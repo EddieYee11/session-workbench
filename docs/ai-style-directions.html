@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>会话工作台 · 三种 AI 风格方向</title>
+  <style>
+    :root {
+      --page: #dedfe1;
+      --page-ink: #202124;
+      --page-muted: #676970;
+      --page-line: rgba(29, 31, 33, .13);
+      --page-card: rgba(255, 255, 255, .58);
+      --font-ui: "DM Sans", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      --font-display: "Fraunces", "Songti SC", "Noto Serif CJK SC", serif;
+      --font-technical: "IBM Plex Mono", "SFMono-Regular", monospace;
+      --ease-soft: cubic-bezier(.2, .75, .25, 1);
+      --ease-snap: cubic-bezier(.25, .8, .2, 1);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      overflow-x: hidden;
+      background: var(--page);
+      color: var(--page-ink);
+      font-family: var(--font-ui);
+      -webkit-font-smoothing: antialiased;
+    }
+    button { font: inherit; cursor: pointer; }
+    button:focus-visible, a:focus-visible { outline: 3px solid #e36061; outline-offset: 3px; }
+    .page {
+      max-width: 1510px;
+      margin: 0 auto;
+      padding: 48px 38px 72px;
+    }
+    .page-top {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 40px;
+      padding: 0 4px 28px;
+      border-bottom: 1px solid var(--page-line);
+    }
+    .eyebrow {
+      margin: 0 0 16px;
+      font: 600 11px/1.3 var(--font-technical);
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      color: #6f7175;
+    }
+    h1 {
+      max-width: 830px;
+      margin: 0;
+      font-size: clamp(34px, 4vw, 57px);
+      line-height: 1.09;
+      font-weight: 600;
+      letter-spacing: -.055em;
+    }
+    h1 em { font-family: var(--font-display); font-weight: 400; letter-spacing: -.07em; }
+    .lead {
+      max-width: 760px;
+      margin: 19px 0 0;
+      color: #55575c;
+      font-size: 15px;
+      line-height: 1.75;
+    }
+    .top-side {
+      min-width: 190px;
+      padding-top: 3px;
+      text-align: right;
+      font: 500 11px/1.9 var(--font-technical);
+      letter-spacing: .03em;
+      color: #606269;
+    }
+    .top-side strong { display: block; color: #252629; font-weight: 600; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px 30px;
+      padding: 25px 4px 29px;
+    }
+    .toolbar-copy { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .toolbar-copy strong { font-size: 14px; }
+    .toolbar-copy span { color: var(--page-muted); font-size: 12px; }
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .control {
+      min-height: 35px;
+      padding: 8px 13px;
+      border: 1px solid rgba(36, 37, 39, .16);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .52);
+      color: #45464a;
+      font-size: 12px;
+      font-weight: 600;
+      transition: color 180ms ease, background 180ms ease, border-color 180ms ease, transform 180ms ease;
+    }
+    .control:hover { transform: translateY(-1px); border-color: rgba(36, 37, 39, .34); }
+    .control[aria-pressed="true"] { background: #202123; color: #fff; border-color: #202123; }
+    .control.replay { margin-left: 4px; background: transparent; border-style: dashed; }
+    .comparison {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      align-items: start;
+      gap: 17px;
+    }
+    .concept {
+      min-width: 0;
+      padding: 20px 15px 22px;
+      border: 1px solid rgba(255, 255, 255, .68);
+      border-radius: 28px;
+      background: var(--page-card);
+      box-shadow: 0 16px 45px rgba(27, 29, 33, .035);
+      transition: background 220ms ease, border-color 220ms ease, transform 220ms var(--ease-soft);
+    }
+    .concept:hover { transform: translateY(-3px); }
+    .concept.selected { border-color: rgba(31, 32, 34, .53); background: rgba(255, 255, 255, .75); }
+    .concept-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 92px;
+      padding: 0 8px;
+    }
+    .concept-id { margin: 0 0 7px; font: 600 10px/1.2 var(--font-technical); letter-spacing: .1em; color: #77787c; }
+    .concept h2 { margin: 0; font-size: 22px; line-height: 1.15; font-weight: 700; letter-spacing: -.035em; }
+    .concept-header p { margin: 7px 0 0; color: #727379; font-size: 11px; line-height: 1.5; }
+    .recommend {
+      white-space: nowrap;
+      padding: 6px 8px;
+      border-radius: 999px;
+      background: #2a2b2d;
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .phone {
+      position: relative;
+      width: min(100%, 359px);
+      height: 735px;
+      margin: 0 auto;
+      padding: 7px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, .9);
+      border-radius: 45px;
+      background: #fafafa;
+      box-shadow: 0 6px 9px rgba(31, 31, 35, .09), 0 25px 55px rgba(31, 31, 35, .17), inset 0 0 0 1px #fff;
+    }
+    .screen {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border-radius: 39px;
+    }
+    .statusbar {
+      position: relative;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 33px;
+      padding: 8px 21px 0;
+      flex: none;
+      color: var(--ink);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: -.03em;
+    }
+    .status-icons { display: flex; align-items: center; gap: 4px; font-size: 10px; letter-spacing: -.1em; }
+    .battery { width: 15px; height: 7px; border-radius: 2px; background: currentColor; transform: scaleX(.88); }
+    .app-head { position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 53px; padding: 4px 16px 7px; flex: none; }
+    .head-round { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--head-line); border-radius: 50%; color: var(--ink); background: var(--head-bg); font-size: 17px; line-height: 1; }
+    .agent-switch { display: flex; align-items: center; gap: 3px; padding: 3px; border-radius: 999px; background: var(--switch-bg); }
+    .agent-switch span { display: inline-flex; align-items: center; justify-content: center; min-width: 52px; height: 25px; border-radius: 999px; color: var(--muted); font-size: 11px; font-weight: 600; }
+    .agent-switch span.active { background: var(--switch-active); color: var(--ink); box-shadow: 0 1px 4px rgba(0, 0, 0, .06); }
+    .phone-content { position: relative; z-index: 1; flex: 1; min-height: 0; overflow: auto; scrollbar-width: none; }
+    .phone-content::-webkit-scrollbar { display: none; }
+    .composer-wrap { position: relative; z-index: 3; flex: none; padding: 9px 14px 20px; }
+    .composer {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 45px;
+      padding: 5px 6px 5px 14px;
+      border: 1px solid var(--composer-line);
+      border-radius: 999px;
+      background: var(--composer-bg);
+      color: var(--composer-text);
+      font-size: 11px;
+      box-shadow: var(--composer-shadow);
+    }
+    .composer .plus { font-size: 18px; font-weight: 400; }
+    .composer .placeholder { flex: 1; color: var(--muted); }
+    .send { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--send-bg); color: var(--send-ink); font-size: 16px; font-weight: 700; }
+    .home-indicator { position: absolute; z-index: 5; bottom: 7px; left: 50%; width: 102px; height: 4px; border-radius: 4px; background: rgba(40, 40, 43, .42); transform: translateX(-50%); }
+    .motion-note { display: flex; justify-content: space-between; gap: 15px; padding: 16px 8px 0; color: #6a6c71; font-size: 11px; line-height: 1.55; }
+    .motion-note strong { white-space: nowrap; color: #27282a; font-size: 11px; }
+    .choose {
+      display: block;
+      width: calc(100% - 16px);
+      margin: 16px 8px 0;
+      padding: 10px 14px;
+      border: 1px solid rgba(33, 34, 36, .24);
+      border-radius: 12px;
+      background: transparent;
+      color: #38393c;
+      font-size: 12px;
+      font-weight: 700;
+      transition: background 200ms ease, color 200ms ease, transform 200ms ease;
+    }
+    .choose:hover { transform: translateY(-1px); background: #222426; color: #fff; }
+    .concept.selected .choose { background: #222426; color: #fff; }
+
+    /* A · calm editorial */
+    .concept-a .screen {
+      --ink: #202123; --muted: #929196; --head-line: #eeeceb; --head-bg: rgba(255,255,255,.76);
+      --switch-bg: #eeeceb; --switch-active: #fff; --composer-line: #eee9e7; --composer-bg: rgba(255,255,255,.94);
+      --composer-text: #262325; --composer-shadow: 0 5px 22px rgba(99,80,79,.08);
+      --send-bg: #191919; --send-ink: #fff;
+      background: #f8f7f6;
+      color: var(--ink);
+      font-family: "DM Sans", "PingFang SC", sans-serif;
+    }
+    .concept-a .screen::before {
+      position: absolute;
+      top: 106px; right: -62px;
+      width: 225px; height: 225px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255,220,216,.48), rgba(255,235,231,0) 67%);
+      content: "";
+      pointer-events: none;
+    }
+    .a-content { padding: 12px 16px 0; }
+    .a-overline { display: flex; align-items: center; gap: 6px; margin: 11px 2px 0; color: #8a8384; font-size: 10px; font-weight: 600; letter-spacing: .02em; }
+    .a-overline i { width: 5px; height: 5px; border-radius: 50%; background: #ef686d; }
+    .a-title { position: relative; margin: 13px 0 7px; font-family: var(--font-display); font-size: 32px; font-weight: 400; line-height: 1.14; letter-spacing: -.055em; }
+    .a-title small { display: block; margin-top: 8px; color: #959094; font-family: var(--font-ui); font-size: 11px; font-weight: 500; letter-spacing: 0; }
+    .a-orb { position: absolute; top: 123px; right: 25px; display: grid; place-items: center; width: 45px; height: 45px; border-radius: 18px; background: linear-gradient(135deg, #fc645e, #db3c83 52%, #ffa637); box-shadow: 0 11px 24px rgba(225,87,94,.21); transform: rotate(-11deg); }
+    .a-orb::before { width: 23px; height: 23px; border: 2px solid white; border-radius: 50% 50% 42% 42%; content: ""; opacity: .97; }
+    body[data-state="working"] .a-orb { animation: a-breathe 2.9s ease-in-out infinite; }
+    .a-section-label { margin: 27px 2px 9px; color: #3b3839; font-size: 11px; font-weight: 700; }
+    .a-card { padding: 14px 15px; border: 1px solid #f2eeec; border-radius: 23px; background: rgba(255,255,255,.96); box-shadow: 0 5px 20px rgba(93,70,71,.035); }
+    .a-card + .a-card { margin-top: 8px; }
+    .a-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .a-card-head span { color: #9a9698; font-size: 10px; }
+    .a-card-head b { color: #9b858b; font-size: 10px; font-weight: 600; }
+    .a-card h3 { margin: 13px 0 5px; color: #272526; font-size: 15px; line-height: 1.3; font-weight: 700; letter-spacing: -.02em; }
+    .a-card p { margin: 0; color: #999395; font-size: 10.5px; line-height: 1.55; }
+    .a-progress { height: 4px; margin-top: 15px; overflow: hidden; border-radius: 4px; background: #f1ebea; }
+    .a-progress::after { display: block; width: 48%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ff945e, #e84775); content: ""; transition: width 360ms var(--ease-soft); }
+    body[data-state="waiting"] .a-progress::after { width: 78%; }
+    body[data-state="done"] .a-progress::after { width: 100%; }
+    .a-next { position: relative; display: flex; gap: 11px; align-items: center; margin-top: 10px; padding: 13px 14px; overflow: hidden; border: 1px solid #f2e6e4; border-radius: 23px; background: #fffafa; transition: background 260ms ease, border-color 260ms ease; }
+    .a-next::before { position: absolute; right: -21px; top: -40px; width: 107px; height: 107px; border-radius: 50%; background: radial-gradient(circle, rgba(255,211,207,.58), transparent 68%); content: ""; }
+    .a-next-icon { position: relative; display: grid; place-items: center; flex: none; width: 35px; height: 35px; border-radius: 13px; background: #ffe8e2; color: #d95164; font-size: 18px; }
+    .a-next div:last-child { position: relative; min-width: 0; }
+    .a-next strong { display: block; font-size: 11.5px; line-height: 1.2; }
+    .a-next span { display: block; margin-top: 4px; color: #9b8788; font-size: 10px; }
+    body[data-state="waiting"] .a-next { border-color: #eebbb2; background: #fff2ee; }
+    body[data-state="done"] .a-next { border-color: #e0e9df; background: #f8fbf7; }
+    body[data-state="done"] .a-next-icon { background: #e9f1e7; color: #527657; }
+    .a-complete { display: flex; justify-content: space-between; gap: 9px; margin: 10px 3px 0; color: #aaa3a2; font-size: 10px; }
+    .a-complete b { color: #666263; font-weight: 600; }
+    .concept-a .composer-wrap { background: linear-gradient(180deg, rgba(248,247,246,0), #f8f7f6 28%); }
+
+    /* B · precise command desk */
+    .concept-b .screen {
+      --ink: #1d2525; --muted: #7e8988; --head-line: #d6deda; --head-bg: #f8faf7;
+      --switch-bg: #e6ebe7; --switch-active: #fff; --composer-line: #cbd4ce; --composer-bg: #fff;
+      --composer-text: #22302b; --composer-shadow: none; --send-bg: #263e32; --send-ink: #fff;
+      background: #f4f6f3;
+      color: var(--ink);
+      font-family: "Manrope", "PingFang SC", sans-serif;
+    }
+    .concept-b .screen::before { position: absolute; inset: 86px 0 65px; opacity: .55; background-image: linear-gradient(#e5e9e4 1px, transparent 1px), linear-gradient(90deg, #e5e9e4 1px, transparent 1px); background-size: 29px 29px; mask-image: linear-gradient(to bottom, transparent, black 11%, black 85%, transparent); content: ""; pointer-events: none; }
+    .b-content { padding: 14px 16px 0; }
+    .b-kicker { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 600 10px/1.3 var(--font-technical); letter-spacing: .045em; color: #63776b; }
+    .b-kicker .sync { display: flex; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid #d8e4d9; border-radius: 6px; background: #eef5ee; color: #2a6d44; font-size: 9px; }
+    .b-kicker .sync::before { width: 5px; height: 5px; border-radius: 50%; background: #499e61; content: ""; }
+    .b-title { margin: 15px 0 18px; font-size: 25px; font-weight: 800; line-height: 1.12; letter-spacing: -.065em; }
+    .b-title span { display: block; color: #7e8d85; }
+    .b-metrics { display: grid; grid-template-columns: repeat(3, 1fr); overflow: hidden; border: 1px solid #d7dfd9; border-radius: 13px; background: #fbfcfa; }
+    .b-metric { min-height: 66px; padding: 10px 9px; border-right: 1px solid #d7dfd9; }
+    .b-metric:last-child { border-right: 0; }
+    .b-metric small { display: block; font-size: 9px; color: #85938b; }
+    .b-metric strong { display: block; margin-top: 5px; font: 600 22px/1 var(--font-technical); letter-spacing: -.08em; }
+    .b-heading { display: flex; align-items: center; justify-content: space-between; margin: 21px 0 8px; font: 600 10px/1.2 var(--font-technical); letter-spacing: .08em; color: #65746a; }
+    .b-heading span:last-child { color: #9ba7a0; }
+    .b-task { border: 1px solid #bfcfc2; border-radius: 11px; background: #fff; box-shadow: 4px 4px 0 #e5ebe6; }
+    .b-task-top { display: flex; align-items: center; justify-content: space-between; padding: 11px 12px 10px; border-bottom: 1px solid #e2e9e3; }
+    .b-task-top strong { font-size: 12px; letter-spacing: -.02em; }
+    .b-state { display: flex; align-items: center; gap: 5px; padding: 4px 6px; border-radius: 5px; background: #e9f5e9; color: #33744a; font: 600 9px/1 var(--font-technical); }
+    .b-state::before { width: 5px; height: 5px; border-radius: 50%; background: currentColor; content: ""; }
+    body[data-state="waiting"] .b-state { background: #fff1df; color: #ab6d21; }
+    body[data-state="done"] .b-state { background: #e9f5e9; color: #33744a; }
+    .b-steps { padding: 10px 13px 12px; }
+    .b-step { position: relative; display: flex; align-items: center; gap: 10px; min-height: 28px; color: #7c8980; font-size: 10px; }
+    .b-step:not(:last-child)::after { position: absolute; left: 5px; top: 20px; width: 1px; height: 16px; background: #d4ddd5; content: ""; }
+    .b-step i { position: relative; z-index: 1; display: grid; place-items: center; width: 11px; height: 11px; flex: none; border: 1px solid #9cafa1; border-radius: 50%; background: #fff; }
+    .b-step.done i { border-color: #377657; background: #377657; }
+    .b-step.done i::after { width: 3px; height: 5px; border-right: 1.5px solid white; border-bottom: 1.5px solid white; content: ""; transform: translateY(-1px) rotate(45deg); }
+    .b-step.current { color: #284f38; font-weight: 700; }
+    .b-step.current i { border: 3px solid #3b8558; background: #bde6c5; }
+    body[data-state="working"] .b-step.current i { animation: b-ring 1.7s ease-out infinite; }
+    .b-progress { height: 6px; overflow: hidden; border-radius: 0 0 10px 10px; background: #e9eee9; }
+    .b-progress i { display: block; width: 49%; height: 100%; background: #3c8658; transition: width 350ms var(--ease-snap); }
+    body[data-state="working"] .b-progress i { background: linear-gradient(90deg, #3c8658 0 65%, #83c89b 83%, #3c8658); background-size: 220% 100%; animation: b-scan 2.3s linear infinite; }
+    body[data-state="waiting"] .b-progress i { width: 79%; background: #ca8e39; }
+    body[data-state="done"] .b-progress i { width: 100%; }
+    .b-review { display: flex; align-items: center; gap: 10px; min-height: 70px; padding: 11px; border: 1px solid #e4d8bd; border-radius: 11px; background: #fffcf5; transition: transform 250ms var(--ease-snap), border-color 250ms ease, box-shadow 250ms ease; }
+    .b-review-mark { display: grid; place-items: center; width: 31px; height: 31px; flex: none; border-radius: 7px; background: #f8e8c8; color: #9b6d24; font: 600 15px/1 var(--font-technical); }
+    .b-review-copy { min-width: 0; flex: 1; }
+    .b-review-copy strong { display: block; font-size: 11px; line-height: 1.2; }
+    .b-review-copy span { display: block; margin-top: 4px; color: #947e5d; font-size: 9px; }
+    .b-review-arrow { color: #a88951; }
+    body[data-state="waiting"] .b-review { border-color: #d5ab5f; box-shadow: 0 0 0 3px rgba(230,178,91,.15); transform: translateY(-2px); }
+    body[data-state="done"] .b-review { border-color: #cfe0cf; background: #f8fcf8; }
+    body[data-state="done"] .b-review-mark { background: #e1f1e3; color: #35784d; }
+    .b-secondary { display: flex; justify-content: space-between; align-items: center; padding: 10px 1px; border-bottom: 1px solid #dce4dd; font-size: 10px; }
+    .b-secondary span:last-child { color: #4c8d60; font: 600 9px/1 var(--font-technical); }
+    .concept-b .composer-wrap { background: linear-gradient(180deg, rgba(244,246,243,0), #f4f6f3 30%); }
+
+    /* C · expressive companion */
+    .concept-c .screen {
+      --ink: #292528; --muted: #9c8d91; --head-line: #f3e7e6; --head-bg: rgba(255,255,255,.84);
+      --switch-bg: #f4e8e7; --switch-active: #fff; --composer-line: #f0e0df; --composer-bg: #fff;
+      --composer-text: #40343a; --composer-shadow: 0 5px 18px rgba(154,104,101,.07);
+      --send-bg: #2b2829; --send-ink: #fff;
+      background: #faf6f4;
+      color: var(--ink);
+      font-family: "Nunito", "PingFang SC", sans-serif;
+    }
+    .concept-c .screen::before { position: absolute; top: 110px; left: 12px; right: 12px; height: 275px; border-radius: 50%; background: radial-gradient(ellipse at center, #e8f4f5 0%, rgba(255,240,235,.32) 45%, transparent 72%); content: ""; pointer-events: none; }
+    .c-content { padding: 7px 16px 0; }
+    .c-greeting { margin: 12px 1px 0; color: #958588; font-size: 10px; font-weight: 700; letter-spacing: .02em; }
+    .c-title { margin: 8px 0 0; font-size: 26px; font-weight: 800; line-height: 1.18; letter-spacing: -.055em; }
+    .c-stage { position: relative; display: flex; align-items: center; justify-content: center; height: 172px; }
+    .c-halo { position: absolute; width: 146px; height: 146px; border-radius: 50%; background: radial-gradient(circle, rgba(197,229,238,.33), rgba(251,238,234,.12) 55%, transparent 72%); }
+    .c-companion { position: relative; width: 230px; height: 230px; flex: none; overflow: visible; cursor: pointer; }
+    grok-bot:focus-visible { outline: 2px solid #ca7966; border-radius: 50%; }
+    .c-halo, .showcase-ring, .showcase-light { pointer-events: none; }
+    .c-bubble { position: relative; padding: 12px 14px; border: 1px solid #f3e4df; border-radius: 20px 20px 20px 5px; background: #fff; box-shadow: 0 8px 21px rgba(147,93,88,.06); }
+    .c-bubble::before { position: absolute; top: -8px; left: 29px; width: 16px; height: 16px; border-top: 1px solid #f3e4df; border-left: 1px solid #f3e4df; background: #fff; content: ""; transform: rotate(45deg); }
+    .c-bubble small { display: block; color: #df8272; font-size: 9px; font-weight: 800; }
+    .c-bubble strong { display: block; margin-top: 4px; font-size: 12px; line-height: 1.4; }
+    .c-bubble p { margin: 5px 0 0; color: #a39295; font-size: 10px; line-height: 1.4; }
+    .c-section { display: flex; align-items: center; justify-content: space-between; margin: 16px 2px 7px; font-size: 10px; font-weight: 800; }
+    .c-section span { color: #b39ea1; font-size: 9px; font-weight: 700; }
+    .c-task { display: flex; align-items: center; gap: 9px; min-height: 54px; padding: 10px; border: 1px solid #f2e6e2; border-radius: 16px; background: #fff; }
+    .c-task + .c-task { margin-top: 6px; }
+    .c-task-icon { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: 11px; background: #ffede7; color: #da7467; font-size: 15px; }
+    .c-task.secondary .c-task-icon { background: #eaf2e9; color: #5e9671; }
+    .c-task-copy { min-width: 0; flex: 1; }
+    .c-task-copy strong { display: block; font-size: 10.5px; }
+    .c-task-copy span { color: #aa9a9d; font-size: 9px; }
+    .c-task-arrow { color: #cdbbbe; font-size: 17px; }
+    .concept-c .composer-wrap { background: linear-gradient(180deg, rgba(250,246,244,0), #faf6f4 28%); }
+
+    .character-study {
+      display: grid;
+      grid-template-columns: minmax(340px, .9fr) minmax(340px, 1.1fr);
+      gap: clamp(24px, 5vw, 72px);
+      align-items: center;
+      min-height: 388px;
+      margin-top: 18px;
+      padding: 26px clamp(30px, 5vw, 82px) 26px 26px;
+      border: 1px solid rgba(255, 255, 255, .7);
+      border-radius: 28px;
+      background: #f9f4f0;
+      box-shadow: 0 16px 45px rgba(27, 29, 33, .035);
+    }
+    .character-showcase {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-height: 334px;
+      overflow: hidden;
+      border-radius: 21px;
+      background: radial-gradient(circle at 50% 52%, #fff9ed 0, #ffefdf 34%, #f3e7e2 66%, #e9e2e0 100%);
+      isolation: isolate;
+    }
+    .character-showcase::before {
+      position: absolute;
+      inset: 0;
+      background-image: radial-gradient(rgba(129, 93, 87, .17) .7px, transparent .7px);
+      background-size: 21px 21px;
+      mask-image: linear-gradient(90deg, transparent, black 24%, black 76%, transparent);
+      content: "";
+      opacity: .28;
+    }
+    .showcase-ring { position: absolute; width: 266px; height: 266px; border: 1px solid rgba(207, 129, 102, .2); border-radius: 50%; }
+    .showcase-ring.ring-two { width: 360px; height: 360px; opacity: .5; }
+    .showcase-light { position: absolute; width: 190px; height: 205px; border-radius: 50%; background: #b8dce9; filter: blur(44px); opacity: .23; transform: translateY(22px); transition: opacity 350ms ease, background 350ms ease; }
+    .showcase-character { position: relative; z-index: 2; width: min(480px, 100%); height: auto; aspect-ratio: 1; cursor: pointer; }
+    body[data-state="working"] .showcase-light { animation: showcase-glow 3.1s ease-in-out infinite; }
+    body[data-state="waiting"] .showcase-light { background: #e9bbb5; opacity: .18; }
+    body[data-state="done"] .showcase-light { background: #b7dfcf; opacity: .26; }
+    .character-description .concept-id { margin-bottom: 14px; }
+    .character-description h2 { margin: 0; font-size: clamp(30px, 3.2vw, 46px); line-height: 1.12; letter-spacing: -.055em; }
+    .character-description h2 em { color: #c96b51; font-family: var(--font-display); font-weight: 400; }
+    .character-intro { max-width: 530px; margin: 22px 0 22px; color: #655d5b; font-size: 14px; line-height: 1.75; }
+    .character-state { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; max-width: 530px; padding: 14px 16px; border: 1px solid #eedbd4; border-radius: 13px; background: #fffaf6; font-size: 13px; }
+    .character-state .state-indicator { width: 8px; height: 8px; border-radius: 50%; background: #82bcd0; box-shadow: 0 0 0 4px rgba(130, 188, 208, .13); }
+    .character-state strong { color: #302828; }
+    .character-state span:last-child { color: #8b7771; }
+    body[data-state="waiting"] .character-state .state-indicator { background: #d1974a; box-shadow: 0 0 0 4px rgba(209, 151, 74, .13); }
+    body[data-state="done"] .character-state .state-indicator { background: #67a173; box-shadow: 0 0 0 4px rgba(103, 161, 115, .13); }
+    .character-help { max-width: 530px; margin: 13px 0 0; color: #9a8d88; font-size: 11px; line-height: 1.65; }
+    @keyframes showcase-glow { 0%, 100% { opacity: .2; transform: translateY(22px) scale(.94); } 50% { opacity: .32; transform: translateY(22px) scale(1.05); } }
+
+    body.replaying .entrance { animation: enter 550ms var(--ease-soft) both; }
+    body.replaying .entrance.d2 { animation-delay: 90ms; }
+    body.replaying .entrance.d3 { animation-delay: 180ms; }
+    body.replaying .entrance.d4 { animation-delay: 260ms; }
+    body.state-flash[data-state="waiting"] .a-next,
+    body.state-flash[data-state="waiting"] .b-review,
+    body.state-flash[data-state="waiting"] .c-bubble { animation: notice 520ms var(--ease-soft); }
+    body.state-flash[data-state="done"] .a-orb,
+    body.state-flash[data-state="done"] .b-task { animation: finish 560ms var(--ease-soft); }
+    @keyframes enter { from { opacity: 0; transform: translateY(16px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    @keyframes notice { 0% { transform: translateY(9px); opacity: .55; } 70% { transform: translateY(-2px); opacity: 1; } 100% { transform: translateY(0); } }
+    @keyframes finish { 0% { transform: scale(.94); } 65% { transform: scale(1.04); } 100% { transform: scale(1); } }
+    @keyframes a-breathe { 0%,100% { box-shadow: 0 11px 24px rgba(225,87,94,.17); filter: saturate(.96); } 50% { box-shadow: 0 12px 29px rgba(225,87,94,.31); filter: saturate(1.08); } }
+    @keyframes b-ring { 0%,100% { box-shadow: 0 0 0 0 rgba(63,133,87,.25); } 55% { box-shadow: 0 0 0 5px rgba(63,133,87,0); } }
+    @keyframes b-scan { from { background-position: 130% 0; } to { background-position: -80% 0; } }
+
+    .footer {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-top: 30px;
+      padding: 21px 4px 0;
+      border-top: 1px solid var(--page-line);
+      color: #66686e;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+    .footer p { max-width: 760px; margin: 0; }
+    .footer .current { min-width: 225px; text-align: right; color: #3e4044; font-weight: 700; }
+    @media (max-width: 1180px) {
+      .comparison { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .concept:last-child { grid-column: 1 / -1; max-width: 505px; width: 100%; justify-self: center; }
+      .character-study { grid-template-columns: minmax(270px, .9fr) minmax(300px, 1.1fr); gap: 28px; padding-right: 30px; }
+    }
+    @media (max-width: 710px) {
+      .page { padding: 30px 15px 48px; }
+      .page-top { display: block; padding-bottom: 21px; }
+      .top-side { margin-top: 18px; text-align: left; }
+      .top-side strong { display: inline; margin-right: 7px; }
+      .toolbar { padding: 21px 4px 22px; }
+      .comparison { grid-template-columns: 1fr; gap: 15px; }
+      .concept, .concept:last-child { grid-column: auto; max-width: 490px; width: 100%; justify-self: center; }
+      .concept { padding: 18px 11px 20px; }
+      .concept-header { min-height: 85px; }
+      .footer { display: block; }
+      .footer .current { margin-top: 14px; text-align: left; }
+      .character-study { grid-template-columns: 1fr; max-width: 490px; margin-left: auto; margin-right: auto; padding: 11px 11px 25px; gap: 24px; }
+      .character-showcase { min-height: 290px; }
+      .character-description { padding: 0 12px; }
+      .character-description h2 { font-size: 32px; }
+      .character-intro { margin: 15px 0; }
+    }
+    @media (max-width: 385px) {
+      .page { padding-left: 9px; padding-right: 9px; }
+      .phone { height: 710px; }
+      .concept { padding-left: 7px; padding-right: 7px; }
+      .a-title { font-size: 30px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body class="replaying" data-state="working">
+  <main class="page">
+    <header class="page-top">
+      <div>
+        <p class="eyebrow">SESSION WORKBENCH · VISUAL STUDY 01</p>
+        <h1>同一个工作台，<em>三种性格。</em></h1>
+        <p class="lead">基于当前 Pi／Codex 会话工作台的结构做的视觉示意。三屏使用相同的示意任务；切换下方状态，可比较它们如何表达工作中、等待回应与完成。此页不连接真实会话。</p>
+      </div>
+      <div class="top-side"><strong>网页示意 · 已接入 Android</strong>2026.10.01<br>窄屏可逐张查看</div>
+    </header>
+
+    <div class="toolbar">
+      <div class="toolbar-copy"><strong>动效对照</strong><span>点选状态，再观察三种表达方式</span></div>
+      <div class="controls" role="group" aria-label="切换示意任务状态">
+        <button class="control" data-mode="working" aria-pressed="true">工作中</button>
+        <button class="control" data-mode="waiting" aria-pressed="false">等待回应</button>
+        <button class="control" data-mode="done" aria-pressed="false">已完成</button>
+        <button class="control replay" id="replay" type="button" aria-label="重播三种风格的入场动效">↻ 重播入场</button>
+      </div>
+    </div>
+
+    <section class="comparison" aria-label="三种会话工作台风格">
+      <article class="concept concept-a" id="direction-a" data-choice="A">
+        <div class="concept-header">
+          <div><p class="concept-id">DIRECTION A · CALM</p><h2>温柔工作台</h2><p>柔软留白 · 让重要状态自然浮现</p></div>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="status-icons">▂▅ ▴ <span class="battery"></span></span></div>
+            <div class="app-head"><span class="head-round" aria-hidden="true">‹</span><div class="agent-switch"><span>Pi</span><span class="active">Codex</span></div><span class="head-round" aria-hidden="true">＋</span></div>
+            <div class="phone-content a-content">
+              <div class="a-overline entrance"><i></i> Mac mini · 已连接</div>
+              <h3 class="a-title entrance d2">今天，先看<br>最重要的。<small>工作会继续，你只需在需要时决定。</small></h3>
+              <div class="a-orb" aria-hidden="true"></div>
+              <div class="a-section-label entrance d2">为你整理</div>
+              <div class="a-card entrance d3">
+                <div class="a-card-head"><span>CODEX · 当前任务</span><b data-copy="badge">工作中</b></div>
+                <h3>整理项目更新</h3>
+                <p data-copy="detail">正在梳理变更，完成后交给你查看。</p>
+                <div class="a-progress" aria-hidden="true"></div>
+              </div>
+              <div class="a-next entrance d4">
+                <div class="a-next-icon" aria-hidden="true">✦</div>
+                <div><strong data-copy="action">稍后可审阅成果</strong><span data-copy="actionSub">重要决定会留给你</span></div>
+              </div>
+              <div class="a-complete entrance d4"><span>近期完成</span><b>检查同步状态 ✓</b></div>
+            </div>
+            <div class="composer-wrap"><div class="composer"><span class="plus">＋</span><span class="placeholder">给 Codex 一条指令…</span><span class="send">↑</span></div></div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+        <div class="motion-note"><strong>动效语气</strong><span>小范围呼吸；待确认卡轻浮起；完成只回弹一次。</span></div>
+        <button class="choose" type="button" data-select="A" aria-pressed="false">选择方向 A</button>
+      </article>
+
+      <article class="concept concept-b" id="direction-b" data-choice="B">
+        <div class="concept-header">
+          <div><p class="concept-id">DIRECTION B · FOCUSED</p><h2>任务指挥台</h2><p>秩序清晰 · 一眼看见过程和决策</p></div>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="status-icons">▂▅ ▴ <span class="battery"></span></span></div>
+            <div class="app-head"><span class="head-round" aria-hidden="true">≡</span><div class="agent-switch"><span>Pi</span><span class="active">Codex</span></div><span class="head-round" aria-hidden="true">＋</span></div>
+            <div class="phone-content b-content">
+              <div class="b-kicker entrance"><span>WORK / TODAY</span><span class="sync">MAC MINI LIVE</span></div>
+              <h3 class="b-title entrance d2">现在发生的事<span>一目了然。</span></h3>
+              <div class="b-metrics entrance d2">
+                <div class="b-metric"><small>当前任务</small><strong>01</strong></div>
+                <div class="b-metric"><small>等待你</small><strong data-copy="count">00</strong></div>
+                <div class="b-metric"><small>近期完成</small><strong>01</strong></div>
+              </div>
+              <div class="b-heading entrance d3"><span>01 / 当前任务</span><span>CODEX</span></div>
+              <div class="b-task entrance d3">
+                <div class="b-task-top"><strong>整理项目更新</strong><span class="b-state" data-copy="badge">工作中</span></div>
+                <div class="b-steps">
+                  <div class="b-step done"><i></i><span>读取变更</span></div>
+                  <div class="b-step done"><i></i><span>整理内容</span></div>
+                  <div class="b-step current"><i></i><span data-copy="step">准备摘要</span></div>
+                </div>
+                <div class="b-progress" aria-hidden="true"><i></i></div>
+              </div>
+              <div class="b-heading entrance d4"><span>02 / 下一步</span><span>REVIEW</span></div>
+              <div class="b-review entrance d4">
+                <div class="b-review-mark">!</div>
+                <div class="b-review-copy"><strong data-copy="action">稍后可审阅成果</strong><span data-copy="actionSub">重要决定会留给你</span></div>
+                <span class="b-review-arrow">↗</span>
+              </div>
+              <div class="b-heading entrance d4"><span>03 / 近期完成</span><span>HISTORY</span></div>
+              <div class="b-secondary entrance d4"><span>检查同步状态</span><span>DONE ↗</span></div>
+            </div>
+            <div class="composer-wrap"><div class="composer"><span class="plus">＋</span><span class="placeholder">下一条指令…</span><span class="send">↑</span></div></div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+        <div class="motion-note"><strong>动效语气</strong><span>进度沿步骤推进；待确认上移；状态切换干脆利落。</span></div>
+        <button class="choose" type="button" data-select="B" aria-pressed="false">选择方向 B</button>
+      </article>
+
+      <article class="concept concept-c selected" id="direction-c" data-choice="C">
+        <div class="concept-header">
+          <div><p class="concept-id">DIRECTION C · ALIVE</p><h2>灵动伙伴</h2><p>流体圆脸 · 用表情与形变表达任务状态</p></div>
+          <span class="recommend">你的倾向</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="status-icons">▂▅ ▴ <span class="battery"></span></span></div>
+            <div class="app-head"><span class="head-round" aria-hidden="true">‹</span><div class="agent-switch"><span>Pi</span><span class="active">Codex</span></div><span class="head-round" aria-hidden="true">＋</span></div>
+            <div class="phone-content c-content">
+              <div class="c-greeting entrance">Mac mini 在线 · Codex 已就位</div>
+              <h3 class="c-title entrance d2">让 Codex 先忙，<br>你看关键一步。</h3>
+              <div class="c-stage entrance d2">
+                <div class="c-halo"></div>
+                <grok-bot id="phone-bot" class="c-companion" state="thinking" aria-describedby="bot-interaction-help"></grok-bot>
+              </div>
+              <div class="c-bubble entrance d3">
+                <small>CODEX · <span data-copy="badge">工作中</span></small>
+                <strong data-copy="bubble">我正在整理项目更新。</strong>
+                <p data-copy="detail">正在梳理变更，完成后交给你查看。</p>
+              </div>
+              <div class="c-section entrance d4">你的工作进展 <span>查看全部 ↗</span></div>
+              <div class="c-task entrance d4"><div class="c-task-icon">✦</div><div class="c-task-copy"><strong>整理项目更新</strong><span data-copy="action">稍后可审阅成果</span></div><span class="c-task-arrow">›</span></div>
+              <div class="c-task secondary entrance d4"><div class="c-task-icon">✓</div><div class="c-task-copy"><strong>检查同步状态</strong><span>已完成 · 可随时查看</span></div><span class="c-task-arrow">›</span></div>
+            </div>
+            <div class="composer-wrap"><div class="composer"><span class="plus">＋</span><span class="placeholder">和 Codex 说句话…</span><span class="send">↑</span></div></div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+        <div class="motion-note"><strong>动效语气</strong><span>视线跟随与轻点回应；任务完成庆祝一次，随后安静待命。</span></div>
+        <button class="choose" type="button" data-select="C" aria-pressed="true">当前选择 · C</button>
+      </article>
+    </section>
+
+    <section class="character-study" aria-labelledby="character-study-title">
+      <div class="character-showcase">
+        <div class="showcase-ring ring-one"></div>
+        <div class="showcase-ring ring-two"></div>
+        <div class="showcase-light"></div>
+        <grok-bot id="showcase-bot" class="showcase-character" state="thinking" aria-describedby="bot-interaction-help"></grok-bot>
+      </div>
+      <div class="character-description">
+        <p class="concept-id">CHARACTER STUDY · C</p>
+        <h2 id="character-study-title">一张会回应的<br><em>流体圆脸。</em></h2>
+        <p class="character-intro">已接入你提供的「Grok 灵动助手 v2」角色：柔和球体、胶囊眼、视线跟随与连续轻点反应。上方 C 版和这里的大角色使用同一套本地动画组件。</p>
+        <div class="character-state" aria-live="polite"><span class="state-indicator"></span><strong data-copy="characterStatus">工作中</strong><span data-copy="characterLine">正在思考；轻点互动后继续处理任务。</span></div>
+        <div class="controls" role="group" aria-label="切换角色的模拟任务状态" style="margin-top:16px">
+          <button class="control" type="button" data-mode="working" aria-pressed="true">工作中</button>
+          <button class="control" type="button" data-mode="waiting" aria-pressed="false">等待回应</button>
+          <button class="control" type="button" data-mode="done" aria-pressed="false">已完成</button>
+        </div>
+        <p class="character-help" id="bot-interaction-help">移动光标看它转头；3 秒内连续轻点三次，体验好奇、小别扭和转晕。也可用 Tab 聚焦后按 Enter／空格。短表情结束会恢复任务状态，卡片上的工作状态保持不变。</p>
+        <p class="character-help">此页仅使用模拟任务数据，不连接真实会话。角色与播放脚本已保存在本地，可离线体验。已完成会播放一次庆祝，然后回到待命。</p>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>这三个画面仍是<strong>首页视觉与动效示意</strong>，网页使用模拟任务，未连接后端。C 方向已接入 Android，内屏实机验收已通过；应用现更名 Com!，双角色与快捷语音方案见 <a href="COM_PRODUCT_DIRECTION.md">产品方向</a>。外屏待验证。</p>
+      <div class="current" id="choice-label" aria-live="polite">当前倾向：C · 灵动伙伴</div>
+    </footer>
+  </main>
+  <script src="grok-bot/vendor/lottie.min.js"></script>
+  <script src="grok-bot/bot-data.js"></script>
+  <script src="grok-bot/bot-controller.js"></script>
+  <script src="grok-bot/grok-bot.js"></script>
+  <script>
+    (function () {
+      const copy = {
+        working: { badge: "工作中", detail: "正在梳理变更，完成后交给你查看。", action: "稍后可审阅成果", actionSub: "重要决定会留给你", count: "00", step: "准备摘要", bubble: "我正在整理项目更新。", characterStatus: "工作中", characterLine: "正在思考；轻点互动后继续处理任务。" },
+        waiting: { badge: "等待回应", detail: "整理已完成，请你确认下一步。", action: "需要你确认下一步", actionSub: "查看摘要后再决定", count: "01", step: "等待你的决定", bubble: "整理好了，下一步请你决定。", characterStatus: "等待你", characterLine: "好奇地等你回应，任务保持待确认。" },
+        done: { badge: "已完成", detail: "项目更新已整理好，可随时查看。", action: "成果已完成", actionSub: "查看整理后的内容", count: "00", step: "成果已准备好", bubble: "已经完成，你随时可以查看。", characterStatus: "已完成", characterLine: "庆祝一次，随后安静待命；成果仍保留。" }
+      };
+      const labels = { A: "温柔工作台", B: "任务指挥台", C: "灵动伙伴" };
+      let timer = null;
+      function replay() {
+        document.body.classList.remove("replaying");
+        void document.body.offsetWidth;
+        document.body.classList.add("replaying");
+        window.clearTimeout(timer);
+        timer = window.setTimeout(function () { document.body.classList.remove("replaying"); }, 1050);
+      }
+      function setState(state) {
+        document.body.dataset.state = state;
+        // The task is the source of truth. Temporary character reactions never
+        // change the page's business state or completion copy.
+        const botState = { working: "thinking", waiting: "curious", done: "happy" }[state];
+        document.querySelectorAll("grok-bot").forEach(function (bot) { bot.setState(botState); });
+        document.querySelectorAll("[data-mode]").forEach(function (button) {
+          button.setAttribute("aria-pressed", String(button.dataset.mode === state));
+        });
+        document.querySelectorAll("[data-copy]").forEach(function (node) {
+          node.textContent = copy[state][node.dataset.copy];
+        });
+        document.body.classList.remove("state-flash");
+        void document.body.offsetWidth;
+        document.body.classList.add("state-flash");
+        window.setTimeout(function () { document.body.classList.remove("state-flash"); }, 720);
+      }
+      function select(choice) {
+        document.querySelectorAll(".concept").forEach(function (card) {
+          card.classList.toggle("selected", card.dataset.choice === choice);
+        });
+        document.querySelectorAll("[data-select]").forEach(function (button) {
+          const selected = button.dataset.select === choice;
+          button.setAttribute("aria-pressed", String(selected));
+          button.textContent = selected ? "当前选择 · " + choice : "选择方向 " + button.dataset.select;
+        });
+        document.getElementById("choice-label").textContent = "当前倾向：" + choice + " · " + labels[choice];
+      }
+      document.querySelectorAll("[data-mode]").forEach(function (button) {
+        button.addEventListener("click", function () { setState(button.dataset.mode); });
+      });
+      document.querySelectorAll("[data-select]").forEach(function (button) {
+        button.addEventListener("click", function () { select(button.dataset.select); });
+      });
+      document.getElementById("replay").addEventListener("click", replay);
+      window.setTimeout(function () { document.body.classList.remove("replaying"); }, 1050);
+    })();
+  </script>
+</body>
+</html>

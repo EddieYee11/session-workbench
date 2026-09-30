@@ -1,0 +1,8 @@
+:root { color-scheme: light; }
+/* Compose supplies a square canvas. Android WebView can initially resolve vh
+   and percentage heights to zero, so derive both dimensions from its width. */
+html, body { width: 100vw; height: 100vw; margin: 0; overflow: hidden; background: transparent; }
+body { display: grid; place-items: center; -webkit-tap-highlight-color: transparent; user-select: none; }
+grok-bot { width: 100vw; height: 100vw; touch-action: pan-y; }
+grok-bot:focus-visible { outline: 2px solid #51493f; border-radius: 50%; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }

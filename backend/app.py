@@ -5,6 +5,7 @@ from fastapi import FastAPI,Request,HTTPException,WebSocket,WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from history import History,text_content
 from runtime import Runtime
+from voice import voice_router
 
 HOME=Path(os.environ.get('WORKBENCH_HOME',str(Path.home())))
 STATE=Path(os.environ.get('WORKBENCH_STATE',str(Path.home()/'.session-workbench')))
@@ -29,6 +30,7 @@ async def lifespan(app):
     if runtime.rpc:await runtime.rpc.close()
 
 app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
+app.include_router(voice_router(STATE))
 @app.middleware('http')
 async def auth(request,call_next):
     if request.url.path not in ('/health','/pair'):

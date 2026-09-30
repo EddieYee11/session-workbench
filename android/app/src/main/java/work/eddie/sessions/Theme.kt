@@ -24,24 +24,28 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
-// ChatGPT 浅色系：纯白底 + 墨黑主操作 + 灰阶层次 + 发丝分隔线
-val Ink=Color(0xFF0D0D0D);val Paper=Color(0xFFFFFFFF);val SidebarBg=Color(0xFFF7F7F8)
-val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF6E6E6E);val Faint=Color(0xFF9B9B9B)
-val Line=Color(0xFFECECEC);val Track=Color(0xFFF0F0F0);val ChipBg=Color(0xFFF4F4F4)
-val UserBubble=Color(0xFFF4F4F4);val ToolSurface=Color(0xFFF7F7F8)
-val Accent=Color(0xFF0D0D0D);val AccentSoft=Color(0xFFECECEC);val AccentInk=Color(0xFF0D0D0D)
+// 灵动伙伴：暖白底、柔和卡片与克制的状态色，墨黑保留给文字和主操作。
+val Ink=Color(0xFF292528);val Paper=Color(0xFFFAF6F4);val SidebarBg=Color(0xFFF5F0EE)
+val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF756B70);val Faint=Color(0xFF8D8187)
+val Line=Color(0xFFECE2DE);val Track=Color(0xFFF0E8E5);val ChipBg=Color(0xFFF3ECE9)
+val UserBubble=Color(0xFFF1E7E3);val ToolSurface=Color(0xFFF5F1EF)
+val Accent=Ink;val AccentSoft=Color(0xFFF0E3DD);val AccentInk=Ink
+val CompanionCoral=Color(0xFFC57665);val CompanionBlue=Color(0xFF5F8794)
+val CompanionGlow=Color(0xFFE2EFF0);val CompanionBlush=Color(0xFFF8EAE3)
 val PiGreen=Color(0xFF396C55);val PiSoft=Color(0xFFE7F2EC)
 val AmberBg=Color(0xFFFFF7E8);val AmberLine=Color(0xFFF0E0B0);val AmberText=Color(0xFF8A6D1D)
 val ApprovalBg=AmberBg
 
 val Palette=lightColorScheme(
  primary=Ink,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=Ink,
- secondary=Ink,secondaryContainer=Color(0xFFEFEFEF),onSecondaryContainer=Ink,
+ secondary=CompanionCoral,secondaryContainer=CompanionBlush,onSecondaryContainer=Ink,
  background=Paper,onBackground=Ink,surface=Card,onSurface=Ink,
- surfaceVariant=Color(0xFFF4F4F4),onSurfaceVariant=Muted,outline=Line)
+ surfaceVariant=ToolSurface,onSurfaceVariant=Muted,outline=Line)
 
 // 动效规范：弹簧为主，全 App 节奏一致
 object Motion{
+ val TravelEasing=CubicBezierEasing(.22f,1f,.36f,1f)
+ val Reveal=spring<Int>(dampingRatio=.95f,stiffness=Spring.StiffnessMedium)
  val Emphasized=spring<Float>(dampingRatio=.8f,stiffness=Spring.StiffnessMediumLow)
  val Gentle=spring<Float>(dampingRatio=.88f,stiffness=Spring.StiffnessMedium)
  val Settle=spring<Float>(dampingRatio=1f,stiffness=Spring.StiffnessMedium)

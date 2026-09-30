@@ -40,16 +40,23 @@ class MainActivity:ComponentActivity(){
  private val vm:WorkbenchModel by viewModels()
  var quick by mutableStateOf("")
  override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
-   intent.getStringExtra("sid")?.let{vm.openId(it)};quick=intent.getStringExtra("agent")?:""
+   handleIntent(intent)
    if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)
-   val shortcuts=listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
+   val shortcuts=listOf(ShortcutInfo.Builder(this,"voice").setShortLabel("和 Pi 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build())+listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
    Thread { getSystemService(ShortcutManager::class.java).dynamicShortcuts=shortcuts }.start()
    androidx.work.WorkManager.getInstance(this).enqueueUniquePeriodicWork("session-updates",androidx.work.ExistingPeriodicWorkPolicy.KEEP,androidx.work.PeriodicWorkRequestBuilder<StatusWorker>(15,java.util.concurrent.TimeUnit.MINUTES).setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build()).build())
    setContent{MaterialTheme(colorScheme=Palette){Workbench(vm,quick){quick=""}}}
  }
  override fun onStart(){super.onStart();vm.active=true}
- override fun onStop(){vm.active=false;super.onStop()}
- override fun onNewIntent(intent:Intent){super.onNewIntent(intent);intent.getStringExtra("sid")?.let{vm.openId(it)};quick=intent.getStringExtra("agent")?:""}
+ override fun onStop(){vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;super.onStop()}
+ override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);handleIntent(intent)}
+ private fun handleIntent(intent:Intent){
+  val sid=intent.getStringExtra("sid").orEmpty()
+  quick=intent.getStringExtra("agent").orEmpty()
+  if(sid.isNotBlank())vm.openId(sid) else if(quick.isNotBlank())vm.close()
+  // Close the old scene before observing delivery; an already-completed worker may open immediately.
+  intent.getStringExtra("voice_work")?.let{vm.followVoiceDelivery(it)}
+ }
 }
 
 @Composable fun AgentBadge(agent:String){Surface(shape=RoundedCornerShape(6.dp),color=if(agent=="pi")PiSoft else AccentSoft){Text(if(agent=="pi")"Pi" else "Codex",Modifier.padding(horizontal=8.dp,vertical=3.dp),fontSize=11.sp,fontWeight=FontWeight.Bold,color=if(agent=="pi")PiGreen else AccentInk,letterSpacing=.3.sp)}}
@@ -107,8 +114,14 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  }}},confirmButton={TextButton(onClick={choose(path)}){Text("使用此目录")}},dismissButton={TextButton(onClick=dismiss){Text("取消")}})
 }
 @Composable fun Settings(vm:WorkbenchModel,dismiss:()->Unit){
+ val context=androidx.compose.ui.platform.LocalContext.current
  var base by remember{mutableStateOf(vm.store.base.ifBlank{"https://pi.eddiegao.work:8443/sessions"})};var code by remember{mutableStateOf("")};var notify by remember{mutableStateOf(vm.store.prefs.getBoolean("notifications",true))}
- AlertDialog(onDismissRequest=dismiss,title={Text("连接与设置")},text={Column(Modifier.verticalScroll(rememberScrollState())){
+ AlertDialog(onDismissRequest=dismiss,containerColor=Paper,title={Text("Com! · 设置")},text={Column(Modifier.verticalScroll(rememberScrollState())){
+ Text("快捷语音",fontWeight=FontWeight.Bold)
+ Text("按住电源键，和 Pi 说一句。说完直接发送，上滑小窗继续详细对话。",Modifier.padding(top=5.dp),fontSize=12.sp,color=Muted)
+ TextButton(onClick={context.startActivity(Intent(context,QuickVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开 Pi 语音小窗",Modifier.padding(start=8.dp))}
+ TextButton(onClick={context.startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS))}){Text("系统默认助手设置")}
+ HorizontalDivider(Modifier.padding(vertical=12.dp),color=Line)
  Text("Mac mini",fontWeight=FontWeight.Bold);Text(if(vm.connected)"连接正常" else "首次使用需配对",color=Muted,fontSize=12.sp)
  OutlinedTextField(base,{base=it},label={Text("HTTPS 服务地址")},modifier=Modifier.padding(top=12.dp))
  OutlinedTextField(code,{code=it},label={Text("一次性配对码")})

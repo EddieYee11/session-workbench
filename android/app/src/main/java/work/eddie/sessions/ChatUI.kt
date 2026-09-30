@@ -30,7 +30,9 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
@@ -62,7 +64,7 @@ fun relTime(ts:Double):String{
  var selectedAgent by rememberSaveable{mutableStateOf(vm.store.prefs.getString("lastAgent","pi")?:"pi")}
  var sidebar by rememberSaveable{mutableStateOf(false)}
  val drawer=rememberDrawerState(DrawerValue.Closed);val scope=rememberCoroutineScope()
- LaunchedEffect(quick){if(quick.isNotBlank()){selectedAgent=quick;vm.close();clearQuick()}}
+ LaunchedEffect(quick){if(quick.isNotBlank()){selectedAgent=quick;clearQuick()}}
  LaunchedEffect(vm.q,vm.agent,vm.role,vm.cwd,vm.days,vm.sort,vm.archived){delay(250);vm.refresh()}
  Surface(Modifier.fillMaxSize(),color=Paper){BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()){
   val wide=maxWidth>=600.dp
@@ -76,8 +78,7 @@ fun relTime(ts:Double):String{
      Row {Box(Modifier.width(264.dp).fillMaxHeight()){HistorySidebar(vm,pick,newChat,{settings=true})};VerticalDivider(color=Line)}
     }
     Box(Modifier.weight(1f).fillMaxHeight()){
-     if(vm.selected.isBlank())NewChatHome(vm,selectedAgent,{selectedAgent=it},openMenu,{advanced=true},pick)
-     else ChatPage(vm,openMenu,newChat)
+     ConversationScene(vm,selectedAgent,{selectedAgent=it;vm.store.prefs.edit().putString("lastAgent",it).apply()},openMenu,{advanced=true},pick,newChat)
      if(wide&&sidebar)Box(Modifier.matchParentSize().clickable(indication=null,interactionSource=remember{MutableInteractionSource()}){sidebar=false})
     }
    }
@@ -91,11 +92,18 @@ fun relTime(ts:Double):String{
 }
 
 @Composable fun Pill(items:List<String>,selected:Int,enabled:List<Boolean> = items.map{true},click:(Int)->Unit){
- Row(Modifier.background(Track,RoundedCornerShape(50)).padding(3.dp)){
-  items.forEachIndexed{i,label->
-   val chipColor by animateColorAsState(if(selected==i)Card else Color.Transparent,spring(dampingRatio=.88f,stiffness=Spring.StiffnessMedium),label="选中会话视图")
-   val (press,pressMod)=rememberPress(.9f)
-   Box(Modifier.height(36.dp).widthIn(min=72.dp).then(pressMod).shadow(if(selected==i)2.dp else 0.dp,RoundedCornerShape(50),spotColor=Color(0x24000000)).clip(RoundedCornerShape(50)).background(chipColor).clickable(interactionSource=press,indication=null,enabled=enabled[i]){click(i)}.padding(horizontal=18.dp),contentAlignment=Alignment.Center){Text(label,fontSize=14.sp,fontWeight=if(selected==i)FontWeight.SemiBold else FontWeight.Normal,color=if(!enabled[i])Faint else if(selected==i)Ink else Muted)}
+ val cell=84.dp
+ val position by animateDpAsState(cell*selected,spring(dampingRatio=.67f,stiffness=430f),label="伙伴选中色块滑动")
+ val jelly=remember{Animatable(0f)}
+ var previous by remember{mutableIntStateOf(selected)}
+ LaunchedEffect(selected){if(previous!=selected){previous=selected;jelly.animateTo(1f,tween(65,easing=FastOutSlowInEasing));jelly.animateTo(0f,spring(dampingRatio=.45f,stiffness=520f))}}
+ Box(Modifier.background(Track,RoundedCornerShape(50)).padding(3.dp)){
+  Box(Modifier.offset(x=position).width(cell).height(38.dp).graphicsLayer{scaleX=1f+jelly.value*.12f;scaleY=1f-jelly.value*.08f}.shadow(1.dp,RoundedCornerShape(50),spotColor=Color(0x1A000000)).background(Card,RoundedCornerShape(50)))
+  Row{
+   items.forEachIndexed{i,label->
+    val (press,motion)=rememberPress(.95f)
+    Box(Modifier.width(cell).height(38.dp).then(motion).clip(RoundedCornerShape(50)).clickable(interactionSource=press,indication=null,enabled=enabled[i]){click(i)},contentAlignment=Alignment.Center){Text(label,fontSize=14.sp,fontWeight=if(selected==i)FontWeight.SemiBold else FontWeight.Normal,color=if(!enabled[i])Faint else if(selected==i)Ink else Muted)}
+   }
   }
  }
 }
@@ -112,32 +120,66 @@ fun relTime(ts:Double):String{
 }
 
 @Composable fun NewChatHome(vm:WorkbenchModel,agent:String,select:(String)->Unit,menu:()->Unit,advanced:()->Unit,pick:(JSONObject)->Unit){
- var prompt by rememberSaveable{mutableStateOf(vm.store.prefs.getString("new-draft","")?:"")}
- var extra by remember{mutableStateOf(false)}
+ val name=if(agent=="pi")"Pi" else "Codex"
+ val fresh=vm.connected&&vm.allRowsFresh&&!vm.archived
+ val sessions=remember(vm.allRows,agent){vm.allRows.filter{it.optString("agent")==agent&&it.optInt("archived")==0}.sortedByDescending{it.optDouble("updated")}}
+ val focus=sessions.firstOrNull{it.optBoolean("managed")&&it.optString("status") in listOf("failed","waiting")}
+  ?:sessions.firstOrNull{it.optString("status")=="running"}?:sessions.firstOrNull()
+ val status=focus?.optString("status").orEmpty()
+ val avatar=rememberCompanionState("home:$agent:${focus?.optString("id")}",status,fresh)
+ val title=when{vm.voiceDelivery.isNotBlank()->"这句话，\nPi 正在接住。";fresh&&status=="waiting"->"下一步，\n我们一起决定。";fresh&&status=="running"->"$name 在忙，\n灵感也可以继续。";else->"今天，想一起\n做点什么？"}
+ val subtitle=when{!vm.connected->"暂时离线，已有的对话仍在这里";status=="failed"&&fresh->"有一步需要看看，点开下方会话继续";status=="waiting"&&fresh->"有件事，正在等你的回应";else->"把想法交给 $name，让它慢慢成形。"}
  Column(Modifier.fillMaxSize()){
-  Box(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp)){
+  Box(Modifier.fillMaxWidth().height(62.dp).padding(horizontal=16.dp)){
    Box(Modifier.align(Alignment.CenterStart)){RoundIcon(Icons.Outlined.Menu,"菜单",menu)}
-   Box(Modifier.align(Alignment.Center)){Pill(listOf("Pi","Codex"),if(agent=="pi")0 else 1){select(if(it==0)"pi" else "codex")}}
+   Text("Com!",Modifier.align(Alignment.Center),fontSize=22.sp,fontWeight=FontWeight.Bold,letterSpacing=(-.8).sp,color=Ink)
    Box(Modifier.align(Alignment.CenterEnd)){RoundIcon(Icons.Outlined.Tune,"新会话设置",advanced)}
   }
-  Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center){
-   Column(horizontalAlignment=Alignment.CenterHorizontally,modifier=Modifier.padding(horizontal=32.dp)){
-    EnterAnim{Text("有什么可以帮忙的？",fontSize=28.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-.6).sp,color=Ink)}
-    EnterAnim(70){Row(Modifier.padding(top=14.dp).clip(RoundedCornerShape(50)).background(ChipBg).padding(horizontal=13.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically){AgentBadge(agent);Text("Mac mini · 最高权限",Modifier.padding(start=7.dp),fontSize=12.sp,color=Muted)}}
-    EnterAnim(140){Row(Modifier.padding(top=26.dp).horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(9.dp)){
-     QuickChip(Icons.Outlined.History,"继续上次会话",vm.rows.isNotEmpty()){vm.rows.firstOrNull()?.let{pick(it)}}
-     QuickChip(Icons.Outlined.Bolt,"进行中的任务"){vm.working=true;menu()}
-     QuickChip(Icons.Outlined.AddComment,"空会话"){vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"","","","","danger-full-access")}
-    }}
+  BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()){
+   val compact=maxHeight<500.dp
+   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=24.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){
+    Spacer(Modifier.height(2.dp))
+    CompanionWelcome(agent,title,subtitle,if(vm.voiceDelivery.isNotBlank())"thinking" else avatar,vm.connected,if(compact)210.dp else 270.dp)
+    Pill(listOf("Pi","Codex"),if(agent=="pi")0 else 1){select(if(it==0)"pi"else"codex")}
+    Spacer(Modifier.height(14.dp))
+    if(focus!=null)Surface(onClick={pick(focus)},modifier=Modifier.widthIn(max=450.dp).fillMaxWidth(),shape=RoundedCornerShape(23.dp),color=Card,border=BorderStroke(1.dp,Line)){
+     Row(Modifier.padding(horizontal=16.dp,vertical=13.dp),verticalAlignment=Alignment.CenterVertically){
+      Icon(if(status=="waiting")Icons.Outlined.ChatBubbleOutline else Icons.Outlined.History,null,Modifier.size(18.dp),tint=if(status=="waiting")CompanionCoral else Muted)
+      Column(Modifier.weight(1f).padding(horizontal=12.dp)){
+       Text(focus.optString("display_title").ifBlank{"上次的对话"},fontSize=13.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis)
+       Text(if(fresh)statusLabel(status)+" · "+relTime(focus.optDouble("updated"))else"已保存的对话",Modifier.padding(top=3.dp),fontSize=10.sp,color=Muted)
+      }
+      Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp),tint=Faint)
+     }
+    }
+    Row(Modifier.padding(top=7.dp,bottom=10.dp),horizontalArrangement=Arrangement.spacedBy(14.dp)){
+     TextButton(onClick={vm.working=true;menu()}){Icon(Icons.Outlined.Bolt,null,Modifier.size(15.dp));Text("工作中",Modifier.padding(start=5.dp),fontSize=12.sp)}
+     TextButton(onClick={vm.working=false;menu()}){Icon(Icons.Outlined.Forum,null,Modifier.size(15.dp));Text("全部对话",Modifier.padding(start=5.dp),fontSize=12.sp)}
+    }
    }
   }
-  if(!vm.connected)Text("未连接 · 已缓存的历史仍可阅读",Modifier.fillMaxWidth().padding(horizontal=22.dp,vertical=8.dp),fontSize=12.sp,color=Muted)
-  EnterAnim(210){Composer(prompt,{prompt=it;vm.store.prefs.edit().putString("new-draft",it).apply()},"询问 ${if(agent=="pi")"Pi" else "Codex"}",vm.connected&&!vm.busy,false,{extra=true},{
-   vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",prompt,"","","danger-full-access")
-  },{})}
-  Text("运行于你的 Mac mini",Modifier.align(Alignment.CenterHorizontally).padding(bottom=9.dp),fontSize=10.sp,color=Faint)
  }
- if(extra)AlertDialog(onDismissRequest={extra=false},containerColor=Card,title={Text("会话选项",fontWeight=FontWeight.SemiBold)},text={Column{TextButton(onClick={extra=false;advanced()}){Icon(Icons.Outlined.FolderOpen,null);Text("工作目录与模型",Modifier.padding(start=12.dp))};Text("当前："+(vm.store.prefs.getString("lastCwd","AI_Work_System")?:"").shortPath(),fontSize=12.sp,color=Muted);Text("语音可使用键盘上的麦克风输入。",Modifier.padding(top=16.dp),fontSize=13.sp,color=Muted)}},confirmButton={TextButton(onClick={extra=false}){Text("完成")}})
+}
+
+@Composable private fun rememberCompanionState(key:String,status:String,connected:Boolean,hasApproval:Boolean=false):String{
+ var previous by remember(key){mutableStateOf<String?>(null)}
+ var visual by remember(key){mutableStateOf(companionVisualState(status,connected,hasApproval))}
+ LaunchedEffect(key,status,connected,hasApproval){
+  visual=companionVisualState(status,connected,hasApproval,previous)
+  previous=if(connected)status else null
+ }
+ return visual
+}
+
+@Composable private fun CompanionWelcome(agent:String,heading:String,message:String,avatar:String,connected:Boolean,heroSize:Dp){
+ Column(horizontalAlignment=Alignment.CenterHorizontally){
+  Box(Modifier.size(heroSize),contentAlignment=Alignment.Center){
+   Box(Modifier.size(heroSize*.8f).background(Brush.radialGradient(listOf((if(agent=="pi")CompanionGlow else Color(0xFFEAF0FF)).copy(alpha=.5f),Color.Transparent)),CircleShape))
+   CompanionLanding(agent,avatar,Modifier.fillMaxSize())
+  }
+  Text(heading,fontSize=if(heroSize<240.dp)30.sp else 36.sp,lineHeight=if(heroSize<240.dp)39.sp else 46.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-1).sp,color=Ink,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
+  Text(message,Modifier.widthIn(max=360.dp).padding(top=8.dp,bottom=12.dp),fontSize=13.sp,lineHeight=21.sp,color=Muted,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
+ }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -200,48 +242,52 @@ fun relTime(ts:Double):String{
  Row(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(10.dp)).background(if(selected)AccentSoft else Color.Transparent).clickable(onClick=click).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){Icon(icon,null,Modifier.size(20.dp),tint=tint);Text(text,Modifier.padding(start=12.dp),fontSize=14.5.sp,fontWeight=if(selected)FontWeight.Medium else FontWeight.Normal,color=tint)}
 }
 
-@Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit){
+@Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null){
  var focused by remember{mutableStateOf(false)}
- val line by animateColorAsState(if(focused)Color(0xFFD5D5D2) else Line,Motion.Tint,label="输入框描边")
+ val line by animateColorAsState(if(focused)CompanionCoral.copy(alpha=.35f) else Line,Motion.Tint,label="输入框描边")
  val view=LocalView.current
- Surface(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp).animateContentSize(animationSpec=spring(dampingRatio=.9f,stiffness=Spring.StiffnessMedium)),shape=RoundedCornerShape(28.dp),color=Card,border=BorderStroke(1.dp,line)){Column(Modifier.padding(horizontal=8.dp,vertical=6.dp)){
-  BasicTextField(text,change,Modifier.fillMaxWidth().heightIn(min=38.dp,max=136.dp).padding(horizontal=10.dp).padding(top=6.dp,bottom=6.dp).onFocusChanged{focused=it.isFocused},textStyle=TextStyle(fontSize=16.5.sp,color=Ink,lineHeight=23.sp),cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,fontSize=16.5.sp,color=Faint);inner()}})
-  Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
-   val (morePress,moreMod)=rememberPress(.85f)
-   IconButton(onClick=more,modifier=Modifier.size(38.dp).then(moreMod).clip(CircleShape),interactionSource=morePress){Icon(Icons.Outlined.Add,"更多选项",Modifier.size(24.dp),tint=Muted)}
-   Spacer(Modifier.weight(1f))
-   val canSend=enabled&&text.isNotBlank()
-   val btnBg by animateColorAsState(if(canSend||running)Ink else Track,Motion.Tint,label="发送键着色")
-   val (press,pressMod)=rememberPress(.82f)
-   if(running)IconButton(onClick=stop,enabled=enabled,modifier=Modifier.size(38.dp).then(pressMod).clip(CircleShape).background(btnBg),interactionSource=press){Icon(Icons.Outlined.Stop,"停止当前执行",tint=Color.White,modifier=Modifier.size(20.dp))}
-   else IconButton(onClick={view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);send()},enabled=canSend,modifier=Modifier.size(38.dp).then(pressMod).clip(CircleShape).background(btnBg),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=if(canSend)Color.White else Faint,modifier=Modifier.size(21.dp))}
+ val canSend=enabled&&text.isNotBlank()
+ Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp).animateContentSize(Motion.Resize),shape=RoundedCornerShape(30.dp),color=Card,border=BorderStroke(1.dp,line),shadowElevation=2.dp){
+  Row(Modifier.padding(horizontal=6.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
+   IconButton(onClick=more,modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,"更多选项",Modifier.size(24.dp),tint=Ink)}
+   BasicTextField(text,change,Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).padding(vertical=10.dp,horizontal=5.dp).onFocusChanged{focused=it.isFocused},textStyle=TextStyle(fontSize=16.sp,color=Ink,lineHeight=24.sp),cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,fontSize=16.sp,color=Faint,maxLines=1);inner()}})
+   val (press,pressMod)=rememberPress(.88f)
+   if(canSend)IconButton(onClick={view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}
+   else if(running)IconButton(onClick=stop,enabled=enabled,modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.Stop,"停止当前执行",tint=Color.White,modifier=Modifier.size(20.dp))}
+   else if(voice!=null)IconButton(onClick=voice,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.Mic,"快速语音 · Pi",Modifier.size(23.dp),tint=Ink)}
   }
- }}
+ }
 }
 
-@Composable fun ChatPage(vm:WorkbenchModel,menu:()->Unit,new:()->Unit){
- val sid=vm.selected;val s=vm.detail.optJSONObject("session")?:JSONObject();val caps=s.optJSONObject("capabilities")?:JSONObject()
- var terminal by rememberSaveable(sid){mutableStateOf(false)};var showMenu by remember{mutableStateOf(false)};var options by remember{mutableStateOf(false)};var search by rememberSaveable(sid){mutableStateOf(vm.queryInSession.isNotBlank())};var matchIndex by rememberSaveable(sid){mutableIntStateOf(0)}
- val messages=remember(vm.detail,vm.live){val merged=linkedMapOf<String,JSONObject>();vm.detail.array("messages").forEach{merged[it.optString("id")]=it};vm.live.array("items").forEach{merged[it.optString("id")]=it};merged.values.toList()}
+@Composable fun ChatPage(vm:WorkbenchModel,menu:()->Unit,new:()->Unit,snapshot:ConversationSnapshot,terminal:Boolean,setTerminal:(Boolean)->Unit,active:Boolean=true){
+ val sid=snapshot.sid;val s=snapshot.detail.optJSONObject("session")?:JSONObject();val caps=s.optJSONObject("capabilities")?:JSONObject()
+ var showMenu by remember{mutableStateOf(false)};var options by remember{mutableStateOf(false)};var search by rememberSaveable(sid){mutableStateOf(vm.queryInSession.isNotBlank())};var matchIndex by rememberSaveable(sid){mutableIntStateOf(0)}
+ val messages=remember(snapshot.detail,snapshot.live){val merged=linkedMapOf<String,JSONObject>();snapshot.detail.array("messages").forEach{merged[it.optString("id")]=it};snapshot.live.array("items").forEach{merged[it.optString("id")]=it};val seed=merged["accepted-first-message"];if(seed!=null&&merged.values.any{it.optString("id")!="accepted-first-message"&&it.optString("role")=="user"&&it.optString("text")==seed.optString("text")})merged.remove("accepted-first-message");merged.values.toList()}
  val displayRows=remember(messages){transcriptRows(messages.map{it.optString("role")},messages.map{it.optString("id")})}
  fun rowFor(id:String)=displayRows.indexOfFirst{row->row.indices.any{messages[it].optString("id")==id}}.coerceAtLeast(0)
  val list=rememberLazyListState();val scope=rememberCoroutineScope();val following by remember{derivedStateOf{!list.canScrollForward}}
- val status=vm.live.optString("status",s.optString("status"))
+ val status=snapshot.live.optString("status",s.optString("status"))
+ val sessionFresh=vm.connected&&snapshot.fresh
+ val companion=rememberCompanionState(sid,status,sessionFresh&&caps.optBoolean("input"),snapshot.live.array("approvals").isNotEmpty())
  val matches=messages.filter{m->vm.queryInSession.isNotBlank()&&vm.queryInSession.trim().split(Regex("\\s+")).all{(m.optString("text")+m.optString("title")).contains(it,true)}}
- LaunchedEffect(sid){val idx=vm.store.prefs.getInt("scroll:$sid",0);list.scrollToItem(idx.coerceAtMost(displayRows.size))}
- LaunchedEffect(sid,list){snapshotFlow{list.firstVisibleItemIndex}.collect{vm.store.prefs.edit().putInt("scroll:$sid",it).apply()}}
- LaunchedEffect(vm.targetMessage,messages.size){if(vm.targetMessage.isNotBlank()){val i=messages.indexOfFirst{it.optString("id")==vm.targetMessage};if(i>=0){list.scrollToItem(rowFor(vm.targetMessage));vm.targetMessage=""}}}
- LaunchedEffect(messages.lastOrNull()?.toString()){if(following&&vm.queryInSession.isBlank())list.animateScrollToItem(displayRows.size)}
+ LaunchedEffect(sid,active){if(!active)return@LaunchedEffect;val idx=vm.store.prefs.getInt("scroll:$sid",0);list.scrollToItem(idx.coerceAtMost(displayRows.size))}
+ LaunchedEffect(sid,list,active){if(!active)return@LaunchedEffect;snapshotFlow{list.firstVisibleItemIndex}.collect{vm.store.prefs.edit().putInt("scroll:$sid",it).apply()}}
+ LaunchedEffect(active,vm.targetMessage,messages.size){if(active&&vm.targetMessage.isNotBlank()){val i=messages.indexOfFirst{it.optString("id")==vm.targetMessage};if(i>=0){list.scrollToItem(rowFor(vm.targetMessage));vm.targetMessage=""}}}
+ LaunchedEffect(active,messages.lastOrNull()?.toString()){if(active&&following&&vm.queryInSession.isBlank())list.animateScrollToItem(displayRows.size)}
  Column(Modifier.fillMaxSize()){
-  Box(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp)){
-   Box(Modifier.align(Alignment.CenterStart)){RoundIcon(Icons.Outlined.Menu,"菜单",menu)}
-   Box(Modifier.align(Alignment.Center)){Pill(listOf("对话","终端"),if(terminal)1 else 0,listOf(true,caps.optBoolean("terminal")&&vm.connected)){terminal=it==1}}
-   Box(Modifier.align(Alignment.CenterEnd)){RoundIcon(Icons.Outlined.Edit,"新聊天",new)}
-  }
-  Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable{showMenu=true}.padding(horizontal=18.dp,vertical=4.dp),verticalAlignment=Alignment.CenterVertically){
-   Text(s.optString("display_title","正在读取…"),fontSize=13.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis,modifier=Modifier.weight(1f))
-   AgentBadge(s.optString("agent"))
-   IconButton(onClick={search=!search},modifier=Modifier.padding(start=2.dp).size(34.dp)){Icon(Icons.Outlined.Search,"查找本会话",Modifier.size(18.dp),tint=Muted)}
+  Box(Modifier.fillMaxWidth().height(if(terminal)74.dp else 126.dp).padding(horizontal=16.dp,vertical=8.dp)){
+   Box(Modifier.align(Alignment.TopStart)){RoundIcon(Icons.Outlined.ArrowBack,"返回首页",new)}
+   Column(Modifier.align(Alignment.TopCenter).widthIn(max=280.dp).fillMaxWidth(.64f),horizontalAlignment=Alignment.CenterHorizontally){
+    if(!terminal)CompanionLanding(s.optString("agent","pi"),companion,Modifier.size(68.dp),interactive=false)
+    Surface(onClick={showMenu=true},shape=RoundedCornerShape(20.dp),color=Card,border=BorderStroke(1.dp,Line)){
+     Row(Modifier.padding(horizontal=12.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically){Text(s.optString("display_title","正在读取…"),Modifier.weight(1f,fill=false),fontSize=12.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis);Icon(Icons.Outlined.ChevronRight,null,Modifier.padding(start=3.dp).size(14.dp),tint=Muted)}
+    }
+    if(!terminal)Text(if(!vm.connected)"离线记录"else if(!caps.optBoolean("input"))"只读历史"else if(sessionFresh)statusLabel(status)else"正在同步",Modifier.padding(top=4.dp),fontSize=10.sp,color=Muted)
+   }
+   Column(Modifier.align(Alignment.TopEnd),horizontalAlignment=Alignment.CenterHorizontally){
+    RoundIcon(if(terminal)Icons.Outlined.ChatBubbleOutline else Icons.Outlined.DesktopWindows,if(terminal)"返回对话"else"打开终端"){if(terminal||caps.optBoolean("terminal")&&vm.connected)setTerminal(!terminal)}
+    if(!terminal)IconButton(onClick={search=!search},modifier=Modifier.size(36.dp).padding(top=3.dp)){Icon(Icons.Outlined.Search,"查找本会话",Modifier.size(19.dp),tint=Muted)}
+   }
   }
   if(search)Row(Modifier.padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){OutlinedTextField(vm.queryInSession,{vm.queryInSession=it;matchIndex=0},Modifier.weight(1f),placeholder={Text("查找内容",fontSize=13.sp)},singleLine=true,shape=RoundedCornerShape(24.dp));Text("${if(matches.isEmpty())0 else matchIndex+1}/${matches.size}",Modifier.padding(5.dp),fontSize=10.sp,color=Muted);listOf(-1 to Icons.Outlined.KeyboardArrowUp,1 to Icons.Outlined.KeyboardArrowDown).forEach{(delta,icon)->IconButton(enabled=matches.isNotEmpty(),onClick={matchIndex=(matchIndex+delta+matches.size)%matches.size;scope.launch{list.animateScrollToItem(rowFor(matches[matchIndex].optString("id")))}}){Icon(icon,if(delta<0)"上一个命中"else"下一个命中")}}}
   if(terminal&&caps.optBoolean("terminal"))Box(Modifier.weight(1f).fillMaxWidth()){Terminal(vm,sid)}
@@ -250,7 +296,7 @@ fun relTime(ts:Double):String{
     items(displayRows,key={it.key}){row->
      RowAppear(active=row==displayRows.last()){
       if(row.process)ProcessGroup(row.indices.map{messages[it]},vm.queryInSession,vm.font,status=="running"&&row==displayRows.last())
-      else Message(messages[row.indices.first()],vm.queryInSession,vm.font)
+      else Message(messages[row.indices.first()],vm.queryInSession,vm.font,s.optString("agent","pi"))
      }
     }
     item{
@@ -263,17 +309,16 @@ fun relTime(ts:Double):String{
    if(!following)Surface(onClick={scope.launch{list.animateScrollToItem(displayRows.size)}},modifier=Modifier.align(Alignment.BottomCenter).padding(bottom=10.dp),shape=CircleShape,color=Card,border=BorderStroke(1.dp,Line),shadowElevation=2.dp){Icon(Icons.Outlined.ArrowDownward,"回到最新",Modifier.padding(8.dp).size(17.dp),tint=Ink)}
   }
   if(!terminal){
-   vm.live.array("approvals").forEach{Approval(vm,it)}
+   snapshot.live.array("approvals").forEach{Approval(vm,it)}
    if(!vm.connected)Text("连接中断 · 远端任务不会因此停止",Modifier.padding(horizontal=22.dp),fontSize=11.sp,color=Muted)
-   if(caps.optBoolean("input"))Composer(vm.draft(),{vm.setDraft(it)},if(status=="running")"写下补充内容…"else"询问 ${s.optString("agent").replaceFirstChar{it.uppercase()}}",vm.connected&&!vm.busy,status in listOf("running","waiting"),{options=true},{vm.send()},{vm.stop()})
-   else Column(Modifier.padding(horizontal=20.dp,vertical=12.dp)){
+   if(!caps.optBoolean("input"))Column(Modifier.padding(horizontal=20.dp,vertical=12.dp)){
     Button(onClick={vm.resume()},enabled=vm.connected&&!vm.busy&&caps.optBoolean("resume"),shape=RoundedCornerShape(25.dp),modifier=Modifier.fillMaxWidth().height(50.dp)){Text("继续这个会话",fontSize=15.sp,fontWeight=FontWeight.Medium)}
     if(!caps.optBoolean("resume"))Text("只读历史 · 正在使用或状态未确认",Modifier.padding(top=8.dp),fontSize=11.sp,color=Faint)
    }
   }
  }
  if(showMenu)SessionMenu(vm,s){showMenu=false}
- if(options)AlertDialog(onDismissRequest={options=false},containerColor=Card,title={Text("会话选项",fontWeight=FontWeight.SemiBold)},text={Column{TextButton(onClick={options=false;terminal=true},enabled=caps.optBoolean("terminal")){Icon(Icons.Outlined.Terminal,null);Text("打开完整终端",Modifier.padding(start=12.dp))};TextButton(onClick={options=false;showMenu=true}){Icon(Icons.Outlined.Tune,null);Text("会话详情与管理",Modifier.padding(start=12.dp))};Text("语音可使用键盘麦克风。终端中支持原生命令与选择菜单。",fontSize=12.sp,color=Muted)}},confirmButton={TextButton(onClick={options=false}){Text("完成")}})
+ if(options)AlertDialog(onDismissRequest={options=false},containerColor=Card,title={Text("会话选项",fontWeight=FontWeight.SemiBold)},text={Column{TextButton(onClick={options=false;setTerminal(true)},enabled=caps.optBoolean("terminal")){Icon(Icons.Outlined.Terminal,null);Text("打开完整终端",Modifier.padding(start=12.dp))};TextButton(onClick={options=false;showMenu=true}){Icon(Icons.Outlined.Tune,null);Text("会话详情与管理",Modifier.padding(start=12.dp))}}},confirmButton={TextButton(onClick={options=false}){Text("完成")}})
 }
 
 @Composable fun ProcessGroup(messages:List<JSONObject>,q:String,font:Float,running:Boolean){
@@ -296,7 +341,7 @@ fun relTime(ts:Double):String{
  }
 }
 
-@Composable fun Message(m:JSONObject,q:String,font:Float){
+@Composable fun Message(m:JSONObject,q:String,font:Float,agent:String="pi"){
  val role=m.optString("role");val tool=role in listOf("tool","progress");val body=m.optString("text");var expanded by rememberSaveable(m.optString("id")){mutableStateOf(false)};val context=LocalContext.current
  if(tool){
   Column(Modifier.fillMaxWidth()){
@@ -310,9 +355,9 @@ fun relTime(ts:Double):String{
   }
  }else{
   Column(Modifier.fillMaxWidth(),horizontalAlignment=if(role=="user")Alignment.End else Alignment.Start){
-   Surface(Modifier.fillMaxWidth(if(role=="user").88f else 1f),color=if(role=="user")UserBubble else Color.Transparent,shape=if(role=="user")RoundedCornerShape(24.dp) else androidx.compose.ui.graphics.RectangleShape){
-    if(q.isNotBlank())SelectionContainer{Text(highlight(body,q),Modifier.padding(if(role=="user")PaddingValues(horizontal=16.dp,vertical=12.dp) else PaddingValues(0.dp)),fontSize=font.sp,lineHeight=(font+9).sp,color=Ink)}
-    else AndroidView(factory={c->MarkdownTextView(c).apply{setTextColor(android.graphics.Color.rgb(13,13,13));setTextIsSelectable(true);tag=Markwon.builder(c).usePlugin(TablePlugin.create(c)).usePlugin(StrikethroughPlugin.create()).usePlugin(LinkifyPlugin.create()).build()}},update={v->v.textSize=font;val pad=if(role=="user")(14*v.resources.displayMetrics.density).toInt()else 0;v.setPadding(pad,pad,pad,pad);v.setLineSpacing(5*v.resources.displayMetrics.density,1f);(v.tag as Markwon).setMarkdown(v,body)})
+   Surface(Modifier.widthIn(max=680.dp).fillMaxWidth(if(role=="user").88f else .96f),color=if(role=="user")UserBubble else if(agent=="codex")Color(0xFFEAF0FD)else Color(0xFFE9F2EF),shape=RoundedCornerShape(24.dp)){
+    if(q.isNotBlank())SelectionContainer{Text(highlight(body,q),Modifier.padding(horizontal=16.dp,vertical=12.dp),fontSize=font.sp,lineHeight=(font+9).sp,color=Ink)}
+    else AndroidView(factory={c->MarkdownTextView(c).apply{setTextColor(android.graphics.Color.rgb(13,13,13));setTextIsSelectable(true);tag=Markwon.builder(c).usePlugin(TablePlugin.create(c)).usePlugin(StrikethroughPlugin.create()).usePlugin(LinkifyPlugin.create()).build()}},update={v->v.textSize=font;val pad=(14*v.resources.displayMetrics.density).toInt();v.setPadding(pad,pad,pad,pad);v.setLineSpacing(5*v.resources.displayMetrics.density,1f);(v.tag as Markwon).setMarkdown(v,body)})
    }
    if(role=="assistant")Row(Modifier.padding(top=4.dp)){
     IconButton(onClick={(context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(ClipData.newPlainText("回复",body))},modifier=Modifier.size(32.dp)){Icon(Icons.Outlined.ContentCopy,"复制回复",Modifier.size(15.dp),tint=Faint)}

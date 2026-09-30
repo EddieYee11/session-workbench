@@ -78,13 +78,19 @@ class Store(val context:Context) {
 
 class WorkbenchModel(app:Application):AndroidViewModel(app) {
  val store=Store(app)
- var rows by mutableStateOf(store.cached("list.json").array("sessions"))
+ var allRows by mutableStateOf(store.cached("list.json").array("sessions"))
+ var allRowsFresh by mutableStateOf(false)
+ var rows by mutableStateOf(allRows)
  var selected by mutableStateOf(store.prefs.getString("selected","")?:"")
  var detail by mutableStateOf(if(selected.isNotEmpty())store.cached(store.detailCache(selected)) else JSONObject())
  var live by mutableStateOf(JSONObject())
+ var liveSessionId by mutableStateOf("")
+ var liveFresh by mutableStateOf(false)
  var error by mutableStateOf("")
  var connected by mutableStateOf(false)
  var busy by mutableStateOf(false)
+ var voiceDelivery by mutableStateOf("")
+ private var voiceWatch:Job?=null
  var index by mutableStateOf(JSONObject())
  var q by mutableStateOf(store.prefs.getString("search","")?:"");var agent by mutableStateOf("");var role by mutableStateOf("");var cwd by mutableStateOf("");var days by mutableIntStateOf(0);var sort by mutableStateOf("relevance")
  var working by mutableStateOf(true);var archived by mutableStateOf(false)
@@ -96,28 +102,49 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    if(tick%5==0)refresh()
    val id=selected
    if(id.isNotEmpty()){
-    try{val l=store.request("/sessions/${enc(id)}/live");if(selected==id)live=l}catch(_:Exception){}
+    try{val l=store.request("/sessions/${enc(id)}/live");if(selected==id&&active){live=l;liveSessionId=id;liveFresh=true}}catch(_:Exception){if(selected==id)liveFresh=false}
     if(tick%5==0)refreshDetail(id)
    }
    tick++
  };delay(800)}}}
  fun enc(s:String)=URLEncoder.encode(s,"UTF-8")
- fun open(s:JSONObject){selected=s.getString("id");store.prefs.edit().putString("selected",selected).apply();detail=store.cached(store.detailCache(selected));live=JSONObject();queryInSession=q;targetMessage=s.optJSONArray("matches")?.optString(0)?:"";viewModelScope.launch{refreshDetail(selected)}}
+ fun followVoiceDelivery(workId:String){
+  val id=runCatching{UUID.fromString(workId)}.getOrNull()?:return
+  voiceWatch?.cancel();voiceDelivery="正在接收你的语音"
+  voiceWatch=viewModelScope.launch{
+   androidx.work.WorkManager.getInstance(getApplication()).getWorkInfoByIdFlow(id).collect{info->
+    when(info?.state){
+     androidx.work.WorkInfo.State.SUCCEEDED->{voiceDelivery="";info.outputData.getString("sid")?.let{openId(it)};voiceWatch?.cancel()}
+     androidx.work.WorkInfo.State.FAILED,androidx.work.WorkInfo.State.CANCELLED->{voiceDelivery="";error=info.outputData.getString("error")?:"语音尚未送达，可打开小窗重试。";voiceWatch?.cancel()}
+     androidx.work.WorkInfo.State.ENQUEUED->voiceDelivery="录音已排队，联网后自动发送"
+     androidx.work.WorkInfo.State.RUNNING->voiceDelivery=if(info.progress.getString("phase")=="sending")"正在进入这条 Pi 会话"else"正在把语音交给 Pi"
+     else->Unit
+    }
+   }
+  }
+ }
+ fun open(s:JSONObject){selected=s.getString("id");store.prefs.edit().putString("selected",selected).apply();val cached=store.cached(store.detailCache(selected));detail=if(cached.has("session"))cached else JSONObject().put("session",s);live=JSONObject();liveFresh=false;liveSessionId="";queryInSession=q;targetMessage=s.optJSONArray("matches")?.optString(0)?:"";val id=selected;viewModelScope.launch{refreshDetail(id)}}
  fun openId(id:String){open(JSONObject().put("id",id))}
- fun close(){selected="";store.prefs.edit().remove("selected").apply();detail=JSONObject();live=JSONObject()}
+ fun close(){selected="";archived=false;store.prefs.edit().remove("selected").apply();detail=JSONObject();live=JSONObject();liveFresh=false;liveSessionId=""}
  fun draft()=drafts.getOrPut(selected){store.prefs.getString("draft:$selected","")?:""}
  fun setDraft(value:String){drafts[selected]=value;store.prefs.edit().putString("draft:$selected",value).apply()}
  suspend fun refresh(){
    try{
-    val all=store.request("/sessions?archived=$archived")
-    if(!archived)store.cache("list.json",all)
+    val includeArchived=archived
+    val all=store.request("/sessions?archived=$includeArchived")
+    if(!includeArchived){store.cache("list.json",all);allRows=all.array("sessions")}
+    allRowsFresh=!includeArchived&&active
     index=all.optJSONObject("index")?:JSONObject();connected=true
     val after=if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0
     rows=if(q.isBlank()&&agent.isBlank()&&role.isBlank()&&cwd.isBlank()&&days==0)all.array("sessions") else store.request("/sessions?q=${enc(q)}&agent=$agent&role=$role&cwd=${enc(cwd)}&after=$after&sort=$sort&archived=$archived").array("sessions")
     rows.filter{it.optBoolean("managed")}.forEach{store.notifyStatus(it.getString("id"),it.optString("status"),it.optString("display_title"))}
-   }catch(e:Exception){connected=false;rows=store.offline(q,agent,role,cwd,if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0)}
+   }catch(e:Exception){connected=false;allRowsFresh=false;liveFresh=false;rows=store.offline(q,agent,role,cwd,if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0)}
  }
- suspend fun refreshDetail(id:String){try{val d=store.request("/sessions/${enc(id)}");store.cache(store.detailCache(id),d);if(selected==id)detail=d}catch(_:Exception){}}
+ suspend fun refreshDetail(id:String){try{val d=store.request("/sessions/${enc(id)}");store.cache(store.detailCache(id),d);if(selected==id){
+  val seed=detail.array("messages").firstOrNull{it.optString("id")=="accepted-first-message"}
+  if(seed!=null&&d.array("messages").isEmpty())d.put("messages",JSONArray().put(seed))
+  detail=d
+ }}catch(_:Exception){}}
  fun run(action:suspend ()->Unit){viewModelScope.launch{busy=true;try{action()}catch(e:Exception){error=e.message?:"操作失败"}finally{busy=false}}}
  suspend fun mutation(path:String,body:JSONObject):JSONObject{
    val key="pending:$path";val existing=store.prefs.getString(key,null)
@@ -139,7 +166,15 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  fun create(agentName:String,path:String,prompt:String,model:String,effort:String,sandbox:String)=run{
    store.prefs.edit().putString("lastAgent",agentName).putString("lastCwd",path).apply()
    val r=mutation("/sessions",JSONObject().put("agent",agentName).put("cwd",path).put("prompt",prompt).put("model",model).put("effort",effort).put("sandbox",sandbox))
-   store.prefs.edit().remove("new-draft").apply();openId(r.getString("sid"));refresh()
+   store.prefs.edit().remove("new-draft").apply();openId(r.getString("sid"))
+   // The server has accepted the message. Seed the destination while history catches up,
+   // so the continuous home-to-chat transition never passes through an empty page.
+   if(!detail.has("session")||detail.optJSONObject("session")?.has("agent")!=true){
+    val session=JSONObject().put("id",selected).put("agent",agentName).put("cwd",path).put("display_title",prompt.ifBlank{"新会话"}.take(60)).put("status",if(prompt.isBlank())"ready"else"running").put("managed",true).put("capabilities",JSONObject().put("input",true).put("terminal",agentName=="pi").put("resume",false))
+    val messages=JSONArray();if(prompt.isNotBlank())messages.put(JSONObject().put("id","accepted-first-message").put("role","user").put("text",prompt))
+    detail=JSONObject().put("session",session).put("messages",messages)
+   }
+   refresh()
  }
  fun send(){val id=selected;val text=draft();if(text.isBlank())return;run{
    mutation("/sessions/${enc(id)}/input",JSONObject().put("text",text))

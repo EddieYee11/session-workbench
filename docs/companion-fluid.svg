@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 8 200 210" width="112" height="128" data-state="working" role="img" aria-labelledby="fluid-title fluid-description">
+  <title id="fluid-title">流体伙伴</title>
+  <desc id="fluid-description">一颗暖银白的柔软圆脸，只有两枚深色竖椭圆眼睛。工作时透出浅青流光，等待回应时透出柔和珊瑚光，完成时轻轻弹起并出现绿色状态珠。</desc>
+  <defs>
+    <radialGradient id="fluid-silver" cx=".35" cy=".24" r=".83">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".33" stop-color="#fbfcfc"/>
+      <stop offset=".60" stop-color="#eff1f1"/>
+      <stop offset=".83" stop-color="#dbe1e5"/>
+      <stop offset="1" stop-color="#b3bec8"/>
+    </radialGradient>
+    <linearGradient id="fluid-side" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset=".68" stop-color="#b9c3cc" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#8d9aa8" stop-opacity=".28"/>
+    </linearGradient>
+    <radialGradient id="fluid-gloss" cx=".46" cy=".40" r=".66">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".9"/>
+      <stop offset=".63" stop-color="#ffffff" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="fluid-blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ddf6f8" stop-opacity="0"/>
+      <stop offset=".41" stop-color="#c6eef4" stop-opacity=".44"/>
+      <stop offset="1" stop-color="#8ccfe3" stop-opacity=".64"/>
+    </linearGradient>
+    <linearGradient id="fluid-coral" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8e0df" stop-opacity="0"/>
+      <stop offset=".45" stop-color="#f5c5c2" stop-opacity=".48"/>
+      <stop offset="1" stop-color="#eaa5aa" stop-opacity=".60"/>
+    </linearGradient>
+    <linearGradient id="fluid-mint" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ecf6f0" stop-opacity="0"/>
+      <stop offset=".50" stop-color="#def1e7" stop-opacity=".26"/>
+      <stop offset="1" stop-color="#afdac8" stop-opacity=".48"/>
+    </linearGradient>
+    <linearGradient id="fluid-eye" x1=".15" y1="0" x2=".85" y2="1">
+      <stop offset="0" stop-color="#26323c"/>
+      <stop offset=".55" stop-color="#222b35"/>
+      <stop offset="1" stop-color="#3d414b"/>
+    </linearGradient>
+    <filter id="fluid-soft-edge" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2.2"/>
+    </filter>
+    <filter id="fluid-shadow" x="-50%" y="-180%" width="200%" height="460%">
+      <feGaussianBlur stdDeviation="4.5"/>
+    </filter>
+    <path id="fluid-outline" d="M120 29c46-2 79 31 80 75 1 45-30 91-77 95-46 4-81-29-83-76-2-42 27-83 67-92 5-1 9-2 13-2Z"/>
+    <clipPath id="fluid-mask"><use href="#fluid-outline"/></clipPath>
+  </defs>
+  <style>
+    #fluid-body { transform-origin: 120px 156px; transition: transform .5s cubic-bezier(.2,.79,.24,1); }
+    #fluid-sheen { transform-origin: 80px 70px; transition: transform .48s ease; }
+    #fluid-eyes-working, #fluid-eyes-waiting, #fluid-eyes-done,
+    #fluid-working-color, #fluid-waiting-color, #fluid-done-color,
+    #fluid-complete-bead { opacity: 0; transition: opacity .2s ease; }
+    svg[data-state="working"] #fluid-eyes-working,
+    svg[data-state="working"] #fluid-working-color,
+    svg[data-state="waiting"] #fluid-eyes-waiting,
+    svg[data-state="waiting"] #fluid-waiting-color,
+    svg[data-state="done"] #fluid-eyes-done,
+    svg[data-state="done"] #fluid-done-color,
+    svg[data-state="done"] #fluid-complete-bead { opacity: 1; }
+    svg[data-state="working"] #fluid-body { animation: fluid-work 4.3s ease-in-out infinite; }
+    svg[data-state="working"] #fluid-sheen { animation: fluid-light 5.6s ease-in-out infinite; }
+    svg[data-state="working"] #fluid-bubbles { animation: fluid-bubbles 3.9s ease-in-out infinite; }
+    svg[data-state="working"] #fluid-eyes-working { animation: fluid-look 4.3s ease-in-out infinite; }
+    svg[data-state="waiting"] #fluid-body { transform: translateY(2px) rotate(-3deg) scale(1.02,.975); }
+    svg[data-state="waiting"] #fluid-sheen { transform: translateX(-3px); }
+    svg[data-state="done"] #fluid-body { animation: fluid-finish .78s cubic-bezier(.18,.78,.24,1) both; }
+    svg[data-state="done"] #fluid-complete-bead { animation: fluid-bead .6s cubic-bezier(.2,.76,.25,1) both; }
+    @keyframes fluid-work {
+      0%,100% { transform: translateY(0) rotate(-.7deg) scale(1); }
+      50% { transform: translateY(-2px) rotate(.8deg) scale(.99,1.016); }
+    }
+    @keyframes fluid-light {
+      0%,100% { transform: translateX(0) rotate(-1deg); }
+      50% { transform: translateX(3px) rotate(2deg); }
+    }
+    @keyframes fluid-look {
+      0%,38%,100% { transform: translateX(0); }
+      48%,69% { transform: translateX(1.5px); }
+    }
+    @keyframes fluid-bubbles {
+      0%,100% { transform: translateY(3px); opacity: .55; }
+      50% { transform: translateY(-3px); opacity: 1; }
+    }
+    @keyframes fluid-finish {
+      0% { transform: translateY(2px) scale(1.03,.97); }
+      48% { transform: translateY(-7px) rotate(4deg) scale(.975,1.035); }
+      76% { transform: translateY(1px) rotate(-1deg) scale(1.025,.982); }
+      100% { transform: translateY(0) rotate(2deg) scale(1); }
+    }
+    @keyframes fluid-bead {
+      0% { opacity: 0; transform: translateY(6px) scale(.35); }
+      65% { opacity: 1; transform: translateY(-2px) scale(1.12); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #fluid-body, #fluid-sheen, #fluid-bubbles, #fluid-eyes-working, #fluid-complete-bead { animation: none !important; transition: none !important; }
+      svg[data-state="done"] #fluid-body { transform: rotate(2deg); }
+      svg[data-state="done"] #fluid-complete-bead { opacity: 1; }
+    }
+  </style>
+
+  <ellipse cx="120" cy="210" rx="52" ry="6" fill="#697784" opacity=".16" filter="url(#fluid-shadow)"/>
+  <g id="fluid-body">
+    <use href="#fluid-outline" fill="url(#fluid-silver)" stroke="#bfc8ce" stroke-opacity=".52" stroke-width="1.1"/>
+    <g clip-path="url(#fluid-mask)">
+      <path d="M150 28c40 19 59 51 57 84-1 35-16 68-50 86 21-30 25-64 19-99-4-30-15-53-26-71Z" fill="url(#fluid-side)"/>
+      <g id="fluid-working-color">
+        <path d="M35 140c34-10 54 20 86 17 31-2 57-16 85-15l4 70H28Z" fill="url(#fluid-blue)" filter="url(#fluid-soft-edge)"/>
+        <g id="fluid-bubbles" fill="#dff7f9" stroke="#9acbdc" stroke-opacity=".38">
+          <circle cx="75" cy="172" r="4.2" fill-opacity=".58" stroke-width=".8"/>
+          <circle cx="163" cy="174" r="3" fill-opacity=".51" stroke-width=".6"/>
+          <circle cx="152" cy="188" r="1.8" fill-opacity=".68" stroke-width=".45"/>
+        </g>
+      </g>
+      <g id="fluid-waiting-color">
+        <path d="M34 145c33-9 58 17 87 16 32-1 61-17 85-13l5 62H27Z" fill="url(#fluid-coral)" filter="url(#fluid-soft-edge)"/>
+      </g>
+      <g id="fluid-done-color">
+        <path d="M35 148c35-8 58 16 87 16 31 0 60-16 84-12l5 61H27Z" fill="url(#fluid-mint)" filter="url(#fluid-soft-edge)"/>
+      </g>
+      <path d="M54 103c-3-25 14-51 39-59" fill="none" stroke="#ffffff" stroke-opacity=".76" stroke-width="3.1" stroke-linecap="round"/>
+      <path d="M169 185c12-7 21-21 25-34" fill="none" stroke="#fafdff" stroke-opacity=".42" stroke-width="2.1" stroke-linecap="round"/>
+      <g id="fluid-sheen">
+        <ellipse cx="80" cy="65" rx="42" ry="29" transform="rotate(-24 80 65)" fill="url(#fluid-gloss)" opacity=".78"/>
+        <path d="M64 64c9-15 29-24 45-22" fill="none" stroke="#ffffff" stroke-opacity=".65" stroke-width="2.5" stroke-linecap="round"/>
+      </g>
+    </g>
+    <use href="#fluid-outline" fill="none" stroke="#ffffff" stroke-opacity=".55" stroke-width="1.3"/>
+    <g id="fluid-eyes-working">
+      <ellipse cx="91" cy="119" rx="6.2" ry="10.5" fill="url(#fluid-eye)"/>
+      <ellipse cx="149" cy="119" rx="6.2" ry="10.5" fill="url(#fluid-eye)"/>
+      <ellipse cx="89.2" cy="115.5" rx="1.45" ry="2.1" fill="#fff" opacity=".68"/>
+      <ellipse cx="147.2" cy="115.5" rx="1.45" ry="2.1" fill="#fff" opacity=".68"/>
+    </g>
+    <g id="fluid-eyes-waiting">
+      <ellipse cx="91" cy="121" rx="6.6" ry="11.2" fill="url(#fluid-eye)"/>
+      <ellipse cx="149" cy="121" rx="6.6" ry="11.2" fill="url(#fluid-eye)"/>
+      <ellipse cx="89.1" cy="117" rx="1.5" ry="2.2" fill="#fff" opacity=".69"/>
+      <ellipse cx="147.1" cy="117" rx="1.5" ry="2.2" fill="#fff" opacity=".69"/>
+    </g>
+    <g id="fluid-eyes-done">
+      <ellipse cx="92" cy="116" rx="6.1" ry="9.3" transform="rotate(5 92 116)" fill="url(#fluid-eye)"/>
+      <ellipse cx="148" cy="116" rx="6.1" ry="9.3" transform="rotate(-5 148 116)" fill="url(#fluid-eye)"/>
+      <ellipse cx="90.3" cy="113" rx="1.4" ry="2" fill="#fff" opacity=".68"/>
+      <ellipse cx="146.3" cy="113" rx="1.4" ry="2" fill="#fff" opacity=".68"/>
+    </g>
+  </g>
+  <g id="fluid-complete-bead" style="transform-origin: 185px 63px">
+    <circle cx="185" cy="63" r="8.2" fill="#ffffff" opacity=".87"/>
+    <circle cx="185" cy="63" r="5.8" fill="#75bba2"/>
+    <circle cx="183.5" cy="61.5" r="1.4" fill="#eafff2" opacity=".9"/>
+  </g>
+</svg>
