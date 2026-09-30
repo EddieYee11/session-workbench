@@ -59,8 +59,8 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
 
 @Composable fun Approval(vm:WorkbenchModel,a:JSONObject){
  val p=a.optJSONObject("params")?:JSONObject();val questions=p.array("questions");val answers=remember(a.optString("id")){mutableStateMapOf<String,String>()}
- Surface(color=ApprovalBg,modifier=Modifier.fillMaxWidth().padding(horizontal=12.dp),shape=RoundedCornerShape(16.dp),border=BorderStroke(1.dp,Color(0xFFF0DFAE))){
- Column(Modifier.padding(12.dp)){Text("需要你回应",fontWeight=FontWeight.Bold);Text(p.optString("command",p.optString("reason","请确认以下操作")),fontSize=13.sp,maxLines=5)
+ Surface(color=AmberBg,modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=4.dp),shape=RoundedCornerShape(20.dp),border=BorderStroke(1.dp,AmberLine)){
+ Column(Modifier.padding(16.dp)){Row(verticalAlignment=Alignment.CenterVertically){Icon(Icons.Outlined.NotificationImportant,null,Modifier.size(17.dp),tint=AmberText);Text("需要你回应",Modifier.padding(start=7.dp),fontWeight=FontWeight.SemiBold,fontSize=14.sp,color=AmberText)};Text(p.optString("command",p.optString("reason","请确认以下操作")),Modifier.padding(top=8.dp),fontSize=13.sp,maxLines=5)
  if(questions.isNotEmpty()){
   questions.forEach{q->Text(q.optString("question"),fontSize=14.sp);q.array("options").forEach{o->FilterChip(answers[q.optString("id")]==o.optString("label"),{answers[q.optString("id")]=o.optString("label")},label={Text(o.optString("label"))})};OutlinedTextField(answers[q.optString("id")]?:"",{answers[q.optString("id")]=it},label={Text("回答")})}
   Button(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("answers",JSONObject(answers.toMap())))}}){Text("提交回答")}
@@ -86,14 +86,14 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  var agent by remember{mutableStateOf(quick.ifBlank{vm.store.prefs.getString("lastAgent","pi")?:"pi"})};var cwd by remember{mutableStateOf(vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"")}
  var prompt by rememberSaveable{mutableStateOf("")};var model by remember{mutableStateOf("")};var effort by remember{mutableStateOf("")};var advanced by remember{mutableStateOf(false)};var sandbox by remember{mutableStateOf("danger-full-access")};var browse by remember{mutableStateOf(false)}
  ModalBottomSheet(onDismissRequest=dismiss,containerColor=Paper){Column(Modifier.padding(horizontal=24.dp).verticalScroll(rememberScrollState()).imePadding()){
- Text("开启新的工作",fontSize=25.sp,fontWeight=FontWeight.Bold);Text("运行在 Mac mini · 默认最高权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=13.sp,color=Muted)
+ Text("开启新的工作",fontSize=24.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-.3).sp);Text("运行在 Mac mini · 默认最高权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=13.sp,color=Muted)
  Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){listOf("pi","codex").forEach{a->FilterChip(agent==a,{agent=a},label={Text(if(a=="pi")"Pi" else "Codex",fontSize=17.sp)},modifier=Modifier.height(48.dp))}}
  Text("工作目录",Modifier.padding(top=16.dp),fontSize=12.sp,color=Muted)
  TextButton(onClick={browse=true}){Icon(Icons.Outlined.FolderOpen,null);Text(cwd,Modifier.padding(start=8.dp),fontSize=13.sp,maxLines=2)}
- OutlinedTextField(prompt,{prompt=it},Modifier.fillMaxWidth().heightIn(min=120.dp),placeholder={Text("想做什么？也可以先打开空会话。")},shape=RoundedCornerShape(16.dp))
+ OutlinedTextField(prompt,{prompt=it},Modifier.fillMaxWidth().heightIn(min=120.dp),placeholder={Text("想做什么？也可以先打开空会话。")},shape=RoundedCornerShape(20.dp))
  TextButton(onClick={advanced=!advanced}){Text(if(advanced)"收起高级设置" else "高级设置")}
  if(advanced){OutlinedTextField(model,{model=it},label={Text("模型（留空沿用 Mac 配置）")});if(agent=="pi")Choice(effort.ifBlank{"默认推理强度"},listOf("默认推理强度","off","minimal","low","medium","high","xhigh")){effort=if(it=="默认推理强度")"" else it};if(agent=="codex")Choice(when(sandbox){"read-only"->"只读";"workspace-write"->"工作目录内写入";else->"最高权限（YOLO）"},listOf("最高权限（YOLO）","工作目录内写入","只读")){sandbox=when(it){"只读"->"read-only";"工作目录内写入"->"workspace-write";else->"danger-full-access"}}}
- Button(onClick={vm.create(agent,cwd,prompt,model,effort,sandbox);dismiss()},enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(52.dp),shape=RoundedCornerShape(16.dp)){Text(if(prompt.isBlank())"打开空会话" else "开始会话")}
+ Button(onClick={vm.create(agent,cwd,prompt,model,effort,sandbox);dismiss()},enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(54.dp),shape=RoundedCornerShape(27.dp)){Text(if(prompt.isBlank())"打开空会话" else "开始会话",fontSize=15.sp,fontWeight=FontWeight.Medium)}
  }}
  if(browse)DirectoryPicker(vm,cwd,{cwd=it;browse=false}){browse=false}
 }

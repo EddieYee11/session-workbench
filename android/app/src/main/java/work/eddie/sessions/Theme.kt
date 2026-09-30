@@ -24,21 +24,23 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
-// 质感浅色主题：暖纸面 + 靛蓝强调色 + 细腻分隔，对齐 Kimi 式精致感
-val Ink=Color(0xFF16161A);val Paper=Color(0xFFF7F7F5);val Card=Color(0xFFFFFFFF)
-val Muted=Color(0xFF6E6E76);val Faint=Color(0xFF9C9CA4);val Line=Color(0xFFE9E9E6)
-val Accent=Color(0xFF3D5BF0);val AccentSoft=Color(0xFFEBEFFF);val AccentInk=Color(0xFF2C44C4)
-val Glow=Accent.copy(alpha=.18f);val UserBubble=Color(0xFFEDEFF6);val ToolSurface=Color(0xFFF3F3F1)
-val Track=Color(0xFFEBEBE9);val ApprovalBg=Color(0xFFFFF4DC)
+// ChatGPT 浅色系：纯白底 + 墨黑主操作 + 灰阶层次 + 发丝分隔线
+val Ink=Color(0xFF0D0D0D);val Paper=Color(0xFFFFFFFF);val SidebarBg=Color(0xFFF7F7F8)
+val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF6E6E6E);val Faint=Color(0xFF9B9B9B)
+val Line=Color(0xFFECECEC);val Track=Color(0xFFF0F0F0);val ChipBg=Color(0xFFF4F4F4)
+val UserBubble=Color(0xFFF4F4F4);val ToolSurface=Color(0xFFF7F7F8)
+val Accent=Color(0xFF0D0D0D);val AccentSoft=Color(0xFFECECEC);val AccentInk=Color(0xFF0D0D0D)
 val PiGreen=Color(0xFF396C55);val PiSoft=Color(0xFFE7F2EC)
+val AmberBg=Color(0xFFFFF7E8);val AmberLine=Color(0xFFF0E0B0);val AmberText=Color(0xFF8A6D1D)
+val ApprovalBg=AmberBg
 
 val Palette=lightColorScheme(
- primary=Accent,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=AccentInk,
- secondary=Ink,secondaryContainer=Color(0xFFEFEFED),onSecondaryContainer=Ink,
+ primary=Ink,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=Ink,
+ secondary=Ink,secondaryContainer=Color(0xFFEFEFEF),onSecondaryContainer=Ink,
  background=Paper,onBackground=Ink,surface=Card,onSurface=Ink,
- surfaceVariant=Color(0xFFF1F1EE),onSurfaceVariant=Muted,outline=Line)
+ surfaceVariant=Color(0xFFF4F4F4),onSurfaceVariant=Muted,outline=Line)
 
-// 动效规范：全面丝滑化
+// 动效规范：弹簧为主，全 App 节奏一致
 object Motion{
  val Emphasized=spring<Float>(dampingRatio=.8f,stiffness=Spring.StiffnessMediumLow)
  val Gentle=spring<Float>(dampingRatio=.88f,stiffness=Spring.StiffnessMedium)
@@ -67,6 +69,13 @@ object Motion{
  AnimatedVisibility(visible=shown,modifier=modifier,enter=fadeIn(Motion.Fade)+slideInVertically(Motion.Slide){it/6}){content()}
 }
 
+// 页面入场：按 delay 分层淡入上浮，首页/页首使用
+@Composable fun EnterAnim(delay:Int=0,content:@Composable ()->Unit){
+ var shown by remember{mutableStateOf(false)}
+ LaunchedEffect(Unit){shown=true}
+ AnimatedVisibility(visible=shown,enter=fadeIn(tween(340,delay,FastOutSlowInEasing))+slideInVertically(spring(dampingRatio=.85f,stiffness=Spring.StiffnessMediumLow)){it/9}){content()}
+}
+
 // 呼吸状态点：运行中会话/连接状态
 @Composable fun StatusDot(color:Color=Accent,size:Dp=6.dp){
  val t=rememberInfiniteTransition(label="dot")
@@ -75,7 +84,7 @@ object Motion{
 }
 
 // 三点打字指示器：依次起伏
-@Composable fun ThinkingDots(color:Color=Accent){
+@Composable fun ThinkingDots(color:Color=Ink){
  val t=rememberInfiniteTransition(label="think")
  Row(horizontalArrangement=Arrangement.spacedBy(4.dp)){
   listOf(0,1,2).forEach{i->
