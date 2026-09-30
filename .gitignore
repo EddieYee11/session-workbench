@@ -1,0 +1,24 @@
+.DS_Store
+.idea/
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.log
+.env
+.env.*
+
+android/.gradle/
+android/**/build/
+android/local.properties
+android/app/src/main/assets/bootstrap.json
+*.apk
+*.aab
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+
+# Local device screenshots and acceptance logs may contain private sessions.
+verification/
