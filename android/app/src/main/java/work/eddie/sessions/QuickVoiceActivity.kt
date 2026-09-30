@@ -105,7 +105,7 @@ class QuickVoiceActivity:ComponentActivity(){
    val panelWidth=500.dp+(maxWidth-500.dp).coerceAtLeast(0.dp)*expansion
    val panelHeight=measuredHeight+(available-measuredHeight)*expansion
    AnimatedVisibility(visible,enter=fadeIn(tween(180))+slideInVertically(spring(dampingRatio=.9f,stiffness=360f)){it/2},exit=fadeOut(tween(180))+slideOutVertically(tween(210,easing=Motion.TravelEasing)){it/3}){
-    Surface(Modifier.widthIn(max=panelWidth).fillMaxWidth().then(if(expanding&&measuredHeight>0.dp)Modifier.height(panelHeight)else Modifier.heightIn(max=available)).onSizeChanged{if(!expanding)measuredHeight=with(density){it.height.toDp()}}.clickable(remember{MutableInteractionSource()},indication=null){},shape=RoundedCornerShape(34.dp*(1f-expansion)),color=Paper,shadowElevation=12.dp*(1f-expansion),border=BorderStroke(1.dp,Color.White.copy(alpha=.9f))){
+    Surface(Modifier.widthIn(max=panelWidth).fillMaxWidth().then(if(expanding&&measuredHeight>0.dp)Modifier.height(panelHeight)else Modifier.heightIn(max=available)).onSizeChanged{if(!expanding)measuredHeight=with(density){it.height.toDp()}}.clickable(remember{MutableInteractionSource()},indication=null){},shape=RoundedCornerShape(Radii.Xxxl*(1f-expansion)),color=Paper,shadowElevation=Elev.Sheet*(1f-expansion),border=BorderStroke(1.dp,Color.White.copy(alpha=.9f))){
      Column(Modifier.padding(horizontal=22.dp).padding(top=8.dp,bottom=18.dp),horizontalAlignment=Alignment.CenterHorizontally){
       Column(Modifier.fillMaxWidth().pointerInput(dragThreshold){var pull=0f;detectVerticalDragGestures(onDragStart={pull=0f},onDragEnd={if(pull < -dragThreshold)expandCurrent()},onVerticalDrag={change,amount->change.consume();pull+=amount})},horizontalAlignment=Alignment.CenterHorizontally){
        Box(Modifier.padding(top=5.dp,bottom=6.dp).width(32.dp).height(4.dp).background(Line,CircleShape))
@@ -126,7 +126,7 @@ class QuickVoiceActivity:ComponentActivity(){
        if(recording){MicLevels(vm.levels,vm.seconds);TextButton(onClick=vm::cancelRecording){Text("取消这次录音",color=Muted)}}
        else if(busy&&!hasReply)LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical=18.dp).height(3.dp),color=PiGreen,trackColor=PiSoft)
        AnimatedVisibility(hasReply&&!recording,enter=fadeIn(tween(220))+expandVertically(tween(260,easing=Motion.TravelEasing)),exit=fadeOut(tween(100))){
-        Surface(Modifier.fillMaxWidth().padding(top=2.dp,bottom=18.dp),shape=RoundedCornerShape(24.dp),color=PiSoft){
+        Surface(Modifier.fillMaxWidth().padding(top=2.dp,bottom=18.dp),shape=RoundedCornerShape(Radii.Xxl),color=PiSoft,shadowElevation=Elev.Card){
          Column(Modifier.padding(horizontal=18.dp,vertical=17.dp)){
           Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)){
            Box(Modifier.size(5.dp).background(PiGreen,CircleShape))
@@ -143,7 +143,7 @@ class QuickVoiceActivity:ComponentActivity(){
        if(vm.hasRecording&&!busy&&!recording)TextButton(onClick={record()}){Text("重新说一句",color=Muted)}
       }
       val (press,motion)=rememberPress(.96f)
-      Button(onClick={when{recording->vm.finishRecording();vm.hasRecording->vm.transcribe();else->record()}},enabled=!busy&&!expanding,modifier=Modifier.fillMaxWidth().height(54.dp).padding(top=2.dp).then(motion),shape=RoundedCornerShape(27.dp),interactionSource=press,colors=ButtonDefaults.buttonColors(containerColor=Ink)){
+      Button(onClick={when{recording->vm.finishRecording();vm.hasRecording->vm.transcribe();else->record()}},enabled=!busy&&!expanding,modifier=Modifier.fillMaxWidth().height(54.dp).padding(top=2.dp).then(motion),shape=Radii.Pill,interactionSource=press,colors=ButtonDefaults.buttonColors(containerColor=Ink)){
        Icon(if(recording||vm.hasRecording)Icons.Outlined.ArrowUpward else Icons.Outlined.Mic,null,Modifier.size(21.dp));Spacer(Modifier.width(8.dp));Text(when{recording->"说完了，立即发送";waiting->"正在等 Pi 回复";busy->"正在发送";vm.hasRecording->"重试发送这段录音";replied||vm.sessionId.isNotBlank()->"再说一句";else->"开始说话"},fontWeight=FontWeight.SemiBold)
       }
       Text("上滑展开 · ${vm.cwd.shortPath()}",Modifier.padding(top=12.dp),color=Faint,fontSize=11.sp)

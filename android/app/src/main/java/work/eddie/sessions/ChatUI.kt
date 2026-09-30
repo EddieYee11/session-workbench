@@ -132,7 +132,7 @@ fun relTime(ts:Double):String{
  Column(Modifier.fillMaxSize()){
   Box(Modifier.fillMaxWidth().height(62.dp).padding(horizontal=16.dp)){
    Box(Modifier.align(Alignment.CenterStart)){RoundIcon(Icons.Outlined.Menu,"菜单",menu)}
-   Text("Com!",Modifier.align(Alignment.Center),fontSize=22.sp,fontWeight=FontWeight.Bold,letterSpacing=(-.8).sp,color=Ink)
+   Text("Com!",Modifier.align(Alignment.Center),fontSize=Type.AppTitle,fontWeight=FontWeight.Bold,letterSpacing=(-.8).sp,color=Ink)
    Box(Modifier.align(Alignment.CenterEnd)){RoundIcon(Icons.Outlined.Tune,"新会话设置",advanced)}
   }
   BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()){
@@ -142,7 +142,7 @@ fun relTime(ts:Double):String{
     CompanionWelcome(agent,title,subtitle,if(vm.voiceDelivery.isNotBlank())"thinking" else avatar,vm.connected,if(compact)210.dp else 270.dp)
     Pill(listOf("Pi","Codex"),if(agent=="pi")0 else 1){select(if(it==0)"pi"else"codex")}
     Spacer(Modifier.height(14.dp))
-    if(focus!=null)Surface(onClick={pick(focus)},modifier=Modifier.widthIn(max=450.dp).fillMaxWidth(),shape=RoundedCornerShape(23.dp),color=Card,border=BorderStroke(1.dp,Line)){
+    if(focus!=null)PolishCard(modifier=Modifier.widthIn(max=450.dp).fillMaxWidth(),radius=Radii.Xxl,onClick={pick(focus)}){
      Row(Modifier.padding(horizontal=16.dp,vertical=13.dp),verticalAlignment=Alignment.CenterVertically){
       Icon(if(status=="waiting")Icons.Outlined.ChatBubbleOutline else Icons.Outlined.History,null,Modifier.size(18.dp),tint=if(status=="waiting")CompanionCoral else Muted)
       Column(Modifier.weight(1f).padding(horizontal=12.dp)){
@@ -191,7 +191,7 @@ fun relTime(ts:Double):String{
    IconButton(onClick={vm.run{vm.store.request("/refresh",JSONObject());vm.refresh()}},modifier=Modifier.size(38.dp)){Icon(Icons.Outlined.Refresh,"刷新历史",Modifier.size(19.dp),tint=Muted)}
    IconButton(onClick={search=!search},modifier=Modifier.size(38.dp)){Icon(Icons.Outlined.Search,"搜索",Modifier.size(21.dp),tint=Ink)}
   }
-  if(search){Surface(Modifier.fillMaxWidth().padding(bottom=8.dp),shape=RoundedCornerShape(28.dp),color=Track){
+  if(search){Surface(Modifier.fillMaxWidth().padding(bottom=8.dp),shape=RoundedCornerShape(Radii.Sheet),color=Track){
    Row(Modifier.padding(horizontal=14.dp),verticalAlignment=Alignment.CenterVertically){
     Icon(Icons.Outlined.Search,null,Modifier.size(17.dp),tint=Faint)
     BasicTextField(vm.q,{vm.q=it;vm.working=false},Modifier.weight(1f).padding(vertical=11.dp).padding(start=9.dp),textStyle=TextStyle(fontSize=14.sp,color=Ink),singleLine=true,cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(vm.q.isBlank())Text("搜索聊天内容",fontSize=14.sp,color=Faint);inner()}})
@@ -217,7 +217,7 @@ fun relTime(ts:Double):String{
    groups.forEach{(label,list)->
     item(key="g:$label"){Text(label,Modifier.padding(start=10.dp,top=16.dp,bottom=6.dp),fontSize=12.sp,color=Faint)}
     items(list,key={it.getString("id")}){s->
-     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if(vm.selected==s.getString("id"))AccentSoft else Color.Transparent).combinedClickable(onClick={pick(s)},onLongClick={menuItem=s}).padding(horizontal=12.dp,vertical=12.dp)){
+     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(Radii.M)).background(if(vm.selected==s.getString("id"))AccentSoft else Color.Transparent).combinedClickable(onClick={pick(s)},onLongClick={menuItem=s}).padding(horizontal=12.dp,vertical=12.dp)){
       Row(verticalAlignment=Alignment.CenterVertically){
        Text(s.optString("display_title").ifBlank{"新聊天"},fontSize=15.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis,modifier=Modifier.weight(1f))
        Text(relTime(s.optDouble("updated")),Modifier.padding(start=8.dp),fontSize=11.sp,color=Faint)
@@ -229,17 +229,17 @@ fun relTime(ts:Double):String{
      }
     }
    }
-   if(rows.isEmpty())item{Text(if(vm.q.isNotBlank())"没有找到匹配内容" else "这里会保存你的聊天",Modifier.padding(14.dp),fontSize=13.sp,color=Muted)}
+   if(rows.isEmpty())item{if(vm.q.isNotBlank())EmptyState(Icons.Outlined.Search,"没有找到匹配内容","换个关键词，或调整筛选条件试试")else EmptyState(Icons.Outlined.Forum,"这里会保存你的聊天","开启新的会话后，它会自动出现在这里")}
    item{Text(if(!vm.connected)"离线：仅搜索已缓存内容" else if(vm.index.optBoolean("scanning"))"正在索引 ${vm.index.optInt("done")}/${vm.index.optInt("total")}" else "${vm.index.optInt("total")} 段 Mac mini 历史"+(if(vm.index.optInt("unreadable")>0)" · ${vm.index.optInt("unreadable")} 份不可读" else ""),Modifier.padding(12.dp),fontSize=10.sp,color=Faint)}
   }
   HorizontalDivider(color=Line)
-  Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick=settings).padding(horizontal=8.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(32.dp).background(Ink,CircleShape),contentAlignment=Alignment.Center){Text("E",color=Color.White,fontSize=14.sp,fontWeight=FontWeight.Bold)};Column(Modifier.weight(1f).padding(start=11.dp)){Text("Eddie",fontSize=14.sp,fontWeight=FontWeight.Medium);Text(if(vm.connected)"Mac mini · 已连接" else "连接与设置",fontSize=11.sp,color=Muted)};Icon(Icons.Outlined.MoreHoriz,"账户与连接设置",tint=Muted)}
+  Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Radii.M)).clickable(onClick=settings).padding(horizontal=8.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(32.dp).background(Ink,CircleShape),contentAlignment=Alignment.Center){Text("E",color=Color.White,fontSize=14.sp,fontWeight=FontWeight.Bold)};Column(Modifier.weight(1f).padding(start=11.dp)){Text("Eddie",fontSize=14.sp,fontWeight=FontWeight.Medium);Text(if(vm.connected)"Mac mini · 已连接" else "连接与设置",fontSize=11.sp,color=Muted)};Icon(Icons.Outlined.MoreHoriz,"账户与连接设置",tint=Muted)}
  }
  menuItem?.let{SessionMenu(vm,it){menuItem=null}}
 }
 @Composable fun SidebarEntry(icon:androidx.compose.ui.graphics.vector.ImageVector,text:String,selected:Boolean,click:()->Unit){
  val tint=if(selected)Ink else Muted
- Row(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(10.dp)).background(if(selected)AccentSoft else Color.Transparent).clickable(onClick=click).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){Icon(icon,null,Modifier.size(20.dp),tint=tint);Text(text,Modifier.padding(start=12.dp),fontSize=14.5.sp,fontWeight=if(selected)FontWeight.Medium else FontWeight.Normal,color=tint)}
+ Row(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(Radii.M)).background(if(selected)AccentSoft else Color.Transparent).clickable(onClick=click).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){Icon(icon,null,Modifier.size(20.dp),tint=tint);Text(text,Modifier.padding(start=12.dp),fontSize=14.5.sp,fontWeight=if(selected)FontWeight.Medium else FontWeight.Normal,color=tint)}
 }
 
 @Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null){
@@ -247,7 +247,7 @@ fun relTime(ts:Double):String{
  val line by animateColorAsState(if(focused)CompanionCoral.copy(alpha=.35f) else Line,Motion.Tint,label="输入框描边")
  val view=LocalView.current
  val canSend=enabled&&text.isNotBlank()
- Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp).animateContentSize(Motion.Resize),shape=RoundedCornerShape(30.dp),color=Card,border=BorderStroke(1.dp,line),shadowElevation=2.dp){
+ Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp).animateContentSize(Motion.Resize),shape=RoundedCornerShape(Radii.Sheet),color=Card,border=BorderStroke(1.dp,line),shadowElevation=Elev.Card){
   Row(Modifier.padding(horizontal=6.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
    IconButton(onClick=more,modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,"更多选项",Modifier.size(24.dp),tint=Ink)}
    BasicTextField(text,change,Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).padding(vertical=10.dp,horizontal=5.dp).onFocusChanged{focused=it.isFocused},textStyle=TextStyle(fontSize=16.sp,color=Ink,lineHeight=24.sp),cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,fontSize=16.sp,color=Faint,maxLines=1);inner()}})
@@ -279,7 +279,7 @@ fun relTime(ts:Double):String{
    Box(Modifier.align(Alignment.TopStart)){RoundIcon(Icons.Outlined.ArrowBack,"返回首页",new)}
    Column(Modifier.align(Alignment.TopCenter).widthIn(max=280.dp).fillMaxWidth(.64f),horizontalAlignment=Alignment.CenterHorizontally){
     if(!terminal)CompanionLanding(s.optString("agent","pi"),companion,Modifier.size(68.dp),interactive=false)
-    Surface(onClick={showMenu=true},shape=RoundedCornerShape(20.dp),color=Card,border=BorderStroke(1.dp,Line)){
+    Surface(onClick={showMenu=true},shape=RoundedCornerShape(Radii.Xl),color=Card,border=BorderStroke(1.dp,Line),shadowElevation=Elev.Card){
      Row(Modifier.padding(horizontal=12.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically){Text(s.optString("display_title","正在读取…"),Modifier.weight(1f,fill=false),fontSize=12.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis);Icon(Icons.Outlined.ChevronRight,null,Modifier.padding(start=3.dp).size(14.dp),tint=Muted)}
     }
     if(!terminal)Text(if(!vm.connected)"离线记录"else if(!caps.optBoolean("input"))"只读历史"else if(sessionFresh)statusLabel(status)else"正在同步",Modifier.padding(top=4.dp),fontSize=10.sp,color=Muted)
@@ -289,7 +289,7 @@ fun relTime(ts:Double):String{
     if(!terminal)IconButton(onClick={search=!search},modifier=Modifier.size(36.dp).padding(top=3.dp)){Icon(Icons.Outlined.Search,"查找本会话",Modifier.size(19.dp),tint=Muted)}
    }
   }
-  if(search)Row(Modifier.padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){OutlinedTextField(vm.queryInSession,{vm.queryInSession=it;matchIndex=0},Modifier.weight(1f),placeholder={Text("查找内容",fontSize=13.sp)},singleLine=true,shape=RoundedCornerShape(24.dp));Text("${if(matches.isEmpty())0 else matchIndex+1}/${matches.size}",Modifier.padding(5.dp),fontSize=10.sp,color=Muted);listOf(-1 to Icons.Outlined.KeyboardArrowUp,1 to Icons.Outlined.KeyboardArrowDown).forEach{(delta,icon)->IconButton(enabled=matches.isNotEmpty(),onClick={matchIndex=(matchIndex+delta+matches.size)%matches.size;scope.launch{list.animateScrollToItem(rowFor(matches[matchIndex].optString("id")))}}){Icon(icon,if(delta<0)"上一个命中"else"下一个命中")}}}
+  if(search)Row(Modifier.padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){OutlinedTextField(vm.queryInSession,{vm.queryInSession=it;matchIndex=0},Modifier.weight(1f),placeholder={Text("查找内容",fontSize=13.sp)},singleLine=true,shape=RoundedCornerShape(Radii.Xxl));Text("${if(matches.isEmpty())0 else matchIndex+1}/${matches.size}",Modifier.padding(5.dp),fontSize=10.sp,color=Muted);listOf(-1 to Icons.Outlined.KeyboardArrowUp,1 to Icons.Outlined.KeyboardArrowDown).forEach{(delta,icon)->IconButton(enabled=matches.isNotEmpty(),onClick={matchIndex=(matchIndex+delta+matches.size)%matches.size;scope.launch{list.animateScrollToItem(rowFor(matches[matchIndex].optString("id")))}}){Icon(icon,if(delta<0)"上一个命中"else"下一个命中")}}}
   if(terminal&&caps.optBoolean("terminal"))Box(Modifier.weight(1f).fillMaxWidth()){Terminal(vm,sid)}
   else Box(Modifier.weight(1f).fillMaxWidth()){
    LazyColumn(state=list,contentPadding=PaddingValues(horizontal=20.dp,vertical=22.dp),verticalArrangement=Arrangement.spacedBy(26.dp)){
@@ -312,7 +312,7 @@ fun relTime(ts:Double):String{
    snapshot.live.array("approvals").forEach{Approval(vm,it)}
    if(!vm.connected)Text("连接中断 · 远端任务不会因此停止",Modifier.padding(horizontal=22.dp),fontSize=11.sp,color=Muted)
    if(!caps.optBoolean("input"))Column(Modifier.padding(horizontal=20.dp,vertical=12.dp)){
-    Button(onClick={vm.resume()},enabled=vm.connected&&!vm.busy&&caps.optBoolean("resume"),shape=RoundedCornerShape(25.dp),modifier=Modifier.fillMaxWidth().height(50.dp)){Text("继续这个会话",fontSize=15.sp,fontWeight=FontWeight.Medium)}
+    Button(onClick={vm.resume()},enabled=vm.connected&&!vm.busy&&caps.optBoolean("resume"),shape=RoundedCornerShape(Radii.Xxl),modifier=Modifier.fillMaxWidth().height(50.dp)){Text("继续这个会话",fontSize=15.sp,fontWeight=FontWeight.Medium)}
     if(!caps.optBoolean("resume"))Text("只读历史 · 正在使用或状态未确认",Modifier.padding(top=8.dp),fontSize=11.sp,color=Faint)
    }
   }
@@ -325,8 +325,8 @@ fun relTime(ts:Double):String{
  var expanded by rememberSaveable(messages.first().optString("id")){mutableStateOf(false)}
  val hasHit=q.isNotBlank()&&messages.any{m->q.trim().split(Regex("\\s+")).all{(m.optString("text")+m.optString("title")).contains(it,true)}}
  Column(Modifier.fillMaxWidth()){
-  Row(Modifier.fillMaxWidth().heightIn(min=44.dp).clip(RoundedCornerShape(10.dp)).clickable{expanded=!expanded}.padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically){
-   Box(Modifier.size(26.dp).clip(RoundedCornerShape(8.dp)).background(ToolSurface).border(1.dp,Line,RoundedCornerShape(8.dp)),contentAlignment=Alignment.Center){
+  Row(Modifier.fillMaxWidth().heightIn(min=44.dp).clip(RoundedCornerShape(Radii.M)).clickable{expanded=!expanded}.padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically){
+   Box(Modifier.size(26.dp).clip(RoundedCornerShape(Radii.S)).background(ToolSurface).border(1.dp,Line,RoundedCornerShape(Radii.S)),contentAlignment=Alignment.Center){
     if(running)StatusDot(Ink,7.dp) else Icon(Icons.Outlined.Check,null,Modifier.size(14.dp),tint=Muted)
    }
    Text(if(running)"正在处理" else "处理过程",Modifier.padding(start=10.dp),fontSize=13.5.sp,fontWeight=FontWeight.Medium,color=Ink)
@@ -345,17 +345,17 @@ fun relTime(ts:Double):String{
  val role=m.optString("role");val tool=role in listOf("tool","progress");val body=m.optString("text");var expanded by rememberSaveable(m.optString("id")){mutableStateOf(false)};val context=LocalContext.current
  if(tool){
   Column(Modifier.fillMaxWidth()){
-   Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable{expanded=!expanded}.padding(vertical=7.dp),verticalAlignment=Alignment.CenterVertically){
+   Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Radii.S)).clickable{expanded=!expanded}.padding(vertical=7.dp),verticalAlignment=Alignment.CenterVertically){
     if(m.optString("state")=="running")StatusDot(Ink,7.dp) else Icon(Icons.Outlined.Check,null,Modifier.size(15.dp),tint=Faint)
     Text(m.optString("title").ifBlank{"执行记录"}.take(120),Modifier.weight(1f).padding(start=9.dp),fontSize=12.5.sp,color=Muted,maxLines=2,overflow=TextOverflow.Ellipsis)
     val chevron by animateFloatAsState(if(expanded)0f else -90f,Motion.Gentle,label="记录箭头")
     Icon(Icons.Outlined.ExpandMore,if(expanded)"收起" else "展开执行记录",Modifier.size(16.dp).rotate(chevron),tint=Faint)
    }
-   AnimatedVisibility(expanded||q.isNotBlank(),enter=expandVertically(animationSpec=spring(dampingRatio=.9f,stiffness=Spring.StiffnessMedium))+fadeIn(tween(150)),exit=shrinkVertically(animationSpec=spring(dampingRatio=1f,stiffness=Spring.StiffnessMedium))+fadeOut(tween(100))){Surface(color=ToolSurface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,Line)){SelectionContainer{Text(highlight(body,q),Modifier.padding(13.dp),fontFamily=FontFamily.Monospace,fontSize=(font-3).sp,lineHeight=(font+5).sp,color=Ink)}}}
+   AnimatedVisibility(expanded||q.isNotBlank(),enter=expandVertically(animationSpec=spring(dampingRatio=.9f,stiffness=Spring.StiffnessMedium))+fadeIn(tween(150)),exit=shrinkVertically(animationSpec=spring(dampingRatio=1f,stiffness=Spring.StiffnessMedium))+fadeOut(tween(100))){Surface(color=ToolSurface,shape=RoundedCornerShape(Radii.M),border=BorderStroke(1.dp,Line)){SelectionContainer{Text(highlight(body,q),Modifier.padding(13.dp),fontFamily=FontFamily.Monospace,fontSize=(font-3).sp,lineHeight=(font+5).sp,color=Ink)}}}
   }
  }else{
   Column(Modifier.fillMaxWidth(),horizontalAlignment=if(role=="user")Alignment.End else Alignment.Start){
-   Surface(Modifier.widthIn(max=680.dp).fillMaxWidth(if(role=="user").88f else .96f),color=if(role=="user")UserBubble else if(agent=="codex")Color(0xFFEAF0FD)else Color(0xFFE9F2EF),shape=RoundedCornerShape(24.dp)){
+   Surface(Modifier.widthIn(max=680.dp).fillMaxWidth(if(role=="user").88f else .96f),color=if(role=="user")UserBubble else if(agent=="codex")Color(0xFFEAF0FD)else Color(0xFFE9F2EF),shape=RoundedCornerShape(Radii.Xxl)){
     if(q.isNotBlank())SelectionContainer{Text(highlight(body,q),Modifier.padding(horizontal=16.dp,vertical=12.dp),fontSize=font.sp,lineHeight=(font+9).sp,color=Ink)}
     else AndroidView(factory={c->MarkdownTextView(c).apply{setTextColor(android.graphics.Color.rgb(13,13,13));setTextIsSelectable(true);tag=Markwon.builder(c).usePlugin(TablePlugin.create(c)).usePlugin(StrikethroughPlugin.create()).usePlugin(LinkifyPlugin.create()).build()}},update={v->v.textSize=font;val pad=(14*v.resources.displayMetrics.density).toInt();v.setPadding(pad,pad,pad,pad);v.setLineSpacing(5*v.resources.displayMetrics.density,1f);(v.tag as Markwon).setMarkdown(v,body)})
    }

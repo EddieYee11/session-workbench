@@ -115,8 +115,8 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
    }
   }
   AnimatedVisibility(vm.voiceDelivery.isNotBlank(),enter=fadeIn()+expandVertically(Motion.Resize),exit=fadeOut()+shrinkVertically(Motion.Resize)){
-   Surface(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=4.dp),color=CompanionGlow,shape=androidx.compose.foundation.shape.RoundedCornerShape(18.dp)){
-    Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically){ThinkingDots();Text(vm.voiceDelivery,Modifier.weight(1f).padding(start=12.dp),fontSize=12.sp,color=Ink)}
+   Surface(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=4.dp),color=CompanionGlow,shape=androidx.compose.foundation.shape.RoundedCornerShape(Radii.L),shadowElevation=Elev.Card){
+    Row(Modifier.padding(Spacing.M),verticalAlignment=Alignment.CenterVertically){ThinkingDots();Text(vm.voiceDelivery,Modifier.weight(1f).padding(start=12.dp),fontSize=Type.Caption,color=Ink)}
    }
   }
   AnimatedVisibility((home||caps.optBoolean("input"))&&!terminal,enter=fadeIn(tween(180))+expandVertically(Motion.Resize),exit=fadeOut(tween(100))+shrinkVertically(Motion.Resize)){
@@ -130,7 +130,7 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
      {vm.stop()},voice,
     )
     AnimatedContent(home,transitionSpec={fadeIn(tween(120)) togetherWith fadeOut(tween(90))},label="输入状态说明") {isHome->
-     Text(if(isHome)"Com! · 想到，就一起做到" else "Com! · ${if(session.optString("agent")=="pi")"Pi"else"Codex"} 与你同在",Modifier.fillMaxWidth().padding(bottom=8.dp),fontSize=10.sp,color=Faint,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
+     Text(if(isHome)"Com! · 想到，就一起做到" else "Com! · ${if(session.optString("agent")=="pi")"Pi"else"Codex"} 与你同在",Modifier.fillMaxWidth().padding(bottom=8.dp),fontSize=Type.Tiny,color=Faint,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
     }
    }
   }
