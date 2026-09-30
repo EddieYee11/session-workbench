@@ -49,6 +49,7 @@ class QuickVoiceActivity:ComponentActivity(){
  companion object{fun launch(context:Context){context.startActivity(Intent(context,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST).apply{if(context !is android.app.Activity)addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)})}}
  override fun onCreate(savedInstanceState:Bundle?){
   super.onCreate(savedInstanceState)
+  if(savedInstanceState==null)vm.requestRecordingOnOpen()
   window.setBackgroundDrawableResource(android.R.color.transparent)
   window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
   setContent{MaterialTheme(colorScheme=Palette){QuickVoiceSheet(vm,this::closeWindow){
@@ -63,6 +64,7 @@ class QuickVoiceActivity:ComponentActivity(){
  }
  override fun onStart(){super.onStart();vm.onForeground()}
  override fun onStop(){vm.onBackground();super.onStop()}
+ override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);vm.requestRecordingOnOpen()}
  @Suppress("DEPRECATION") private fun closeWindow(){finish();overridePendingTransition(0,0)}
 }
 
@@ -70,16 +72,15 @@ class QuickVoiceActivity:ComponentActivity(){
  val context=androidx.compose.ui.platform.LocalContext.current
  val scope=rememberCoroutineScope()
  var visible by remember{mutableStateOf(false)}
- var autoStarted by remember{mutableStateOf(false)}
  var expanding by remember{mutableStateOf(false)}
  val expandLatest by rememberUpdatedState(expand)
  val expansion by animateFloatAsState(if(expanding)1f else 0f,tween(340,easing=Motion.TravelEasing),label="小窗拉成会话",finishedListener={if(it==1f)expandLatest()})
  fun beginExpansion(){if(expanding)return;if(vm.phase=="recording")vm.finishRecording();expanding=true}
- val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){if(it)vm.record()else vm.permissionDenied()}
+ val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){if(it)vm.requestRecordingOnOpen()else vm.permissionDenied()}
  fun record(){if(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)vm.record()else permission.launch(Manifest.permission.RECORD_AUDIO)}
  fun close(){vm.onBackground();visible=false;scope.launch{delay(210);dismiss()}}
  LaunchedEffect(Unit){visible=true}
- LaunchedEffect(vm.restored){if(vm.restored&&!autoStarted){autoStarted=true;if(vm.deliveryId.isBlank()&&!vm.hasRecording)record()}}
+ LaunchedEffect(vm.restored,vm.isForeground,vm.openRecordingRequest){if(vm.restored&&vm.isForeground&&vm.consumeRecordingOnOpen())record()}
  BackHandler{close()}
  val recording=vm.phase=="recording"
  val waiting=vm.phase in listOf("waiting","sent")

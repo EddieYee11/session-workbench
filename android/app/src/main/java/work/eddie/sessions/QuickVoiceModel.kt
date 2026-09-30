@@ -25,7 +25,6 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
     var levels by mutableStateOf(List(24) { 0f }); private set
     var sessionId by mutableStateOf(prefs.getString("quick-voice-capture-sid", "") ?: ""); private set
     var replyText by mutableStateOf(""); private set
-    var hasPendingSend by mutableStateOf(prefs.contains("quick-voice-pending")); private set
     var hasRecording by mutableStateOf(captureFile()?.exists() == true); private set
     val cwd: String get() = prefs.getString("lastCwd", "/Users/eddiegao/AI_Work_System") ?: "/Users/eddiegao/AI_Work_System"
     val paired: Boolean get() = store.base.isNotBlank() && store.token.isNotBlank()
@@ -34,13 +33,21 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
     private var deliveryWatch: Job? = null
     private var replyWatch: Job? = null
     private var sessionEnded = false
+    private var protectedCaptureName: String? = null
+    var openRecordingRequest by mutableIntStateOf(0); private set
+    private var consumedOpenRecordingRequest = 0
+    private var freshWindowRequested = false
     init {
         viewModelScope.launch {
             val previous=runCatching{UUID.fromString(deliveryId)}.getOrNull()
             if(previous!=null){
                 val info=withContext(Dispatchers.IO){WorkManager.getInstance(getApplication()).getWorkInfoById(previous).get()}
-                if(info?.state==WorkInfo.State.SUCCEEDED && prefs.getBoolean("quick-voice-read:$deliveryId",false)){deliveryId="";prefs.edit().remove("quick-voice-work").apply();hasRecording=false;sessionId=""}
-                else watchDelivery(deliveryId)
+                if(info?.state in listOf(WorkInfo.State.ENQUEUED,WorkInfo.State.BLOCKED,WorkInfo.State.RUNNING))
+                    protectedCaptureName = captureFile()?.name
+                if(!freshWindowRequested){
+                    if(info?.state==WorkInfo.State.SUCCEEDED && prefs.getBoolean("quick-voice-read:$deliveryId",false)){deliveryId="";prefs.edit().remove("quick-voice-work").apply();hasRecording=false;sessionId=""}
+                    else watchDelivery(deliveryId)
+                }
             }
             restored=true
         }
@@ -49,20 +56,33 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
     private var recordingFile: File? = null
     private var timer: Job? = null
     private var started = 0L
-    private var foreground = false
+    var isForeground by mutableStateOf(false); private set
     private fun captureFile(): File? = prefs.getString("quick-voice-file", null)?.let { name ->
         File(captureDir, File(name).name).takeIf { it.extension == "m4a" }
     }
+    fun requestRecordingOnOpen() {
+        freshWindowRequested = true
+        openRecordingRequest++
+    }
+    fun consumeRecordingOnOpen(): Boolean {
+        if (openRecordingRequest == consumedOpenRecordingRequest) return false
+        consumedOpenRecordingRequest = openRecordingRequest
+        if (phase == "recording") return false
+        deliveryWatch?.cancel(); replyWatch?.cancel()
+        phase = "ready"; message = ""; replyText = ""; sessionId = ""; sessionEnded = false
+        deliveryId = ""
+        return true
+    }
     fun permissionDenied() { message = "麦克风权限未开启。请在系统设置中允许 Com! 使用麦克风。" }
-    fun onForeground() { foreground = true }
+    fun onForeground() { isForeground = true }
     fun onBackground() {
-        foreground = false
+        isForeground = false
         if (phase == "reply" && deliveryId.isNotBlank()) prefs.edit().putBoolean("quick-voice-read:$deliveryId",true).apply()
         if (phase == "recording") finishRecording(transcribe = false)
     }
     @Suppress("DEPRECATION")
     fun record() {
-        if (!foreground || phase in listOf("recording", "transcribing", "sending", "queued", "waiting") || hasPendingSend) return
+        if (!isForeground || phase in listOf("recording", "transcribing", "sending", "queued", "waiting")) return
         if (!paired) { message = "先在 Com! 中完成 Mac mini 配对，再使用语音。"; return }
         replyWatch?.cancel(); replyText=""
         if(sessionEnded){sessionId="";sessionEnded=false}
@@ -110,7 +130,8 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
             file?.delete(); message = "录音太短，请再说一次。原来的草稿已保留。"; return
         }
         // Replace the previous capture only after a complete, usable recording exists.
-        captureFile()?.takeIf { it != file }?.delete()
+        // A previous window's WorkManager job may still be reading its capture.
+        captureFile()?.takeIf { it != file && it.name != protectedCaptureName }?.delete()
         prefs.edit().putString("quick-voice-file", file.name).putString("quick-voice-capture-sid",sessionId).apply()
         hasRecording = true
         if (transcribe) transcribe() else message = "录音已保存，下次打开可继续发送。"
@@ -160,7 +181,7 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
             var tick=0
             val began=SystemClock.elapsedRealtime()
             while(isActive){
-                if(!foreground){delay(400);continue}
+                if(!isForeground){delay(400);continue}
                 try{
                     val live=store.request("/sessions/${URLEncoder.encode(sid,"UTF-8")}/live")
                     val status=live.optString("status")
