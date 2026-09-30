@@ -20,6 +20,7 @@ fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull { optJ
 fun JSONObject.array(key:String)=optJSONArray(key)?.objects()?:emptyList()
 fun String.shortPath()=trimEnd('/').substringAfterLast('/')
 fun statusLabel(s:String)=when(s){"running"->"运行中";"waiting"->"需要你回应";"completed"->"本轮完成";"interrupted"->"已中断";"ended"->"会话已结束";"failed"->"执行失败";"ready"->"可以开始";else->"历史记录"}
+data class ModelSelection(val model:String="",val effort:String="")
 
 class Store(val context:Context) {
  val prefs=context.getSharedPreferences("workbench",0)
@@ -96,6 +97,10 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var working by mutableStateOf(true);var archived by mutableStateOf(false)
  var queryInSession by mutableStateOf(store.prefs.getString("session-search","")?:"");var targetMessage by mutableStateOf("")
  val drafts=mutableStateMapOf<String,String>()
+ private val selections=mutableStateMapOf<String,ModelSelection>()
+ val catalogs=mutableStateMapOf<String,List<ModelChoice>>()
+ val catalogLoading=mutableStateMapOf<String,Boolean>()
+ val catalogErrors=mutableStateMapOf<String,String>()
  var active by mutableStateOf(true)
  var font by mutableFloatStateOf(store.prefs.getFloat("font",16f))
  init {viewModelScope.launch{snapshotFlow{q to queryInSession}.collect{(global,local)->store.prefs.edit().putString("search",global).putString("session-search",local).apply()}};viewModelScope.launch{var tick=0;while(true){if(active&&store.token.isNotEmpty()){
@@ -128,6 +133,37 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  fun close(){selected="";archived=false;store.prefs.edit().remove("selected").apply();detail=JSONObject();live=JSONObject();liveFresh=false;liveSessionId=""}
  fun draft()=drafts.getOrPut(selected){store.prefs.getString("draft:$selected","")?:""}
  fun setDraft(value:String){drafts[selected]=value;store.prefs.edit().putString("draft:$selected",value).apply()}
+ private fun selectionKey(agentName:String,sid:String)=if(sid.isBlank())"new:$agentName" else "session:$sid"
+ fun selection(agentName:String,sid:String=""):ModelSelection {
+   val key=selectionKey(agentName,sid)
+   return selections.getOrPut(key){
+     val session=if(sid.isNotBlank()&&sid==selected)detail.optJSONObject("session") else null
+     ModelSelection(store.prefs.getString("model:$key",session?.optString("model").orEmpty()).orEmpty(),store.prefs.getString("effort:$key",session?.optString("effort").orEmpty()).orEmpty())
+   }
+ }
+ fun chooseModel(agentName:String,sid:String="",model:String,effort:String){
+   val key=selectionKey(agentName,sid)
+   selections[key]=ModelSelection(model,effort)
+   store.prefs.edit().putString("model:$key",model).putString("effort:$key",effort).apply()
+ }
+ fun loadModels(agentName:String,force:Boolean=false){
+   if(agentName !in listOf("pi","codex") || catalogLoading[agentName]==true || !force&&catalogs.containsKey(agentName))return
+   catalogLoading[agentName]=true
+   viewModelScope.launch{
+     try{
+       val data=store.request("/models?agent=$agentName")
+       catalogs[agentName]=data.array("models").mapNotNull{entry->
+         val id=entry.optString("id");if(id.isBlank())null else ModelChoice(
+           id,entry.optString("label",id).ifBlank{id},entry.optString("provider"),
+           entry.optJSONArray("efforts")?.let{choices->(0 until choices.length()).mapNotNull{i->choices.optString(i).takeIf(String::isNotBlank)}}?:emptyList(),
+           entry.optString("default_effort"),
+         )
+       }
+       catalogErrors.remove(agentName)
+     }catch(e:Exception){catalogErrors[agentName]=e.message?:"暂时无法读取模型列表"}
+     finally{catalogLoading[agentName]=false}
+   }
+ }
  suspend fun refresh(){
    try{
     val includeArchived=archived
@@ -143,6 +179,14 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  suspend fun refreshDetail(id:String){try{val d=store.request("/sessions/${enc(id)}");store.cache(store.detailCache(id),d);if(selected==id){
   val seed=detail.array("messages").firstOrNull{it.optString("id")=="accepted-first-message"}
   if(seed!=null&&d.array("messages").isEmpty())d.put("messages",JSONArray().put(seed))
+  val session=d.optJSONObject("session")
+  if(session!=null){
+   val key=selectionKey(session.optString("agent"),id)
+   val saved=selections[key]?:ModelSelection(store.prefs.getString("model:$key","").orEmpty(),store.prefs.getString("effort:$key","").orEmpty())
+   if(!store.prefs.contains("model:$key")&&!store.prefs.contains("effort:$key") || saved.model.isBlank()&&saved.effort.isBlank()&&(session.optString("model").isNotBlank()||session.optString("effort").isNotBlank())){
+    chooseModel(session.optString("agent"),id,session.optString("model"),session.optString("effort"))
+   }
+  }
   detail=d
  }}catch(_:Exception){}}
  fun run(action:suspend ()->Unit){viewModelScope.launch{busy=true;try{action()}catch(e:Exception){error=e.message?:"操作失败"}finally{busy=false}}}
@@ -166,18 +210,19 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  fun create(agentName:String,path:String,prompt:String,model:String,effort:String,sandbox:String)=run{
    store.prefs.edit().putString("lastAgent",agentName).putString("lastCwd",path).apply()
    val r=mutation("/sessions",JSONObject().put("agent",agentName).put("cwd",path).put("prompt",prompt).put("model",model).put("effort",effort).put("sandbox",sandbox))
+   chooseModel(agentName,r.getString("sid"),model,effort)
    store.prefs.edit().remove("new-draft").apply();openId(r.getString("sid"))
    // The server has accepted the message. Seed the destination while history catches up,
    // so the continuous home-to-chat transition never passes through an empty page.
    if(!detail.has("session")||detail.optJSONObject("session")?.has("agent")!=true){
-    val session=JSONObject().put("id",selected).put("agent",agentName).put("cwd",path).put("display_title",prompt.ifBlank{"新会话"}.take(60)).put("status",if(prompt.isBlank())"ready"else"running").put("managed",true).put("capabilities",JSONObject().put("input",true).put("terminal",agentName=="pi").put("resume",false))
+    val session=JSONObject().put("id",selected).put("agent",agentName).put("cwd",path).put("display_title",prompt.ifBlank{"新会话"}.take(60)).put("status",if(prompt.isBlank())"ready"else"running").put("managed",true).put("model",model).put("effort",effort).put("capabilities",JSONObject().put("input",true).put("terminal",agentName=="pi").put("resume",false))
     val messages=JSONArray();if(prompt.isNotBlank())messages.put(JSONObject().put("id","accepted-first-message").put("role","user").put("text",prompt))
     detail=JSONObject().put("session",session).put("messages",messages)
    }
    refresh()
  }
- fun send(){val id=selected;val text=draft();if(text.isBlank())return;run{
-   mutation("/sessions/${enc(id)}/input",JSONObject().put("text",text))
+ fun send(){val id=selected;val text=draft();if(text.isBlank())return;val agentName=detail.optJSONObject("session")?.optString("agent").orEmpty();val chosen=selection(agentName,id);run{
+   mutation("/sessions/${enc(id)}/input",JSONObject().put("text",text).put("model",chosen.model).put("effort",chosen.effort))
    if(drafts[id]==text){drafts[id]="";store.prefs.edit().remove("draft:$id").apply()};refreshDetail(id)
  }}
  fun resume()=run{val id=selected;mutation("/sessions/${enc(id)}/resume",JSONObject());refreshDetail(id)}

@@ -1,4 +1,4 @@
-import asyncio, json, os, shlex, time, uuid, contextlib, fcntl
+import asyncio, base64, json, os, shlex, time, uuid, contextlib, fcntl
 from pathlib import Path
 import websockets
 from history import text_content,codex_item
@@ -11,6 +11,7 @@ class Runtime:
         self.pi=os.environ.get('WORKBENCH_PI','/usr/local/bin/pi')
         self.sock='session-workbench';self.rpc=None;self.pending={};self.counter=0;self.connect_lock=asyncio.Lock();self.action_lock=asyncio.Lock()
         self.live={};self.approvals={};self.reader_task=None;self.rpc_errors=''
+        self.model_cache={}
     async def cmd(self,*args,input=None,check=True):
         p=await asyncio.create_subprocess_exec(*map(str,args),stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
         out,err=await p.communicate(input)
@@ -46,6 +47,51 @@ class Runtime:
         await self.rpc.send(json.dumps({'id':i,'method':method,'params':params or {}}))
         try:return await asyncio.wait_for(f,45)
         finally:self.pending.pop(i,None)
+    async def models(self,agent):
+        if agent not in ('pi','codex'):raise ValueError('不支持的 Agent')
+        cached=self.model_cache.get(agent)
+        if cached and time.monotonic()-cached[0]<300:return cached[1]
+        if agent=='pi':
+            rows=[]
+            for line in (await self.cmd(self.pi,'--list-models')).splitlines()[1:]:
+                fields=line.split()
+                if len(fields)<5:continue
+                provider,model=fields[:2]
+                if not provider or not model:continue
+                thinking=fields[4].lower()=='yes'
+                rows.append({'id':provider+'/'+model,'label':model,'provider':provider,'efforts':['off','minimal','low','medium','high','xhigh','max'] if thinking else ['off'],'default_effort':'' if thinking else 'off'})
+        else:
+            rows=[];cursor=None;seen=set()
+            for _ in range(20):
+                params={'includeHidden':False,'limit':100}
+                if cursor:params['cursor']=cursor
+                page=await self.call('model/list',params)
+                for item in page.get('data',[]):
+                    if item.get('hidden'):continue
+                    model=item.get('model','')
+                    if not model or model in seen:continue
+                    seen.add(model)
+                    levels=[x.get('effort') for x in item.get('supportedReasoningEfforts',[]) if isinstance(x,dict) and x.get('effort')]
+                    rows.append({'id':model,'label':item.get('displayName') or model,'provider':'OpenAI','efforts':levels,'default_effort':item.get('defaultReasoningEffort') or ''})
+                following=page.get('nextCursor')
+                if not following:break
+                if following==cursor:raise RuntimeError('模型列表分页异常')
+                cursor=following
+            else:raise RuntimeError('模型列表超过分页上限')
+        if not rows:raise RuntimeError('Mac mini 暂无可选模型')
+        self.model_cache[agent]=(time.monotonic(),rows)
+        return rows
+    async def validate_model(self,agent,model,effort):
+        if not isinstance(model,str) or not isinstance(effort,str) or len(model)>200:raise ValueError('无效的模型设置')
+        allowed={'off','minimal','low','medium','high','xhigh','max'} if agent=='pi' else {'none','minimal','low','medium','high','xhigh','max','ultra'}
+        if effort and effort not in allowed:raise ValueError('不支持的推理强度')
+        if not model and not effort:return ''
+        if agent=='codex' and not model:raise ValueError('请先选择 Codex 模型，再选择推理强度')
+        choices=await self.models(agent)
+        picked=next((x for x in choices if x['id']==model),None) if model else None
+        if model and not picked:raise ValueError('所选模型不在 Mac mini 的模型列表中')
+        if picked and effort and effort not in picked['efforts']:raise ValueError('当前模型不支持这个推理强度')
+        return effort or (picked['default_effort'] if agent=='codex' and picked else '')
     def event_file(self,sid):return self.state/(sid.replace(':','-')+'.events.jsonl')
     def emit(self,sid,event):
         event.setdefault('time',time.time())
@@ -87,6 +133,7 @@ class Runtime:
         if not Path(cwd).is_dir() or not Path(cwd).is_relative_to(self.h.home):raise ValueError('请选择 Mac mini 用户目录中的有效目录')
         if agent not in ('pi','codex'):raise ValueError('不支持的 Agent')
         if sandbox not in ('danger-full-access','workspace-write','read-only'):raise ValueError('无效的权限模式')
+        if not resume:effort=await self.validate_model(agent,model,effort)
         policy='never' if sandbox=='danger-full-access' else 'on-request'
         if resume:
             if not await self.resumable(resume):raise ValueError('会话正在使用或状态无法确认，保持只读')
@@ -113,7 +160,8 @@ class Runtime:
         prefix+='export SESSION_WORKBENCH_EVENTS='+shlex.quote(str(self.state/(name+'.pi.jsonl')))+'\n'
         if agent=='pi':prefix+='export SESSION_WORKBENCH_YOLO=1\n'
         script.write_text(prefix+'cd '+shlex.quote(cwd)+'\nexec '+shlex.join(args)+'\n');script.chmod(0o700)
-        m={'sid':sid,'native_id':nid,'agent':agent,'cwd':cwd,'tmux':name,'created':time.time(),'source':'手机发起' if not resume else '从历史继续','pi_file':str(self.state/(name+'.pi.jsonl')),'script':str(script),'sandbox':sandbox,'approval_policy':policy,'ended':False}
+        prior=self.h.managed().get(sid,{}) if resume else {}
+        m={'sid':sid,'native_id':nid,'agent':agent,'cwd':cwd,'tmux':name,'created':time.time(),'source':'手机发起' if not resume else '从历史继续','pi_file':str(self.state/(name+'.pi.jsonl')),'script':str(script),'sandbox':sandbox,'approval_policy':policy,'model':model or prior.get('model',''),'effort':effort or prior.get('effort',''),'ended':False}
         # Save before start so notifications cannot be lost.
         self.h.save_managed(sid,m)
         if agent=='pi':await self.ensure_terminal(sid)
@@ -155,17 +203,65 @@ class Runtime:
                 if len(parts)==2 and (Path(parts[1]).name=='pi' or 'pi-coding-agent' in parts[1]) and parts[0] not in known:
                     return False
         return True
-    async def input(self,sid,text,request_id):
+    async def input(self,sid,text,request_id,model=None,effort=None):
         m=self.h.managed().get(sid)
         if not m or m.get('ended') or (m['agent']=='pi' and not await self.alive(m['tmux'])):raise ValueError('请先继续会话')
+        explicit=model is not None or effort is not None
+        model='' if model is None else model
+        effort='' if effort is None else effort
+        if explicit and not model and not effort and (m.get('model') or m.get('effort')):
+            raise ValueError('已有会话不能直接恢复 Mac 默认；请选一个具体模型，或开启新会话')
+        if m['agent']=='codex' and not explicit and m.get('model'):
+            # An empty Codex thread has not run a first turn yet. Keep the
+            # launch selection effective even if an older phone omits fields.
+            model=m['model'];effort=m.get('effort','')
+        if model or effort:effort=await self.validate_model(m['agent'],model,effort)
+        changing=bool(model or effort) and bool((model and model!=m.get('model','')) or (effort and effort!=m.get('effort','')))
+        if changing:
+            if await self.status(sid) not in ('ready','completed','failed','interrupted'):
+                raise ValueError('会话正在处理消息，请稍后切换模型')
         if m['agent']=='codex':
-            result=await self.call('turn/start',{'threadId':m['native_id'],'input':[{'type':'text','text':text}]})
+            params={'threadId':m['native_id'],'input':[{'type':'text','text':text}]}
+            if model:params['model']=model
+            if effort:params['effort']=effort
+            result=await self.call('turn/start',params)
+            if model or effort:self._save_model(m,model,effort)
             return result.get('turn',{}).get('id')
+        if changing:
+            await self._set_pi_model(sid,m,model,effort)
         # Bracketed paste sends literal text; shell metacharacters never become host commands.
         await self.tm('load-buffer','-b',request_id,'-',input=text.encode())
         await self.tm('paste-buffer','-d','-p','-b',request_id,'-t',m['tmux'])
         await asyncio.sleep(.08);await self.tm('send-keys','-t',m['tmux'],'Enter')
         return request_id
+    def _save_model(self,m,model,effort):
+        if model:
+            m['model']=model
+            m['effort']=effort
+        elif effort:m['effort']=effort
+        self.h.save_managed(m['sid'],m)
+    async def _set_pi_model(self,sid,m,model,effort):
+        if not model and not effort:return
+        request_id=str(uuid.uuid4())
+        payload=base64.urlsafe_b64encode(json.dumps({'requestId':request_id,'model':model,'effort':effort}).encode()).decode().rstrip('=')
+        command='/com-set-model '+payload
+        buffer_name='config-'+request_id
+        await self.tm('load-buffer','-b',buffer_name,'-',input=command.encode())
+        await self.tm('paste-buffer','-d','-p','-b',buffer_name,'-t',m['tmux'])
+        await asyncio.sleep(.08);await self.tm('send-keys','-t',m['tmux'],'Enter')
+        deadline=asyncio.get_running_loop().time()+8
+        while asyncio.get_running_loop().time()<deadline:
+            for event in reversed(self.events(sid)):
+                if event.get('type')=='config_result' and event.get('data',{}).get('requestId')==request_id:
+                    data=event['data']
+                    if not data.get('ok'):raise ValueError(data.get('error') or 'Pi 模型切换失败')
+                    # A blank requested effort means "keep Pi's current level".
+                    # Do not persist the observed level as an explicit choice.
+                    self._save_model(m,data.get('model') or model,effort)
+                    return
+            if not await self.alive(m['tmux']):raise RuntimeError('Pi 会话已退出，消息未发送')
+            await asyncio.sleep(.15)
+        raise RuntimeError('Pi 模型切换未确认，消息未发送；请检查终端状态')
     async def ensure_terminal(self,sid):
         m=self.h.managed()[sid];name=m['tmux']
         if await self.alive(name):return

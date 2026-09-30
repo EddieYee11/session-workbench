@@ -109,7 +109,7 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun NewSession(vm:WorkbenchModel,quick:String,dismiss:()->Unit){
  var agent by remember{mutableStateOf(quick.ifBlank{vm.store.prefs.getString("lastAgent","pi")?:"pi"})};var cwd by remember{mutableStateOf(vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"")}
- var prompt by rememberSaveable{mutableStateOf("")};var model by remember{mutableStateOf("")};var effort by remember{mutableStateOf("")};var advanced by remember{mutableStateOf(false)};var sandbox by remember{mutableStateOf("danger-full-access")};var browse by remember{mutableStateOf(false)}
+ var prompt by rememberSaveable{mutableStateOf("")};var model by remember(agent){mutableStateOf(vm.selection(agent).model)};var effort by remember(agent){mutableStateOf(vm.selection(agent).effort)};var advanced by remember{mutableStateOf(false)};var sandbox by remember{mutableStateOf("danger-full-access")};var browse by remember{mutableStateOf(false)};var modelPicker by remember{mutableStateOf(false)}
  ModalBottomSheet(onDismissRequest=dismiss,containerColor=Paper){Column(Modifier.padding(horizontal=24.dp).verticalScroll(rememberScrollState()).imePadding()){
  StaggerIn(0){Column{Text("开启新的工作",fontSize=Type.SheetTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.3).sp);Text("运行在 Mac mini · 默认最高权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=13.sp,color=Muted)}}
  val (createPress,createMotion)=rememberPress(.97f)
@@ -118,10 +118,14 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  TextButton(onClick={browse=true}){Icon(Icons.Outlined.FolderOpen,null);Text(cwd,Modifier.padding(start=8.dp),fontSize=13.sp,maxLines=2)}
  OutlinedTextField(prompt,{prompt=it},Modifier.fillMaxWidth().heightIn(min=120.dp),placeholder={Text("想做什么？也可以先打开空会话。")},shape=RoundedCornerShape(Radii.Xl))
  TextButton(onClick={advanced=!advanced}){Text(if(advanced)"收起高级设置" else "高级设置")}
- if(advanced){OutlinedTextField(model,{model=it},label={Text("模型（留空沿用 Mac 配置）")});if(agent=="pi")Choice(effort.ifBlank{"默认推理强度"},listOf("默认推理强度","off","minimal","low","medium","high","xhigh")){effort=if(it=="默认推理强度")"" else it};if(agent=="codex")Choice(when(sandbox){"read-only"->"只读";"workspace-write"->"工作目录内写入";else->"最高权限（YOLO）"},listOf("最高权限（YOLO）","工作目录内写入","只读")){sandbox=when(it){"只读"->"read-only";"工作目录内写入"->"workspace-write";else->"danger-full-access"}}}
- StaggerIn(2){Button(onClick={vm.create(agent,cwd,prompt,model,effort,sandbox);dismiss()},enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(54.dp).then(createMotion),shape=Radii.Pill,interactionSource=createPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text(if(prompt.isBlank())"打开空会话" else "开始会话",fontSize=15.sp,fontWeight=FontWeight.SemiBold)}}
+ if(advanced){
+  TextButton(onClick={modelPicker=true;vm.loadModels(agent)}){Icon(Icons.Outlined.AutoAwesome,null);Text("${vm.catalogs[agent]?.firstOrNull{it.id==model}?.label?:model.ifBlank{"跟随 Mac 默认"}} · ${effort.ifBlank{"默认推理"}}",Modifier.padding(start=8.dp),maxLines=1)}
+  if(agent=="codex")Choice(when(sandbox){"read-only"->"只读";"workspace-write"->"工作目录内写入";else->"最高权限（YOLO）"},listOf("最高权限（YOLO）","工作目录内写入","只读")){sandbox=when(it){"只读"->"read-only";"工作目录内写入"->"workspace-write";else->"danger-full-access"}}
+ }
+ StaggerIn(2){Button(onClick={vm.chooseModel(agent,"",model,effort);vm.create(agent,cwd,prompt,model,effort,sandbox);dismiss()},enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(54.dp).then(createMotion),shape=Radii.Pill,interactionSource=createPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text(if(prompt.isBlank())"打开空会话" else "开始会话",fontSize=15.sp,fontWeight=FontWeight.SemiBold)}}
  }}
  if(browse)DirectoryPicker(vm,cwd,{cwd=it;browse=false}){browse=false}
+ if(modelPicker)ModelPickerSheet(agent,vm.catalogs[agent].orEmpty(),model,effort,vm.catalogLoading[agent]==true,vm.catalogErrors[agent],{modelPicker=false},{chosen,level->model=chosen;effort=level;modelPicker=false},{vm.loadModels(agent,true)})
 }
 @Composable fun DirectoryPicker(vm:WorkbenchModel,initial:String,choose:(String)->Unit,dismiss:()->Unit){
  var path by remember{mutableStateOf(initial)};var data by remember{mutableStateOf(JSONObject())};var error by remember{mutableStateOf("")}

@@ -60,9 +60,12 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
  val route=vm.selected.ifBlank{"home"}
  val home=route=="home"
  var prompt by rememberSaveable{mutableStateOf(vm.store.prefs.getString("new-draft","")?:"")}
- var options by remember{mutableStateOf(false)}
+ var modelPicker by remember{mutableStateOf(false)}
  var terminal by rememberSaveable(vm.selected){mutableStateOf(false)}
  val session=vm.detail.optJSONObject("session")?:JSONObject()
+ val pickerAgent=if(home)agent else session.optString("agent",agent)
+ val pickerSid=if(home)"" else route
+ val modelSelection=vm.selection(pickerAgent,pickerSid)
  val caps=session.optJSONObject("capabilities")?:JSONObject()
  val status=vm.live.optString("status",session.optString("status"))
  var origin by remember{mutableStateOf(Offset.Zero)}
@@ -134,14 +137,21 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
      if(home)prompt else vm.draft(),
      {if(home){prompt=it;vm.store.prefs.edit().putString("new-draft",it).apply()}else vm.setDraft(it)},
      if(home)"交给 ${if(agent=="pi")"Pi"else"Codex"} 做点什么…" else if(status=="running")"写下补充内容…"else"继续和 ${session.optString("agent")} 聊聊…",
-     vm.connected&&!vm.busy,!home&&status in listOf("running","waiting"),{options=true},
-     {if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",prompt,"","","danger-full-access")else vm.send()},
-     {vm.stop()},voice,
+     vm.connected&&!vm.busy,!home&&status in listOf("running","waiting"),{modelPicker=true;vm.loadModels(pickerAgent)},
+     {if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",prompt,modelSelection.model,modelSelection.effort,"danger-full-access")else vm.send()},
+     {vm.stop()},voice,modelSelection.model.isNotBlank()||modelSelection.effort.isNotBlank(),
     )
    }
   }
  }
  LaunchedEffect(route){if(!home&&vm.store.prefs.getString("new-draft",null)==null)prompt=""}
- LaunchedEffect(options,home){if(options&&home){options=false;advanced()}}
- if(options&&!home)SessionMenu(vm,session){options=false}
+ if(modelPicker)ModelPickerSheet(
+  pickerAgent,vm.catalogs[pickerAgent].orEmpty(),modelSelection.model,modelSelection.effort,
+  vm.catalogLoading[pickerAgent]==true,vm.catalogErrors[pickerAgent],
+  {modelPicker=false},
+  {model,effort->vm.chooseModel(pickerAgent,pickerSid,model,effort);modelPicker=false},
+  {vm.loadModels(pickerAgent,true)},
+  existingSession=!home,
+  allowDefaultModel=home||(session.optString("model").isBlank()&&session.optString("effort").isBlank()),
+ )
 }

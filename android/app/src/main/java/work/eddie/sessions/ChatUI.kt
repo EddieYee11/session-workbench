@@ -296,14 +296,14 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
  Row(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(Radii.M)).background(if(selected)AccentSoft else Color.Transparent).clickable(onClick=click).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){Icon(icon,null,Modifier.size(20.dp),tint=tint);Text(text,Modifier.padding(start=12.dp),fontSize=14.5.sp,fontWeight=if(selected)FontWeight.Medium else FontWeight.Normal,color=tint)}
 }
 
-@Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null){
+@Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null,modelConfigured:Boolean=false){
  var focused by remember{mutableStateOf(false)}
  val line by animateColorAsState(if(focused)CompanionCoral.copy(alpha=.35f) else Line,Motion.Tint,label="输入框描边")
  val haptics=rememberComHaptics()
  val canSend=enabled&&text.isNotBlank()
  Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=RoundedCornerShape(Radii.Sheet),color=Card,border=BorderStroke(1.dp,line),shadowElevation=0.dp){
   Row(Modifier.padding(horizontal=6.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
-   IconButton(onClick=more,modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,"更多选项",Modifier.size(24.dp),tint=Ink)}
+   IconButton(onClick={haptics(HapticCue.Selection);more()},modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,if(modelConfigured)"模型与推理 · 已自定义" else "选择模型与推理",Modifier.size(24.dp),tint=if(modelConfigured)EmberDeep else Ink)}
    BasicTextField(text,change,Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).padding(vertical=10.dp,horizontal=5.dp).onFocusChanged{focused=it.isFocused},textStyle=TextStyle(fontSize=16.sp,color=Ink,lineHeight=24.sp),cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,fontSize=16.sp,color=Faint,maxLines=1);inner()}})
    val (press,pressMod)=rememberPress(.97f)
    if(canSend)IconButton(onClick={haptics(HapticCue.Commit);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}

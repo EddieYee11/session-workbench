@@ -53,6 +53,9 @@ async def pair(request:Request):
     p.unlink();return {'token':TOKEN}
 @app.get('/status')
 async def status():return {'index':history.progress,'managed':len(history.managed()),'host':'Mac mini','default_cwd':str(HOME/'AI_Work_System')}
+@app.get('/models')
+async def models(agent:str='pi'):
+    return {'models':await runtime.models(agent)}
 @app.post('/refresh')
 async def refresh():asyncio.create_task(asyncio.to_thread(history.scan));return {'ok':True}
 @app.get('/sessions')
@@ -62,6 +65,8 @@ async def sessions(q:str='',agent:str='',role:str='',cwd:str='',after:float=0,so
     for s in rows:
         s['source']=managed.get(s['id'],{}).get('source','Mac mini 历史')
         s['managed']=s['id'] in managed;s['status']=await runtime.status(s['id'])
+        if s['managed']:
+            s['model']=managed[s['id']].get('model','');s['effort']=managed[s['id']].get('effort','')
         s.pop('signature',None);s.pop('path',None)
     return {'sessions':rows,'index':history.progress,'coverage':'Mac mini 已发现的本机历史'}
 @app.get('/directories')
@@ -77,6 +82,7 @@ async def detail(sid:str):
     m=history.managed().get(sid);s['status']=await runtime.status(sid);alive=bool(m and not m.get('ended') and (m['agent']=='codex' or await runtime.alive(m['tmux'])))
     s['capabilities']={'history':True,'input':alive,'terminal':alive and (s['agent']=='pi' or bool(history.messages(sid))),'resume':False if alive else await runtime.resumable(s),'queue':False,'steer':False}
     s['managed']=bool(m);s['source']=(m or {}).get('source','Mac mini 历史')
+    if m:s['model']=m.get('model','');s['effort']=m.get('effort','')
     s.pop('signature',None);s.pop('path',None)
     return {'session':s,'messages':await asyncio.to_thread(history.messages,sid)}
 @app.get('/sessions/{sid}/live')
@@ -151,7 +157,7 @@ async def create(request:Request):
                     await asyncio.sleep(.25)
                 else:raise RuntimeError('Pi 启动未就绪，请在会话中检查终端；不要重复提交')
                 await asyncio.sleep(1)
-            await runtime.input(sid,data['prompt'],data['request_id'])
+            await runtime.input(sid,data['prompt'],data['request_id'],data.get('model','') if data.get('agent','pi')=='codex' else '',data.get('effort','') if data.get('agent','pi')=='codex' else '')
         return {'sid':sid}
     return await once(data,action)
 @app.post('/sessions/{sid}/resume')
@@ -164,7 +170,7 @@ async def resume(sid:str,request:Request):
 async def send(sid:str,request:Request):
     data=await request.json()
     if not data.get('text','').strip():raise ValueError('输入为空')
-    async def action():return {'sid':sid,'turn_id':await runtime.input(sid,data['text'],data['request_id'])}
+    async def action():return {'sid':sid,'turn_id':await runtime.input(sid,data['text'],data['request_id'],data.get('model'),data.get('effort'))}
     return await once(dict(data,sid=sid,action='input'),action)
 @app.post('/sessions/{sid}/stop')
 async def stop(sid:str):await runtime.stop(sid);return {'ok':True}
