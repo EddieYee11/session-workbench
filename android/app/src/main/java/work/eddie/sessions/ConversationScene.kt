@@ -67,15 +67,16 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
  val status=vm.live.optString("status",session.optString("status"))
  var origin by remember{mutableStateOf(Offset.Zero)}
  var lastAnchor by remember{mutableStateOf<CompanionAnchor?>(null)}
- val anchor=stage.anchors[route]?:lastAnchor
+ val routeAnchor=stage.anchors[route]
+ val anchor=routeAnchor?:lastAnchor
  SideEffect{stage.anchors[route]?.let{lastAnchor=it}}
  val voice:()->Unit={context.startActivity(Intent(context,QuickVoiceActivity::class.java))}
  Column(Modifier.fillMaxSize()){
   Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned{origin=it.positionInRoot()}){
    CompositionLocalProvider(LocalCompanionStage provides stage){
     AnimatedContent(route,modifier=Modifier.fillMaxSize(),transitionSpec={
-     (fadeIn(tween(260,90))+slideInVertically(spring(dampingRatio=.86f,stiffness=Spring.StiffnessMediumLow)){if(targetState=="home")-it/30 else it/30}+scaleIn(spring(dampingRatio=.86f,stiffness=Spring.StiffnessMediumLow),.97f)) togetherWith
-      (fadeOut(tween(160))+scaleOut(tween(160),.98f)) using SizeTransform(clip=false)
+     (fadeIn(tween(180))+slideInVertically(tween(220,easing=Motion.TravelEasing)){if(targetState=="home")-it/50 else it/50}) togetherWith
+      fadeOut(tween(100)) using SizeTransform(clip=false)
     },label="连续会话场景"){scene->
      CompositionLocalProvider(LocalSceneKey provides scene){
       Box(Modifier.fillMaxSize().then(if(scene!=route)Modifier.clearAndSetSemantics{} else Modifier)){
@@ -94,9 +95,17 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
    anchor?.let{target->
     val travel=remember{Animatable(target.rect,Rect.VectorConverter)}
     var settledRoute by remember{mutableStateOf(route)}
-    LaunchedEffect(route,target.rect){
-     if(settledRoute!=route){travel.animateTo(target.rect,tween(460,easing=Motion.TravelEasing));settledRoute=route}
-     else travel.snapTo(target.rect)
+    var requestedRoute by remember{mutableStateOf(route)}
+    var travelling by remember{mutableStateOf(false)}
+    LaunchedEffect(route,routeAnchor?.rect){
+     if(requestedRoute!=route){requestedRoute=route;travelling=true}
+     // Keep the existing face in place until the destination has actually laid
+     // out. A fallback anchor must never mark a new route as already settled.
+     val destination=routeAnchor?.rect?:return@LaunchedEffect
+     if(travelling){
+      travel.animateTo(destination,spring(dampingRatio=1f,stiffness=520f))
+      settledRoute=route;travelling=false
+     }else travel.snapTo(destination)
     }
     val bounds=travel.value
     val alpha by animateFloatAsState(if(terminal&&!home)0f else 1f,tween(140),label="伙伴可见性")
@@ -129,9 +138,6 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
      {if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",prompt,"","","danger-full-access")else vm.send()},
      {vm.stop()},voice,
     )
-    AnimatedContent(home,transitionSpec={fadeIn(tween(120)) togetherWith fadeOut(tween(90))},label="输入状态说明") {isHome->
-     Text(if(isHome)"Com! · 想到，就一起做到" else "Com! · ${if(session.optString("agent")=="pi")"Pi"else"Codex"} 与你同在",Modifier.fillMaxWidth().padding(bottom=8.dp),fontSize=Type.Tiny,color=Faint,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
-    }
    }
   }
  }

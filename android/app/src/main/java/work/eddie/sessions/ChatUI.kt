@@ -1,10 +1,8 @@
 package work.eddie.sessions
 
-import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.expandVertically
@@ -26,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
@@ -34,7 +33,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,6 +52,7 @@ import org.json.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 fun relTime(ts:Double):String{
  val age=(System.currentTimeMillis()-ts*1000).toLong()
@@ -93,32 +95,34 @@ fun relTime(ts:Double):String{
 
 @Composable fun Pill(items:List<String>,selected:Int,enabled:List<Boolean> = items.map{true},click:(Int)->Unit){
  val cell=84.dp
+ val haptics=rememberComHaptics()
  val position by animateDpAsState(cell*selected,spring(dampingRatio=.67f,stiffness=430f),label="伙伴选中色块滑动")
  val jelly=remember{Animatable(0f)}
  var previous by remember{mutableIntStateOf(selected)}
  LaunchedEffect(selected){if(previous!=selected){previous=selected;jelly.animateTo(1f,tween(65,easing=FastOutSlowInEasing));jelly.animateTo(0f,spring(dampingRatio=.45f,stiffness=520f))}}
  Box(Modifier.background(Track,RoundedCornerShape(50)).padding(3.dp)){
-  Box(Modifier.offset(x=position).width(cell).height(38.dp).graphicsLayer{scaleX=1f+jelly.value*.12f;scaleY=1f-jelly.value*.08f}.shadow(1.dp,RoundedCornerShape(50),spotColor=Color(0x1A000000)).background(Card,RoundedCornerShape(50)))
+  Box(Modifier.offset(x=position).width(cell).height(48.dp).graphicsLayer{scaleX=1f+jelly.value*.12f;scaleY=1f-jelly.value*.08f}.shadow(1.dp,RoundedCornerShape(50),spotColor=Color(0x1A000000)).background(Card,RoundedCornerShape(50)))
   Row{
    items.forEachIndexed{i,label->
-    val (press,motion)=rememberPress(.95f)
-    Box(Modifier.width(cell).height(38.dp).then(motion).clip(RoundedCornerShape(50)).clickable(interactionSource=press,indication=null,enabled=enabled[i]){click(i)},contentAlignment=Alignment.Center){Text(label,fontSize=14.sp,fontWeight=if(selected==i)FontWeight.SemiBold else FontWeight.Normal,color=if(!enabled[i])Faint else if(selected==i)Ink else Muted)}
+    val (press,motion)=rememberPress(.97f)
+    Box(Modifier.width(cell).height(48.dp).then(motion).clip(RoundedCornerShape(50)).clickable(interactionSource=press,indication=null,enabled=enabled[i]){if(selected!=i){haptics(HapticCue.Selection);click(i)}},contentAlignment=Alignment.Center){Text(label,fontSize=14.sp,fontWeight=if(selected==i)FontWeight.SemiBold else FontWeight.Normal,color=if(!enabled[i])Faint else if(selected==i)Ink else Muted)}
    }
   }
  }
 }
 @Composable fun RoundIcon(icon:androidx.compose.ui.graphics.vector.ImageVector,label:String,click:()->Unit){
- val (press,pressMod)=rememberPress(.86f)
+ val (press,pressMod)=rememberPress(.97f)
  IconButton(onClick=click,modifier=Modifier.size(46.dp).then(pressMod).clip(CircleShape).background(Card).border(1.dp,Line,CircleShape),interactionSource=press){Icon(icon,label,Modifier.size(22.dp),tint=Ink)}
 }
 
 @Composable fun QuickChip(icon:androidx.compose.ui.graphics.vector.ImageVector,label:String,enabled:Boolean=true,click:()->Unit){
- val (press,pressMod)=rememberPress(.9f)
+ val (press,pressMod)=rememberPress(.97f)
  Row(Modifier.then(pressMod).clip(RoundedCornerShape(50)).background(if(enabled)ChipBg else ChipBg.copy(alpha=.45f)).clickable(interactionSource=press,indication=null,enabled=enabled){click()}.padding(horizontal=15.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
   Icon(icon,null,Modifier.size(15.dp),tint=if(enabled)Ink else Faint);Text(label,Modifier.padding(start=7.dp),fontSize=13.sp,color=if(enabled)Ink else Faint)
  }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable fun NewChatHome(vm:WorkbenchModel,agent:String,select:(String)->Unit,menu:()->Unit,advanced:()->Unit,pick:(JSONObject)->Unit){
  val name=if(agent=="pi")"Pi" else "Codex"
  val fresh=vm.connected&&vm.allRowsFresh&&!vm.archived
@@ -129,21 +133,46 @@ fun relTime(ts:Double):String{
  val avatar=rememberCompanionState("home:$agent:${focus?.optString("id")}",status,fresh)
  val title=when{vm.voiceDelivery.isNotBlank()->"这句话，\nPi 正在接住。";fresh&&status=="waiting"->"下一步，\n我们一起决定。";fresh&&status=="running"->"$name 在忙，\n灵感也可以继续。";else->"今天，想一起\n做点什么？"}
  val subtitle=when{!vm.connected->"暂时离线，已有的对话仍在这里";status=="failed"&&fresh->"有一步需要看看，点开下方会话继续";status=="waiting"&&fresh->"有件事，正在等你的回应";else->"把想法交给 $name，让它慢慢成形。"}
+ val density=LocalDensity.current
+ val imeBottom=WindowInsets.ime.getBottom(density)
+ val imeExtent=maxOf(WindowInsets.imeAnimationSource.getBottom(density),WindowInsets.imeAnimationTarget.getBottom(density),imeBottom)
+ val imeProgress=if(imeExtent>0)(imeBottom.toFloat()/imeExtent).coerceIn(0f,1f) else 0f
  WashBackground(Modifier.fillMaxSize()){
  Column(Modifier.fillMaxSize()){
-  Box(Modifier.fillMaxWidth().height(62.dp).padding(horizontal=16.dp)){
+  Box(Modifier.fillMaxWidth().height(56.dp).padding(horizontal=16.dp)){
    Box(Modifier.align(Alignment.CenterStart)){RoundIcon(Icons.Outlined.Menu,"菜单",menu)}
    Text("Com!",Modifier.align(Alignment.Center),fontSize=Type.AppTitle,fontWeight=FontWeight.Bold,letterSpacing=(-.8).sp,color=Ink)
    Box(Modifier.align(Alignment.CenterEnd)){RoundIcon(Icons.Outlined.Tune,"新会话设置",advanced)}
   }
   BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()){
-   val compact=maxHeight<500.dp
-   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=24.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){
-    Spacer(Modifier.height(2.dp))
-    StaggerIn(0){CompanionWelcome(agent,title,subtitle,if(vm.voiceDelivery.isNotBlank())"thinking" else avatar,vm.connected,if(compact)210.dp else 270.dp)}
-    StaggerIn(1){Pill(listOf("Pi","Codex"),if(agent=="pi")0 else 1){select(if(it==0)"pi"else"codex")}}
-    Spacer(Modifier.height(14.dp))
-    if(focus!=null)StaggerIn(2){HeroCard(modifier=Modifier.widthIn(max=450.dp).fillMaxWidth(),onClick={pick(focus)}){
+   // The available height already follows the system IME animation. Use it directly;
+   // a second size animation would trail the keyboard and briefly crop the headline.
+   val restingHeight=maxHeight+with(density){imeBottom.toDp()}
+   val fontScale=density.fontScale
+   val secondaryReveal=if(restingHeight>=440.dp*fontScale.coerceAtLeast(1f))1f-imeProgress else 0f
+   val compression=maxOf(imeProgress,((350f-maxHeight.value/fontScale)/150f).coerceIn(0f,1f))
+   val headingReveal=((maxHeight.value/fontScale-100f)/90f).coerceIn(0f,1f)
+   val headingSize=(32f-10f*compression).sp
+   val headingLineHeight=(41f-12f*compression).sp
+   val headingBudget=((headingLineHeight.value*fontScale*2+12)*headingReveal).dp
+   val secondaryBudget=(((if(focus!=null)84 else 0)+52+42*fontScale)*secondaryReveal).dp
+   val restingSecondary=if(restingHeight>=440.dp*fontScale.coerceAtLeast(1f))((if(focus!=null)84 else 0)+52+42*fontScale).dp else 0.dp
+   val restingHero=(restingHeight-(82*fontScale+12).dp-restingSecondary-78.dp).coerceIn(36.dp,270.dp)
+   // Keep the avatar shrinking throughout keyboard entry even as secondary content
+   // gives space back; otherwise it briefly grows before settling into typing mode.
+   val typingHero=restingHero.coerceAtMost(104.dp)
+   val preferredHero=restingHero+(typingHero-restingHero)*imeProgress
+   val heroSize=(maxHeight-headingBudget-secondaryBudget-78.dp).coerceAtLeast(36.dp).coerceAtMost(preferredHero)
+   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=24.dp,vertical=8.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){
+    CompanionWelcome(
+     agent,title,subtitle,
+     if(vm.voiceDelivery.isNotBlank())"thinking" else avatar,heroSize,
+     headingSize,headingLineHeight,headingReveal,secondaryReveal,
+    )
+    Pill(listOf("Pi","Codex"),if(agent=="pi")0 else 1){select(if(it==0)"pi"else"codex")}
+    Column(Modifier.homeReveal(secondaryReveal),horizontalAlignment=Alignment.CenterHorizontally){
+    Spacer(Modifier.height(12.dp))
+    if(focus!=null)Surface(modifier=Modifier.widthIn(max=450.dp).fillMaxWidth(),onClick={pick(focus)},enabled=secondaryReveal>.99f,shape=RoundedCornerShape(Radii.Xl),color=Card,border=BorderStroke(1.dp,Line),shadowElevation=0.dp){
      Row(Modifier.padding(horizontal=16.dp,vertical=14.dp),verticalAlignment=Alignment.CenterVertically){
       Box(Modifier.size(36.dp).clip(RoundedCornerShape(Radii.M)).background(if(status=="waiting")AmberBg else if(status=="running")EmberSoft else ChipBg),contentAlignment=Alignment.Center){
        if(status=="running")StatusDot(Ember,8.dp)
@@ -153,13 +182,14 @@ fun relTime(ts:Double):String{
        Text(focus.optString("display_title").ifBlank{"上次的对话"},fontSize=14.sp,fontWeight=FontWeight.SemiBold,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis)
        Text(if(fresh)statusLabel(status)+" · "+relTime(focus.optDouble("updated"))else"已保存的对话",Modifier.padding(top=3.dp),fontSize=11.sp,color=Muted)
       }
-      Box(Modifier.size(30.dp).background(EmberSoft,CircleShape),contentAlignment=Alignment.Center){Icon(Icons.Outlined.ChevronRight,null,Modifier.size(17.dp),tint=EmberDeep)}
+      Icon(Icons.Outlined.ChevronRight,null,Modifier.size(20.dp),tint=Muted)
      }
-    }}
-    StaggerIn(3){Row(Modifier.padding(top=7.dp,bottom=10.dp),horizontalArrangement=Arrangement.spacedBy(14.dp)){
-     TextButton(onClick={vm.working=true;menu()}){Icon(Icons.Outlined.Bolt,null,Modifier.size(15.dp));Text("工作中",Modifier.padding(start=5.dp),fontSize=12.sp)}
-     TextButton(onClick={vm.working=false;menu()}){Icon(Icons.Outlined.Forum,null,Modifier.size(15.dp));Text("全部对话",Modifier.padding(start=5.dp),fontSize=12.sp)}
-    }}
+    }
+    Row(Modifier.padding(top=4.dp),horizontalArrangement=Arrangement.spacedBy(14.dp)){
+     TextButton(onClick={vm.working=true;menu()},enabled=secondaryReveal>.99f){Icon(Icons.Outlined.Bolt,null,Modifier.size(15.dp));Text("工作中",Modifier.padding(start=5.dp),fontSize=12.sp)}
+     TextButton(onClick={vm.working=false;menu()},enabled=secondaryReveal>.99f){Icon(Icons.Outlined.Forum,null,Modifier.size(15.dp));Text("全部对话",Modifier.padding(start=5.dp),fontSize=12.sp)}
+    }
+    }
    }
   }
  }
@@ -176,16 +206,29 @@ fun relTime(ts:Double):String{
  return visual
 }
 
-@Composable private fun CompanionWelcome(agent:String,heading:String,message:String,avatar:String,connected:Boolean,heroSize:Dp){
+@Composable private fun CompanionWelcome(
+ agent:String,heading:String,message:String,avatar:String,heroSize:Dp,
+ headingSize:TextUnit,headingLineHeight:TextUnit,headingReveal:Float,messageReveal:Float,
+){
  Column(horizontalAlignment=Alignment.CenterHorizontally){
   Box(Modifier.size(heroSize),contentAlignment=Alignment.Center){
    Box(Modifier.size(heroSize*.8f).background(Brush.radialGradient(listOf((if(agent=="pi")CompanionGlow else Color(0xFFEAF0FF)).copy(alpha=.5f),Color.Transparent)),CircleShape))
    CompanionLanding(agent,avatar,Modifier.fillMaxSize())
   }
-  Text(heading,fontSize=if(heroSize<240.dp)30.sp else 36.sp,lineHeight=if(heroSize<240.dp)39.sp else 46.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-1).sp,color=Ink,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
-  Text(message,Modifier.widthIn(max=360.dp).padding(top=8.dp,bottom=12.dp),fontSize=13.sp,lineHeight=21.sp,color=Muted,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
+  Text(heading,Modifier.homeReveal(headingReveal).padding(bottom=12.dp),fontSize=headingSize,lineHeight=headingLineHeight,fontWeight=FontWeight.SemiBold,letterSpacing=(-.5).sp,color=Ink,textAlign=androidx.compose.ui.text.style.TextAlign.Center,maxLines=2,overflow=TextOverflow.Ellipsis)
+  Text(message,Modifier.homeReveal(messageReveal).widthIn(max=360.dp).padding(bottom=12.dp),fontSize=13.sp,lineHeight=21.sp,color=Muted,textAlign=androidx.compose.ui.text.style.TextAlign.Center,maxLines=2,overflow=TextOverflow.Ellipsis)
  }
 }
+
+/** Collapse in lockstep with system insets, without a competing animation clock. */
+private fun Modifier.homeReveal(fraction:Float):Modifier=this
+ .then(if(fraction<.01f)Modifier.clearAndSetSemantics{} else Modifier)
+ .clipToBounds()
+ .layout{measurable,constraints->
+  val placeable=measurable.measure(constraints.copy(minHeight=0))
+  layout(placeable.width,(placeable.height*fraction).roundToInt()){placeable.placeRelative(0,0)}
+ }
+ .graphicsLayer{alpha=fraction}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable fun HistorySidebar(vm:WorkbenchModel,pick:(JSONObject)->Unit,new:()->Unit,settings:()->Unit){
@@ -221,10 +264,10 @@ fun relTime(ts:Double):String{
   LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(bottom=16.dp)){
    groups.forEach{(label,list)->
     item(key="g:$label"){SectionHeader(label,Modifier.padding(start=10.dp,top=16.dp,bottom=6.dp))}
-    itemsIndexed(list,key={_,it->it.getString("id")}){i,s->
+    items(list,key={it.getString("id")}){s->
      val selBg by animateColorAsState(if(vm.selected==s.getString("id"))AccentSoft else Color.Transparent,Motion.Tint,label="行选中")
      val (rowPress,rowMotion)=rememberPress(.98f)
-     StaggerIn(i){Column(Modifier.fillMaxWidth().then(rowMotion).clip(RoundedCornerShape(Radii.M)).background(selBg).combinedClickable(interactionSource=rowPress,indication=null,onClick={pick(s)},onLongClick={menuItem=s}).padding(horizontal=12.dp,vertical=12.dp)){
+     Column(Modifier.fillMaxWidth().then(rowMotion).clip(RoundedCornerShape(Radii.M)).background(selBg).combinedClickable(interactionSource=rowPress,indication=null,onClick={pick(s)},onLongClick={menuItem=s}).padding(horizontal=12.dp,vertical=12.dp)){
       Row(verticalAlignment=Alignment.CenterVertically){
        Text(s.optString("display_title").ifBlank{"新聊天"},fontSize=15.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis,modifier=Modifier.weight(1f))
        Text(relTime(s.optDouble("updated")),Modifier.padding(start=8.dp),fontSize=11.sp,color=Faint)
@@ -234,7 +277,7 @@ fun relTime(ts:Double):String{
       if(vm.q.isNotBlank()&&s.optString("snippet").isNotBlank()){Text(highlight(s.optString("snippet"),vm.q),Modifier.padding(top=7.dp),fontSize=12.sp,maxLines=3,overflow=TextOverflow.Ellipsis);Text("${s.optString("agent")} · 命中 ${s.optInt("hit_count")} 处",Modifier.padding(top=6.dp),fontSize=10.sp,color=Faint)}
       else if(s.optString("status")=="waiting")Row(Modifier.padding(top=6.dp),verticalAlignment=Alignment.CenterVertically){StatusDot(AmberText,6.dp);Text("需要你回应",Modifier.padding(start=7.dp),fontSize=11.sp,color=AmberText)}
      }
-    }}
+    }
    }
    if(rows.isEmpty())item{
     if(vm.busy&&vm.q.isBlank())Column(Modifier.padding(horizontal=4.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){repeat(3){ShimmerCard(Modifier.fillMaxWidth())}}
@@ -256,16 +299,15 @@ fun relTime(ts:Double):String{
 @Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null){
  var focused by remember{mutableStateOf(false)}
  val line by animateColorAsState(if(focused)CompanionCoral.copy(alpha=.35f) else Line,Motion.Tint,label="输入框描边")
- val glow by animateDpAsState(if(focused)10.dp else Elev.Card,Motion.Glide,label="输入框光晕")
- val view=LocalView.current
+ val haptics=rememberComHaptics()
  val canSend=enabled&&text.isNotBlank()
- Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp).animateContentSize(Motion.Resize),shape=RoundedCornerShape(Radii.Sheet),color=Card,border=BorderStroke(1.dp,line),shadowElevation=glow){
+ Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=RoundedCornerShape(Radii.Sheet),color=Card,border=BorderStroke(1.dp,line),shadowElevation=0.dp){
   Row(Modifier.padding(horizontal=6.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
    IconButton(onClick=more,modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,"更多选项",Modifier.size(24.dp),tint=Ink)}
    BasicTextField(text,change,Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).padding(vertical=10.dp,horizontal=5.dp).onFocusChanged{focused=it.isFocused},textStyle=TextStyle(fontSize=16.sp,color=Ink,lineHeight=24.sp),cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,fontSize=16.sp,color=Faint,maxLines=1);inner()}})
-   val (press,pressMod)=rememberPress(.88f)
-   if(canSend)IconButton(onClick={view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}
-   else if(running)IconButton(onClick=stop,enabled=enabled,modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.Stop,"停止当前执行",tint=Color.White,modifier=Modifier.size(20.dp))}
+   val (press,pressMod)=rememberPress(.97f)
+   if(canSend)IconButton(onClick={haptics(HapticCue.Commit);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}
+   else if(running)IconButton(onClick={haptics(HapticCue.RecordingStop);stop()},enabled=enabled,modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.Stop,"停止当前执行",tint=Color.White,modifier=Modifier.size(20.dp))}
    else if(voice!=null)IconButton(onClick=voice,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.Mic,"快速语音 · Pi",Modifier.size(23.dp),tint=Ink)}
   }
  }
@@ -369,7 +411,16 @@ fun relTime(ts:Double):String{
   Column(Modifier.fillMaxWidth(),horizontalAlignment=if(role=="user")Alignment.End else Alignment.Start){
    Surface(Modifier.widthIn(max=680.dp).fillMaxWidth(if(role=="user").88f else .96f),color=if(role=="user")UserBubble else if(agent=="codex")Color(0xFFEAF0FD)else Color(0xFFE9F2EF),shape=RoundedCornerShape(Radii.Xxl),shadowElevation=1.dp){
     if(q.isNotBlank())SelectionContainer{Text(highlight(body,q),Modifier.padding(horizontal=16.dp,vertical=12.dp),fontSize=font.sp,lineHeight=(font+9).sp,color=Ink)}
-    else AndroidView(factory={c->MarkdownTextView(c).apply{setTextColor(android.graphics.Color.rgb(13,13,13));setTextIsSelectable(true);tag=Markwon.builder(c).usePlugin(TablePlugin.create(c)).usePlugin(StrikethroughPlugin.create()).usePlugin(LinkifyPlugin.create()).build()}},update={v->v.textSize=font;val pad=(14*v.resources.displayMetrics.density).toInt();v.setPadding(pad,pad,pad,pad);v.setLineSpacing(5*v.resources.displayMetrics.density,1f);(v.tag as Markwon).setMarkdown(v,body)})
+    else AndroidView(factory={c->MarkdownTextView(c).apply{
+     setTextColor(android.graphics.Color.rgb(13,13,13));setTextIsSelectable(true)
+     val pad=(14*resources.displayMetrics.density).toInt();setPadding(pad,pad,pad,pad)
+     setLineSpacing(5*resources.displayMetrics.density,1f)
+     tag=MessageMarkdownState(Markwon.builder(c).usePlugin(TablePlugin.create(c)).usePlugin(StrikethroughPlugin.create()).usePlugin(LinkifyPlugin.create()).build())
+    }},update={v->
+     val rendered=v.tag as MessageMarkdownState
+     if(rendered.font!=font){v.textSize=font;rendered.font=font}
+     if(rendered.text!=body){rendered.markwon.setMarkdown(v,body);rendered.text=body}
+    })
    }
    if(role=="assistant")Row(Modifier.padding(top=4.dp)){
     IconButton(onClick={(context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(ClipData.newPlainText("回复",body))},modifier=Modifier.size(32.dp)){Icon(Icons.Outlined.ContentCopy,"复制回复",Modifier.size(15.dp),tint=Faint)}
@@ -378,3 +429,5 @@ fun relTime(ts:Double):String{
   }
  }
 }
+
+private class MessageMarkdownState(val markwon:Markwon,var text:String?=null,var font:Float?=null)

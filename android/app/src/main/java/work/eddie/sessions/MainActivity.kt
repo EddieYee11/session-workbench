@@ -66,6 +66,7 @@ fun dayLabel(ts:Double):String {val date=Date((ts*1000).toLong());val fmt=Simple
 fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(text);if(q.isNotBlank())q.trim().split(Regex("\\s+")).forEach{term->var start=0;while(start<text.length){val i=text.indexOf(term,start,true);if(i<0)break;addStyle(SpanStyle(background=Color(0xFFFFE6A5),color=Ink),i,i+term.length);start=i+term.length}}}
 
 @Composable fun Approval(vm:WorkbenchModel,a:JSONObject){
+ val haptics=rememberComHaptics()
  val p=a.optJSONObject("params")?:JSONObject();val questions=p.array("questions");val answers=remember(a.optString("id")){mutableStateMapOf<String,String>()}
  SpringIn(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp)){
   Surface(shape=RoundedCornerShape(Radii.Xl),color=Card,border=BorderStroke(1.dp,AmberLine),shadowElevation=Elev.Raised){
@@ -80,12 +81,12 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
     Surface(Modifier.padding(top=12.dp).fillMaxWidth(),shape=RoundedCornerShape(Radii.M),color=ToolSurface,border=BorderStroke(1.dp,Line)){Text(p.optString("command",p.optString("reason","请确认以下操作")),Modifier.padding(12.dp),fontSize=13.sp,lineHeight=19.sp,color=Ink,maxLines=6)}
     if(questions.isNotEmpty()){
      questions.forEach{q->Text(q.optString("question"),fontSize=14.sp);q.array("options").forEach{o->FilterChip(answers[q.optString("id")]==o.optString("label"),{answers[q.optString("id")]=o.optString("label")},label={Text(o.optString("label"))})};OutlinedTextField(answers[q.optString("id")]?:"",{answers[q.optString("id")]=it},label={Text("回答")},modifier=Modifier.fillMaxWidth().padding(top=6.dp))}
-     Button(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("answers",JSONObject(answers.toMap())))}}){Text("提交回答")}
+     Button(onClick={haptics(HapticCue.Commit);vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("answers",JSONObject(answers.toMap())))}}){Text("提交回答")}
     }else Row(Modifier.padding(top=12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
-     val (okPress,okMotion)=rememberPress(.95f)
-     Button(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision","accept"))}},modifier=Modifier.weight(1f).height(46.dp).then(okMotion),shape=Radii.Pill,interactionSource=okPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text("允许本次",fontWeight=FontWeight.SemiBold)}
-     val (noPress,noMotion)=rememberPress(.95f)
-     OutlinedButton(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision","decline"))}},modifier=Modifier.weight(1f).height(46.dp).then(noMotion),shape=Radii.Pill,interactionSource=noPress){Text("拒绝",color=Muted)}
+     val (okPress,okMotion)=rememberPress()
+     Button(onClick={haptics(HapticCue.Commit);vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision","accept"))}},modifier=Modifier.weight(1f).height(46.dp).then(okMotion),shape=Radii.Pill,interactionSource=okPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text("允许本次",fontWeight=FontWeight.SemiBold)}
+     val (noPress,noMotion)=rememberPress()
+     OutlinedButton(onClick={haptics(HapticCue.Reject);vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision","decline"))}},modifier=Modifier.weight(1f).height(46.dp).then(noMotion),shape=Radii.Pill,interactionSource=noPress){Text("拒绝",color=Muted)}
     }
    }
   }
