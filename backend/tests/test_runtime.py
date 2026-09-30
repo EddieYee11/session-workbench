@@ -20,7 +20,7 @@ def test_model_catalog_uses_host_catalogs_and_codex_supported_efforts(tmp_path):
   return 'provider model context max-out thinking images\nopenai-codex gpt-6-astra 272K 128K yes yes\nlocal plain 32K 8K no no'
  async def rpc(method,params):
   assert method=='model/list'
-  if 'cursor' not in params:return {'data':[{'model':'gpt-6-astra','displayName':'Astra','hidden':False,'supportedReasoningEfforts':[{'effort':'low'},{'effort':'high'}],'defaultReasoningEffort':'low'},{'model':'hidden','hidden':True}], 'nextCursor':'page-2'}
+  if 'cursor' not in params:return {'data':[{'model':'gpt-6-astra','displayName':'Astra','hidden':False,'supportedReasoningEfforts':[{'reasoningEffort':'low'},{'reasoningEffort':'high'}],'defaultReasoningEffort':'low'},{'model':'hidden','hidden':True}], 'nextCursor':'page-2'}
   assert params['cursor']=='page-2'
   return {'data':[{'model':'gpt-6-sol','displayName':'Sol','hidden':False,'supportedReasoningEfforts':[{'effort':'medium'}],'defaultReasoningEffort':'medium'}], 'nextCursor':None}
  r.cmd=command;r.call=rpc

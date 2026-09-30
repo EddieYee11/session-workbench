@@ -71,7 +71,7 @@ class Runtime:
                     model=item.get('model','')
                     if not model or model in seen:continue
                     seen.add(model)
-                    levels=[x.get('effort') for x in item.get('supportedReasoningEfforts',[]) if isinstance(x,dict) and x.get('effort')]
+                    levels=[x.get('reasoningEffort') or x.get('effort') for x in item.get('supportedReasoningEfforts',[]) if isinstance(x,dict) and (x.get('reasoningEffort') or x.get('effort'))]
                     rows.append({'id':model,'label':item.get('displayName') or model,'provider':'OpenAI','efforts':levels,'default_effort':item.get('defaultReasoningEffort') or ''})
                 following=page.get('nextCursor')
                 if not following:break
