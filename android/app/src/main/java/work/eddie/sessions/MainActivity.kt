@@ -15,6 +15,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -59,20 +60,36 @@ class MainActivity:ComponentActivity(){
  }
 }
 
-@Composable fun AgentBadge(agent:String){Surface(shape=RoundedCornerShape(Radii.S),color=if(agent=="pi")PiSoft else AccentSoft){Text(if(agent=="pi")"Pi" else "Codex",Modifier.padding(horizontal=8.dp,vertical=3.dp),fontSize=11.sp,fontWeight=FontWeight.Bold,color=if(agent=="pi")PiGreen else AccentInk,letterSpacing=.3.sp)}}
+@Composable fun AgentBadge(agent:String){Surface(shape=Radii.Pill,color=if(agent=="pi")PiSoft else AccentSoft,shadowElevation=1.dp){Row(Modifier.padding(horizontal=10.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(6.dp).background(if(agent=="pi")PiGreen else Ember,CircleShape));Text(if(agent=="pi")"Pi" else "Codex",Modifier.padding(start=6.dp),fontSize=11.sp,fontWeight=FontWeight.Bold,color=if(agent=="pi")PiGreen else EmberDeep,letterSpacing=.4.sp)}}}
 @Composable fun Choice(label:String,options:List<String>,select:(String)->Unit){var show by remember{mutableStateOf(false)};Box{TextButton(onClick={show=true},contentPadding=PaddingValues(horizontal=8.dp)){Text(label,fontSize=12.sp,maxLines=1);Icon(Icons.Outlined.ExpandMore,null,Modifier.size(15.dp))};DropdownMenu(show,{show=false}){options.forEach{o->DropdownMenuItem(text={Text(o,fontSize=13.sp)},onClick={select(o);show=false})}}}}
 fun dayLabel(ts:Double):String {val date=Date((ts*1000).toLong());val fmt=SimpleDateFormat("yyyy-MM-dd",Locale.CHINA);return when(fmt.format(date)){fmt.format(Date())->"今天";fmt.format(Date(System.currentTimeMillis()-86400000))->"昨天";else->SimpleDateFormat("M月d日",Locale.CHINA).format(date)}}
 fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(text);if(q.isNotBlank())q.trim().split(Regex("\\s+")).forEach{term->var start=0;while(start<text.length){val i=text.indexOf(term,start,true);if(i<0)break;addStyle(SpanStyle(background=Color(0xFFFFE6A5),color=Ink),i,i+term.length);start=i+term.length}}}
 
 @Composable fun Approval(vm:WorkbenchModel,a:JSONObject){
  val p=a.optJSONObject("params")?:JSONObject();val questions=p.array("questions");val answers=remember(a.optString("id")){mutableStateMapOf<String,String>()}
- Surface(color=AmberBg,modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=4.dp),shape=RoundedCornerShape(Radii.Xl),border=BorderStroke(1.dp,AmberLine),shadowElevation=Elev.Card){
- Column(Modifier.padding(Spacing.Xl)){Row(verticalAlignment=Alignment.CenterVertically){Icon(Icons.Outlined.NotificationImportant,null,Modifier.size(17.dp),tint=AmberText);Text("需要你回应",Modifier.padding(start=7.dp),fontWeight=FontWeight.SemiBold,fontSize=14.sp,color=AmberText)};Text(p.optString("command",p.optString("reason","请确认以下操作")),Modifier.padding(top=8.dp),fontSize=13.sp,maxLines=5)
- if(questions.isNotEmpty()){
-  questions.forEach{q->Text(q.optString("question"),fontSize=14.sp);q.array("options").forEach{o->FilterChip(answers[q.optString("id")]==o.optString("label"),{answers[q.optString("id")]=o.optString("label")},label={Text(o.optString("label"))})};OutlinedTextField(answers[q.optString("id")]?:"",{answers[q.optString("id")]=it},label={Text("回答")})}
-  Button(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("answers",JSONObject(answers.toMap())))}}){Text("提交回答")}
- }else Row{listOf("accept" to "允许本次","decline" to "拒绝").forEach{(key,label)->TextButton(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision",key))}}){Text(label)}}}
- }}
+ SpringIn(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp)){
+  Surface(shape=RoundedCornerShape(Radii.Xl),color=Card,border=BorderStroke(1.dp,AmberLine),shadowElevation=Elev.Raised){
+   Column(Modifier.padding(Spacing.Xl)){
+    Row(verticalAlignment=Alignment.CenterVertically){
+     Box(Modifier.size(36.dp).background(AmberBg,CircleShape),contentAlignment=Alignment.Center){Icon(Icons.Outlined.NotificationImportant,null,Modifier.size(18.dp),tint=AmberText)}
+     Column(Modifier.padding(start=12.dp)){
+      Text("需要你回应",fontWeight=FontWeight.SemiBold,fontSize=15.sp,color=Ink)
+      Text("来自 Mac mini 的执行请求",fontSize=11.sp,color=Muted)
+     }
+    }
+    Surface(Modifier.padding(top=12.dp).fillMaxWidth(),shape=RoundedCornerShape(Radii.M),color=ToolSurface,border=BorderStroke(1.dp,Line)){Text(p.optString("command",p.optString("reason","请确认以下操作")),Modifier.padding(12.dp),fontSize=13.sp,lineHeight=19.sp,color=Ink,maxLines=6)}
+    if(questions.isNotEmpty()){
+     questions.forEach{q->Text(q.optString("question"),fontSize=14.sp);q.array("options").forEach{o->FilterChip(answers[q.optString("id")]==o.optString("label"),{answers[q.optString("id")]=o.optString("label")},label={Text(o.optString("label"))})};OutlinedTextField(answers[q.optString("id")]?:"",{answers[q.optString("id")]=it},label={Text("回答")},modifier=Modifier.fillMaxWidth().padding(top=6.dp))}
+     Button(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("answers",JSONObject(answers.toMap())))}}){Text("提交回答")}
+    }else Row(Modifier.padding(top=12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
+     val (okPress,okMotion)=rememberPress(.95f)
+     Button(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision","accept"))}},modifier=Modifier.weight(1f).height(46.dp).then(okMotion),shape=Radii.Pill,interactionSource=okPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text("允许本次",fontWeight=FontWeight.SemiBold)}
+     val (noPress,noMotion)=rememberPress(.95f)
+     OutlinedButton(onClick={vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision","decline"))}},modifier=Modifier.weight(1f).height(46.dp).then(noMotion),shape=Radii.Pill,interactionSource=noPress){Text("拒绝",color=Muted)}
+    }
+   }
+  }
+ }
 }
 
 @Composable fun SessionMenu(vm:WorkbenchModel,s:JSONObject,dismiss:()->Unit){
@@ -93,14 +110,15 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  var agent by remember{mutableStateOf(quick.ifBlank{vm.store.prefs.getString("lastAgent","pi")?:"pi"})};var cwd by remember{mutableStateOf(vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"")}
  var prompt by rememberSaveable{mutableStateOf("")};var model by remember{mutableStateOf("")};var effort by remember{mutableStateOf("")};var advanced by remember{mutableStateOf(false)};var sandbox by remember{mutableStateOf("danger-full-access")};var browse by remember{mutableStateOf(false)}
  ModalBottomSheet(onDismissRequest=dismiss,containerColor=Paper){Column(Modifier.padding(horizontal=24.dp).verticalScroll(rememberScrollState()).imePadding()){
- Text("开启新的工作",fontSize=Type.SheetTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.3).sp);Text("运行在 Mac mini · 默认最高权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=13.sp,color=Muted)
- Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){listOf("pi","codex").forEach{a->FilterChip(agent==a,{agent=a},label={Text(if(a=="pi")"Pi" else "Codex",fontSize=17.sp)},modifier=Modifier.height(48.dp))}}
+ StaggerIn(0){Column{Text("开启新的工作",fontSize=Type.SheetTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.3).sp);Text("运行在 Mac mini · 默认最高权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=13.sp,color=Muted)}}
+ val (createPress,createMotion)=rememberPress(.97f)
+ StaggerIn(1){Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){listOf("pi","codex").forEach{a->FilterChip(agent==a,{agent=a},label={Text(if(a=="pi")"Pi" else "Codex",fontSize=17.sp)},modifier=Modifier.height(48.dp))}}}
  Text("工作目录",Modifier.padding(top=16.dp),fontSize=12.sp,color=Muted)
  TextButton(onClick={browse=true}){Icon(Icons.Outlined.FolderOpen,null);Text(cwd,Modifier.padding(start=8.dp),fontSize=13.sp,maxLines=2)}
  OutlinedTextField(prompt,{prompt=it},Modifier.fillMaxWidth().heightIn(min=120.dp),placeholder={Text("想做什么？也可以先打开空会话。")},shape=RoundedCornerShape(Radii.Xl))
  TextButton(onClick={advanced=!advanced}){Text(if(advanced)"收起高级设置" else "高级设置")}
  if(advanced){OutlinedTextField(model,{model=it},label={Text("模型（留空沿用 Mac 配置）")});if(agent=="pi")Choice(effort.ifBlank{"默认推理强度"},listOf("默认推理强度","off","minimal","low","medium","high","xhigh")){effort=if(it=="默认推理强度")"" else it};if(agent=="codex")Choice(when(sandbox){"read-only"->"只读";"workspace-write"->"工作目录内写入";else->"最高权限（YOLO）"},listOf("最高权限（YOLO）","工作目录内写入","只读")){sandbox=when(it){"只读"->"read-only";"工作目录内写入"->"workspace-write";else->"danger-full-access"}}}
- Button(onClick={vm.create(agent,cwd,prompt,model,effort,sandbox);dismiss()},enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(54.dp),shape=Radii.Pill){Text(if(prompt.isBlank())"打开空会话" else "开始会话",fontSize=15.sp,fontWeight=FontWeight.Medium)}
+ StaggerIn(2){Button(onClick={vm.create(agent,cwd,prompt,model,effort,sandbox);dismiss()},enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(54.dp).then(createMotion),shape=Radii.Pill,interactionSource=createPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text(if(prompt.isBlank())"打开空会话" else "开始会话",fontSize=15.sp,fontWeight=FontWeight.SemiBold)}}
  }}
  if(browse)DirectoryPicker(vm,cwd,{cwd=it;browse=false}){browse=false}
 }

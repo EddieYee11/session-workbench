@@ -108,7 +108,7 @@ class QuickVoiceActivity:ComponentActivity(){
     Surface(Modifier.widthIn(max=panelWidth).fillMaxWidth().then(if(expanding&&measuredHeight>0.dp)Modifier.height(panelHeight)else Modifier.heightIn(max=available)).onSizeChanged{if(!expanding)measuredHeight=with(density){it.height.toDp()}}.clickable(remember{MutableInteractionSource()},indication=null){},shape=RoundedCornerShape(Radii.Xxxl*(1f-expansion)),color=Paper,shadowElevation=Elev.Sheet*(1f-expansion),border=BorderStroke(1.dp,Color.White.copy(alpha=.9f))){
      Column(Modifier.padding(horizontal=22.dp).padding(top=8.dp,bottom=18.dp),horizontalAlignment=Alignment.CenterHorizontally){
       Column(Modifier.fillMaxWidth().pointerInput(dragThreshold){var pull=0f;detectVerticalDragGestures(onDragStart={pull=0f},onDragEnd={if(pull < -dragThreshold)expandCurrent()},onVerticalDrag={change,amount->change.consume();pull+=amount})},horizontalAlignment=Alignment.CenterHorizontally){
-       Box(Modifier.padding(top=5.dp,bottom=6.dp).width(32.dp).height(4.dp).background(Line,CircleShape))
+       Box(Modifier.padding(top=5.dp,bottom=6.dp).width(40.dp).height(5.dp).background(Brush.horizontalGradient(listOf(Ember.copy(alpha=.7f),Gold.copy(alpha=.7f))),CircleShape))
        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
         Surface(color=PiSoft,shape=CircleShape){Row(Modifier.padding(horizontal=11.dp,vertical=7.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)){Box(Modifier.size(5.dp).background(PiGreen,CircleShape));Text(if(vm.sessionId.isBlank())"Pi · 随时聊" else "Pi · 对话中",fontWeight=FontWeight.SemiBold,color=PiGreen,fontSize=12.sp)}}
         Spacer(Modifier.weight(1f));Text("Com!",color=Ink,fontSize=19.sp,fontWeight=FontWeight.Bold,letterSpacing=(-.6).sp)
@@ -118,6 +118,7 @@ class QuickVoiceActivity:ComponentActivity(){
       }
       Column(Modifier.weight(1f,fill=false).verticalScroll(contentScroll),horizontalAlignment=Alignment.CenterHorizontally){
        Box(Modifier.fillMaxWidth().height(heroHeight),contentAlignment=Alignment.Center){
+        if(recording)PulseRing(Ember,Modifier.size(avatarSize*1.15f))
         Box(Modifier.size(avatarSize*.92f).background(Brush.radialGradient(listOf(CompanionGlow.copy(alpha=.85f),Color.Transparent)),CircleShape))
         CompanionAvatar("pi",botState,Modifier.size(avatarSize),interactive=false)
        }
@@ -143,7 +144,8 @@ class QuickVoiceActivity:ComponentActivity(){
        if(vm.hasRecording&&!busy&&!recording)TextButton(onClick={record()}){Text("重新说一句",color=Muted)}
       }
       val (press,motion)=rememberPress(.96f)
-      Button(onClick={when{recording->vm.finishRecording();vm.hasRecording->vm.transcribe();else->record()}},enabled=!busy&&!expanding,modifier=Modifier.fillMaxWidth().height(54.dp).padding(top=2.dp).then(motion),shape=Radii.Pill,interactionSource=press,colors=ButtonDefaults.buttonColors(containerColor=Ink)){
+      val btnColor by animateColorAsState(if(recording)Ember else Ink,Motion.Tint,label="语音主按钮")
+      Button(onClick={when{recording->vm.finishRecording();vm.hasRecording->vm.transcribe();else->record()}},enabled=!busy&&!expanding,modifier=Modifier.fillMaxWidth().height(54.dp).padding(top=2.dp).then(motion),shape=Radii.Pill,interactionSource=press,colors=ButtonDefaults.buttonColors(containerColor=btnColor)){
        Icon(if(recording||vm.hasRecording)Icons.Outlined.ArrowUpward else Icons.Outlined.Mic,null,Modifier.size(21.dp));Spacer(Modifier.width(8.dp));Text(when{recording->"说完了，立即发送";waiting->"正在等 Pi 回复";busy->"正在发送";vm.hasRecording->"重试发送这段录音";replied||vm.sessionId.isNotBlank()->"再说一句";else->"开始说话"},fontWeight=FontWeight.SemiBold)
       }
       Text("上滑展开 · ${vm.cwd.shortPath()}",Modifier.padding(top=12.dp),color=Faint,fontSize=11.sp)

@@ -74,8 +74,8 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
   Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned{origin=it.positionInRoot()}){
    CompositionLocalProvider(LocalCompanionStage provides stage){
     AnimatedContent(route,modifier=Modifier.fillMaxSize(),transitionSpec={
-     (fadeIn(tween(240,90))+slideInVertically(tween(380,easing=Motion.TravelEasing)){if(targetState=="home")-it/35 else it/35}) togetherWith
-      fadeOut(tween(150)) using SizeTransform(clip=false)
+     (fadeIn(tween(260,90))+slideInVertically(spring(dampingRatio=.86f,stiffness=Spring.StiffnessMediumLow)){if(targetState=="home")-it/30 else it/30}+scaleIn(spring(dampingRatio=.86f,stiffness=Spring.StiffnessMediumLow),.97f)) togetherWith
+      (fadeOut(tween(160))+scaleOut(tween(160),.98f)) using SizeTransform(clip=false)
     },label="连续会话场景"){scene->
      CompositionLocalProvider(LocalSceneKey provides scene){
       Box(Modifier.fillMaxSize().then(if(scene!=route)Modifier.clearAndSetSemantics{} else Modifier)){
