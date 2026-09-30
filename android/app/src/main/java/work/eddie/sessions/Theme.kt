@@ -1,5 +1,4 @@
 package work.eddie.sessions
-
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.animation.fadeIn
@@ -23,73 +22,65 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
-
-// ChatGPT 浅色系：纯白底 + 墨黑主操作 + 灰阶层次 + 发丝分隔线
-val Ink=Color(0xFF0D0D0D);val Paper=Color(0xFFFFFFFF);val SidebarBg=Color(0xFFF7F7F8)
-val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF6E6E6E);val Faint=Color(0xFF9B9B9B)
-val Line=Color(0xFFECECEC);val Track=Color(0xFFF0F0F0);val ChipBg=Color(0xFFF4F4F4)
-val UserBubble=Color(0xFFF4F4F4);val ToolSurface=Color(0xFFF7F7F8)
-val Accent=Color(0xFF0D0D0D);val AccentSoft=Color(0xFFECECEC);val AccentInk=Color(0xFF0D0D0D)
+// ChatGPT 的留白与灰阶，叠加克制的 Cue 蓝色用于选中态和主要操作。
+val Ink=Color(0xFF17191F);val Paper=Color(0xFFFFFFFF);val SidebarBg=Color(0xFFF8F9FB)
+val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF646B75);val Faint=Color(0xFF8B929E)
+val Line=Color(0xFFE8EBF0);val Track=Color(0xFFF1F3F6);val ChipBg=Color(0xFFF5F7FA)
+val UserBubble=Color(0xFFF1F4F8);val ToolSurface=Color(0xFFF7F8FA)
+val Accent=Color(0xFF2563EB);val AccentSoft=Color(0xFFECF3FF);val AccentInk=Color(0xFF174EA6)
 val PiGreen=Color(0xFF396C55);val PiSoft=Color(0xFFE7F2EC)
 val AmberBg=Color(0xFFFFF7E8);val AmberLine=Color(0xFFF0E0B0);val AmberText=Color(0xFF8A6D1D)
 val ApprovalBg=AmberBg
-
 val Palette=lightColorScheme(
- primary=Ink,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=Ink,
- secondary=Ink,secondaryContainer=Color(0xFFEFEFEF),onSecondaryContainer=Ink,
- background=Paper,onBackground=Ink,surface=Card,onSurface=Ink,
- surfaceVariant=Color(0xFFF4F4F4),onSurfaceVariant=Muted,outline=Line)
-
+primary=Accent,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=AccentInk,
+secondary=Accent,secondaryContainer=AccentSoft,onSecondaryContainer=AccentInk,
+background=Paper,onBackground=Ink,surface=Card,onSurface=Ink,
+surfaceVariant=Color(0xFFF4F6F9),onSurfaceVariant=Muted,outline=Line)
 // 动效规范：弹簧为主，全 App 节奏一致
 object Motion{
- val Emphasized=spring<Float>(dampingRatio=.8f,stiffness=Spring.StiffnessMediumLow)
- val Gentle=spring<Float>(dampingRatio=.88f,stiffness=Spring.StiffnessMedium)
- val Settle=spring<Float>(dampingRatio=1f,stiffness=Spring.StiffnessMedium)
- val Bouncy=spring<Float>(dampingRatio=Spring.DampingRatioMediumBouncy,stiffness=Spring.StiffnessHigh)
- val Fade=tween<Float>(180,easing=FastOutSlowInEasing)
- val Slide=spring<IntOffset>(dampingRatio=.9f,stiffness=Spring.StiffnessMedium)
- val Tint=tween<Color>(200,easing=FastOutSlowInEasing)
- val Glide=spring<Dp>(dampingRatio=.88f,stiffness=Spring.StiffnessMedium)
- val Resize=spring<IntSize>(dampingRatio=.9f,stiffness=Spring.StiffnessMedium)
+val Emphasized=spring<Float>(dampingRatio=.8f,stiffness=Spring.StiffnessMediumLow)
+val Gentle=spring<Float>(dampingRatio=.88f,stiffness=Spring.StiffnessMedium)
+val Settle=spring<Float>(dampingRatio=1f,stiffness=Spring.StiffnessMedium)
+val Bouncy=spring<Float>(dampingRatio=Spring.DampingRatioMediumBouncy,stiffness=Spring.StiffnessHigh)
+val Fade=tween<Float>(180,easing=FastOutSlowInEasing)
+val Slide=spring<IntOffset>(dampingRatio=.9f,stiffness=Spring.StiffnessMedium)
+val Tint=tween<Color>(200,easing=FastOutSlowInEasing)
+val Glide=spring<Dp>(dampingRatio=.88f,stiffness=Spring.StiffnessMedium)
+val Resize=spring<IntSize>(dampingRatio=.9f,stiffness=Spring.StiffnessMedium)
 }
-
 // 按压反馈：缩小回弹，搭配 interactionSource 挂到真实按钮上
 @Composable fun rememberPress(scaleTo:Float=.92f):Pair<MutableInteractionSource,Modifier>{
- val src=remember{MutableInteractionSource()}
- val pressed by src.collectIsPressedAsState()
- val scale by animateFloatAsState(if(pressed)scaleTo else 1f,Motion.Bouncy,label="pressScale")
- return src to Modifier.scale(scale)
+val src=remember{MutableInteractionSource()}
+val pressed by src.collectIsPressedAsState()
+val scale by animateFloatAsState(if(pressed)scaleTo else 1f,Motion.Bouncy,label="pressScale")
+return src to Modifier.scale(scale)
 }
-
 // 列表新条目进入：淡入 + 轻微上浮；active=false 时直通（避免历史消息滚动回屏时重复播放）
 @Composable fun RowAppear(modifier:Modifier=Modifier,active:Boolean=true,content:@Composable ()->Unit){
- if(!active){Box(modifier){content()};return}
- var shown by remember{mutableStateOf(false)}
- LaunchedEffect(Unit){shown=true}
- AnimatedVisibility(visible=shown,modifier=modifier,enter=fadeIn(Motion.Fade)+slideInVertically(Motion.Slide){it/6}){content()}
+if(!active){Box(modifier){content()};return}
+var shown by remember{mutableStateOf(false)}
+LaunchedEffect(Unit){shown=true}
+AnimatedVisibility(visible=shown,modifier=modifier,enter=fadeIn(Motion.Fade)+slideInVertically(Motion.Slide){it/6}){content()}
 }
-
 // 页面入场：按 delay 分层淡入上浮，首页/页首使用
 @Composable fun EnterAnim(delay:Int=0,content:@Composable ()->Unit){
- var shown by remember{mutableStateOf(false)}
- LaunchedEffect(Unit){shown=true}
- AnimatedVisibility(visible=shown,enter=fadeIn(tween(340,delay,FastOutSlowInEasing))+slideInVertically(spring(dampingRatio=.85f,stiffness=Spring.StiffnessMediumLow)){it/9}){content()}
+var shown by remember{mutableStateOf(false)}
+LaunchedEffect(Unit){shown=true}
+AnimatedVisibility(visible=shown,enter=fadeIn(tween(340,delay,FastOutSlowInEasing))+slideInVertically(spring(dampingRatio=.85f,stiffness=Spring.StiffnessMediumLow)){it/9}){content()}
 }
-
 // 呼吸状态点：运行中会话/连接状态
 @Composable fun StatusDot(color:Color=Accent,size:Dp=6.dp){
- val t=rememberInfiniteTransition(label="dot")
- val a by t.animateFloat(1f,.2f,infiniteRepeatable(tween(900,easing=FastOutSlowInEasing),RepeatMode.Reverse),label="a")
- Box(Modifier.size(size).background(color.copy(alpha=a),CircleShape))
+val t=rememberInfiniteTransition(label="dot")
+val a by t.animateFloat(1f,.2f,infiniteRepeatable(tween(900,easing=FastOutSlowInEasing),RepeatMode.Reverse),label="a")
+Box(Modifier.size(size).background(color.copy(alpha=a),CircleShape))
 }
-
 // 三点打字指示器：依次起伏
 @Composable fun ThinkingDots(color:Color=Ink){
- val t=rememberInfiniteTransition(label="think")
- Row(horizontalArrangement=Arrangement.spacedBy(4.dp)){
-  listOf(0,1,2).forEach{i->
-   val y by t.animateFloat(0f,-4f,infiniteRepeatable(tween(520,delayMillis=i*130,easing=FastOutSlowInEasing),RepeatMode.Reverse),label="y$i")
-   Box(Modifier.offset{IntOffset(0,y.roundToInt())}.size(6.dp).background(color,CircleShape))
-  }
- }
+val t=rememberInfiniteTransition(label="think")
+Row(horizontalArrangement=Arrangement.spacedBy(4.dp)){
+listOf(0,1,2).forEach{i->
+val y by t.animateFloat(0f,-4f,infiniteRepeatable(tween(520,delayMillis=i*130,easing=FastOutSlowInEasing),RepeatMode.Reverse),label="y$i")
+Box(Modifier.offset{IntOffset(0,y.roundToInt())}.size(6.dp).background(color,CircleShape))
+}
+}
 }
