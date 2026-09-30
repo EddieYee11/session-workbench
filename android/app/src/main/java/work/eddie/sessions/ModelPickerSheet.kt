@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -41,6 +42,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -94,6 +96,10 @@ fun ModelPickerSheet(
     }
     val haptics = rememberComHaptics()
     val agentName = if (agent.equals("codex", ignoreCase = true)) "Codex" else "Pi"
+    val listState = remember(agent) { LazyListState() }
+    LaunchedEffect(agent, models.size) {
+        if (models.isNotEmpty()) listState.scrollToItem(0)
+    }
     LaunchedEffect(chosen?.id, availableEfforts) {
         if (chosen != null && draftEffort.isNotBlank() && draftEffort !in availableEfforts) {
             draftEffort = chosen.defaultEffort.takeIf { it in availableEfforts }.orEmpty()
@@ -173,6 +179,7 @@ fun ModelPickerSheet(
             }
             LazyColumn(
                 Modifier.weight(1f, fill = false).padding(horizontal = 16.dp),
+                state = listState,
                 contentPadding = PaddingValues(bottom = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
