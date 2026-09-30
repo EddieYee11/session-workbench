@@ -1,5 +1,6 @@
 """Read-only source discovery; derived SQLite index never edits agent history."""
 import json, sqlite3, time, hashlib, threading
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 
@@ -48,8 +49,13 @@ class History:
             CREATE TABLE IF NOT EXISTS managed(sid TEXT PRIMARY KEY,data TEXT);
             CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY,fingerprint TEXT,data TEXT);
             ''')
+    @contextmanager
     def db(self):
-        d=sqlite3.connect(self.dbpath,timeout=20);d.row_factory=sqlite3.Row;return d
+        d=sqlite3.connect(self.dbpath,timeout=20);d.row_factory=sqlite3.Row
+        try:
+            with d:yield d
+        finally:
+            d.close()
     def sources(self):
         result={}
         for agent,root in [('pi',self.home/'.pi/agent/sessions'),('codex',self.home/'.codex/sessions'),('codex',self.home/'.codex/archived_sessions')]:
