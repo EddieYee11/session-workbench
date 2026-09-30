@@ -36,9 +36,6 @@ import org.json.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-val Ink=Color(0xFF0D0D0D);val Blue=Color(0xFF0D0D0D);val Paper=Color(0xFFFAFAFA);val Muted=Color(0xFF767676)
-val Palette=lightColorScheme(primary=Blue,background=Paper,surface=Color.White,onBackground=Ink,onSurface=Ink,secondary=Ink,secondaryContainer=Color(0xFFECECEC),onSecondaryContainer=Ink,primaryContainer=Color(0xFFECECEC),surfaceVariant=Color(0xFFF1F1F1))
-
 class MainActivity:ComponentActivity(){
  private val vm:WorkbenchModel by viewModels()
  var quick by mutableStateOf("")
@@ -55,14 +52,14 @@ class MainActivity:ComponentActivity(){
  override fun onNewIntent(intent:Intent){super.onNewIntent(intent);intent.getStringExtra("sid")?.let{vm.openId(it)};quick=intent.getStringExtra("agent")?:""}
 }
 
-@Composable fun AgentBadge(agent:String){Surface(shape=RoundedCornerShape(5.dp),color=if(agent=="pi")Color(0xFFE9F2EC) else Color(0xFFEBEFF8)){Text(if(agent=="pi")"Pi" else "Codex",Modifier.padding(horizontal=7.dp,vertical=3.dp),fontSize=11.sp,fontWeight=FontWeight.Bold,color=if(agent=="pi")Color(0xFF396C55) else Blue)}}
+@Composable fun AgentBadge(agent:String){Surface(shape=RoundedCornerShape(6.dp),color=if(agent=="pi")PiSoft else AccentSoft){Text(if(agent=="pi")"Pi" else "Codex",Modifier.padding(horizontal=8.dp,vertical=3.dp),fontSize=11.sp,fontWeight=FontWeight.Bold,color=if(agent=="pi")PiGreen else AccentInk,letterSpacing=.3.sp)}}
 @Composable fun Choice(label:String,options:List<String>,select:(String)->Unit){var show by remember{mutableStateOf(false)};Box{TextButton(onClick={show=true},contentPadding=PaddingValues(horizontal=8.dp)){Text(label,fontSize=12.sp,maxLines=1);Icon(Icons.Outlined.ExpandMore,null,Modifier.size(15.dp))};DropdownMenu(show,{show=false}){options.forEach{o->DropdownMenuItem(text={Text(o,fontSize=13.sp)},onClick={select(o);show=false})}}}}
 fun dayLabel(ts:Double):String {val date=Date((ts*1000).toLong());val fmt=SimpleDateFormat("yyyy-MM-dd",Locale.CHINA);return when(fmt.format(date)){fmt.format(Date())->"今天";fmt.format(Date(System.currentTimeMillis()-86400000))->"昨天";else->SimpleDateFormat("M月d日",Locale.CHINA).format(date)}}
 fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(text);if(q.isNotBlank())q.trim().split(Regex("\\s+")).forEach{term->var start=0;while(start<text.length){val i=text.indexOf(term,start,true);if(i<0)break;addStyle(SpanStyle(background=Color(0xFFFFE6A5),color=Ink),i,i+term.length);start=i+term.length}}}
 
 @Composable fun Approval(vm:WorkbenchModel,a:JSONObject){
  val p=a.optJSONObject("params")?:JSONObject();val questions=p.array("questions");val answers=remember(a.optString("id")){mutableStateMapOf<String,String>()}
- Surface(color=Color(0xFFFFF2D6),modifier=Modifier.fillMaxWidth().padding(horizontal=12.dp),shape=RoundedCornerShape(12.dp)){
+ Surface(color=ApprovalBg,modifier=Modifier.fillMaxWidth().padding(horizontal=12.dp),shape=RoundedCornerShape(16.dp),border=BorderStroke(1.dp,Color(0xFFF0DFAE))){
  Column(Modifier.padding(12.dp)){Text("需要你回应",fontWeight=FontWeight.Bold);Text(p.optString("command",p.optString("reason","请确认以下操作")),fontSize=13.sp,maxLines=5)
  if(questions.isNotEmpty()){
   questions.forEach{q->Text(q.optString("question"),fontSize=14.sp);q.array("options").forEach{o->FilterChip(answers[q.optString("id")]==o.optString("label"),{answers[q.optString("id")]=o.optString("label")},label={Text(o.optString("label"))})};OutlinedTextField(answers[q.optString("id")]?:"",{answers[q.optString("id")]=it},label={Text("回答")})}
