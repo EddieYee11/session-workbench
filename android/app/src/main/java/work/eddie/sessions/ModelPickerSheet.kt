@@ -97,7 +97,7 @@ fun ModelPickerSheet(
     val haptics = rememberComHaptics()
     val agentName = if (agent.equals("codex", ignoreCase = true)) "Codex" else "Pi"
     val listState = remember(agent) { LazyListState() }
-    LaunchedEffect(agent, models.size) {
+    LaunchedEffect(agent, models.size, query) {
         if (models.isNotEmpty()) listState.scrollToItem(0)
     }
     LaunchedEffect(chosen?.id, availableEfforts) {
