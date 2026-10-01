@@ -2,6 +2,8 @@
 
 Com! 是原「会话工作台」Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务。保留原包名以便原位升级和保留本机配对、缓存。可从手机发起和继续 Pi / Codex 会话，查看实时过程和终端，并检索 Mac mini 上保存的历史会话。
 
+当前 Android 版本为 **1.3.4**。给协作者介绍项目时，可直接阅读 [项目背景、功能、架构与当前状态](docs/app-overview.md)；模型与推理选择的实现及验证边界见 [1.3.4 记录](docs/com-1.3.4.md)。
+
 - `backend/`：只读历史索引、Codex App Server 接口、Pi 实时扩展、tmux 终端桥。
 - `android/`：Kotlin / Compose 原生会话、全文搜索、离线缓存与 xterm.js 终端。
 - `backend/tests/`、`android/app/src/{test,androidTest}/`：项目检查代码。
@@ -25,3 +27,7 @@ Bot 直接复用用户指定的「Grok 灵动助手 v2」矢量动画与控制�
 ## Com! 1.3.2
 
 每次新呼出 Pi 快捷小窗都会直接开启录音，包括留有旧草稿或上一条仍在后台发送时；旧草稿保留到新录音成功为止。已提交的发送继续由 WorkManager 处理。首次使用需允许麦克风权限。
+
+## Com! 1.3.3–1.3.4
+
+1.3.3 调整原生输入、快捷小窗手势和关键操作触感；1.3.4 加入从 Mac mini 实时读取的 Pi / Codex 模型目录，以及输入框旁「＋」中的模型与推理水平选择。1.3.4 已覆盖安装在小米折叠屏；所选模型的真实消息回合尚待实机验收。详见 [1.3.3](docs/com-1.3.3.md) 和 [1.3.4](docs/com-1.3.4.md)。
