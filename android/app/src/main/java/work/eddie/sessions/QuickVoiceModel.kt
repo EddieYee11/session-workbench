@@ -172,7 +172,7 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
   }
  }
 
- /** 确认记账（3 秒倒计时后自动调用，或点“立即记账”） */
+ /** 确认向助理发送（3 秒倒计时后自动调用，或点“交给助理”） */
  fun confirmExpense() {
   val e = expense ?: return
   if (phase != "confirm" || e.amount == null) return
@@ -194,7 +194,7 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
      WorkInfo.State.RUNNING -> { phase = "sending" }
      WorkInfo.State.SUCCEEDED -> { phase = "sent"; message = ""; sendWatch?.cancel() }
      WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
-      phase = "confirm"; message = info.outputData.getString("error") ?: "发送失败，可重试记账。"
+      phase = "confirm"; message = info.outputData.getString("error") ?: "发送结果待核实，可重试同一条消息。"
       sendWatch?.cancel()
      }
      else -> Unit

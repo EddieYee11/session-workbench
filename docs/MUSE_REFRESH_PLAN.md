@@ -1,3 +1,5 @@
+> 后续实现说明：此文保留 muse-refresh 基线记录。最新任务层已恢复明确任务授权，刷新不自动审批。手机日历仅权限页计数，未接入主对话上下文；Standard/Active 均开启重要通知，未实现差异化主动调度。语音发送成功只代表主对话消息已受理，不能视为实际记账成功。详见 HERMES_TASK_LOOP_IMPLEMENTATION.md。
+
 # Com! muse-refresh 整合说明（2026-10-02）
 
 分支：`muse-refresh`（基于 main @ 1.4.1）。目标：按 Eddie 确认的方向做第一轮整合——

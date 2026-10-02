@@ -75,7 +75,7 @@ class QuickVoiceActivity:ComponentActivity(){
  fun record(){if(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)vm.record()else permission.launch(Manifest.permission.RECORD_AUDIO)}
  LaunchedEffect(Unit){visible=true}
  LaunchedEffect(vm.restored,vm.isForeground,vm.openRecordingRequest){if(vm.restored&&vm.isForeground&&vm.consumeRecordingOnOpen())record()}
- // 录音边：开始/结束/记账成功给震动
+ // 录音边：开始/结束/助理接收成功给震动
  var prevPhase by remember{mutableStateOf(vm.phase)}
  LaunchedEffect(vm.phase){
   val p=vm.phase
@@ -95,7 +95,7 @@ class QuickVoiceActivity:ComponentActivity(){
    if(vm.phase=="confirm"&&countdown==0)vm.confirmExpense()
   }
  }
- // 记账成功 1.4 秒后自动收起
+ // 助理接收成功 1.4 秒后自动收起
  LaunchedEffect(vm.phase){if(vm.phase=="sent"){delay(1400);close()}}
  BackHandler{close()}
  Box(Modifier.padding(horizontal=16.dp),contentAlignment=Alignment.BottomCenter){
@@ -126,12 +126,12 @@ class QuickVoiceActivity:ComponentActivity(){
       "confirm"->ExpenseConfirm(vm,countdown,{vm.retry();record()},{haptics(HapticCue.Commit);vm.confirmExpense()},{close()})
       "sending"->{
        CircularProgressIndicator(Modifier.padding(top=18.dp).size(30.dp),strokeWidth=3.dp,color=Muted)
-       Text("正在记账…",Modifier.padding(top=12.dp,bottom=8.dp),fontSize=13.sp,color=Muted)
+       Text("正在交给助理…",Modifier.padding(top=12.dp,bottom=8.dp),fontSize=13.sp,color=Muted)
       }
       "sent"->{
-       Icon(Icons.Outlined.CheckCircle,"已记账",Modifier.padding(top=14.dp).size(40.dp),tint=PiGreen)
-       val e=vm.expense
-       Text(if(e?.amount!=null)"已记账 ¥${fmtAmount(e.amount!!)}" else "已记账",Modifier.padding(top=8.dp,bottom=6.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+       Icon(Icons.Outlined.CheckCircle,"已交给助理",Modifier.padding(top=14.dp).size(40.dp),tint=PiGreen)
+       Text("已交给助理",Modifier.padding(top=8.dp,bottom=6.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+       Text("尚未收到实际账本回执",fontSize=11.sp,color=Muted)
       }
       else->{
        if(vm.message.isNotBlank())Text(vm.message,Modifier.padding(top=10.dp),fontSize=13.sp,lineHeight=19.sp,color=if(vm.paired)Muted else AmberText,textAlign=TextAlign.Center)
@@ -158,11 +158,11 @@ class QuickVoiceActivity:ComponentActivity(){
   }
   Text("“${vm.transcript.take(40)}”",Modifier.padding(top=8.dp),fontSize=11.sp,color=Faint,textAlign=TextAlign.Center)
   if(vm.message.isNotBlank())Text(vm.message,Modifier.padding(top=4.dp),fontSize=11.sp,color=AmberText)
-  Text("$countdown 秒后自动记账",Modifier.padding(top=6.dp),fontSize=11.sp,color=Muted)
+  Text("$countdown 秒后交给助理",Modifier.padding(top=6.dp),fontSize=11.sp,color=Muted)
   Row(Modifier.padding(top=10.dp),verticalAlignment=Alignment.CenterVertically){
    OutlinedButton(onClick=onRetry,shape=RoundedCornerShape(50)){Text("重说")}
    Spacer(Modifier.width(10.dp))
-   Button(onClick=onConfirm,shape=RoundedCornerShape(50)){Text("立即记账")}
+   Button(onClick=onConfirm,shape=RoundedCornerShape(50)){Text("交给助理")}
   }
  }else{
   Text("没听清金额",Modifier.padding(top=8.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)

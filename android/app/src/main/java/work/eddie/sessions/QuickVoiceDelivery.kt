@@ -46,11 +46,11 @@ class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorke
   val receipt=File(dir,"$capture.expense.json")
   if(receipt.exists())return Result.success(workDataOf("message_id" to JSONObject(receipt.readText()).optString("message_id")))
   setProgress(workDataOf("phase" to "sending"))
-  // 与 Hermes 对话发送共用 request_id 去重语义：重放不会记两笔
+  // 与 Hermes 对话发送共用 request_id 去重语义：重放不会重复提交同一消息；这不是账本交易回执
   val result=store.request("/personal/conversation/messages",
    JSONObject().put("request_id","expense-$capture").put("text",text))
   val messageId=result.optString("message_id")
-  check(messageId.isNotBlank()){"Hermes 尚未确认接收这条记账"}
+  check(messageId.isNotBlank()){"Hermes 尚未确认接收这条消息"}
   val tmp=File(dir,"$capture.expense.tmp")
   tmp.writeText(JSONObject().put("message_id",messageId).put("text",text).toString())
   check(tmp.renameTo(receipt))

@@ -27,7 +27,7 @@ inspector=SignalInspector(signals,HermesSignalReviewer(STATE))
 work_proposals=WorkProposalStore(STATE,HOME/'AI_Work_System')
 task_store=TaskStore(STATE)
 task_controller=TaskController(task_store,runtime,conversation)
-conversation.task_context=lambda: [{k:t.get(k) for k in ('id','title','message_id','status','constraints','result')} for t in task_store.list()][-30:]
+conversation.task_context=lambda: [{k:t.get(k) for k in ('id','title','message_id','status','constraints','inputs','result')} for t in task_store.list()][-30:]
 rate={}
 
 @asynccontextmanager
@@ -43,7 +43,8 @@ async def lifespan(app):
     task_store.recover()
     async def task_loop():
         while True:
-            with contextlib.suppress(Exception):await task_controller.poll()
+            with contextlib.suppress(Exception):
+                async with runtime.action_lock:await task_controller.poll()
             await asyncio.sleep(1)
     ledger_loop=asyncio.create_task(task_loop())
     conversation.start()

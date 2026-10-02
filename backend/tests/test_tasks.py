@@ -21,7 +21,7 @@ class FakeWorker:
 
 def active(store,tid,mid):
     store.ensure(proposal(tid,mid))
-    store.change(tid,'start-'+tid,'started',status='running',session_id='sid-'+tid,run_id='turn-'+tid)
+    store.change(tid,'start-'+tid,'started',authorization={'sandbox':'read-only','prompt':'inspect'},status='running',session_id='sid-'+tid,run_id='turn-'+tid)
 
 
 def test_two_tasks_update_not_third_and_completion_outbox(tmp_path):

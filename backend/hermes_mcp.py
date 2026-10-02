@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from work_dispatch import WorkProposalStore
 from tasks import TaskStore
+from task_tools import record_constraint
 
 
 COM_BASE_URL = "http://127.0.0.1:8650"
@@ -205,14 +206,10 @@ def personal_tasks() -> dict[str, Any]:
     return {'items': store.list()}
 
 
-@mcp.tool(description="Record a constraint on an existing task, never create a new task. This acknowledges receipt only, does not authorize permission expansion or deliver to the worker. Use the exact task ID; ask if the reference is unclear.", annotations=PROPOSAL_ONLY)
-def update_task_constraints(task_id: str, text: str, request_id: str) -> dict[str, Any]:
-    if not isinstance(text, str) or not text.strip() or len(text)>6000:
-        raise ValueError('Invalid constraint')
-    task, _ = TaskStore(Path.home() / '.session-workbench').change(
-        task_id, request_id, 'input_accepted', text)
-    return {'task_id': task_id, 'status': task['status'], 'delivery': 'accepted_pending',
-            'constraints': task['constraints'], 'work_started': False}
+@mcp.tool(description="Update an exact existing task ID; ask if ambiguous. Structured read_only or forbid_path restrictions are automatically queued within existing task authorization. Arbitrary note text is recorded but blocked pending explicit user authorization; it never grants new permissions. Receipt is not delivery or effect. No task is created.", annotations=PROPOSAL_ONLY)
+def update_task_constraints(task_id: str, text: str, request_id: str, constraint_type: str = 'note') -> dict[str, Any]:
+    return record_constraint(TaskStore(Path.home() / '.session-workbench'),
+                             task_id,text,request_id,constraint_type)
 
 
 if __name__ == "__main__":

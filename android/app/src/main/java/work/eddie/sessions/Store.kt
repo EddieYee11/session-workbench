@@ -337,8 +337,16 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    viewModelScope.launch{
      try{
        val result=store.request("/personal/tasks/${enc(id)}/${if(cancel)"cancel" else "input"}",body)
-       if(!cancel&&result.optString("delivery")=="applied")runCatching{store.secureCache("$key.enc",JSONObject())}
-       taskControlNote=if(cancel)"取消已受理，等待工作器确认停止" else if(result.optString("delivery")=="unknown")"指令送达待核实，不会自动重发" else "指令已受理，请查看事件确认生效"
+       if(!cancel&&result.optString("delivery") in setOf("delivered","failed","unsupported","blocked_authorization","blocked_state"))runCatching{store.secureCache("$key.enc",JSONObject())}
+       taskControlNote=if(cancel)"取消已受理，等待工作器确认停止" else when(result.optString("delivery")){
+        "delivered"->"指令已送达目标回合，生效仍需查看执行结果"
+        "unsupported"->"当前 Pi 执行会话不支持在线投递；未发送，请查看详情"
+        "failed"->"工作器拒绝了指令；未自动重试"
+        "blocked_state"->"任务状态不允许投递，请先核实"
+        "blocked_authorization"->"指令等待明确授权，未投递"
+        "unknown"->"指令送达待核实，不会自动重发"
+        else->"指令已受理，排队送达中"
+       }
      }catch(e:Exception){taskControlNote="请求结果待核实；重试复用同一请求号"}
      finally{refreshWorkProposals();taskControlBusy=""}
    }

@@ -116,12 +116,12 @@ class Runtime:
                     key=str(msg['id']);self.approvals[key]={'id':key,'rpc_id':msg['id'],'sid':sid,'method':method,'params':p}
                     self.emit(sid,{'kind':'approval','id':key,'title':'需要你回应','text':p.get('command',p.get('reason',method))})
                 elif method in ('item/agentMessage/delta','item/commandExecution/outputDelta','item/reasoning/summaryTextDelta'):
-                    self.emit(sid,{'kind':'delta','id':p.get('itemId',''),'text':p.get('delta',''),'role':'assistant' if 'agentMessage' in method else 'tool'})
+                    self.emit(sid,{'kind':'delta','id':p.get('itemId',''),'text':p.get('delta',''),'role':'assistant' if 'agentMessage' in method else 'tool','turn_id':p.get('turnId')})
                 elif method in ('item/started','item/completed'):
                     item=p.get('item',{});e=codex_item(item,item.get('id',''),time.time())
-                    if e:self.emit(sid,dict(e,kind='item',state='running' if method.endswith('started') else 'completed'))
+                    if e:self.emit(sid,dict(e,kind='item',state='running' if method.endswith('started') else 'completed',turn_id=p.get('turnId')))
                 elif method=='turn/started':self.emit(sid,{'kind':'status','status':'running','turn_id':p.get('turn',{}).get('id')})
-                elif method=='turn/completed':self.emit(sid,{'kind':'status','status':{'completed':'completed','interrupted':'interrupted'}.get(p.get('turn',{}).get('status'),'failed')})
+                elif method=='turn/completed':self.emit(sid,{'kind':'status','status':{'completed':'completed','interrupted':'interrupted'}.get(p.get('turn',{}).get('status'),'failed'),'turn_id':p.get('turn',{}).get('id')})
                 elif method=='serverRequest/resolved':self.approvals.pop(str(p.get('requestId')),None)
         except Exception as e:self.rpc_errors=type(e).__name__
         finally:
@@ -297,6 +297,34 @@ class Runtime:
             if e.get('type')=='agent_start':status='running'
             if e.get('type')=='agent_end':status='completed'
         return status
+    async def task_status(self,task):
+        status=await self.status(task['session_id'])
+        if task['agent']!='pi':
+            matches=[e for e in self.events(task['session_id']) if e.get('kind')=='status' and e.get('turn_id')==task.get('run_id')]
+            if matches:return matches[-1]['status']
+            return 'unknown' if status in ('ended','history') else 'running'
+        events=self.events(task['session_id'])
+        # agent_end is a low-level run, not final settled state.
+        last_start=max((i for i,e in enumerate(events) if e.get('type')=='agent_start'),default=-1)
+        settled=next((e for e in reversed(events[last_start+1:]) if e.get('type')=='agent_settled'),None)
+        if settled:
+            messages=[e.get('data',{}).get('message',{}) for e in events[last_start+1:] if e.get('type')=='message_end']
+            reason=next((m.get('stopReason') for m in reversed(messages) if m.get('role')=='assistant'),None)
+            return 'interrupted' if reason=='aborted' else 'failed' if reason=='error' else 'completed'
+        return 'unknown' if status=='ended' else 'running' if status=='completed' else status
+    def task_capabilities(self,task):
+        # Existing Pi sessions are interactive tmux processes, not RPC subprocesses.
+        return {'steer':task['agent']=='codex','transport':'codex-app-server' if task['agent']=='codex' else 'pi-tmux'}
+    async def deliver_task_input(self,task,command):
+        if not self.task_capabilities(task)['steer']:
+            return {'state':'unsupported'}
+        text=('Task instruction within the original authorization only. Do not expand permissions, '
+              'publish, delete, send messages or change the authorized project. New instruction: '
+              + command['text'])
+        result=await self.steer_task(task['session_id'],task['run_id'],text)
+        if not isinstance(result,dict) or result.get('turnId')!=task['run_id']:
+            return {'state':'unknown','error':'工作器未确认目标 turn ID；不宣告送达'}
+        return {'state':'delivered'}
     async def steer_task(self,sid,turn_id,text):
         m=self.h.managed().get(sid)
         if not m or m['agent']!='codex' or not turn_id:
