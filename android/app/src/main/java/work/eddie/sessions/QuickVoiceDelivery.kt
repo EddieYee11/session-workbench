@@ -66,7 +66,7 @@ class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorke
  }
 }
 
-private suspend fun uploadVoice(store:Store,file:File,capture:String):JSONObject=withContext(Dispatchers.IO){
+internal suspend fun uploadVoice(store:Store,file:File,capture:String):JSONObject=withContext(Dispatchers.IO){
  require(store.base.startsWith("https://")){"请先在 Com! 中完成配对。"}
  check(file.exists()&&file.length() in 128..5L*1024*1024){"录音文件不可用，请重新录制。"}
  val connection=URL(store.base+"/voice/transcribe/"+capture).openConnection() as HttpURLConnection

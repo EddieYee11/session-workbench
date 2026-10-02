@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.*
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -35,6 +36,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.*
@@ -60,37 +63,94 @@ fun relTime(ts:Double):String{
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun Workbench(vm:WorkbenchModel,quick:String,clearQuick:()->Unit){
+@Composable fun Workbench(vm:WorkbenchModel,quick:String,workLaunch:Int,clearQuick:()->Unit){
  var settings by remember{mutableStateOf(vm.store.token.isBlank())}
  var advanced by remember{mutableStateOf(false)}
+ var page by remember{mutableStateOf(vm.rootPage)}
  var selectedAgent by rememberSaveable{mutableStateOf(vm.store.prefs.getString("lastAgent","pi")?:"pi")}
- var sidebar by rememberSaveable{mutableStateOf(false)}
- val drawer=rememberDrawerState(DrawerValue.Closed);val scope=rememberCoroutineScope()
- LaunchedEffect(quick){if(quick.isNotBlank()){selectedAgent=quick;clearQuick()}}
+ var history by rememberSaveable{mutableStateOf(false)}
+ var more by rememberSaveable{mutableStateOf(false)}
+ val navigate:(String)->Unit={target->page=target;more=false;history=false}
+ LaunchedEffect(quick){if(quick.isNotBlank()){selectedAgent=quick;page="work";clearQuick()}}
+ LaunchedEffect(workLaunch){if(workLaunch>0)page="work"}
+ LaunchedEffect(vm.externalWorkRoute){if(vm.externalWorkRoute>0)page="work"}
+ LaunchedEffect(vm.externalHermesRoute){if(vm.externalHermesRoute>0)page="hermes"}
+ LaunchedEffect(page){
+  vm.rootPage=page;vm.hermesVisible=page=="hermes"
+  if(vm.store.token.isNotEmpty())when(page){
+   "hermes"->vm.refreshHermesNow()
+   "sources"->{vm.refreshPersonalNow();vm.refreshHermesNow();vm.refreshSignalsNow();vm.refreshWorkProposalsNow()}
+  }
+ }
  LaunchedEffect(vm.q,vm.agent,vm.role,vm.cwd,vm.days,vm.sort,vm.archived){delay(250);vm.refresh()}
- Surface(Modifier.fillMaxSize(),color=Paper){BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()){
-  val wide=maxWidth>=600.dp
-  val openMenu:()->Unit={if(wide)sidebar=!sidebar else scope.launch{drawer.open()}}
-  val newChat:()->Unit={vm.close();vm.q="";vm.queryInSession="";if(wide)sidebar=false else scope.launch{drawer.close()}}
-  val pick:(JSONObject)->Unit={vm.open(it);if(wide)sidebar=false else scope.launch{drawer.close()}}
-  BackHandler(drawer.isOpen||sidebar||vm.selected.isNotBlank()){if(drawer.isOpen)scope.launch{drawer.close()}else if(sidebar)sidebar=false else vm.close()}
-  val content:@Composable ()->Unit={
-   Row(Modifier.fillMaxSize()){
-    AnimatedVisibility(visible=wide&&sidebar,enter=expandHorizontally(expandFrom=Alignment.Start,animationSpec=spring(dampingRatio=.86f,stiffness=Spring.StiffnessMediumLow))+fadeIn(tween(140)),exit=shrinkHorizontally(shrinkTowards=Alignment.Start,animationSpec=spring(dampingRatio=1f,stiffness=Spring.StiffnessMedium))+fadeOut(tween(120))){
-     Row {Box(Modifier.width(264.dp).fillMaxHeight()){HistorySidebar(vm,pick,newChat,{settings=true})};VerticalDivider(color=Line)}
+ val openActivity:()->Unit={page="hermes";vm.showSignalsActivity=true}
+ val newChat:()->Unit={vm.close();vm.q="";vm.queryInSession="";history=false}
+ val pick:(JSONObject)->Unit={vm.open(it);history=false}
+ BackHandler(page!="hermes"||page=="work"&&vm.selected.isNotBlank()){
+  if(page=="work"&&vm.selected.isNotBlank())vm.close()else page="hermes"
+ }
+ Surface(Modifier.fillMaxSize(),color=Paper){Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()){
+  val imeVisible=WindowInsets.ime.getBottom(LocalDensity.current)>0
+  Column(Modifier.fillMaxSize()){
+   Box(Modifier.weight(1f).fillMaxWidth()){
+    when(page){
+     "work"->Column(Modifier.fillMaxSize()){
+      Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
+       ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(23.dp))
+       Text("工作 · Pi / Codex",Modifier.weight(1f).padding(start=10.dp),fontSize=14.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+       IconButton(onClick={history=true}){Icon(Icons.Outlined.History,"工作会话历史",tint=Muted)}
+      }
+      Box(Modifier.weight(1f)){
+       ConversationScene(vm,selectedAgent,{selectedAgent=it;vm.store.prefs.edit().putString("lastAgent",it).apply()},{history=true},{advanced=true},pick,newChat)
+      }
+     }
+     "calendar","finance"->PersonalDetailPage(vm,page){page="sources"}
+     "sources"->PersonalSourcesPage(vm){page="hermes"}
+     else->HermesChat(vm,{more=true},true)
     }
-    Box(Modifier.weight(1f).fillMaxHeight()){
-     ConversationScene(vm,selectedAgent,{selectedAgent=it;vm.store.prefs.edit().putString("lastAgent",it).apply()},openMenu,{advanced=true},pick,newChat)
-     if(wide&&sidebar)Box(Modifier.matchParentSize().clickable(indication=null,interactionSource=remember{MutableInteractionSource()}){sidebar=false})
+   }
+   if(!imeVisible)ComBottomNavigation(page,navigate,openActivity,{more=true})
+  }
+  if(vm.busy)LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).align(Alignment.TopCenter),color=Ink,trackColor=Color.Transparent)
+ }}
+ if(history)ModalBottomSheet(onDismissRequest={history=false},containerColor=Paper,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)){
+  Box(Modifier.fillMaxWidth().fillMaxHeight(.88f)){HistorySidebar(vm,pick,newChat,{history=false;settings=true})}
+ }
+ if(more)ModalBottomSheet(onDismissRequest={more=false},containerColor=Paper){
+  Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=32.dp),verticalArrangement=Arrangement.spacedBy(6.dp)){
+   Text("Com!",Modifier.padding(bottom=12.dp),fontSize=24.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+   listOf("calendar" to "日历","finance" to "账本","settings" to "设置").forEach{(target,label)->
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable{more=false;if(target=="settings")settings=true else navigate(target)}.padding(horizontal=16.dp,vertical=18.dp),verticalAlignment=Alignment.CenterVertically){
+     ComPrimaryIcon(target,null,24.dp,Muted)
+     Text(label,Modifier.weight(1f).padding(start=18.dp),fontSize=17.sp,color=Ink)
+     Icon(Icons.Outlined.ChevronRight,null,Modifier.size(20.dp),tint=Faint)
     }
    }
   }
-  if(wide)content() else ModalNavigationDrawer(drawerState=drawer,drawerContent={ModalDrawerSheet(drawerContainerColor=SidebarBg,drawerShape=RoundedCornerShape(0.dp),modifier=Modifier.fillMaxWidth(.85f)){HistorySidebar(vm,pick,newChat,{settings=true})}},content=content)
-  if(vm.busy)LinearProgressIndicator(Modifier.fillMaxWidth().height(3.dp).align(Alignment.TopCenter),color=Ember,trackColor=Color.Transparent)
- }}
+ }
  if(settings)Settings(vm){settings=false}
  if(advanced)NewSession(vm,selectedAgent){advanced=false}
  if(vm.error.isNotBlank())AlertDialog(onDismissRequest={vm.error=""},containerColor=Card,title={Text("操作提示",fontWeight=FontWeight.SemiBold)},text={SelectionContainer{Text(vm.error)}},confirmButton={TextButton(onClick={vm.error=""}){Text("知道了")}})
+}
+
+@Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,activity:()->Unit,more:()->Unit){
+ Box(Modifier.fillMaxWidth().height(84.dp).background(Paper).padding(horizontal=12.dp),contentAlignment=Alignment.Center){
+  Row(Modifier.widthIn(max=640.dp).fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+   listOf("hermes" to "对话","sources" to "今天","activity" to "活动","work" to "工作","settings" to "更多").forEach{(target,label)->
+    val selected=page==target||target=="sources"&&page in listOf("calendar","finance")
+    Column(Modifier.weight(1f).height(68.dp).clip(Radii.Pill)
+     .selectable(selected=selected,role=androidx.compose.ui.semantics.Role.Tab,onClick={when(target){"activity"->activity();"settings"->more();else->navigate(target)}}),
+     horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){
+     ComPrimaryIcon(target,label,27.dp,if(selected)Ink else Muted,selected)
+     Text(label,Modifier.padding(top=5.dp),fontSize=10.sp,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,color=if(selected)Ink else Muted)
+    }
+   }
+  }
+ }
+}
+
+@Composable private fun ComPrimaryIcon(target:String,label:String?,size:Dp,tint:Color=Ink,selected:Boolean=false){
+ ComIcon(when(target){"hermes"->R.drawable.com_icon_chat_v1;"activity"->R.drawable.com_icon_activity_v1;"work"->R.drawable.com_icon_work_v1;"settings"->R.drawable.com_icon_settings_v1;"finance"->R.drawable.com_icon_finance_v1;else->R.drawable.com_icon_today_v1},label,Modifier.size(size),tint=tint,selected=selected)
 }
 
 @Composable fun Pill(items:List<String>,selected:Int,enabled:List<Boolean> = items.map{true},click:(Int)->Unit){
@@ -212,7 +272,7 @@ fun relTime(ts:Double):String{
 ){
  Column(horizontalAlignment=Alignment.CenterHorizontally){
   Box(Modifier.size(heroSize),contentAlignment=Alignment.Center){
-   Box(Modifier.size(heroSize*.8f).background(Brush.radialGradient(listOf((if(agent=="pi")CompanionGlow else Color(0xFFEAF0FF)).copy(alpha=.5f),Color.Transparent)),CircleShape))
+
    CompanionLanding(agent,avatar,Modifier.fillMaxSize())
   }
   Text(heading,Modifier.homeReveal(headingReveal).padding(bottom=12.dp),fontSize=headingSize,lineHeight=headingLineHeight,fontWeight=FontWeight.SemiBold,letterSpacing=(-.5).sp,color=Ink,textAlign=androidx.compose.ui.text.style.TextAlign.Center,maxLines=2,overflow=TextOverflow.Ellipsis)
@@ -298,17 +358,17 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
 
 @Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null,modelConfigured:Boolean=false){
  var focused by remember{mutableStateOf(false)}
- val line by animateColorAsState(if(focused)CompanionCoral.copy(alpha=.35f) else Line,Motion.Tint,label="输入框描边")
+ val line by animateColorAsState(if(focused)Muted.copy(alpha=.2f) else Color.Transparent,Motion.Tint,label="输入框描边")
  val haptics=rememberComHaptics()
  val canSend=enabled&&text.isNotBlank()
- Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=RoundedCornerShape(Radii.Sheet),color=Card,border=BorderStroke(1.dp,line),shadowElevation=0.dp){
+ Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=RoundedCornerShape(32.dp),color=UserBubble,border=BorderStroke(1.dp,line),shadowElevation=0.dp){
   Row(Modifier.padding(horizontal=6.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
    IconButton(onClick={haptics(HapticCue.Selection);more()},modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,if(modelConfigured)"模型与推理 · 已自定义" else "选择模型与推理",Modifier.size(24.dp),tint=if(modelConfigured)EmberDeep else Ink)}
    BasicTextField(text,change,Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).padding(vertical=10.dp,horizontal=5.dp).onFocusChanged{focused=it.isFocused},textStyle=TextStyle(fontSize=16.sp,color=Ink,lineHeight=24.sp),cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,fontSize=16.sp,color=Faint,maxLines=1);inner()}})
    val (press,pressMod)=rememberPress(.97f)
    if(canSend)IconButton(onClick={haptics(HapticCue.Commit);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}
    else if(running)IconButton(onClick={haptics(HapticCue.RecordingStop);stop()},enabled=enabled,modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.Stop,"停止当前执行",tint=Color.White,modifier=Modifier.size(20.dp))}
-   else if(voice!=null)IconButton(onClick=voice,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.Mic,"快速语音 · Pi",Modifier.size(23.dp),tint=Ink)}
+   else if(voice!=null)IconButton(onClick=voice,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.MicNone,"快速语音 · Pi",Modifier.size(23.dp),tint=Muted)}
   }
  }
 }
@@ -360,7 +420,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
      if(caps.optBoolean("input")&&messages.isEmpty())Text("发送第一句话开始。执行过程会实时显示；首条消息后可切换终端。",fontSize=13.sp,color=Muted)
     }
    }
-   if(!following)Surface(onClick={scope.launch{list.animateScrollToItem(displayRows.size)}},modifier=Modifier.align(Alignment.BottomCenter).padding(bottom=10.dp),shape=CircleShape,color=Card,border=BorderStroke(1.dp,Line),shadowElevation=2.dp){Icon(Icons.Outlined.ArrowDownward,"回到最新",Modifier.padding(8.dp).size(17.dp),tint=Ink)}
+   if(!following)Surface(onClick={scope.launch{list.animateScrollToItem(displayRows.size)}},modifier=Modifier.align(Alignment.BottomCenter).padding(bottom=10.dp),shape=CircleShape,color=UserBubble,shadowElevation=0.dp){Icon(Icons.Outlined.ArrowDownward,"回到最新",Modifier.padding(8.dp).size(17.dp),tint=Ink)}
   }
   if(!terminal){
    snapshot.live.array("approvals").forEach{Approval(vm,it)}
@@ -409,7 +469,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
   }
  }else{
   Column(Modifier.fillMaxWidth(),horizontalAlignment=if(role=="user")Alignment.End else Alignment.Start){
-   Surface(Modifier.widthIn(max=680.dp).fillMaxWidth(if(role=="user").88f else .96f),color=if(role=="user")UserBubble else if(agent=="codex")Color(0xFFEAF0FD)else Color(0xFFE9F2EF),shape=RoundedCornerShape(Radii.Xxl),shadowElevation=1.dp){
+   Surface(Modifier.widthIn(max=680.dp).fillMaxWidth(if(role=="user").88f else .96f),color=UserBubble,shape=RoundedCornerShape(28.dp),shadowElevation=0.dp){
     if(q.isNotBlank())SelectionContainer{Text(highlight(body,q),Modifier.padding(horizontal=16.dp,vertical=12.dp),fontSize=font.sp,lineHeight=(font+9).sp,color=Ink)}
     else AndroidView(factory={c->MarkdownTextView(c).apply{
      setTextColor(android.graphics.Color.rgb(13,13,13));setTextIsSelectable(true)

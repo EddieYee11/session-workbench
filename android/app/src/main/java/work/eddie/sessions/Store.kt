@@ -2,12 +2,15 @@ package work.eddie.sessions
 
 import android.app.*
 import android.content.*
+import android.media.MediaRecorder
+import android.os.SystemClock
 import android.security.keystore.*
 import android.util.Base64
 import androidx.compose.runtime.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
 import org.json.*
 import java.io.File
 import java.net.*
@@ -36,6 +39,32 @@ class Store(val context:Context) {
  var token:String
    get()=runCatching { val raw=Base64.decode(prefs.getString("token","")?:"",Base64.NO_WRAP);val c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.DECRYPT_MODE,key(),GCMParameterSpec(128,raw.copyOfRange(0,12)));String(c.doFinal(raw.copyOfRange(12,raw.size))) }.getOrDefault("")
    set(v){val c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.ENCRYPT_MODE,key());prefs.edit().putString("token",Base64.encodeToString(c.iv+c.doFinal(v.toByteArray()),Base64.NO_WRAP)).apply()}
+ private fun encrypt(value:String):String{
+   val cipher=Cipher.getInstance("AES/GCM/NoPadding")
+   cipher.init(Cipher.ENCRYPT_MODE,key())
+   return Base64.encodeToString(cipher.iv+cipher.doFinal(value.toByteArray(Charsets.UTF_8)),Base64.NO_WRAP)
+ }
+ private fun decrypt(value:String):String{
+   val raw=Base64.decode(value,Base64.NO_WRAP)
+   val cipher=Cipher.getInstance("AES/GCM/NoPadding")
+   cipher.init(Cipher.DECRYPT_MODE,key(),GCMParameterSpec(128,raw.copyOfRange(0,12)))
+   return String(cipher.doFinal(raw.copyOfRange(12,raw.size)),Charsets.UTF_8)
+ }
+ fun secureText(name:String):String=runCatching{decrypt(prefs.getString(name,"").orEmpty())}.getOrDefault("")
+ fun saveSecureText(name:String,value:String,durable:Boolean=false){
+   val edit=prefs.edit().apply{if(value.isBlank())remove(name) else putString(name,encrypt(value))}
+   if(durable)check(edit.commit()){ "加密状态保存失败" } else edit.apply()
+ }
+ fun secureCache(name:String,value:JSONObject){
+   val target=File(dir,name);val tmp=File(dir,"$name.tmp")
+   tmp.writeText(encrypt(value.toString()))
+   check(tmp.renameTo(target)){"加密数据保存失败"}
+ }
+ fun secureCacheOrNull(name:String):JSONObject?{
+   val file=File(dir,name)
+   return if(file.exists())JSONObject(decrypt(file.readText())) else null
+ }
+ fun cachedSecure(name:String)=runCatching{JSONObject(decrypt(File(dir,name).readText()))}.getOrDefault(JSONObject())
  init {
    val bootstrap=File(context.filesDir,"connection.json")
    if(bootstrap.exists()){runCatching{val c=JSONObject(bootstrap.readText());base=c.getString("base");token=c.getString("token")};bootstrap.delete()}
@@ -53,6 +82,42 @@ class Store(val context:Context) {
     if(code !in 200..299)error(data.optString("detail","连接失败：$code"))
     data
    }finally{con.disconnect()}
+ }
+ suspend fun streamConversation(onEvent:suspend (String,JSONObject)->Unit)=withContext(Dispatchers.IO){
+   require(base.startsWith("https://")){"请先设置 HTTPS 服务地址"}
+   val con=URL(base+"/personal/conversation/stream").openConnection() as HttpURLConnection
+   con.connectTimeout=12000;con.readTimeout=45000;con.instanceFollowRedirects=false
+   con.setRequestProperty("Accept","text/event-stream")
+   con.setRequestProperty("Cache-Control","no-cache")
+   con.setRequestProperty("Authorization","Bearer $token")
+   val closeOnCancel=CoroutineScope(currentCoroutineContext()).launch(Dispatchers.IO){
+     try{awaitCancellation()}finally{con.disconnect()}
+   }
+   try{
+     check(con.responseCode in 200..299){"Hermes 实时连接失败：${con.responseCode}"}
+     con.inputStream.bufferedReader().use{reader->
+       var kind="message"
+       val data=StringBuilder()
+       while(currentCoroutineContext().isActive){
+         val line=reader.readLine()?:break
+         when{
+           line.isEmpty()->{
+             if(data.isNotEmpty()){
+               val payload=JSONObject(data.toString())
+               withContext(Dispatchers.Main.immediate){onEvent(kind,payload)}
+             }
+             kind="message";data.setLength(0)
+           }
+           line.startsWith("event:")->kind=line.substringAfter(':').trim()
+           line.startsWith("data:")->{
+             if(data.isNotEmpty())data.append('\n')
+             data.append(line.substringAfter(':').trimStart())
+             check(data.length<=8_000_000){"Hermes 实时事件过大"}
+           }
+         }
+       }
+     }
+   }finally{closeOnCancel.cancel();con.disconnect()}
  }
  fun cache(name:String,value:JSONObject){val target=File(dir,name);val tmp=File(dir,"$name.tmp");tmp.writeText(value.toString());tmp.renameTo(target)}
  fun cached(name:String)=runCatching{JSONObject(File(dir,name).readText())}.getOrDefault(JSONObject())
@@ -90,6 +155,47 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var error by mutableStateOf("")
  var connected by mutableStateOf(false)
  var busy by mutableStateOf(false)
+ var personal by mutableStateOf(store.cachedSecure("personal-overview.enc"))
+ var personalFresh by mutableStateOf(false)
+ var personalLoading by mutableStateOf(false)
+ var personalError by mutableStateOf("")
+ var hermes by mutableStateOf(store.cachedSecure("hermes-conversation.enc"))
+ var hermesFresh by mutableStateOf(false)
+ var hermesLoading by mutableStateOf(false)
+ var hermesStreaming by mutableStateOf(false)
+ var hermesError by mutableStateOf("")
+ var hermesSending by mutableStateOf(false)
+ var hermesSendNote by mutableStateOf("")
+ var hermesDraft by mutableStateOf(store.secureText("hermes-draft"))
+ var hermesPending by mutableStateOf(runCatching{JSONObject(store.secureText("hermes-pending"))}.getOrDefault(JSONObject()))
+ var hermesVisible by mutableStateOf(true)
+ var rootPage by mutableStateOf("hermes")
+ var signals by mutableStateOf(store.cachedSecure("personal-signals-review.enc"))
+ var signalsHealth by mutableStateOf(store.cachedSecure("personal-signals-health.enc"))
+ var signalsFresh by mutableStateOf(false)
+ var signalsHealthFresh by mutableStateOf(false)
+ var signalsLoading by mutableStateOf(false)
+ var signalsError by mutableStateOf("")
+ var showSignalsActivity by mutableStateOf(false)
+ var workProposals by mutableStateOf(store.cachedSecure("personal-work-proposals.enc"))
+ var workProposalsFresh by mutableStateOf(false)
+ var workProposalsLoading by mutableStateOf(false)
+ var workProposalsError by mutableStateOf("")
+ var workProposalBusy by mutableStateOf("")
+ var workProposalNote by mutableStateOf("")
+ private var workApprovalIds=runCatching{JSONObject(store.secureText("work-approval-ids"))}.getOrDefault(JSONObject())
+ private var hermesReconcile:Job?=null
+ var externalHermesRoute by mutableIntStateOf(0)
+ private val hermesVoiceDir=File(app.filesDir,"hermes-voice").apply{mkdirs()}
+ private var hermesRecorder:MediaRecorder?=null
+ private var hermesRecordingFile:File?=null
+ private var hermesVoiceStarted=0L
+ private var hermesVoiceTimer:Job?=null
+ var hermesVoicePhase by mutableStateOf("idle")
+ var hermesVoiceSeconds by mutableIntStateOf(0)
+ var hermesVoiceNote by mutableStateOf("")
+ var hermesVoiceSaved by mutableStateOf(store.prefs.getString("hermes-voice-file","").orEmpty())
+ var externalWorkRoute by mutableIntStateOf(0)
  var voiceDelivery by mutableStateOf("")
  private var voiceWatch:Job?=null
  var index by mutableStateOf(JSONObject())
@@ -103,7 +209,18 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  val catalogErrors=mutableStateMapOf<String,String>()
  var active by mutableStateOf(true)
  var font by mutableFloatStateOf(store.prefs.getFloat("font",16f))
- init {viewModelScope.launch{snapshotFlow{q to queryInSession}.collect{(global,local)->store.prefs.edit().putString("search",global).putString("session-search",local).apply()}};viewModelScope.launch{var tick=0;while(true){if(active&&store.token.isNotEmpty()){
+ init {viewModelScope.launch{snapshotFlow{q to queryInSession}.collect{(global,local)->store.prefs.edit().putString("search",global).putString("session-search",local).apply()}};viewModelScope.launch{while(true){if(active&&store.token.isNotEmpty())refreshPersonal();delay(60_000)}};viewModelScope.launch{snapshotFlow{active&&hermesVisible}.collectLatest{visible->
+  hermesStreaming=false
+  if(visible)while(currentCoroutineContext().isActive){
+   if(store.token.isBlank()){delay(1000);continue}
+   refreshHermes()
+   try{store.streamConversation{kind,payload->applyHermesEvent(kind,payload)}}
+   catch(e:CancellationException){throw e}
+   catch(_:Exception){}
+   finally{hermesStreaming=false}
+   delay(1500)
+  }
+ }};viewModelScope.launch{var tick=0;while(true){if(active&&store.token.isNotEmpty()){
    if(tick%5==0)refresh()
    val id=selected
    if(id.isNotEmpty()){
@@ -113,13 +230,262 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    tick++
  };delay(800)}}}
  fun enc(s:String)=URLEncoder.encode(s,"UTF-8")
+ fun refreshPersonalNow(){viewModelScope.launch{refreshPersonal()}}
+ fun refreshHermesNow(){viewModelScope.launch{refreshHermes()}}
+ fun hermesVoicePermissionDenied(){hermesVoiceNote="请在系统设置中允许 Com! 使用麦克风。"}
+ @Suppress("DEPRECATION")
+ fun beginHermesVoice(){
+   if(hermesVoicePhase!="idle"||hermesVoiceSaved.isNotBlank()||hermesDraft.isNotBlank()||hermesPending.optString("text").isNotBlank()||store.token.isBlank())return
+   val file=File(hermesVoiceDir,"${UUID.randomUUID()}.m4a")
+   try{
+     val recorder=MediaRecorder()
+     hermesRecorder=recorder
+     recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+     recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+     recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+     recorder.setAudioSamplingRate(16000)
+     recorder.setAudioEncodingBitRate(64000)
+     recorder.setOutputFile(file.absolutePath)
+     recorder.prepare();recorder.start()
+     hermesRecordingFile=file;hermesVoiceStarted=SystemClock.elapsedRealtime()
+     hermesVoiceSeconds=0;hermesVoicePhase="recording";hermesVoiceNote="正在听你说话，点麦克风结束。"
+     hermesVoiceTimer?.cancel();hermesVoiceTimer=viewModelScope.launch{while(hermesVoicePhase=="recording"){
+       delay(1000);hermesVoiceSeconds=((SystemClock.elapsedRealtime()-hermesVoiceStarted)/1000).toInt()
+       if(hermesVoiceSeconds>=60)finishHermesVoice()
+     }}
+   }catch(_:Exception){runCatching{hermesRecorder?.release()};hermesRecorder=null;file.delete();hermesVoicePhase="idle";hermesVoiceNote="录音无法开始，请检查麦克风权限或占用状态。"}
+ }
+ fun finishHermesVoice(transcribe:Boolean=true){
+   if(hermesVoicePhase!="recording")return
+   hermesVoiceTimer?.cancel();hermesVoiceTimer=null
+   val file=hermesRecordingFile;hermesRecordingFile=null
+   val stopped=runCatching{hermesRecorder?.stop()}.isSuccess
+   runCatching{hermesRecorder?.release()};hermesRecorder=null;hermesVoicePhase="idle"
+   if(!stopped||file==null||file.length()<512||SystemClock.elapsedRealtime()-hermesVoiceStarted<650){
+     file?.delete();hermesVoiceNote="录音太短，请再说一次。";return
+   }
+   hermesVoiceSaved=file.name;store.prefs.edit().putString("hermes-voice-file",file.name).apply()
+   if(transcribe)transcribeHermesVoice() else hermesVoiceNote="录音已保留，回到 Hermes 可重试转写。"
+ }
+ fun transcribeHermesVoice(){
+   if(hermesVoicePhase!="idle")return
+   val file=File(hermesVoiceDir,hermesVoiceSaved)
+   if(!hermesVoiceSaved.matches(Regex("[a-f0-9-]{36}\\.m4a"))||!file.exists()){hermesVoiceSaved="";store.prefs.edit().remove("hermes-voice-file").apply();return}
+   hermesVoicePhase="transcribing";hermesVoiceNote="正在转写给 Hermes…"
+   viewModelScope.launch{
+     try{
+       val transcript=uploadVoice(store,file,file.nameWithoutExtension).optString("text").trim()
+       check(transcript.isNotBlank()){"没有听清这段录音"}
+       if(hermesDraft.isNotBlank())error("已有文字草稿，请先处理后再转写录音")
+       updateHermesDraft(transcript)
+       file.delete();hermesVoiceSaved="";store.prefs.edit().remove("hermes-voice-file").apply()
+       hermesVoicePhase="idle"
+       if(hermesFresh){hermesVoiceNote="";sendHermes()}
+       else hermesVoiceNote="已转写到草稿；连接 Hermes 后点发送。"
+     }catch(e:CancellationException){throw e}
+      catch(e:Exception){hermesVoicePhase="idle";hermesVoiceNote="${e.message?:"转写失败"}；录音已保留，可重试或删除。"}
+   }
+ }
+ fun discardHermesVoice(){
+   if(hermesVoicePhase!="idle")return
+   val file=File(hermesVoiceDir,hermesVoiceSaved)
+   if(hermesVoiceSaved.matches(Regex("[a-f0-9-]{36}\\.m4a")))file.delete()
+   hermesVoiceSaved="";store.prefs.edit().remove("hermes-voice-file").apply();hermesVoiceNote=""
+ }
+ fun refreshSignalsNow(){viewModelScope.launch{refreshSignals()}}
+ fun refreshWorkProposalsNow(){viewModelScope.launch{refreshWorkProposals()}}
+ suspend fun refreshWorkProposals(){
+   if(workProposalsLoading||store.token.isBlank())return
+   workProposalsLoading=true;workProposalsError=""
+   try{
+     val recent=store.request("/personal/work/proposals?limit=20")
+     if(recent.optJSONArray("items")==null)error("工作建议数据格式不完整")
+     workProposals=recent;workProposalsFresh=true
+     runCatching{store.secureCache("personal-work-proposals.enc",recent)}
+   }catch(e:Exception){workProposalsFresh=false;workProposalsError=e.message?:"工作建议暂不可用"}
+   finally{workProposalsLoading=false}
+ }
+ fun workApprovalId(id:String)=workApprovalIds.optString(id)
+ private fun saveWorkApprovalId(id:String):String{
+   val current=workApprovalIds.optString(id)
+   if(current.isNotBlank())return current
+   val requestId=UUID.randomUUID().toString()
+   val updated=JSONObject(workApprovalIds.toString()).put(id,requestId)
+   store.saveSecureText("work-approval-ids",updated.toString(),durable=true)
+   workApprovalIds=updated
+   return requestId
+ }
+ fun approveWorkProposal(id:String){
+   if(workProposalBusy.isNotBlank()||!workProposalsFresh||store.token.isBlank())return
+   val proposal=workProposals.array("items").firstOrNull{it.optString("id")==id}?:return
+   if(proposal.optString("status")!="proposed"||proposal.optDouble("expires_at")<=System.currentTimeMillis()/1000.0)return
+   val requestId=runCatching{saveWorkApprovalId(id)}.getOrElse{
+     workProposalNote="审批请求未能保存，尚未启动工作。"
+     return
+   }
+   workProposalBusy=id;workProposalNote=""
+   viewModelScope.launch{
+     try{
+       val result=store.request("/personal/work/proposals/${enc(id)}/approve",JSONObject().put("request_id",requestId))
+       if(result.optString("id")!=id||result.optString("approval_request_id")!=requestId)error("审批结果待核实")
+       workProposalNote=when(result.optString("status")){
+         "accepted"->"已批准并启动工作会话"
+         "unknown"->"派发状态待核实，请在工作页检查；不会自动重发"
+         else->"审批已收到，正在核对工作状态"
+       }
+     }catch(e:Exception){workProposalNote="审批结果待核实，请刷新工作建议并核对工作页；如需重试会复用同一请求号，不会自动重发。";workProposalsError=e.message?:"暂时无法核实审批结果"}
+     finally{
+       refreshWorkProposals()
+       val latest=workProposals.array("items").firstOrNull{it.optString("id")==id}
+       if(latest?.optString("status")=="accepted")workProposalNote="已批准并启动工作会话"
+       else if(latest?.optString("status")=="unknown")workProposalNote="派发状态待核实，请在工作页检查；不会自动重发"
+       workProposalBusy=""
+     }
+   }
+ }
+ fun rejectWorkProposal(id:String){
+   if(workProposalBusy.isNotBlank()||!workProposalsFresh||workApprovalId(id).isNotBlank()||store.token.isBlank())return
+   val proposal=workProposals.array("items").firstOrNull{it.optString("id")==id}?:return
+   if(proposal.optString("status")!="proposed")return
+   workProposalBusy=id;workProposalNote=""
+   viewModelScope.launch{
+     try{
+       val result=store.request("/personal/work/proposals/${enc(id)}/reject",JSONObject())
+       if(result.optString("status")!="rejected")error("拒绝结果待核实")
+       workProposalNote="已拒绝这项工作建议"
+     }catch(e:Exception){workProposalNote="拒绝结果待核实，请刷新后检查状态。";workProposalsError=e.message?:"暂时无法核实拒绝结果"}
+     finally{
+       refreshWorkProposals()
+       if(workProposals.array("items").firstOrNull{it.optString("id")==id}?.optString("status")=="rejected")workProposalNote="已拒绝这项工作建议"
+       workProposalBusy=""
+     }
+   }
+ }
+ suspend fun refreshSignals(){
+   if(signalsLoading||store.token.isBlank())return
+   signalsLoading=true;signalsError=""
+   try{
+     val recent=store.request("/personal/signals?limit=50")
+     if(recent.optJSONArray("items")==null)error("通知活动数据格式不完整")
+     signals=recent;signalsFresh=true
+     runCatching{store.secureCache("personal-signals-review.enc",recent)}
+   }catch(e:Exception){signalsFresh=false;signalsError=e.message?:"通知活动暂不可用"}
+   try{
+     val health=store.request("/personal/signals/health")
+     if(!health.has("pending")||!health.has("interval_minutes"))error("通知巡检状态格式不完整")
+     signalsHealth=health;signalsHealthFresh=true
+     runCatching{store.secureCache("personal-signals-health.enc",health)}
+   }catch(e:Exception){signalsHealthFresh=false;signalsError=listOf(signalsError,e.message?:"巡检状态暂不可用").filter{it.isNotBlank()}.joinToString("；")}
+   signalsLoading=false
+ }
+ fun updateHermesDraft(value:String){hermesDraft=value;store.saveSecureText("hermes-draft",value)}
+ private fun mergeHermesRows(existing:JSONArray?,changes:List<JSONObject>,key:String):JSONArray{
+   val rows=(existing?.objects()?:emptyList()).map{JSONObject(it.toString())}.toMutableList()
+   changes.forEach{change->
+     val id=change.optString(key)
+     if(id.isBlank())return@forEach
+     val index=rows.indexOfFirst{it.optString(key)==id}
+     if(index<0)rows.add(JSONObject(change.toString())) else rows[index]=JSONObject(change.toString())
+   }
+   return JSONArray(rows)
+ }
+ private fun activeHermesRuns(messages:JSONArray?):JSONArray=JSONArray((messages?.objects()?:emptyList())
+  .filter{it.optString("role")=="user"&&it.optString("status") in setOf("queued","sending","running","unknown","approval_required")}
+  .map{message->JSONObject().put("message_id",message.optString("id"))
+   .put("run_id",message.opt("run_id")).put("status",message.optString("status"))
+   .put("phase",message.optString("phase")).put("active_tool",message.opt("active_tool"))
+   .put("received_at",message.opt("received_at"))})
+ private fun applyHermesEvent(kind:String,payload:JSONObject){
+   if(kind=="snapshot"){
+     if(payload.optJSONArray("messages")==null||payload.optJSONArray("runs")==null)return
+     val snapshot=JSONObject(payload.toString())
+     if(snapshot.optString("conversation_id").isBlank())snapshot.put("conversation_id",hermes.optString("conversation_id").ifBlank{"personal-main"})
+     hermes=snapshot;hermesFresh=true;hermesError="";hermesStreaming=true
+     runCatching{store.secureCache("hermes-conversation.enc",snapshot)}
+     return
+   }
+   if(kind!="update")return
+   val current=JSONObject(hermes.toString())
+   if(payload.has("revision")&&payload.optLong("revision")<=current.optLong("revision"))return
+   val message=payload.optJSONObject("message")?:payload.optJSONObject("changed_message")
+    ?:payload.takeIf{it.has("id")&&it.has("role")}
+   val changedMessages=(payload.optJSONArray("messages")?.objects()?:emptyList())+listOfNotNull(message)
+   if(changedMessages.isNotEmpty()){
+     current.put("messages",mergeHermesRows(current.optJSONArray("messages"),changedMessages,"id"))
+     current.put("runs",activeHermesRuns(current.optJSONArray("messages")))
+   }else payload.optJSONArray("runs")?.let{current.put("runs",JSONArray(it.toString()))}
+   if(payload.has("revision"))current.put("revision",payload.optLong("revision"))
+   if(current.optString("conversation_id").isBlank())current.put("conversation_id","personal-main")
+   if(changedMessages.isNotEmpty()||payload.has("runs")||payload.has("run")){
+     hermes=current;hermesFresh=true;hermesError="";hermesStreaming=true
+   }
+   hermesReconcile?.cancel()
+   hermesReconcile=viewModelScope.launch{delay(700);refreshHermes()}
+ }
+ suspend fun refreshHermes(){
+   if(hermesLoading)return
+   hermesLoading=true
+   try{
+     val data=store.request("/personal/conversation")
+     if(data.optString("conversation_id").isBlank()||data.optJSONArray("messages")==null||data.optJSONArray("runs")==null)error("Hermes 对话数据格式不完整")
+     if(data.has("revision")&&data.optLong("revision")<hermes.optLong("revision"))return
+     hermes=data;hermesFresh=true;hermesError=""
+     runCatching{store.secureCache("hermes-conversation.enc",data)}
+   }catch(e:Exception){hermesFresh=false;hermesError=e.message?:"Hermes 暂时无法连接"}
+   finally{hermesLoading=false}
+ }
+ fun sendHermes(){
+   val message=hermesDraft.trim()
+   if(message.isBlank()||hermesSending||!hermesFresh)return
+   if(hermesPending.optString("text").isNotBlank()&&hermesPending.optString("text")!=message){
+     hermesSendNote="上一条发送结果待核实。请先核对并决定是否重试。"
+     return
+   }
+   viewModelScope.launch{
+     hermesSending=true;hermesSendNote="";hermesError=""
+     try{
+       val requestId=hermesPending.optString("request_id").ifBlank{UUID.randomUUID().toString()}
+       hermesPending=JSONObject().put("request_id",requestId).put("text",message)
+       store.saveSecureText("hermes-pending",hermesPending.toString())
+       val receipt=store.request("/personal/conversation/messages",JSONObject().put("request_id",requestId).put("text",message))
+       if(receipt.optString("status") !in setOf("accepted","queued","sending","completed","failed","unknown")||receipt.optString("message_id").isBlank())error("Hermes 尚未确认接收这条消息")
+       if(receipt.optString("request_id")!=requestId)error("发送回执请求号不匹配")
+       store.saveSecureText("hermes-pending","")
+       hermesPending=JSONObject()
+       if(hermesDraft.trim()==message)updateHermesDraft("")
+       hermesSendNote=if(receipt.optString("status") in listOf("failed","unknown"))"请查看对话中的失败或待核实状态" else "Hermes 已接收，正在更新对话"
+       refreshHermes()
+     }catch(e:Exception){hermesSendNote="发送结果待核实，草稿已保留；重试会复用同一请求号";hermesError=e.message?:"暂时无法发送"}
+     finally{hermesSending=false}
+   }
+ }
+ fun stopHermesRetry(){
+   store.saveSecureText("hermes-pending","")
+   hermesPending=JSONObject()
+   hermesSendNote="已停止重试上一条；发送新消息前请核对对话记录。"
+ }
+ override fun onCleared(){
+   hermesVoiceTimer?.cancel();runCatching{hermesRecorder?.stop()};runCatching{hermesRecorder?.release()};hermesRecordingFile?.delete()
+   super.onCleared()
+ }
+ suspend fun refreshPersonal(){
+   if(personalLoading)return
+   personalLoading=true
+   try{
+     val overview=store.request("/personal/overview")
+     if(overview.optInt("schema_version")!=1)error("个人概览版本暂不支持")
+     personal=overview;personalFresh=true;personalError=""
+     runCatching{store.secureCache("personal-overview.enc",overview)}
+   }catch(e:Exception){personalFresh=false;personalError=e.message?:"个人概览暂时无法连接"}
+   finally{personalLoading=false}
+ }
  fun followVoiceDelivery(workId:String){
   val id=runCatching{UUID.fromString(workId)}.getOrNull()?:return
   voiceWatch?.cancel();voiceDelivery="正在接收你的语音"
   voiceWatch=viewModelScope.launch{
    androidx.work.WorkManager.getInstance(getApplication()).getWorkInfoByIdFlow(id).collect{info->
     when(info?.state){
-     androidx.work.WorkInfo.State.SUCCEEDED->{voiceDelivery="";info.outputData.getString("sid")?.let{openId(it)};voiceWatch?.cancel()}
+     androidx.work.WorkInfo.State.SUCCEEDED->{voiceDelivery="";info.outputData.getString("sid")?.let{openId(it);externalWorkRoute++};voiceWatch?.cancel()}
      androidx.work.WorkInfo.State.FAILED,androidx.work.WorkInfo.State.CANCELLED->{voiceDelivery="";error=info.outputData.getString("error")?:"语音尚未送达，可打开小窗重试。";voiceWatch?.cancel()}
      androidx.work.WorkInfo.State.ENQUEUED->voiceDelivery="录音已排队，联网后自动发送"
      androidx.work.WorkInfo.State.RUNNING->voiceDelivery=if(info.progress.getString("phase")=="sending")"正在进入这条 Pi 会话"else"正在把语音交给 Pi"

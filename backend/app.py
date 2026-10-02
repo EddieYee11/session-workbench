@@ -2,10 +2,15 @@ import asyncio,contextlib,hashlib,hmac,json,os,secrets,time,fcntl,termios,struct
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI,Request,HTTPException,WebSocket,WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse,StreamingResponse
 from history import History,text_content
 from runtime import Runtime
 from voice import voice_router
+from personal import PersonalBridge
+from conversation import PersonalConversation
+from signals import PersonalSignals
+from signal_inspector import HermesSignalReviewer,SignalInspector
+from work_dispatch import WorkProposalStore
 
 HOME=Path(os.environ.get('WORKBENCH_HOME',str(Path.home())))
 STATE=Path(os.environ.get('WORKBENCH_STATE',str(Path.home()/'.session-workbench')))
@@ -14,6 +19,11 @@ TOKEN_FILE=STATE/'token'
 if not TOKEN_FILE.exists():TOKEN_FILE.write_text(secrets.token_urlsafe(40));TOKEN_FILE.chmod(0o600)
 TOKEN=TOKEN_FILE.read_text().strip()
 history=History(HOME,STATE);runtime=Runtime(history,TOKEN)
+personal=PersonalBridge(STATE)
+conversation=PersonalConversation(STATE)
+signals=PersonalSignals(STATE)
+inspector=SignalInspector(signals,HermesSignalReviewer(STATE))
+work_proposals=WorkProposalStore(STATE,HOME/'AI_Work_System')
 rate={}
 
 @asynccontextmanager
@@ -25,8 +35,13 @@ async def lifespan(app):
                 with contextlib.suppress(Exception):await runtime.ensure_rpc()
             await asyncio.sleep(4)
     task=asyncio.create_task(scan_loop())
+    work_proposals.recover_inflight()
+    conversation.start()
+    inspector.start()
     yield
     task.cancel()
+    await inspector.stop()
+    await conversation.stop()
     if runtime.rpc:await runtime.rpc.close()
 
 app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
@@ -53,6 +68,72 @@ async def pair(request:Request):
     p.unlink();return {'token':TOKEN}
 @app.get('/status')
 async def status():return {'index':history.progress,'managed':len(history.managed()),'host':'Mac mini','default_cwd':str(HOME/'AI_Work_System')}
+@app.get('/personal/overview')
+async def personal_overview():return await personal.overview()
+@app.get('/personal/conversation')
+async def personal_conversation():
+    return conversation.snapshot()
+@app.get('/personal/conversation/stream')
+async def personal_conversation_stream(request:Request):
+    raw=request.headers.get('last-event-id','')
+    after=int(raw) if raw.isdecimal() and len(raw)<19 else None
+    async def events():
+        async for frame in conversation.stream(after):
+            if frame['event']=='keepalive':
+                yield ': keepalive\n\n'
+            else:
+                payload=json.dumps(frame['data'],ensure_ascii=False,separators=(',',':'))
+                yield f"id: {frame['id']}\nevent: {frame['event']}\ndata: {payload}\n\n"
+    return StreamingResponse(events(),media_type='text/event-stream',headers={'Cache-Control':'no-store','X-Accel-Buffering':'no'})
+@app.post('/personal/conversation/messages')
+async def personal_message(request:Request):
+    data=await request.json()
+    if not isinstance(data,dict) or not isinstance(data.get('request_id'),str) or not isinstance(data.get('text'),str):raise ValueError('消息格式无效')
+    return conversation.submit(data['request_id'],data['text'])
+@app.post('/personal/signals')
+async def personal_signal_batch(request:Request):
+    data=await request.json()
+    if not isinstance(data,dict):raise ValueError('通知批次无效')
+    result=signals.ingest(data.get('events'))
+    if result['accepted_ids']:inspector.wake()
+    return result
+@app.get('/personal/signals')
+async def personal_signal_list(limit:int=50):
+    return signals.recent(limit)
+@app.get('/personal/signals/health')
+async def personal_signal_health():
+    return signals.health()
+@app.get('/personal/work/proposals')
+async def personal_work_proposals(limit:int=20):
+    return {'items':work_proposals.list(limit)}
+@app.post('/personal/work/proposals/{proposal_id}/approve')
+async def approve_personal_work(proposal_id:str,request:Request):
+    data=await request.json()
+    if not isinstance(data,dict) or not isinstance(data.get('request_id'),str):raise ValueError('缺少有效请求标识')
+    request_id=data['request_id']
+    async with runtime.action_lock:
+        existing=work_proposals.get(proposal_id)
+        if not existing:raise ValueError('工作建议不存在')
+        if existing['approval_request_id']:
+            if existing['approval_request_id']!=request_id:raise ValueError('工作建议已由另一次审批处理')
+            return existing
+        proposal=work_proposals.claim_approval(proposal_id,request_id)
+        try:
+            sid=await runtime.create(proposal['agent'],proposal['cwd'],sandbox=proposal['sandbox'])
+            if proposal['agent']=='pi':
+                for _ in range(80):
+                    if any(e.get('type')=='session_start' for e in runtime.events(sid)):break
+                    await asyncio.sleep(.25)
+                else:raise RuntimeError('Pi 启动状态待核实')
+                await asyncio.sleep(1)
+            await runtime.input(sid,proposal['prompt'],request_id)
+            return work_proposals.mark_accepted(proposal_id,request_id,sid)
+        except Exception as exc:
+            work_proposals.mark_unknown(proposal_id,request_id,type(exc).__name__[:80],locals().get('sid'))
+            raise RuntimeError('派发状态待核实，请先查看工作会话；不会自动重发') from None
+@app.post('/personal/work/proposals/{proposal_id}/reject')
+async def reject_personal_work(proposal_id:str):
+    return work_proposals.reject(proposal_id)
 @app.get('/models')
 async def models(agent:str='pi'):
     return {'models':await runtime.models(agent)}

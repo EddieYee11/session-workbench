@@ -47,11 +47,11 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
 // 中性表面承载内容，角色本身和少量状态色承担个性。
-val Ink=Color(0xFF252A31);val Paper=Color(0xFFF8F9FA);val SidebarBg=Color(0xFFF1F3F5)
-val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF68727D);val Faint=Color(0xFF7A838D)
-val Line=Color(0xFFE5E8EC);val Track=Color(0xFFEBEEF2);val ChipBg=Color(0xFFF0F2F5)
-val UserBubble=Color(0xFFEDF2F7);val ToolSurface=Color(0xFFF3F5F7)
-val Accent=Ink;val AccentSoft=Color(0xFFEAF0F5);val AccentInk=Ink
+val Ink=Color(0xFF141414);val Paper=Color(0xFFFFFFFF);val SidebarBg=Color(0xFFF5F5F5)
+val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF686868);val Faint=Color(0xFF909090)
+val Line=Color(0xFFEAEAEA);val Track=Color(0xFFEDEDED);val ChipBg=Color(0xFFF1F1F1)
+val UserBubble=Color(0xFFECECEC);val ToolSurface=Color(0xFFF3F3F3)
+val Accent=Ink;val AccentSoft=Color(0xFFEDEDED);val AccentInk=Ink
 val CompanionCoral=Color(0xFFC57665);val CompanionBlue=Color(0xFF5F8794)
 val CompanionGlow=Color(0xFFE2EFF0);val CompanionBlush=Color(0xFFF8EAE3)
 val PiGreen=Color(0xFF396C55);val PiSoft=Color(0xFFE7F2EC)
@@ -62,13 +62,13 @@ val Danger=Color(0xFFB24A3D);val Success=PiGreen
 // 保留少量强调色，避免把整页背景染成角色色。
 val WashTop=Paper;val WashMid=Paper;val WashBottom=Paper
 // 暖赭仅用于局部主操作与状态。
-val Ember=Color(0xFFB4552D);val EmberDeep=Color(0xFF8F3E1E);val EmberSoft=Color(0xFFF8E9DC)
+val Ember=Color(0xFF333333);val EmberDeep=Color(0xFF333333);val EmberSoft=Color(0xFFEDEDED)
 // 点缀金：状态徽标与高光
 val Gold=Color(0xFFC99A3C);val GoldSoft=Color(0xFFFAF0DA)
 
 val Palette=lightColorScheme(
  primary=Ink,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=Ink,
- secondary=CompanionCoral,secondaryContainer=CompanionBlush,onSecondaryContainer=Ink,
+ secondary=Muted,secondaryContainer=ChipBg,onSecondaryContainer=Ink,
  tertiary=Ember,onTertiary=Color.White,tertiaryContainer=EmberSoft,onTertiaryContainer=EmberDeep,
  background=Paper,onBackground=Ink,surface=Card,onSurface=Ink,
  surfaceVariant=ToolSurface,onSurfaceVariant=Muted,outline=Line)

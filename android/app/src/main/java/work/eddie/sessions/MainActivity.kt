@@ -25,6 +25,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,21 +42,24 @@ import java.util.*
 class MainActivity:ComponentActivity(){
  private val vm:WorkbenchModel by viewModels()
  var quick by mutableStateOf("")
+ var workLaunch by mutableIntStateOf(0)
  override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
    handleIntent(intent)
    if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)
    val shortcuts=listOf(ShortcutInfo.Builder(this,"voice").setShortLabel("和 Pi 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build())+listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
    Thread { getSystemService(ShortcutManager::class.java).dynamicShortcuts=shortcuts }.start()
    androidx.work.WorkManager.getInstance(this).enqueueUniquePeriodicWork("session-updates",androidx.work.ExistingPeriodicWorkPolicy.KEEP,androidx.work.PeriodicWorkRequestBuilder<StatusWorker>(15,java.util.concurrent.TimeUnit.MINUTES).setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build()).build())
-   setContent{MaterialTheme(colorScheme=Palette){Workbench(vm,quick){quick=""}}}
+   if(SignalConfig.enabled(this))SignalSync.schedule(this)
+   setContent{MaterialTheme(colorScheme=Palette){Workbench(vm,quick,workLaunch){quick=""}}}
  }
- override fun onStart(){super.onStart();vm.active=true}
- override fun onStop(){vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;super.onStop()}
+ override fun onStart(){super.onStart();vm.active=true;if(vm.store.token.isNotEmpty()){vm.refreshPersonalNow();vm.refreshHermesNow()};if(SignalConfig.enabled(this)&&SignalConfig.accessGranted(this))SignalSync.schedule(this)}
+ override fun onStop(){vm.finishHermesVoice(false);vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;vm.personalFresh=false;vm.hermesFresh=false;vm.signalsFresh=false;vm.signalsHealthFresh=false;super.onStop()}
  override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);handleIntent(intent)}
  private fun handleIntent(intent:Intent){
   val sid=intent.getStringExtra("sid").orEmpty()
   quick=intent.getStringExtra("agent").orEmpty()
-  if(sid.isNotBlank())vm.openId(sid) else if(quick.isNotBlank())vm.close()
+  if(sid.isNotBlank()){vm.openId(sid);workLaunch++} else if(quick.isNotBlank()){vm.close();workLaunch++}
+  if(intent.getBooleanExtra("signal_activity",false)){vm.showSignalsActivity=true;vm.externalHermesRoute++}
   // Close the old scene before observing delivery; an already-completed worker may open immediately.
   intent.getStringExtra("voice_work")?.let{vm.followVoiceDelivery(it)}
  }
@@ -139,7 +144,7 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
 @Composable fun Settings(vm:WorkbenchModel,dismiss:()->Unit){
  val context=androidx.compose.ui.platform.LocalContext.current
  var base by remember{mutableStateOf(vm.store.base.ifBlank{"https://pi.eddiegao.work:8443/sessions"})};var code by remember{mutableStateOf("")};var notify by remember{mutableStateOf(vm.store.prefs.getBoolean("notifications",true))}
- AlertDialog(onDismissRequest=dismiss,containerColor=Paper,title={Text("Com! · 设置")},text={Column(Modifier.verticalScroll(rememberScrollState())){
+ AlertDialog(onDismissRequest=dismiss,containerColor=Paper,title={Row(verticalAlignment=Alignment.CenterVertically){ComIcon(R.drawable.com_icon_settings_v1,null,Modifier.size(24.dp));Text("Com! · 设置",Modifier.padding(start=5.dp))}},text={Column(Modifier.verticalScroll(rememberScrollState())){
  Text("快捷语音",fontWeight=FontWeight.Bold)
  Text("按住电源键，和 Pi 说一句。说完直接发送，上滑小窗继续详细对话。",Modifier.padding(top=5.dp),fontSize=12.sp,color=Muted)
  TextButton(onClick={context.startActivity(Intent(context,QuickVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开 Pi 语音小窗",Modifier.padding(start=8.dp))}
@@ -148,10 +153,11 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  Text("Mac mini",fontWeight=FontWeight.Bold);Text(if(vm.connected)"连接正常" else "首次使用需配对",color=Muted,fontSize=12.sp)
  OutlinedTextField(base,{base=it},label={Text("HTTPS 服务地址")},modifier=Modifier.padding(top=12.dp))
  OutlinedTextField(code,{code=it},label={Text("一次性配对码")})
- TextButton(onClick={vm.run{vm.store.base=base;val r=vm.store.request("/pair",JSONObject().put("code",code),false);vm.store.token=r.getString("token");vm.refresh();dismiss()}}){Text("配对并连接")}
+ TextButton(onClick={vm.run{vm.store.base=base;val r=vm.store.request("/pair",JSONObject().put("code",code),false);vm.store.token=r.getString("token");vm.refresh();vm.refreshPersonal();vm.refreshHermes();SignalSync.immediate(context);dismiss()}}){Text("配对并连接")}
  Text("字号 ${vm.font.toInt()}",Modifier.padding(top=16.dp));Slider(vm.font,{vm.font=it;vm.store.prefs.edit().putFloat("font",it).apply()},valueRange=14f..22f,steps=7)
  Row(verticalAlignment=Alignment.CenterVertically){Text("完成、失败与待回应通知",Modifier.weight(1f),fontSize=13.sp);Switch(notify,{notify=it;vm.store.prefs.edit().putBoolean("notifications",it).apply()})}
  Text("后台通知由 Android 定时调度，前台即时更新。\n历史索引 ${vm.index.optInt("done")}/${vm.index.optInt("total")}\n无法读取 ${vm.index.optInt("unreadable")} 份",fontSize=12.sp,color=Muted)
+ SignalSettings(context)
  Text("离线仅检索已缓存的会话正文。凭据使用 Android Keystore 加密保存。",Modifier.padding(top=12.dp),fontSize=12.sp,color=Muted)
  }},confirmButton={TextButton(onClick=dismiss){Text("完成")}})
 }

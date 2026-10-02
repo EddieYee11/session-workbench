@@ -2,17 +2,17 @@
 
 Com! 是原「会话工作台」Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务。保留原包名以便原位升级和保留本机配对、缓存。可从手机发起和继续 Pi / Codex 会话，查看实时过程和终端，并检索 Mac mini 上保存的历史会话。
 
-当前 Android 版本为 **1.3.4**。给协作者介绍项目时，可直接阅读 [项目背景、功能、架构与当前状态](docs/app-overview.md)；模型与推理选择的实现及验证边界见 [1.3.4 记录](docs/com-1.3.4.md)。
+当前 Android 工程版本为 **1.4.1**。1.4.1 已通过无线 ADB 覆盖安装到小米折叠屏，已核对展开屏聊天、今天、工作、日历/账本入口、活动与历史底部弹层及键盘布局；Personal Agent 其余业务流程仍按实施规划中的边界验收。给协作者介绍原工作台可阅读 [项目背景、功能与架构](docs/app-overview.md)；Personal Agent 的最新实施状态和待验收项见 [产品与实施规划](docs/COM_PERSONAL_AGENT_PLAN.md)。旧模型与推理选择的验证边界见 [1.3.4 记录](docs/com-1.3.4.md)。
 
-- `backend/`：只读历史索引、Codex App Server 接口、Pi 实时扩展、tmux 终端桥。
-- `android/`：Kotlin / Compose 原生会话、全文搜索、离线缓存与 xterm.js 终端。
+- `backend/`：只读历史索引、Pi/Codex 会话运行时、Hermes 主对话与流式服务、个人概览、通知收件箱和待审批工作建议。
+- `android/`：Kotlin / Compose 原生会话、Hermes 主线与「今天」页、通知采集、离线缓存与 xterm.js 终端。
 - `backend/tests/`、`android/app/src/{test,androidTest}/`：项目检查代码。
 
 本机虚拟环境、Android 构建产物、连接令牌和 `verification/` 中的设备截图不会提交到仓库。
 
 Android 工程位于 `android/`，可用 Android Studio 打开，或在配置好 JDK 17+ 与 Android SDK 后运行 `./gradlew assembleDebug`。Mac mini 端需要 Python 3.12+、Pi、Codex、tmux 和 Caddy；`backend/install-mini.py` 是针对当前 Mac mini 的部署脚本，运行前应先核对其中的 Caddy 路径和路由。服务状态与会话数据保存在 Mac mini 的 `~/.session-workbench/`，不属于此仓库。
 
-工作台新建和显式继续的会话默认使用最高权限。Codex 采用 `danger-full-access` 与无审批；Pi 使用 `--approve` 和工作台专属工具扩展。如果 Mac mini 全局加载了额外的 Pi 命令护栏，需要让该护栏仅在 `SESSION_WORKBENCH_YOLO=1` 的工作台进程中跳过确认，其余 Pi 入口保持原行为。
+原工作台新建和显式继续的会话默认使用最高权限。Codex 采用 `danger-full-access` 与无审批；Pi 使用 `--approve` 和工作台专属工具扩展。如果 Mac mini 全局加载了额外的 Pi 命令护栏，需要让该护栏仅在 `SESSION_WORKBENCH_YOLO=1` 的工作台进程中跳过确认，其余 Pi 入口保持原行为。Hermes 主线没有这些编码工具，只能提交需用户在 Com! 审批的工作建议；当前 Pi 建议不能自动执行。
 
 Android 1.1.0 使用已选定的「灵动伙伴」界面：暖白底色、圆角会话卡片和本地流体圆脸 Bot。首页卡片读取真实会话，点开历史仍是只读；对话、终端、搜索和新建入口保持原有结构。网页 `docs/ai-style-directions.html` 仍是使用模拟数据的风格对照页。
 
@@ -31,3 +31,17 @@ Bot 直接复用用户指定的「Grok 灵动助手 v2」矢量动画与控制�
 ## Com! 1.3.3–1.3.4
 
 1.3.3 调整原生输入、快捷小窗手势和关键操作触感；1.3.4 加入从 Mac mini 实时读取的 Pi / Codex 模型目录，以及输入框旁「＋」中的模型与推理水平选择。1.3.4 已覆盖安装在小米折叠屏；所选模型的真实消息回合尚待实机验收。详见 [1.3.3](docs/com-1.3.3.md) 和 [1.3.4](docs/com-1.3.4.md)。
+
+## Com! 1.4.0 · Personal Agent 开发中
+
+默认入口改为独立 Hermes 的一条持久主对话，回复通过 SSE 逐段显示服务端实际阶段；「今天」直接展示 Google「Pi」日历未来 14 天和 NAS ezBookkeeping 的只读概览，以及待我处理和在途工作。Mac mini 的 Google OAuth 已恢复，概览在本机与公网均可读取；Hermes 两轮连续对话、重启后历史读取和本机／公网真实流式增量已验证。Pi/Codex 仍在「工作」中，Hermes 提出的工作建议须经 Com! 审批，实际派发闭环尚未验收。
+
+通知采集需要用户在 Android 系统中手动开启特殊访问；选定来源的新通知才会入队，由隔离的 Hermes 分析成摘要、建议记录和回复草稿。**不会自动发送消息**。目前只通过合成通知验证了服务端分析；真实微信／短信通知、后台可靠性和新版 Android 整机交互仍待手机验收。新主导航四枚图标和 Hermes 形象采用同系 GPT 生成 PNG；旧工作区的部分控件仍使用原有 Material Icons。详情及当前边界见 [实施记录](docs/COM_PERSONAL_AGENT_PLAN.md#7-2026-10-01-实施记录)。
+
+## Com! 1.4.1 · 白灰聊天界面
+
+按 Muse 参考图统一为纯白背景、浅灰大圆角气泡和胶囊输入框，功能图标改为同一套黑灰矢量符号；保留 Hermes / Pi / Codex 的角色形象。对话页的数据卡片集中到「今天」，空会话使用轻量欢迎文字。
+
+手机与折叠屏展开都使用底部「对话、今天、活动、工作、更多」，不再切换到侧边功能栏。日历、账本、设置从「更多」底部弹层进入；工作历史也从底部展开。键盘打开时底部导航收起，为输入保留空间。既有对话、配对、审批与快捷语音逻辑沿用。
+
+本轮已通过 Android 编译和现有 24 项单元测试，优化安装包版本为 1.4.1（versionCode 10）。展开屏实机检查已完成；411dp 窄屏与 608dp 宽屏模拟器的导航、账本、工作历史和键盘检查均通过，新增设备检查见 `ComNavigationTest`。物理折叠/展开切换仍需用户手持体验。截图保存在本机 `verification/com-1.4.1/`，测试中的示例对话仅用于模拟器。
