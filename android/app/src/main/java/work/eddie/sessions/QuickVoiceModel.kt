@@ -8,206 +8,201 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.*
 import kotlinx.coroutines.*
-import org.json.JSONObject
 import java.io.File
-import java.net.URLEncoder
 import java.util.UUID
 import kotlin.math.ln
 
-/** Foreground capture, followed by durable background delivery directly to Pi. */
+/**
+ * 悬浮语音记账：录音 → 转写 → 解析 → 3 秒后自动记账，说完就走。
+ * phase: ready | recording | transcribing | confirm | sending | sent
+ */
 class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
-    private val store = Store(app)
-    private val prefs = store.prefs
-    private val captureDir = File(app.filesDir, "quick-voice").apply { mkdirs() }
-    var phase by mutableStateOf("ready"); private set
-    var message by mutableStateOf(""); private set
-    var seconds by mutableIntStateOf(0); private set
-    var levels by mutableStateOf(List(24) { 0f }); private set
-    var sessionId by mutableStateOf(prefs.getString("quick-voice-capture-sid", "") ?: ""); private set
-    var replyText by mutableStateOf(""); private set
-    var hasRecording by mutableStateOf(captureFile()?.exists() == true); private set
-    val cwd: String get() = prefs.getString("lastCwd", "/Users/eddiegao/AI_Work_System") ?: "/Users/eddiegao/AI_Work_System"
-    val paired: Boolean get() = store.base.isNotBlank() && store.token.isNotBlank()
-    var deliveryId by mutableStateOf(prefs.getString("quick-voice-work", "") ?: ""); private set
-    var restored by mutableStateOf(false); private set
-    private var deliveryWatch: Job? = null
-    private var replyWatch: Job? = null
-    private var sessionEnded = false
-    private var protectedCaptureName: String? = null
-    var openRecordingRequest by mutableIntStateOf(0); private set
-    private var consumedOpenRecordingRequest = 0
-    private var freshWindowRequested = false
-    init {
-        viewModelScope.launch {
-            val previous=runCatching{UUID.fromString(deliveryId)}.getOrNull()
-            if(previous!=null){
-                val info=withContext(Dispatchers.IO){WorkManager.getInstance(getApplication()).getWorkInfoById(previous).get()}
-                if(info?.state in listOf(WorkInfo.State.ENQUEUED,WorkInfo.State.BLOCKED,WorkInfo.State.RUNNING))
-                    protectedCaptureName = captureFile()?.name
-                if(!freshWindowRequested){
-                    if(info?.state==WorkInfo.State.SUCCEEDED && prefs.getBoolean("quick-voice-read:$deliveryId",false)){deliveryId="";prefs.edit().remove("quick-voice-work").apply();hasRecording=false;sessionId=""}
-                    else watchDelivery(deliveryId)
-                }
-            }
-            restored=true
-        }
+ private val store = Store(app)
+ private val prefs = store.prefs
+ private val captureDir = File(app.filesDir, "quick-voice").apply { mkdirs() }
+ var phase by mutableStateOf("ready"); private set
+ var message by mutableStateOf(""); private set
+ var seconds by mutableIntStateOf(0); private set
+ var levels by mutableStateOf(List(24) { 0f }); private set
+ var transcript by mutableStateOf(""); private set
+ var expense by mutableStateOf<ParsedExpense?>(null); private set
+ val paired: Boolean get() = store.base.isNotBlank() && store.token.isNotBlank()
+ var restored by mutableStateOf(false); private set
+ var openRecordingRequest by mutableIntStateOf(0); private set
+ private var consumedOpenRecordingRequest = 0
+ private var pendingCapture: String? = null
+ private var transcribeWatch: Job? = null
+ private var sendWatch: Job? = null
+ private var recorder: MediaRecorder? = null
+ private var recordingFile: File? = null
+ private var timer: Job? = null
+ private var started = 0L
+ var isForeground by mutableStateOf(false); private set
+
+ init { restored = true }
+
+ private fun captureFile(): File? = prefs.getString("quick-voice-file", null)?.let { name ->
+  File(captureDir, File(name).name).takeIf { it.extension == "m4a" }
+ }
+
+ fun requestRecordingOnOpen() { openRecordingRequest++ }
+ fun consumeRecordingOnOpen(): Boolean {
+  if (openRecordingRequest == consumedOpenRecordingRequest) return false
+  consumedOpenRecordingRequest = openRecordingRequest
+  if (phase == "recording") return false
+  transcribeWatch?.cancel(); sendWatch?.cancel()
+  phase = "ready"; message = ""; transcript = ""; expense = null
+  return true
+ }
+ fun permissionDenied() { message = "麦克风权限未开启。请在系统设置中允许 Com! 使用麦克风。" }
+ fun onForeground() { isForeground = true }
+ fun onBackground() {
+  isForeground = false
+  if (phase == "recording") finishRecording(transcribe = false)
+ }
+
+ @Suppress("DEPRECATION")
+ fun record() {
+  if (!isForeground || phase in listOf("recording", "transcribing", "confirm", "sending", "sent")) return
+  if (!paired) { message = "先在 Com! 中完成 Mac mini 配对，再使用语音记账。"; return }
+  val file = File(captureDir, UUID.randomUUID().toString() + ".m4a")
+  try {
+   val r = MediaRecorder()
+   recorder = r
+   r.setAudioSource(MediaRecorder.AudioSource.MIC)
+   r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+   r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+   r.setAudioSamplingRate(16000)
+   r.setAudioEncodingBitRate(64000)
+   r.setOutputFile(file.absolutePath)
+   r.prepare(); r.start()
+   recordingFile = file
+   started = SystemClock.elapsedRealtime(); seconds = 0
+   levels = List(24) { 0f }; phase = "recording"; message = ""; transcript = ""; expense = null
+   val endpoint = SpeechEndpointDetector()
+   timer = viewModelScope.launch {
+    while (phase == "recording") {
+     delay(50)
+     val amplitude = runCatching { r.maxAmplitude }.getOrDefault(0)
+     levels = levels.drop(1) + ((ln(1.0 + amplitude) / ln(32768.0)).toFloat().coerceIn(0f, 1f))
+     seconds = ((SystemClock.elapsedRealtime() - started) / 1000).toInt()
+     if (endpoint.sample(amplitude, SystemClock.elapsedRealtime())) finishRecording()
+     else if (seconds >= 60) {
+      if (endpoint.heardSpeech) finishRecording() else { cancelRecording(); message = "没有检测到说话，未记账。点“重说”再来一次。" }
+     }
     }
-    private var recorder: MediaRecorder? = null
-    private var recordingFile: File? = null
-    private var timer: Job? = null
-    private var started = 0L
-    var isForeground by mutableStateOf(false); private set
-    private fun captureFile(): File? = prefs.getString("quick-voice-file", null)?.let { name ->
-        File(captureDir, File(name).name).takeIf { it.extension == "m4a" }
+   }
+  } catch (_: Exception) {
+   releaseRecorder(); file.delete(); phase = "ready"
+   message = "暂时无法使用麦克风，请检查权限或其他应用的录音占用。"
+  }
+ }
+
+ fun finishRecording(transcribe: Boolean = true) {
+  if (phase != "recording") return
+  timer?.cancel(); timer = null
+  val file = recordingFile
+  val stopped = runCatching { recorder?.stop() }.isSuccess
+  releaseRecorder()
+  phase = "ready"
+  if (!stopped || file == null || file.length() < 512 || SystemClock.elapsedRealtime() - started < 650) {
+   file?.delete(); message = "录音太短，请再说一次。"; return
+  }
+  captureFile()?.takeIf { it != file }?.delete()
+  prefs.edit().putString("quick-voice-file", file.name).apply()
+  if (transcribe) transcribe() else message = "录音已保存，下次打开可继续识别。"
+ }
+
+ fun cancelRecording() {
+  if (phase != "recording") return
+  timer?.cancel(); timer = null
+  runCatching { recorder?.stop() }; releaseRecorder()
+  recordingFile?.delete(); recordingFile = null
+  phase = "ready"; message = "本次录音已取消。"
+ }
+
+ /** 重说：取消转写，回到可录音状态 */
+ fun retry() {
+  pendingCapture?.let { WorkManager.getInstance(getApplication()).cancelUniqueWork("voice-$it") }
+  transcribeWatch?.cancel()
+  transcript = ""; expense = null; message = ""; phase = "ready"
+ }
+
+ /** 关窗时调用：转写中可取消；已确认的发送继续在后台完成 */
+ fun cancelPending() {
+  if (phase == "transcribing" || phase == "confirm") {
+   pendingCapture?.let { WorkManager.getInstance(getApplication()).cancelUniqueWork("voice-$it") }
+   transcribeWatch?.cancel()
+  }
+  if (phase == "recording") finishRecording(transcribe = false)
+ }
+
+ fun transcribe() {
+  val file = recordingFile ?: captureFile() ?: return
+  if (phase !in listOf("ready", "failed")) return
+  val capture = file.nameWithoutExtension
+  pendingCapture = capture
+  val request = OneTimeWorkRequestBuilder<QuickVoiceDelivery>()
+   .setInputData(workDataOf("step" to "transcribe", "capture" to capture))
+   .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+  phase = "transcribing"; message = ""
+  WorkManager.getInstance(getApplication()).enqueueUniqueWork("voice-$capture", ExistingWorkPolicy.KEEP, request)
+  watchTranscribe(request.id)
+ }
+
+ private fun watchTranscribe(id: UUID) {
+  transcribeWatch?.cancel()
+  transcribeWatch = viewModelScope.launch {
+   WorkManager.getInstance(getApplication()).getWorkInfoByIdFlow(id).collect { info ->
+    when (info?.state) {
+     WorkInfo.State.RUNNING -> { phase = "transcribing" }
+     WorkInfo.State.SUCCEEDED -> {
+      transcript = info.outputData.getString("transcript").orEmpty()
+      expense = parseExpense(transcript)
+      phase = "confirm"; message = ""
+      transcribeWatch?.cancel()
+     }
+     WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
+      phase = "ready"; message = info.outputData.getString("error") ?: "没听清，请再说一次。"
+      transcribeWatch?.cancel()
+     }
+     else -> Unit
     }
-    fun requestRecordingOnOpen() {
-        freshWindowRequested = true
-        openRecordingRequest++
+   }
+  }
+ }
+
+ /** 确认记账（3 秒倒计时后自动调用，或点“立即记账”） */
+ fun confirmExpense() {
+  val e = expense ?: return
+  if (phase != "confirm" || e.amount == null) return
+  val capture = pendingCapture ?: UUID.randomUUID().toString()
+  val text = expenseMessage(e)
+  val request = OneTimeWorkRequestBuilder<QuickVoiceDelivery>()
+   .setInputData(workDataOf("step" to "send", "capture" to capture, "text" to text))
+   .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+  phase = "sending"; message = ""
+  WorkManager.getInstance(getApplication()).enqueueUniqueWork("expense-$capture", ExistingWorkPolicy.KEEP, request)
+  watchSend(request.id)
+ }
+
+ private fun watchSend(id: UUID) {
+  sendWatch?.cancel()
+  sendWatch = viewModelScope.launch {
+   WorkManager.getInstance(getApplication()).getWorkInfoByIdFlow(id).collect { info ->
+    when (info?.state) {
+     WorkInfo.State.RUNNING -> { phase = "sending" }
+     WorkInfo.State.SUCCEEDED -> { phase = "sent"; message = ""; sendWatch?.cancel() }
+     WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
+      phase = "confirm"; message = info.outputData.getString("error") ?: "发送失败，可重试记账。"
+      sendWatch?.cancel()
+     }
+     else -> Unit
     }
-    fun consumeRecordingOnOpen(): Boolean {
-        if (openRecordingRequest == consumedOpenRecordingRequest) return false
-        consumedOpenRecordingRequest = openRecordingRequest
-        if (phase == "recording") return false
-        deliveryWatch?.cancel(); replyWatch?.cancel()
-        phase = "ready"; message = ""; replyText = ""; sessionId = ""; sessionEnded = false
-        deliveryId = ""
-        return true
-    }
-    fun permissionDenied() { message = "麦克风权限未开启。请在系统设置中允许 Com! 使用麦克风。" }
-    fun onForeground() { isForeground = true }
-    fun onBackground() {
-        isForeground = false
-        if (phase == "reply" && deliveryId.isNotBlank()) prefs.edit().putBoolean("quick-voice-read:$deliveryId",true).apply()
-        if (phase == "recording") finishRecording(transcribe = false)
-    }
-    @Suppress("DEPRECATION")
-    fun record() {
-        if (!isForeground || phase in listOf("recording", "transcribing", "sending", "queued", "waiting")) return
-        if (!paired) { message = "先在 Com! 中完成 Mac mini 配对，再使用语音。"; return }
-        replyWatch?.cancel(); replyText=""
-        if(sessionEnded){sessionId="";sessionEnded=false}
-        deliveryId=""; prefs.edit().remove("quick-voice-work").apply()
-        val file = File(captureDir, UUID.randomUUID().toString() + ".m4a")
-        try {
-            val r = MediaRecorder()
-            recorder = r
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioSamplingRate(16000)
-            r.setAudioEncodingBitRate(64000)
-            r.setOutputFile(file.absolutePath)
-            r.prepare(); r.start()
-            recordingFile = file
-            started = SystemClock.elapsedRealtime(); seconds = 0
-            levels = List(24) { 0f }; phase = "recording"; message = ""
-            val endpoint = SpeechEndpointDetector()
-            timer = viewModelScope.launch {
-                while (phase == "recording") {
-                    delay(50)
-                    val amplitude = runCatching { r.maxAmplitude }.getOrDefault(0)
-                    levels = levels.drop(1) + ((ln(1.0 + amplitude) / ln(32768.0)).toFloat().coerceIn(0f, 1f))
-                    seconds = ((SystemClock.elapsedRealtime() - started) / 1000).toInt()
-                    if (endpoint.sample(amplitude,SystemClock.elapsedRealtime())) finishRecording()
-                    else if (seconds >= 60) {
-                        if(endpoint.heardSpeech)finishRecording() else { cancelRecording(); message="没有检测到说话，未发送录音。轻点下方再说一句。" }
-                    }
-                }
-            }
-        } catch (_: Exception) {
-            releaseRecorder(); file.delete(); phase = "ready"
-            message = "暂时无法使用麦克风，请检查权限或其他应用的录音占用。"
-        }
-    }
-    fun finishRecording(transcribe: Boolean = true) {
-        if (phase != "recording") return
-        timer?.cancel(); timer = null
-        val file = recordingFile
-        val stopped = runCatching { recorder?.stop() }.isSuccess
-        releaseRecorder()
-        phase = "ready"
-        if (!stopped || file == null || file.length() < 512 || SystemClock.elapsedRealtime() - started < 650) {
-            file?.delete(); message = "录音太短，请再说一次。原来的草稿已保留。"; return
-        }
-        // Replace the previous capture only after a complete, usable recording exists.
-        // A previous window's WorkManager job may still be reading its capture.
-        captureFile()?.takeIf { it != file && it.name != protectedCaptureName }?.delete()
-        prefs.edit().putString("quick-voice-file", file.name).putString("quick-voice-capture-sid",sessionId).apply()
-        hasRecording = true
-        if (transcribe) transcribe() else message = "录音已保存，下次打开可继续发送。"
-    }
-    fun cancelRecording() {
-        if (phase != "recording") return
-        timer?.cancel(); timer = null
-        runCatching { recorder?.stop() }; releaseRecorder()
-        recordingFile?.delete(); recordingFile = null
-        phase = "ready"; message = "本次录音已取消，原来的草稿保留。"
-    }
-    fun transcribe() {
-        val file=captureFile()?:return
-        if(phase !in listOf("ready","failed"))return
-        val request=OneTimeWorkRequestBuilder<QuickVoiceDelivery>()
-            .setInputData(workDataOf("capture" to file.nameWithoutExtension,"cwd" to cwd,"sid" to (prefs.getString("quick-voice-capture-sid",sessionId)?:sessionId)))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
-        deliveryId=request.id.toString()
-        prefs.edit().putString("quick-voice-work",deliveryId).commit()
-        phase="queued";message=""
-        WorkManager.getInstance(getApplication()).enqueueUniqueWork("voice-"+file.nameWithoutExtension,ExistingWorkPolicy.KEEP,request)
-        watchDelivery(deliveryId)
-    }
-    private fun watchDelivery(id:String){
-        val uuid=runCatching{UUID.fromString(id)}.getOrNull()?:return
-        deliveryWatch?.cancel()
-        deliveryWatch=viewModelScope.launch {
-            WorkManager.getInstance(getApplication()).getWorkInfoByIdFlow(uuid).collect { info->
-                when(info?.state){
-                    WorkInfo.State.ENQUEUED,WorkInfo.State.BLOCKED->{phase="queued";message="已排队，网络恢复后自动交给 Pi。"}
-                    WorkInfo.State.RUNNING->{phase=info.progress.getString("phase")?:"transcribing";message=""}
-                    WorkInfo.State.SUCCEEDED->{
-                        sessionId=info.outputData.getString("sid")?:"";hasRecording=false;message=""
-                        phase="waiting"; watchReply(sessionId,info.outputData.getLong("reply_after",0L))
-                        deliveryWatch?.cancel()
-                    }
-                    WorkInfo.State.FAILED,WorkInfo.State.CANCELLED->{phase="ready";hasRecording=captureFile()?.exists()==true;message=info.outputData.getString("error")?:"尚未送达，录音已保留。";deliveryWatch?.cancel()}
-                    else->Unit
-                }
-            }
-        }
-    }
-    private fun watchReply(sid:String,after:Long){
-        replyWatch?.cancel()
-        replyWatch=viewModelScope.launch {
-            var observedRunning=false
-            var tick=0
-            val began=SystemClock.elapsedRealtime()
-            while(isActive){
-                if(!isForeground){delay(400);continue}
-                try{
-                    val live=store.request("/sessions/${URLEncoder.encode(sid,"UTF-8")}/live")
-                    val status=live.optString("status")
-                    observedRunning=observedRunning||status=="running"
-                    var items=live.array("items")
-                    // Finished messages can outlive the live event log. Read history without resuming Pi.
-                    if(tick%4==0||status in listOf("completed","ended","failed")){
-                        val detail=store.request("/sessions/${URLEncoder.encode(sid,"UTF-8")}")
-                        items=(items+detail.array("messages")).distinctBy{it.optString("id")}
-                    }
-                    val current=items.filter{(it.optString("id").removePrefix("pi:").toLongOrNull()?:0L)>after}
-                    replyText=voiceReplyText(items.map{VoiceReplyItem(it.optString("id"),it.optString("role"),it.optString("text"))},after)
-                    message=""
-                    if(voiceReplyFinished(status,replyText.isNotBlank(),observedRunning,current.isNotEmpty(),SystemClock.elapsedRealtime()-began)){
-                        sessionEnded=status=="ended"
-                        phase="reply"
-                        if(replyText.isBlank())message=if(status=="completed")"Pi 已处理完这句话，本轮没有文字回复。"else"这轮对话已结束，暂时没有回复。"
-                        break
-                    }
-                    if(status=="waiting")message="Pi 需要进一步确认，可以上滑展开处理。"
-                }catch(e:CancellationException){throw e}
-                 catch(_:Exception){message="正在重新连接 Pi，回复会继续显示在这里。"}
-                tick++;delay(650)
-            }
-        }
-    }
-    private fun releaseRecorder() { runCatching { recorder?.release() }; recorder = null }
-    override fun onCleared() { replyWatch?.cancel(); deliveryWatch?.cancel(); timer?.cancel(); runCatching { recorder?.stop() }; releaseRecorder(); super.onCleared() }
+   }
+  }
+ }
+
+ private fun releaseRecorder() { runCatching { recorder?.release() }; recorder = null }
+ override fun onCleared() { transcribeWatch?.cancel(); sendWatch?.cancel(); timer?.cancel(); runCatching { recorder?.stop() }; releaseRecorder(); super.onCleared() }
 }

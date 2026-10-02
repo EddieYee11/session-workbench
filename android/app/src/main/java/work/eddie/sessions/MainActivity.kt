@@ -46,7 +46,7 @@ class MainActivity:ComponentActivity(){
  override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
    handleIntent(intent)
    if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)
-   val shortcuts=listOf(ShortcutInfo.Builder(this,"voice").setShortLabel("和 Pi 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build())+listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
+   val shortcuts=listOf(ShortcutInfo.Builder(this,"voice").setShortLabel("语音记账").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build())+listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
    Thread { getSystemService(ShortcutManager::class.java).dynamicShortcuts=shortcuts }.start()
    androidx.work.WorkManager.getInstance(this).enqueueUniquePeriodicWork("session-updates",androidx.work.ExistingPeriodicWorkPolicy.KEEP,androidx.work.PeriodicWorkRequestBuilder<StatusWorker>(15,java.util.concurrent.TimeUnit.MINUTES).setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build()).build())
    if(SignalConfig.enabled(this))SignalSync.schedule(this)
@@ -149,9 +149,9 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
    ComIcon(R.drawable.com_icon_settings_v1,null,Modifier.size(24.dp))
    Text("Com! · 设置",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
   }
- Text("快捷语音",fontWeight=FontWeight.Bold)
- Text("按住电源键，和 Pi 说一句。说完直接发送，上滑小窗继续详细对话。",Modifier.padding(top=5.dp),fontSize=12.sp,color=Muted)
- TextButton(onClick={context.startActivity(Intent(context,QuickVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开 Pi 语音小窗",Modifier.padding(start=8.dp))}
+ Text("语音记账",fontWeight=FontWeight.Bold)
+ Text("按住电源键，直接说出这笔支出（例如“午饭三十五”），3 秒后自动记账。小窗悬浮在当前应用上，不打断你正在做的事。",Modifier.padding(top=5.dp),fontSize=12.sp,color=Muted)
+ TextButton(onClick={context.startActivity(Intent(context,QuickVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开语音记账",Modifier.padding(start=8.dp))}
  TextButton(onClick={context.startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS))}){Text("系统默认助手设置")}
  HorizontalDivider(Modifier.padding(vertical=12.dp),color=Line)
  Text("Mac mini",fontWeight=FontWeight.Bold);Text(if(vm.connected)"连接正常" else "首次使用需配对",color=Muted,fontSize=12.sp)

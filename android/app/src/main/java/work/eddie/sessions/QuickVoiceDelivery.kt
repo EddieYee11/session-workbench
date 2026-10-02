@@ -8,61 +8,53 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 
-/** Durable delivery: closing the small window does not cancel a submitted recording. */
+/**
+ * 语音记账投递，两步都是幂等的：
+ * - transcribe：只转写，输出 transcript；音频转完即删。
+ * - send：把记账消息发给 Hermes（request_id 去重），关掉小窗也不会取消已确认的发送。
+ */
 class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorker(context,params){
  override suspend fun doWork():Result{
+  val step=inputData.getString("step")?:"transcribe"
   val capture=inputData.getString("capture")?:return Result.failure()
   if(!capture.matches(Regex("[a-f0-9-]{36}")))return Result.failure()
-  val store=Store(applicationContext)
-  val dir=File(applicationContext.filesDir,"quick-voice")
-  val file=File(dir,"$capture.m4a")
-  val envelope=File(dir,"$capture.json")
-  val receipt=File(dir,"$capture.accepted.json")
   return try{
-   // WorkManager may replay after process death between server acceptance and its DB commit.
-   if(receipt.exists()){
-    val accepted=JSONObject(receipt.readText())
-    return Result.success(workDataOf("sid" to accepted.getString("sid"),"reply_after" to accepted.optLong("reply_after",0L)))
+   when(step){
+    "send"->doSend(capture)
+    else->doTranscribe(capture)
    }
-   setProgress(workDataOf("phase" to "transcribing"))
-   // Persist the exact request before sending. A retry uses the same server receipt.
-   val target=inputData.getString("sid").orEmpty()
-   require(target.isBlank()||target.startsWith("pi:")){"快捷语音只发送给 Pi。"}
-   val path=if(target.isBlank())"/sessions" else "/sessions/${URLEncoder.encode(target,"UTF-8")}/input"
-   val packet=if(envelope.exists())JSONObject(envelope.readText()) else{
-    val transcript=uploadVoice(store,file,capture).getString("text").trim()
-    check(transcript.isNotBlank()){"没有听清，录音已保留，请再试一次。"}
-    // Fix the old-turn boundary before sending. A retry must keep this boundary and request ID.
-    val after=if(target.isBlank())0L else{
-     val live=store.request("/sessions/${URLEncoder.encode(target,"UTF-8")}/live")
-     val detail=store.request("/sessions/${URLEncoder.encode(target,"UTF-8")}")
-     (live.array("items")+detail.array("messages")).maxOfOrNull{it.optString("id").removePrefix("pi:").toLongOrNull()?:0L}?:0L
-    }
-    val body=JSONObject().put("request_id","voice-$capture")
-    if(target.isBlank())body.put("agent","pi").put("cwd",inputData.getString("cwd")?:"/Users/eddiegao/AI_Work_System")
-     .put("prompt",transcript).put("model","").put("effort","").put("sandbox","danger-full-access")
-    else body.put("text",transcript)
-    JSONObject().put("path",path).put("body",body).put("reply_after",after).also{
-     val temporary=File(dir,"$capture.tmp");temporary.writeText(it.toString());check(temporary.renameTo(envelope))
-    }
-   }
-   // Accept the previous app version's saved envelope as well.
-   val body=packet.optJSONObject("body")?:packet
-   setProgress(workDataOf("phase" to "sending"))
-   val result=store.request(packet.optString("path",path),body)
-   check(result.optString("status")=="accepted"){"发送结果待确认；录音已保留，重试会核对同一条会话。"}
-   val sid=result.getString("sid")
-   val completed=JSONObject().put("sid",sid).put("reply_after",packet.optLong("reply_after",0L))
-   val receiptTemp=File(dir,"$capture.accepted.tmp")
-   receiptTemp.writeText(completed.toString());check(receiptTemp.renameTo(receipt))
-   // Keep the tiny accepted receipt across worker retries; audio can now be safely removed.
-   file.delete();envelope.delete()
-   if(store.prefs.getString("quick-voice-file",null)==file.name)store.prefs.edit().remove("quick-voice-file").remove("quick-voice-capture-sid").apply()
-   Result.success(workDataOf("sid" to sid,"reply_after" to packet.optLong("reply_after",0L)))
   }catch(e:java.util.concurrent.CancellationException){throw e}
-   catch(e:Exception){Result.failure(workDataOf("error" to (e.message?:"暂未送达，录音已保留，可重试。").take(500)))}
+   catch(e:Exception){Result.failure(workDataOf("error" to (e.message?:"暂未送达，录音已保留。").take(300)))}
+ }
+
+ private suspend fun doTranscribe(capture:String):Result{
+  val store=Store(applicationContext)
+  val file=File(applicationContext.filesDir,"quick-voice/$capture.m4a")
+  setProgress(workDataOf("phase" to "transcribing"))
+  val transcript=uploadVoice(store,file,capture).getString("text").trim()
+  check(transcript.isNotBlank()){"没有听清，请再说一次。"}
+  file.delete()
+  return Result.success(workDataOf("transcript" to transcript.take(200)))
+ }
+
+ private suspend fun doSend(capture:String):Result{
+  val store=Store(applicationContext)
+  val text=inputData.getString("text")?.trim()?:return Result.failure()
+  check(text.isNotBlank()){"记账内容为空"}
+  val dir=File(applicationContext.filesDir,"quick-voice").apply{mkdirs()}
+  val receipt=File(dir,"$capture.expense.json")
+  if(receipt.exists())return Result.success(workDataOf("message_id" to JSONObject(receipt.readText()).optString("message_id")))
+  setProgress(workDataOf("phase" to "sending"))
+  // 与 Hermes 对话发送共用 request_id 去重语义：重放不会记两笔
+  val result=store.request("/personal/conversation/messages",
+   JSONObject().put("request_id","expense-$capture").put("text",text))
+  val messageId=result.optString("message_id")
+  check(messageId.isNotBlank()){"Hermes 尚未确认接收这条记账"}
+  val tmp=File(dir,"$capture.expense.tmp")
+  tmp.writeText(JSONObject().put("message_id",messageId).put("text",text).toString())
+  check(tmp.renameTo(receipt))
+  return Result.success(workDataOf("message_id" to messageId))
  }
 }
 

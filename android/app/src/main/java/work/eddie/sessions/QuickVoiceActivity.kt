@@ -1,10 +1,9 @@
 package work.eddie.sessions
 
 import android.Manifest
-import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.Gravity
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -15,8 +14,6 @@ import androidx.activity.viewModels
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,213 +26,121 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.util.VelocityTracker
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import io.noties.markwon.Markwon
-import io.noties.markwon.ext.tables.TablePlugin
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/**
+ * 悬浮语音记账小窗：WRAP_CONTENT + 不拦截窗外触摸 + 不压暗，
+ * 前台应用保持可见、可点。小窗只做一件事：语音记账，说完就走。
+ */
 class QuickVoiceActivity:ComponentActivity(){
  private val vm:QuickVoiceModel by viewModels()
- companion object{fun launch(context:Context){context.startActivity(Intent(context,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST).apply{if(context !is android.app.Activity)addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)})}}
  override fun onCreate(savedInstanceState:Bundle?){
   super.onCreate(savedInstanceState)
   if(savedInstanceState==null)vm.requestRecordingOnOpen()
   window.setBackgroundDrawableResource(android.R.color.transparent)
-  window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-  setContent{MaterialTheme(colorScheme=Palette){QuickVoiceSheet(vm,this::closeWindow){
-   if(vm.phase=="recording")vm.finishRecording()
-   else if(vm.hasRecording&&vm.phase=="ready")vm.transcribe()
-   startActivity(Intent(this,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP).apply{
-    if(vm.sessionId.isNotBlank())putExtra("sid",vm.sessionId)
-    else{putExtra("agent","pi");if(vm.deliveryId.isNotBlank())putExtra("voice_work",vm.deliveryId)}
-   })
-   closeWindow()
-  }}}
+  window.setLayout(WindowManager.LayoutParams.WRAP_CONTENT,WindowManager.LayoutParams.WRAP_CONTENT)
+  window.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+  window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+  window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+  val lp=window.attributes
+  lp.y=(28*resources.displayMetrics.density).toInt()
+  window.attributes=lp
+  setContent{MaterialTheme(colorScheme=Palette){ExpenseVoiceCard(vm,::closeWindow)}}
  }
  override fun onStart(){super.onStart();vm.onForeground()}
  override fun onStop(){
-  // Folding/rotation recreates only the window; the retained model owns the
-  // same recording. Only actually leaving the assistant should save and stop it.
   if(!isChangingConfigurations)vm.onBackground()
   super.onStop()
  }
- override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);vm.requestRecordingOnOpen()}
+ override fun onNewIntent(intent:android.content.Intent){super.onNewIntent(intent);setIntent(intent);vm.requestRecordingOnOpen()}
  @Suppress("DEPRECATION") private fun closeWindow(){finish();overridePendingTransition(0,0)}
 }
 
-@Composable private fun QuickVoiceSheet(vm:QuickVoiceModel,dismiss:()->Unit,expand:()->Unit){
- val context=androidx.compose.ui.platform.LocalContext.current
+@Composable private fun ExpenseVoiceCard(vm:QuickVoiceModel,dismiss:()->Unit){
+ val context=LocalContext.current
  val scope=rememberCoroutineScope()
  val haptics=rememberComHaptics()
  var visible by remember{mutableStateOf(false)}
- val expansionMotion=remember{Animatable(0f)}
- var dragging by remember{mutableStateOf(false)}
- var settling by remember{mutableStateOf(false)}
- var dragProgress by remember{mutableFloatStateOf(0f)}
- var expansionJob by remember{mutableStateOf<Job?>(null)}
- var expanded by remember{mutableStateOf(false)}
- var suppressRecordingEnd by remember{mutableStateOf(false)}
- val expansion=(if(dragging)dragProgress else expansionMotion.value).coerceIn(0f,1f)
- val expandLatest by rememberUpdatedState(expand)
- fun settle(target:Float,velocity:Float=0f){
-  if(expanded)return
-  val from=if(dragging)dragProgress else expansionMotion.value
-  expansionJob?.cancel()
-  settling=true
-  expansionJob=scope.launch{
-   expansionMotion.snapTo(from)
-   dragging=false
-   expansionMotion.animateTo(target,spring(dampingRatio=.92f,stiffness=480f,visibilityThreshold=.001f),initialVelocity=velocity)
-   settling=false
-   if(target==1f&&!expanded){
-    expanded=true
-    // Expanding can finish a recording. One expansion cue covers this action;
-    // don't also play the recording-end cue while leaving the window.
-    suppressRecordingEnd=true
-    haptics(HapticCue.Expand)
-    expandLatest()
-   }
-  }
- }
- fun beginExpansion(){settle(1f)}
+ fun close(){vm.cancelPending();visible=false;scope.launch{delay(150);dismiss()}}
  val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){if(it)vm.requestRecordingOnOpen()else{vm.permissionDenied();haptics(HapticCue.Reject)}}
  fun record(){if(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)vm.record()else permission.launch(Manifest.permission.RECORD_AUDIO)}
- fun close(){expansionJob?.cancel();vm.onBackground();visible=false;scope.launch{delay(180);dismiss()}}
  LaunchedEffect(Unit){visible=true}
  LaunchedEffect(vm.restored,vm.isForeground,vm.openRecordingRequest){if(vm.restored&&vm.isForeground&&vm.consumeRecordingOnOpen())record()}
- var previousPhase by remember{mutableStateOf(vm.phase)}
+ // 录音边：开始/结束/记账成功给震动
+ var prevPhase by remember{mutableStateOf(vm.phase)}
  LaunchedEffect(vm.phase){
-  val phase=vm.phase
-  val deliveryPhases=setOf("queued","transcribing","sending","sent","waiting")
+  val p=vm.phase
   when{
-   phase=="recording"&&previousPhase!="recording"->haptics(HapticCue.RecordingStart)
-   !suppressRecordingEnd&&phase in deliveryPhases&&previousPhase !in deliveryPhases->haptics(HapticCue.Commit)
-   !suppressRecordingEnd&&previousPhase=="recording"&&phase!="recording"->haptics(HapticCue.RecordingStop)
+   p=="recording"&&prevPhase!="recording"->haptics(HapticCue.RecordingStart)
+   prevPhase=="recording"&&p!="recording"->haptics(HapticCue.RecordingStop)
+   p=="sent"&&prevPhase!="sent"->haptics(HapticCue.Commit)
   }
-  previousPhase=phase
+  prevPhase=p
  }
+ // confirm 页 3 秒倒计时后自动记账（没听清金额时不自动）
+ var countdown by remember{mutableIntStateOf(3)}
+ LaunchedEffect(vm.phase){
+  if(vm.phase=="confirm"&&vm.expense?.amount!=null){
+   countdown=3
+   while(countdown>0){delay(1000);if(vm.phase!="confirm")break;countdown--}
+   if(vm.phase=="confirm"&&countdown==0)vm.confirmExpense()
+  }
+ }
+ // 记账成功 1.4 秒后自动收起
+ LaunchedEffect(vm.phase){if(vm.phase=="sent"){delay(1400);close()}}
  BackHandler{close()}
- val recording=vm.phase=="recording"
- val waiting=vm.phase in listOf("waiting","sent")
- val busy=waiting||vm.phase in listOf("queued","transcribing","sending")
- val replied=vm.phase=="reply"
- val hasReply=vm.replyText.isNotBlank()
- val conversational=waiting||replied||hasReply
- val botState=when{recording->"listening";waiting&&hasReply->"speaking";busy->"thinking";replied->"happy";vm.hasRecording&&vm.message.isNotBlank()->"curious";else->"idle"}
- val avatarSize by animateDpAsState(if(conversational&&!recording)100.dp else 174.dp,spring(dampingRatio=.88f,stiffness=360f),label="Pi 小窗形象尺寸")
- val heroHeight by animateDpAsState(if(conversational&&!recording)88.dp else 164.dp,spring(dampingRatio=.88f,stiffness=360f),label="小窗回复空间")
- val contentScroll=rememberScrollState()
- LaunchedEffect(recording){if(recording)contentScroll.animateScrollTo(0)}
- val scrim by animateFloatAsState(if(visible)1f else 0f,tween(180),label="voiceScrim")
- val settleCurrent by rememberUpdatedState<(Float,Float)->Unit>({target,velocity->settle(target,velocity)})
- Box(Modifier.fillMaxSize()){
-  Box(Modifier.fillMaxSize().background(Color(0xFF152A2B).copy(alpha=.22f*scrim)).clickable(remember{MutableInteractionSource()},indication=null){close()})
-  BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal=12.dp,vertical=8.dp),contentAlignment=Alignment.BottomCenter){
-   val available=maxHeight
-   val density=LocalDensity.current
-   var measuredHeight by remember{mutableStateOf(0.dp)}
-   val panelWidth=500.dp.coerceAtMost(maxWidth)+(maxWidth-500.dp).coerceAtLeast(0.dp)*expansion
-   val panelHeight=measuredHeight+(available-measuredHeight)*expansion
-   val travel=with(density){(available-measuredHeight).coerceAtLeast(160.dp).toPx()}
-   val flingThreshold=with(density){900.dp.toPx()}
-   val travelLatest by rememberUpdatedState(travel)
-   val flingThresholdLatest by rememberUpdatedState(flingThreshold)
-   AnimatedVisibility(visible,enter=fadeIn(tween(180))+slideInVertically(spring(dampingRatio=.9f,stiffness=360f)){it/2},exit=fadeOut(tween(180))+slideOutVertically(tween(210,easing=Motion.TravelEasing)){it/3}){
-    Surface(Modifier.widthIn(max=panelWidth).fillMaxWidth().then(if((dragging||settling||expansion>0f)&&measuredHeight>0.dp)Modifier.height(panelHeight)else Modifier.heightIn(max=available)).onSizeChanged{
-     // The resting measurement is the anchor, not the latest interpolated height.
-     // Updating it during a drag makes every frame expand from the previous frame.
-     if(!dragging&&!settling&&expansion==0f)measuredHeight=with(density){it.height.toDp()}
-    }.clickable(remember{MutableInteractionSource()},indication=null){},shape=RoundedCornerShape(28.dp*(1f-expansion)),color=MaterialTheme.colorScheme.surface,shadowElevation=8.dp*(1f-expansion)){
-     Column(Modifier.padding(horizontal=22.dp).padding(top=8.dp,bottom=18.dp),horizontalAlignment=Alignment.CenterHorizontally){
-      Column(Modifier.fillMaxWidth().pointerInput(Unit){
-       val tracker=VelocityTracker()
-       var pull=0f
-       var start=0f
-       var distance=1f
-       var lastMovementAt=0L
-       detectVerticalDragGestures(
-        onDragStart={
-         expansionJob?.cancel()
-         start=if(dragging)dragProgress else expansionMotion.value
-         distance=travelLatest
-         dragProgress=start
-         dragging=true
-         settling=false
-         pull=0f
-         tracker.resetTracking()
-         lastMovementAt=android.os.SystemClock.uptimeMillis()
-         tracker.addPosition(lastMovementAt,Offset.Zero)
-        },
-        onDragEnd={
-         val velocity=voiceSheetReleaseVelocity(tracker.calculateVelocity().y,android.os.SystemClock.uptimeMillis()-lastMovementAt)
-         val target=if(shouldExpandVoiceSheet(dragProgress,velocity,flingThresholdLatest))1f else 0f
-         settleCurrent(target,-velocity/distance)
-        },
-        onDragCancel={settleCurrent(0f,0f)},
-        onVerticalDrag={change,amount->
-         change.consume()
-         pull+=amount
-         lastMovementAt=change.uptimeMillis
-         dragProgress=(start-pull/distance).coerceIn(0f,1f)
-         // Synthetic coordinates remain stable as the panel itself moves.
-         tracker.addPosition(change.uptimeMillis,Offset(0f,pull))
-        }
-       )
-      },horizontalAlignment=Alignment.CenterHorizontally){
-       Box(Modifier.padding(top=5.dp,bottom=6.dp).width(36.dp).height(4.dp).background(Muted.copy(alpha=.35f),CircleShape))
-       Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
-        Surface(color=PiSoft,shape=CircleShape){Row(Modifier.padding(horizontal=11.dp,vertical=7.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)){Box(Modifier.size(5.dp).background(PiGreen,CircleShape));Text(if(vm.sessionId.isBlank())"Pi · 随时聊" else "Pi · 对话中",fontWeight=FontWeight.SemiBold,color=PiGreen,fontSize=12.sp)}}
-        Spacer(Modifier.weight(1f));Text("Com!",color=Ink,fontSize=19.sp,fontWeight=FontWeight.Bold,letterSpacing=(-.6).sp)
-        IconButton(onClick=::beginExpansion,modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.OpenInFull,"展开到会话",Modifier.size(19.dp),tint=Ink)}
-        IconButton(onClick={close()},modifier=Modifier.size(38.dp)){Icon(Icons.Outlined.Close,"收起小窗",Modifier.size(20.dp),tint=Muted)}
+ Box(Modifier.padding(horizontal=16.dp),contentAlignment=Alignment.BottomCenter){
+  AnimatedVisibility(visible,enter=fadeIn(tween(180))+slideInVertically(spring(dampingRatio=.9f,stiffness=380f)){it/3},exit=fadeOut(tween(150))+slideOutVertically(tween(180)){it/3}){
+   Surface(Modifier.widthIn(max=360.dp),shape=RoundedCornerShape(24.dp),color=Card,border=BorderStroke(1.dp,Line),shadowElevation=12.dp){
+    Column(Modifier.padding(horizontal=20.dp,vertical=16.dp),horizontalAlignment=Alignment.CenterHorizontally){
+     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+      Icon(Icons.Outlined.ReceiptLong,"语音记账",Modifier.size(18.dp),tint=Muted)
+      Text("语音记账",Modifier.padding(start=8.dp),fontSize=14.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+      Spacer(Modifier.weight(1f))
+      IconButton(onClick={close()},modifier=Modifier.size(32.dp)){Icon(Icons.Outlined.Close,"关闭",Modifier.size(18.dp),tint=Muted)}
+     }
+     when(vm.phase){
+      "recording"->{
+       Box(Modifier.padding(top=10.dp),contentAlignment=Alignment.Center){
+        PulseRing(PiGreen,Modifier.size(76.dp))
+        Icon(Icons.Outlined.Mic,null,Modifier.size(30.dp),tint=Ink)
+       }
+       Text("说出这笔支出",Modifier.padding(top=10.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+       Text("例如：午饭三十五",Modifier.padding(top=4.dp),fontSize=12.sp,color=Muted)
+       MicLevels(vm.levels,vm.seconds,Modifier.padding(top=8.dp))
+       TextButton(onClick={vm.finishRecording()},Modifier.padding(top=2.dp)){Text("说完了",fontSize=14.sp)}
+      }
+      "transcribing"->{
+       CircularProgressIndicator(Modifier.padding(top=18.dp).size(30.dp),strokeWidth=3.dp,color=Muted)
+       Text("正在识别…",Modifier.padding(top=12.dp,bottom=8.dp),fontSize=13.sp,color=Muted)
+      }
+      "confirm"->ExpenseConfirm(vm,countdown,{vm.retry();record()},{haptics(HapticCue.Commit);vm.confirmExpense()},{close()})
+      "sending"->{
+       CircularProgressIndicator(Modifier.padding(top=18.dp).size(30.dp),strokeWidth=3.dp,color=Muted)
+       Text("正在记账…",Modifier.padding(top=12.dp,bottom=8.dp),fontSize=13.sp,color=Muted)
+      }
+      "sent"->{
+       Icon(Icons.Outlined.CheckCircle,"已记账",Modifier.padding(top=14.dp).size(40.dp),tint=PiGreen)
+       val e=vm.expense
+       Text(if(e?.amount!=null)"已记账 ¥${fmtAmount(e.amount!!)}" else "已记账",Modifier.padding(top=8.dp,bottom=6.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+      }
+      else->{
+       if(vm.message.isNotBlank())Text(vm.message,Modifier.padding(top=10.dp),fontSize=13.sp,lineHeight=19.sp,color=if(vm.paired)Muted else AmberText,textAlign=TextAlign.Center)
+       else Text("点下方开始说出这笔支出",Modifier.padding(top=10.dp),fontSize=13.sp,color=Muted)
+       Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically){
+        TextButton(onClick={vm.retry();record()}){Text("重说",fontSize=14.sp)}
+        TextButton(onClick={close()}){Text("关闭",fontSize=14.sp,color=Muted)}
        }
       }
-      Column(Modifier.weight(1f,fill=dragging||settling||expansion>0f).verticalScroll(contentScroll),horizontalAlignment=Alignment.CenterHorizontally){
-       Box(Modifier.fillMaxWidth().height(heroHeight),contentAlignment=Alignment.Center){
-        CompanionAvatar("pi",botState,Modifier.size(avatarSize),interactive=false)
-       }
-       AnimatedContent(when{recording->"说吧，Pi 在听。";waiting&&hasReply->"Pi 正在回复。";waiting->"Pi 正在想…";replied->"我在，接着聊。";vm.phase=="queued"->"这句话，已经收好。";busy->"正在交给 Pi。";vm.hasRecording->"这句话，还在这里。";else->"想到了，就告诉 Pi。"},transitionSpec={fadeIn(tween(160)) togetherWith fadeOut(tween(100))},label="voiceTitle"){Text(it,color=Ink,fontSize=if(conversational&&!recording)22.sp else 25.sp,fontWeight=FontWeight.SemiBold)}
-       Text(when{recording->"停顿 0.5 秒自动发送";waiting->"回复会直接出现在这里";replied->"继续说一句，或展开聊";busy->"收起后也会继续发送";else->"直接说，无需文字确认"},Modifier.padding(top=8.dp,bottom=12.dp),fontSize=12.sp,color=Muted)
-       if(recording){MicLevels(vm.levels,vm.seconds);TextButton(onClick=vm::cancelRecording){Text("取消这次录音",color=Muted)}}
-       else if(busy&&!hasReply)LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical=18.dp).height(3.dp),color=PiGreen,trackColor=PiSoft)
-       AnimatedVisibility(hasReply&&!recording,enter=fadeIn(tween(220))+expandVertically(tween(260,easing=Motion.TravelEasing)),exit=fadeOut(tween(100))){
-        Surface(Modifier.fillMaxWidth().padding(top=2.dp,bottom=18.dp),shape=RoundedCornerShape(20.dp),color=PiSoft,shadowElevation=0.dp){
-         Column(Modifier.padding(horizontal=18.dp,vertical=17.dp)){
-          Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)){
-           Box(Modifier.size(5.dp).background(PiGreen,CircleShape))
-           Text(if(waiting)"Pi 正在回复" else "Pi",fontSize=11.sp,color=PiGreen,fontWeight=FontWeight.SemiBold)
-          }
-          AndroidView(modifier=Modifier.fillMaxWidth().padding(top=10.dp),factory={c->
-           MarkdownTextView(c).apply{setTextColor(android.graphics.Color.rgb(41,37,40));textSize=16f;setTextIsSelectable(true);setLineSpacing(7*resources.displayMetrics.density,1f);tag=VoiceMarkdownState(Markwon.builder(c).usePlugin(TablePlugin.create(c)).build())}
-          },update={v->
-           val state=v.tag as VoiceMarkdownState
-           if(state.text!=vm.replyText){state.markwon.setMarkdown(v,vm.replyText);state.text=vm.replyText}
-          })
-          if(waiting)LinearProgressIndicator(Modifier.fillMaxWidth().padding(top=14.dp).height(2.dp),color=PiGreen.copy(alpha=.6f),trackColor=Color.White.copy(alpha=.6f))
-         }
-        }
-       }
-       if(vm.message.isNotBlank()&&!recording)Text(vm.message,Modifier.fillMaxWidth().padding(top=5.dp,bottom=10.dp),fontSize=12.sp,lineHeight=18.sp,color=Muted)
-       if(vm.hasRecording&&!busy&&!recording)TextButton(onClick={record()}){Text("重新说一句",color=Muted)}
-      }
-      val (press,motion)=rememberPress(.96f)
-      val btnColor by animateColorAsState(if(recording)PiGreen else Ink,Motion.Tint,label="语音主按钮")
-      Button(onClick={when{recording->vm.finishRecording();vm.hasRecording->vm.transcribe();else->record()}},enabled=!busy&&!dragging&&!settling&&!expanded,modifier=Modifier.fillMaxWidth().height(54.dp).padding(top=2.dp).then(motion),shape=Radii.Pill,interactionSource=press,colors=ButtonDefaults.buttonColors(containerColor=btnColor)){
-       Icon(if(recording||vm.hasRecording)Icons.Outlined.ArrowUpward else Icons.Outlined.Mic,null,Modifier.size(21.dp));Spacer(Modifier.width(8.dp));Text(when{recording->"说完了，立即发送";waiting->"正在等 Pi 回复";busy->"正在发送";vm.hasRecording->"重试发送这段录音";replied||vm.sessionId.isNotBlank()->"再说一句";else->"开始说话"},fontWeight=FontWeight.SemiBold)
-      }
-      Text("向上拖动，展开对话",Modifier.padding(top=12.dp),color=Muted,fontSize=11.sp)
      }
     }
    }
@@ -243,13 +148,39 @@ class QuickVoiceActivity:ComponentActivity(){
  }
 }
 
-private class VoiceMarkdownState(val markwon:Markwon,var text:String?=null)
+@Composable private fun ExpenseConfirm(vm:QuickVoiceModel,countdown:Int,onRetry:()->Unit,onConfirm:()->Unit,onDismiss:()->Unit){
+ val e=vm.expense
+ if(e?.amount!=null){
+  Text("¥${fmtAmount(e.amount!!)}",Modifier.padding(top=8.dp),fontSize=36.sp,fontWeight=FontWeight.Bold,color=Ink)
+  Row(Modifier.padding(top=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
+   Surface(color=ChipBg,shape=RoundedCornerShape(50)){Text(e.category,Modifier.padding(horizontal=10.dp,vertical=4.dp),fontSize=12.sp,color=Ink)}
+   Text(e.note,fontSize=14.sp,color=Ink)
+  }
+  Text("“${vm.transcript.take(40)}”",Modifier.padding(top=8.dp),fontSize=11.sp,color=Faint,textAlign=TextAlign.Center)
+  if(vm.message.isNotBlank())Text(vm.message,Modifier.padding(top=4.dp),fontSize=11.sp,color=AmberText)
+  Text("$countdown 秒后自动记账",Modifier.padding(top=6.dp),fontSize=11.sp,color=Muted)
+  Row(Modifier.padding(top=10.dp),verticalAlignment=Alignment.CenterVertically){
+   OutlinedButton(onClick=onRetry,shape=RoundedCornerShape(50)){Text("重说")}
+   Spacer(Modifier.width(10.dp))
+   Button(onClick=onConfirm,shape=RoundedCornerShape(50)){Text("立即记账")}
+  }
+ }else{
+  Text("没听清金额",Modifier.padding(top=8.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+  if(vm.transcript.isNotBlank())Text("“${vm.transcript.take(60)}”",Modifier.padding(top=6.dp),fontSize=12.sp,color=Muted,textAlign=TextAlign.Center)
+  Text("再说一次，比如：午饭三十五",Modifier.padding(top=4.dp),fontSize=11.sp,color=Faint)
+  Row(Modifier.padding(top=10.dp),verticalAlignment=Alignment.CenterVertically){
+   OutlinedButton(onClick=onRetry,shape=RoundedCornerShape(50)){Text("重说")}
+   Spacer(Modifier.width(10.dp))
+   TextButton(onClick=onDismiss){Text("算了",color=Muted)}
+  }
+ }
+}
 
-@Composable private fun MicLevels(levels:List<Float>,seconds:Int){
- Row(Modifier.fillMaxWidth().height(60.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(15.dp)){
-  Canvas(Modifier.weight(1f).height(38.dp).semantics{contentDescription="实时麦克风音量"}){
+@Composable private fun MicLevels(levels:List<Float>,seconds:Int,modifier:Modifier=Modifier){
+ Row(modifier.fillMaxWidth().height(44.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(15.dp)){
+  androidx.compose.foundation.Canvas(Modifier.weight(1f).height(34.dp).semantics{contentDescription="实时麦克风音量"}){
    val step=size.width/levels.size
-   levels.forEachIndexed{i,level->val h=3.dp.toPx()+level*(size.height-3.dp.toPx());val x=step*(i+.5f);drawLine(CompanionBlue.copy(alpha=.35f+.65f*(i+1f)/levels.size),androidx.compose.ui.geometry.Offset(x,(size.height-h)/2),androidx.compose.ui.geometry.Offset(x,(size.height+h)/2),strokeWidth=3.dp.toPx(),cap=StrokeCap.Round)}
+   levels.forEachIndexed{i,level->val h=3.dp.toPx()+level*(size.height-3.dp.toPx());val x=step*(i+.5f);drawLine(CompanionBlue.copy(alpha=.35f+.65f*(i+1f)/levels.size),Offset(x,(size.height-h)/2),Offset(x,(size.height+h)/2),strokeWidth=3.dp.toPx(),cap=StrokeCap.Round)}
   }
   Text("0:${seconds.toString().padStart(2,'0')}",color=Muted,fontSize=13.sp,fontFamily=FontFamily.Monospace)
  }
