@@ -42,11 +42,13 @@ class MainActivity:ComponentActivity(){
  var quick by mutableStateOf("")
  override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
    handleIntent(intent)
-   if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)
+   val perms=mutableListOf(Manifest.permission.READ_CALENDAR)
+   if(android.os.Build.VERSION.SDK_INT>=33)perms.add(Manifest.permission.POST_NOTIFICATIONS)
+   requestPermissions(perms.toTypedArray(),10)
    val shortcuts=listOf(ShortcutInfo.Builder(this,"voice").setShortLabel("和 Pi 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build())+listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
    Thread { getSystemService(ShortcutManager::class.java).dynamicShortcuts=shortcuts }.start()
    androidx.work.WorkManager.getInstance(this).enqueueUniquePeriodicWork("session-updates",androidx.work.ExistingPeriodicWorkPolicy.KEEP,androidx.work.PeriodicWorkRequestBuilder<StatusWorker>(15,java.util.concurrent.TimeUnit.MINUTES).setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build()).build())
-   setContent{MaterialTheme(colorScheme=Palette){Workbench(vm,quick){quick=""}}}
+   setContent{MaterialTheme(colorScheme=Palette){MainTabs(vm,quick){quick=""}}}
  }
  override fun onStart(){super.onStart();vm.active=true}
  override fun onStop(){vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;super.onStop()}
