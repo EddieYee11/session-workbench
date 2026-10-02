@@ -90,10 +90,10 @@ private fun scopeText(calendar:JSONObject):String{
  val hasSnapshot=overview.has("generated_at")
  BoxWithConstraints(Modifier.fillMaxWidth()){
   if(maxWidth>=500.dp)Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
-   Box(Modifier.weight(1f)){CalendarOverviewCard(calendar,vm.personalFresh,hasSnapshot,true){open("calendar")}}
+   Box(Modifier.weight(1f)){PhoneCalendarCard(compact=true)}
    Box(Modifier.weight(1f)){FinanceOverviewCard(finance,vm.personalFresh,hasSnapshot,true){open("finance")}}
   }else Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(10.dp)){
-   Box(Modifier.width(285.dp)){CalendarOverviewCard(calendar,vm.personalFresh,hasSnapshot,true){open("calendar")}}
+   Box(Modifier.width(285.dp)){PhoneCalendarCard(compact=true)}
    Box(Modifier.width(285.dp)){FinanceOverviewCard(finance,vm.personalFresh,hasSnapshot,true){open("finance")}}
   }
  }
@@ -132,8 +132,8 @@ private fun scopeText(calendar:JSONObject):String{
     Text("今天",Modifier.weight(1f).padding(start=7.dp),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     IconButton(onClick={vm.refreshPersonalNow()},enabled=!vm.personalLoading&&vm.store.token.isNotEmpty()){ComIcon(R.drawable.com_icon_refresh_v1,"刷新来源",Modifier.size(24.dp),alpha=if(vm.personalLoading).5f else 1f)}
    }
-   Text(if(vm.personalFresh)"概览生成于 ${updateTime(overview.optDouble("generated_at"))}" else if(hasSnapshot)"离线缓存 · 保存于 ${updateTime(overview.optDouble("generated_at"))}" else "正在连接数据来源",Modifier.padding(start=54.dp,bottom=14.dp),fontSize=12.sp,color=if(vm.personalFresh)Muted else AmberText)
-   CalendarOverviewCard(calendar,vm.personalFresh,hasSnapshot,false){}
+   Text("手机日历直接读取 · 账本与任务由 Mac mini 同步",Modifier.padding(start=54.dp,bottom=14.dp),fontSize=12.sp,color=Muted)
+   PhoneCalendarCard()
    Spacer(Modifier.height(14.dp))
    FinanceOverviewCard(finance,vm.personalFresh,hasSnapshot,false){}
    TodaySections(vm){vm.showSignalsActivity=true;back()}

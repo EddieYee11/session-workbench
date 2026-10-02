@@ -24,6 +24,9 @@ private fun todayRunTitle(run:JSONObject,messages:List<JSONObject>)=run.optStrin
  val proposals=vm.workProposals.array("items")
  val runs=vm.hermes.array("runs")
  val messages=vm.hermes.array("messages")
+ val ledgerTasks=buildLedgerTasks(vm.taskLedger.array("items"),messages)
+ val ongoingTasks=ledgerTasks.filter{it.status=="active"}
+ val reviewTasks=ledgerTasks.filter{it.status=="attention"&&it.statusText!="待授权"||it.status=="closed"&&it.result.isNotBlank()}
  val signals=vm.signals.array("items")
  val now=System.currentTimeMillis()/1000.0
  val needsApproval=proposals.filter{it.optString("status")=="proposed"&&it.optDouble("expires_at")>now}
@@ -48,7 +51,8 @@ private fun todayRunTitle(run:JSONObject,messages:List<JSONObject>)=run.optStrin
     TextButton(onClick=openActivity){Text("查看活动",fontSize=12.sp)}
    }
    if(!vm.workProposalsFresh||!vm.hermesFresh||!vm.signalsFresh)Text("部分条目来自本机缓存，联网后刷新",fontSize=11.sp,color=AmberText)
-   if(needsApproval.isEmpty()&&uncertainProposals.isEmpty()&&needsReview.isEmpty()&&failedMessages.isEmpty())Text("${if(vm.workProposalsFresh&&vm.hermesFresh)"当前没有待处理项"else"缓存中没有待处理项"}",fontSize=13.sp,color=Muted)
+   if(needsApproval.isEmpty()&&uncertainProposals.isEmpty()&&needsReview.isEmpty()&&failedMessages.isEmpty()&&reviewTasks.isEmpty())Text("${if(vm.workProposalsFresh&&vm.hermesFresh)"当前没有待处理项"else"缓存中没有待处理项"}",fontSize=13.sp,color=Muted)
+   reviewTasks.take(3).forEach{task->TodayLine("${task.agent} · ${task.statusText}",task.title)}
    needsApproval.take(3).forEach{item->TodayLine("待批准 · ${item.optString("agent").uppercase()}",item.optString("title").ifBlank{"工作建议"})}
    uncertainProposals.take(2).forEach{item->TodayLine("派发结果待核实 · ${item.optString("agent").uppercase()}",item.optString("title").ifBlank{"工作建议"})}
    needsReview.take(3).forEach{run->TodayLine("Hermes · ${hermesMessageStatus(run.optString("status"))}",todayRunTitle(run,messages))}
@@ -63,13 +67,9 @@ private fun todayRunTitle(run:JSONObject,messages:List<JSONObject>)=run.optStrin
     ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(24.dp))
     Text("在途工作",Modifier.padding(start=4.dp),fontSize=17.sp,fontWeight=FontWeight.SemiBold,color=Ink)
    }
-   if(activeRuns.isEmpty()&&dispatched.isEmpty())Text("${if(vm.hermesFresh&&vm.workProposalsFresh)"当前没有在途工作"else"缓存中没有在途工作"}",Modifier.padding(top=9.dp),fontSize=13.sp,color=Muted)
-   activeRuns.take(3).forEach{run->TodayLine("Hermes · ${hermesMessageStatus(run.optString("status"))}",todayRunTitle(run,messages))}
-   dispatched.take(3).forEach{item->
-    val work=vm.allRows.firstOrNull{it.optString("id")==item.optString("work_session_id")}
-    val label=if(item.optString("status")=="dispatching")"正在派发" else if(vm.allRowsFresh&&work!=null)statusLabel(work.optString("status")) else "已启动 · 状态待同步"
-    TodayLine("${item.optString("agent").uppercase()} · $label",item.optString("title").ifBlank{"工作建议"})
-   }
+   if(ongoingTasks.isEmpty())Text(if(vm.taskLedgerFresh)"当前没有在途工作"else"正在同步任务",Modifier.padding(top=9.dp),fontSize=13.sp,color=Muted)
+   ongoingTasks.take(3).forEach{task->TodayLine("${if(vm.taskLedgerFresh)""else"上次同步："}${task.agent} · ${task.statusText}",task.title)}
+   if(ongoingTasks.isNotEmpty())TextButton(onClick=openActivity){Text("查看任务进度",fontSize=12.sp)}
   }
  }
 }

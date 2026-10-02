@@ -83,8 +83,14 @@ fun relTime(ts:Double):String{
    "sources"->{vm.refreshPersonalNow();vm.refreshHermesNow();vm.refreshSignalsNow();vm.refreshWorkProposalsNow()}
   }
  }
+ LaunchedEffect(page,vm.active){
+  while(vm.active){
+   if(vm.store.token.isNotEmpty())vm.refreshWorkProposals()
+   delay(if(page=="activity")3000 else 10000)
+  }
+ }
  LaunchedEffect(vm.q,vm.agent,vm.role,vm.cwd,vm.days,vm.sort,vm.archived){delay(250);vm.refresh()}
- val openActivity:()->Unit={page="hermes";vm.showSignalsActivity=true}
+ val openActivity:()->Unit={page="activity"}
  val newChat:()->Unit={vm.close();vm.q="";vm.queryInSession="";history=false}
  val pick:(JSONObject)->Unit={vm.open(it);history=false}
  BackHandler(page!="hermes"||page=="work"&&vm.selected.isNotBlank()){
@@ -105,9 +111,11 @@ fun relTime(ts:Double):String{
        ConversationScene(vm,selectedAgent,{selectedAgent=it;vm.store.prefs.edit().putString("lastAgent",it).apply()},{history=true},{advanced=true},pick,newChat)
       }
      }
-     "calendar","finance"->PersonalDetailPage(vm,page){page="sources"}
+     "calendar"->PhoneCalendarPage{page="sources"}
+     "finance"->PersonalDetailPage(vm,page){page="sources"}
      "sources"->PersonalSourcesPage(vm){page="hermes"}
-     else->HermesChat(vm,{more=true},true)
+     "activity"->TaskActivityPage(vm){page="hermes"}
+     else->HermesChat(vm,{more=true},true,openActivity)
     }
    }
    if(!imeVisible)ComBottomNavigation(page,navigate,openActivity,{more=true})
@@ -141,23 +149,37 @@ fun relTime(ts:Double):String{
 }
 
 @Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,activity:()->Unit,more:()->Unit){
- FrostedBar(Modifier.fillMaxWidth()){
-  Row(Modifier.widthIn(max=640.dp).fillMaxWidth().height(84.dp).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){
-   listOf("hermes" to "对话","sources" to "今天","activity" to "活动","work" to "工作","settings" to "更多").forEach{(target,label)->
+ BoxWithConstraints(Modifier.fillMaxWidth().padding(top=10.dp,bottom=10.dp),contentAlignment=Alignment.Center){
+ val roomy=maxWidth>=360.dp&&LocalDensity.current.fontScale<=1.3f
+ val labelWidth=(maxWidth-278.dp).coerceAtLeast(26.dp)
+ Surface(shape=RoundedCornerShape(50),color=Card,border=BorderStroke(1.dp,Color(0xFFE5E8EC)),shadowElevation=8.dp){
+  Row(Modifier.padding(horizontal=8.dp,vertical=6.dp),horizontalArrangement=Arrangement.spacedBy(2.dp),verticalAlignment=Alignment.CenterVertically){
+   listOf("hermes" to "对话","sources" to "今天","activity" to "任务","work" to "工作","settings" to "更多").forEach{(target,label)->
     val selected=page==target||target=="sources"&&page in listOf("calendar","finance")
-    Column(Modifier.weight(1f).height(68.dp).clip(Radii.Pill)
-     .selectable(selected=selected,role=androidx.compose.ui.semantics.Role.Tab,onClick={when(target){"activity"->activity();"settings"->more();else->navigate(target)}}),
-     horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){
-     ComPrimaryIcon(target,label,27.dp,if(selected)Ink else Muted,selected)
-     Text(label,Modifier.padding(top=5.dp),fontSize=10.sp,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,color=if(selected)Ink else Muted)
+    val background by animateColorAsState(if(selected)Color(0xFF252A31) else Color.Transparent,tween(180),label="导航选中")
+    val foreground=if(selected)Color.White else Color(0xFF68727D)
+    Row(Modifier.widthIn(min=48.dp).heightIn(min=48.dp).clip(RoundedCornerShape(50)).background(background)
+     .selectable(selected=selected,role=androidx.compose.ui.semantics.Role.Tab,onClick={when(target){"activity"->activity();"settings"->more();else->navigate(target)}})
+     .padding(horizontal=if(roomy)15.dp else 12.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){
+     ComPrimaryIcon(target,label,20.dp,foreground)
+     if(roomy)AnimatedVisibility(selected,enter=expandHorizontally(tween(180))+fadeIn(tween(120)),exit=shrinkHorizontally(tween(140))+fadeOut(tween(100))){
+      Text(label,Modifier.padding(start=6.dp),fontSize=13.sp,fontWeight=FontWeight.SemiBold,color=foreground,maxLines=1)
+     }
+     else if(selected)Text(label,Modifier.padding(start=6.dp).widthIn(max=labelWidth),fontSize=13.sp,fontWeight=FontWeight.SemiBold,color=foreground,maxLines=1,overflow=TextOverflow.Ellipsis)
     }
    }
   }
  }
+ }
 }
 
 @Composable private fun ComPrimaryIcon(target:String,label:String?,size:Dp,tint:Color=Ink,selected:Boolean=false){
- ComIcon(when(target){"hermes"->R.drawable.com_icon_chat_v1;"activity"->R.drawable.com_icon_activity_v1;"work"->R.drawable.com_icon_work_v1;"settings"->R.drawable.com_icon_settings_v1;"finance"->R.drawable.com_icon_finance_v1;else->R.drawable.com_icon_today_v1},label,Modifier.size(size),tint=tint,selected=selected)
+ when(target){
+  "sources"->Icon(Icons.Outlined.WbSunny,label,Modifier.size(size),tint=tint)
+  "activity"->Icon(Icons.Outlined.Checklist,label,Modifier.size(size),tint=tint)
+  "settings"->Icon(Icons.Outlined.PersonOutline,label,Modifier.size(size),tint=tint)
+  else->ComIcon(when(target){"hermes"->R.drawable.com_icon_chat_v1;"work"->R.drawable.com_icon_work_v1;"finance"->R.drawable.com_icon_finance_v1;else->R.drawable.com_icon_today_v1},label,Modifier.size(size),tint=tint,selected=selected)
+ }
 }
 
 @Composable fun Pill(items:List<String>,selected:Int,enabled:List<Boolean> = items.map{true},click:(Int)->Unit){

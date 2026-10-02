@@ -35,6 +35,7 @@ class Runtime:
             self.reader_task=asyncio.create_task(self.reader())
             await self.call('initialize',{'clientInfo':{'name':'mini_sessions','title':'会话工作台','version':'1.0.0'},'capabilities':{'experimentalApi':True}},connect=False)
             await self.rpc.send(json.dumps({'method':'initialized'}))
+            self.rpc_errors=''
             for sid,m in self.h.managed().items():
                 if m['agent']=='codex' and not m.get('ended'):
                     params={'threadId':m['native_id'],'excludeTurns':True}
@@ -72,7 +73,7 @@ class Runtime:
                     if not model or model in seen:continue
                     seen.add(model)
                     levels=[x.get('reasoningEffort') or x.get('effort') for x in item.get('supportedReasoningEfforts',[]) if isinstance(x,dict) and (x.get('reasoningEffort') or x.get('effort'))]
-                    rows.append({'id':model,'label':item.get('displayName') or model,'provider':'OpenAI','efforts':levels,'default_effort':item.get('defaultReasoningEffort') or ''})
+                    rows.append({'id':model,'label':item.get('displayName') or model,'provider':'OpenAI','efforts':levels,'default_effort':item.get('defaultReasoningEffort') or '', 'is_default':bool(item.get('isDefault'))})
                 following=page.get('nextCursor')
                 if not following:break
                 if following==cursor:raise RuntimeError('模型列表分页异常')
@@ -121,7 +122,7 @@ class Runtime:
                     item=p.get('item',{});e=codex_item(item,item.get('id',''),time.time())
                     if e:self.emit(sid,dict(e,kind='item',state='running' if method.endswith('started') else 'completed',turn_id=p.get('turnId')))
                 elif method=='turn/started':self.emit(sid,{'kind':'status','status':'running','turn_id':p.get('turn',{}).get('id')})
-                elif method=='turn/completed':self.emit(sid,{'kind':'status','status':{'completed':'completed','interrupted':'interrupted'}.get(p.get('turn',{}).get('status'),'failed'),'turn_id':p.get('turn',{}).get('id')})
+                elif method=='turn/completed':self.emit(sid,{'kind':'status','status':{'completed':'completed','interrupted':'interrupted'}.get(p.get('turn',{}).get('status'),'failed'),'turn_id':p.get('turn',{}).get('id'),'error':p.get('turn',{}).get('error')})
                 elif method=='serverRequest/resolved':self.approvals.pop(str(p.get('requestId')),None)
         except Exception as e:self.rpc_errors=type(e).__name__
         finally:
@@ -168,6 +169,16 @@ class Runtime:
         if not self.h.get(sid):
             with self.h.db() as d:d.execute('INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?,?,?,?,?)',(sid,agent,nid,'',cwd,'新会话',time.time(),'','只展示实际捕获的输出'))
         return sid
+    async def create_task_worker(self,task):
+        """Use the native account's advertised default rather than a stale config alias."""
+        if task['agent']!='codex':
+            return await self.create(task['agent'],task['cwd'],sandbox=task['sandbox'])
+        models=await self.models('codex')
+        default=next((m for m in models if m.get('is_default')),None)
+        if not default:
+            raise ValueError('Codex did not advertise an available default model')
+        return await self.create('codex',task['cwd'],model=default['id'],
+                                 effort=default.get('default_effort',''),sandbox=task['sandbox'])
     async def resumable(self,s):
         m=self.h.managed().get(s['id'])
         if m and not m.get('ended') and (m['agent']=='codex' or await self.alive(m['tmux'])):return False
@@ -300,8 +311,14 @@ class Runtime:
     async def task_status(self,task):
         status=await self.status(task['session_id'])
         if task['agent']!='pi':
+            if status=='waiting' and any(a['sid']==task['session_id'] and
+                                         a.get('params',{}).get('turnId',task.get('run_id'))==task.get('run_id')
+                                         for a in self.approvals.values()):
+                return 'waiting'
             matches=[e for e in self.events(task['session_id']) if e.get('kind')=='status' and e.get('turn_id')==task.get('run_id')]
-            if matches:return matches[-1]['status']
+            if matches:
+                observed=matches[-1]['status']
+                return 'unknown' if self.rpc_errors and observed in ('running','waiting') else observed
             return 'unknown' if status in ('ended','history') else 'running'
         events=self.events(task['session_id'])
         # agent_end is a low-level run, not final settled state.
@@ -338,6 +355,16 @@ class Runtime:
             events=self.events(sid);tid=next((e['turn_id'] for e in reversed(events) if e.get('turn_id')),None)
             if tid:await self.call('turn/interrupt',{'threadId':m['native_id'],'turnId':tid})
             else:await self.tm('send-keys','-t',m['tmux'],'Escape')
+    async def cancel_task(self,task):
+        m=self.h.managed().get(task['session_id'])
+        if not m or not task.get('run_id'):
+            raise ValueError('Task worker identity is unavailable')
+        if m['agent']=='codex':
+            await self.call('turn/interrupt',{'threadId':m['native_id'],'turnId':task['run_id']})
+        else:
+            if m.get('ended') or not await self.alive(m['tmux']):
+                raise ValueError('Pi worker is unavailable')
+            await self.tm('send-keys','-t',m['tmux'],'Escape')
     async def decision(self,key,answer):
         a=self.approvals.get(key)
         if not a:raise ValueError('该请求已结束')

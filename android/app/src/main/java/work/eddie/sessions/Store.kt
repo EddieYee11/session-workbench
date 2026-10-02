@@ -178,6 +178,9 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var signalsError by mutableStateOf("")
  var showSignalsActivity by mutableStateOf(false)
  var taskLedger by mutableStateOf(store.cachedSecure("personal-tasks.enc"))
+ var taskLedgerFresh by mutableStateOf(false)
+ var taskLedgerError by mutableStateOf("")
+ var taskControlTarget by mutableStateOf("")
  var taskControlBusy by mutableStateOf("")
  var taskControlNote by mutableStateOf("")
  var workProposals by mutableStateOf(store.cachedSecure("personal-work-proposals.enc"))
@@ -297,21 +300,31 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  }
  fun refreshSignalsNow(){viewModelScope.launch{refreshSignals()}}
  fun refreshWorkProposalsNow(){viewModelScope.launch{refreshWorkProposals()}}
- /** 已自动批准过的建议 id（内存集合）：最高权限模式下，新到的工作建议自动执行，不再逐条请求确认 */
- private val autoApprovedIds=mutableSetOf<String>()
  suspend fun refreshWorkProposals(){
    if(workProposalsLoading||store.token.isBlank())return
    workProposalsLoading=true;workProposalsError=""
    try{
      val recent=store.request("/personal/work/proposals?limit=20")
      if(recent.optJSONArray("items")==null)error("工作建议数据格式不完整")
-     val tasks=store.request("/personal/tasks")
-     if(tasks.optJSONArray("items")==null)error("任务数据格式不完整")
-     taskLedger=tasks
-     runCatching{store.secureCache("personal-tasks.enc",tasks)}
      workProposals=recent;workProposalsFresh=true
      runCatching{store.secureCache("personal-work-proposals.enc",recent)}
-   }catch(e:Exception){workProposalsFresh=false;workProposalsError=e.message?:"工作建议暂不可用"}
+   }catch(e:CancellationException){workProposalsLoading=false;throw e}
+    catch(e:Exception){workProposalsFresh=false;workProposalsError=e.message?:"工作建议暂不可用"}
+   try{
+     val tasks=store.request("/personal/tasks")
+     if(tasks.optJSONArray("items")==null)error("任务数据格式不完整")
+     taskLedger=tasks;taskLedgerFresh=true;taskLedgerError=""
+     runCatching{store.secureCache("personal-tasks.enc",tasks)}
+     for(task in tasks.array("items")){
+       val key="task-command-${task.optString("id")}-input.enc"
+       val pending=store.cachedSecure(key)
+       val receipt=task.array("inputs").firstOrNull{it.optString("request_id")==pending.optString("request_id")}
+       if(receipt!=null&&receipt.optString("state") in setOf("delivered","failed","unsupported","blocked_authorization","blocked_state")){
+         runCatching{store.secureCache(key,JSONObject())}
+       }
+     }
+   }catch(e:CancellationException){throw e}
+    catch(e:Exception){taskLedgerFresh=false;taskLedgerError=e.message?:"任务暂不可用"}
    finally{workProposalsLoading=false}
  }
  fun workApprovalId(id:String)=workApprovalIds.optString(id)
@@ -325,8 +338,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    return requestId
  }
  fun taskCommand(id:String,text:String,cancel:Boolean=false){
-   if(taskControlBusy.isNotBlank()||!workProposalsFresh||store.token.isBlank())return
-   taskControlBusy=id;taskControlNote=""
+   if(taskControlBusy.isNotBlank()||!taskLedgerFresh||store.token.isBlank())return
+   taskControlBusy=id;taskControlTarget=id;taskControlNote=""
    // Persist each command before sending; uncertain delivery is never silently retried.
    val key="task-command-$id-${if(cancel)"cancel" else "input"}"
    val old=store.cachedSecure("$key.enc")
@@ -338,13 +351,19 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      try{
        val result=store.request("/personal/tasks/${enc(id)}/${if(cancel)"cancel" else "input"}",body)
        if(!cancel&&result.optString("delivery") in setOf("delivered","failed","unsupported","blocked_authorization","blocked_state"))runCatching{store.secureCache("$key.enc",JSONObject())}
-       taskControlNote=if(cancel)"取消已受理，等待工作器确认停止" else when(result.optString("delivery")){
+       taskControlNote=if(cancel&&("unknown" in listOf(result.optString("delivery"),result.optString("cancel_delivery"))))"取消结果待核实，请查看执行事件" else if(cancel)when(result.optString("status")){
+        "cancelled"->"任务已停止"
+        "unknown"->"取消结果待核实，请查看执行事件"
+        else->"取消已受理，等待执行器确认停止"
+       } else when(result.optString("delivery")){
         "delivered"->"指令已送达目标回合，生效仍需查看执行结果"
         "unsupported"->"当前 Pi 执行会话不支持在线投递；未发送，请查看详情"
         "failed"->"工作器拒绝了指令；未自动重试"
         "blocked_state"->"任务状态不允许投递，请先核实"
         "blocked_authorization"->"指令等待明确授权，未投递"
         "unknown"->"指令送达待核实，不会自动重发"
+        "pending_start"->"约束已保存，将在任务开始时送达"
+        "worker_queued"->"执行器已接收，等待送达下一回合"
         else->"指令已受理，排队送达中"
        }
      }catch(e:Exception){taskControlNote="请求结果待核实；重试复用同一请求号"}

@@ -10,7 +10,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * 语音记账投递，两步都是幂等的：
+ * 快速语音及记账共用的幂等投递链：
  * - transcribe：只转写，输出 transcript；音频转完即删。
  * - send：把记账消息发给 Hermes（request_id 去重），关掉小窗也不会取消已确认的发送。
  */
@@ -34,24 +34,34 @@ class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorke
   setProgress(workDataOf("phase" to "transcribing"))
   val transcript=uploadVoice(store,file,capture).getString("text").trim()
   check(transcript.isNotBlank()){"没有听清，请再说一次。"}
+  val conversation=inputData.getBoolean("conversation",false)
+  check(!conversation||transcript.length<=2000){"这段语音较长，请分两次说，录音已保留。"}
   file.delete()
-  return Result.success(workDataOf("transcript" to transcript.take(200)))
+  // WorkManager Data is bounded; 2000 Chinese characters fit its 10 KiB limit.
+  return Result.success(workDataOf("transcript" to if(conversation)transcript else transcript.take(200)))
  }
 
  private suspend fun doSend(capture:String):Result{
   val store=Store(applicationContext)
   val text=inputData.getString("text")?.trim()?:return Result.failure()
-  check(text.isNotBlank()){"记账内容为空"}
+  check(text.isNotBlank()){"语音内容为空"}
+  val conversation=inputData.getBoolean("conversation",false)
+  val purpose=if(conversation)"quickvoice"else"expense"
   val dir=File(applicationContext.filesDir,"quick-voice").apply{mkdirs()}
-  val receipt=File(dir,"$capture.expense.json")
+  val receipt=File(dir,"$capture.$purpose.json")
   if(receipt.exists())return Result.success(workDataOf("message_id" to JSONObject(receipt.readText()).optString("message_id")))
   setProgress(workDataOf("phase" to "sending"))
   // 与 Hermes 对话发送共用 request_id 去重语义：重放不会重复提交同一消息；这不是账本交易回执
+  val requestId="$purpose-$capture"
   val result=store.request("/personal/conversation/messages",
-   JSONObject().put("request_id","expense-$capture").put("text",text))
+   JSONObject().put("request_id",requestId).put("text",text))
   val messageId=result.optString("message_id")
   check(messageId.isNotBlank()){"Hermes 尚未确认接收这条消息"}
-  val tmp=File(dir,"$capture.expense.tmp")
+  if(conversation){
+   check(result.optString("request_id")==requestId){"发送回执请求号不匹配，请重试核实"}
+   check(result.optString("status") in setOf("accepted","queued","sending","completed","failed","unknown")){"Hermes 尚未确认接收这条消息"}
+  }
+  val tmp=File(dir,"$capture.$purpose.tmp")
   tmp.writeText(JSONObject().put("message_id",messageId).put("text",text).toString())
   check(tmp.renameTo(receipt))
   return Result.success(workDataOf("message_id" to messageId))

@@ -2,7 +2,7 @@
 
 Com! 是原「会话工作台」Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务。保留原包名以便原位升级和保留本机配对、缓存。可从手机发起和继续 Pi / Codex 会话，查看实时过程和终端，并检索 Mac mini 上保存的历史会话。
 
-当前 Android 工程版本为 **1.4.1**。1.4.1 已通过无线 ADB 覆盖安装到小米折叠屏，已核对展开屏聊天、今天、工作、日历/账本入口、活动与历史底部弹层及键盘布局；Personal Agent 其余业务流程仍按实施规划中的边界验收。给协作者介绍原工作台可阅读 [项目背景、功能与架构](docs/app-overview.md)；Personal Agent 的最新实施状态和待验收项见 [产品与实施规划](docs/COM_PERSONAL_AGENT_PLAN.md)。旧模型与推理选择的验证边界见 [1.3.4 记录](docs/com-1.3.4.md)。
+当前 Android 工程版本为 **1.5.0**。使用 Coms! 图标、Com2 浮动胶囊底栏与日历卡片；「今天」直接读取手机日历。Hermes 主对话可派出独立 Codex 后台任务，任务、约束、回执和结果存放在 Mac mini，手机进入后台后继续执行。版本说明和本次实测见 [1.5.0 记录](docs/com-1.5.0.md)。给协作者介绍原工作台可阅读 [项目背景、功能与架构](docs/app-overview.md)；Personal Agent 的规划见 [产品与实施规划](docs/COM_PERSONAL_AGENT_PLAN.md)。旧模型与推理选择的验证边界见 [1.3.4 记录](docs/com-1.3.4.md)。
 
 - `backend/`：只读历史索引、Pi/Codex 会话运行时、Hermes 主对话与流式服务、个人概览、通知收件箱和待审批工作建议。
 - `android/`：Kotlin / Compose 原生会话、Hermes 主线与「今天」页、通知采集、离线缓存与 xterm.js 终端。
@@ -12,7 +12,7 @@ Com! 是原「会话工作台」Android 应用（`work.eddie.sessions`）与 Mac
 
 Android 工程位于 `android/`，可用 Android Studio 打开，或在配置好 JDK 17+ 与 Android SDK 后运行 `./gradlew assembleDebug`。Mac mini 端需要 Python 3.12+、Pi、Codex、tmux 和 Caddy；`backend/install-mini.py` 是针对当前 Mac mini 的部署脚本，运行前应先核对其中的 Caddy 路径和路由。服务状态与会话数据保存在 Mac mini 的 `~/.session-workbench/`，不属于此仓库。
 
-原工作台新建和显式继续的会话默认使用最高权限。Codex 采用 `danger-full-access` 与无审批；Pi 使用 `--approve` 和工作台专属工具扩展。如果 Mac mini 全局加载了额外的 Pi 命令护栏，需要让该护栏仅在 `SESSION_WORKBENCH_YOLO=1` 的工作台进程中跳过确认，其余 Pi 入口保持原行为。Hermes 主线没有这些编码工具，只能提交需用户在 Com! 审批的工作建议；当前 Pi 建议不能自动执行。
+「工作」中手动新建和显式继续的会话沿用既有权限：Codex 为 `danger-full-access` 与无审批；Pi 使用 `--approve` 和工作台专属工具扩展。Hermes 主线的自动任务使用独立 Codex 沙箱，只支持明确交办的只读检查或项目内代码修改；完整权限 Pi 与超出已有任务授权的操作走可审阅的工作建议。现有 Pi tmux 会话不支持任务约束在线送达，界面明确显示该限制。运行时与验收边界见 [任务闭环实施记录](docs/HERMES_TASK_LOOP_IMPLEMENTATION.md)。
 
 Android 1.1.0 使用已选定的「灵动伙伴」界面：暖白底色、圆角会话卡片和本地流体圆脸 Bot。首页卡片读取真实会话，点开历史仍是只读；对话、终端、搜索和新建入口保持原有结构。网页 `docs/ai-style-directions.html` 仍是使用模拟数据的风格对照页。
 

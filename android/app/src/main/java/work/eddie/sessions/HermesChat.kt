@@ -52,7 +52,7 @@ fun hermesMessageStatus(status:String):String=when(status){
  "thinking"->"正在思考"
  "executing"->"正在执行"
  "responding","streaming"->"正在回复"
- "completed"->"已完成"
+ "completed"->"回复结束"
  "failed"->"处理失败"
  "unknown"->"结果待核实 · 不会自动重发"
  "approval_required"->"待授权"
@@ -65,7 +65,7 @@ fun hermesPhaseStatus(phase:String):String=when(phase){
  "thinking"->"正在思考"
  "executing","tool"->"正在执行"
  "responding","replying","streaming"->"正在回复"
- "completed"->"已完成"
+ "completed"->"回复结束"
  "failed"->"处理失败"
  "unknown"->"结果待核实 · 不会自动重发"
  else->""
@@ -104,13 +104,16 @@ private fun hermesToolLabel(name:String):String=when{
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun HermesChat(vm:WorkbenchModel,menu:()->Unit,showMenu:Boolean){
+@Composable fun HermesChat(vm:WorkbenchModel,menu:()->Unit,showMenu:Boolean,openTasks:()->Unit){
  DisposableEffect(Unit){onDispose{vm.finishHermesVoice(false)}}
  val haptics=rememberComHaptics()
  val data=vm.hermes
  val messages=data.array("messages")
  val runs=data.array("runs")
+ val backgroundTasks=buildLedgerTasks(vm.taskLedger.array("items"),messages)
+ val activeTasks=backgroundTasks.count{it.status=="active"}
  val list=rememberLazyListState()
+ var positionedAtLatest by remember{mutableStateOf(false)}
  var activity by remember{mutableStateOf(false)}
  LaunchedEffect(vm.showSignalsActivity){if(vm.showSignalsActivity){activity=true;vm.showSignalsActivity=false}}
  LaunchedEffect(activity){if(activity){vm.refreshSignalsNow();vm.refreshWorkProposalsNow()}}
@@ -120,7 +123,10 @@ private fun hermesToolLabel(name:String):String=when{
  val needsAttention=runs.any{it.optString("status") in setOf("waiting","unknown")}
  LaunchedEffect(messages.size,messages.lastOrNull()?.optString("id"),messages.lastOrNull()?.optString("text"),messages.lastOrNull()?.optString("phase")){
   val lastVisible=list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?:0
-  if(messages.size>4&&lastVisible>=messages.size-1)list.scrollToItem(messages.size+1)
+  if(messages.size>4&&(!positionedAtLatest||lastVisible>=messages.size-1)){
+   list.scrollToItem(messages.size+1)
+   positionedAtLatest=true
+  }
  }
  LaunchedEffect(vm.hermesSendNote){
   if(vm.hermesSendNote.startsWith("Hermes 已接收"))list.scrollToItem(messages.size+1)
@@ -130,13 +136,13 @@ private fun hermesToolLabel(name:String):String=when{
    if(showMenu)Surface(onClick=menu,modifier=Modifier.align(Alignment.CenterStart).size(44.dp),shape=CircleShape,color=Card,border=BorderStroke(1.dp,Line)){
     ComIcon(R.drawable.com_icon_menu_v1,"打开导航",Modifier.padding(11.dp))
    }else Text("Com!",Modifier.align(Alignment.CenterStart),fontSize=17.sp,fontWeight=FontWeight.Bold,color=Ink)
-   Column(Modifier.align(Alignment.Center).clickable{activity=true},horizontalAlignment=Alignment.CenterHorizontally){
+   Column(Modifier.align(Alignment.Center).clickable{openTasks()},horizontalAlignment=Alignment.CenterHorizontally){
     Image(painterResource(R.drawable.hermes_companion_v1),"Hermes",Modifier.size(76.dp),contentScale=ContentScale.Fit)
     Text("Hermes",fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-    Text(if(vm.hermesFresh)hermesActivityStatus(runs,messages) else if(vm.hermesLoading)"连接中" else "离线记录",fontSize=10.sp,color=if(vm.hermesFresh)Muted else AmberText,maxLines=1)
+    Text(if(vm.hermesFresh&&vm.taskLedgerFresh&&activeTasks>0)"$activeTasks 项后台任务 · 可继续交办" else if(vm.hermesFresh)hermesActivityStatus(runs,messages) else if(vm.hermesLoading)"连接中" else "离线记录",fontSize=10.sp,color=if(vm.hermesFresh)Muted else AmberText,maxLines=1)
    }
    Box(Modifier.align(Alignment.CenterEnd)){
-    Surface(onClick={activity=true},modifier=Modifier.size(44.dp),shape=CircleShape,color=Card,border=BorderStroke(1.dp,Line)){
+    Surface(onClick=openTasks,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card,border=BorderStroke(1.dp,Line)){
      ComIcon(R.drawable.com_icon_activity_v1,"查看 Hermes 活动",Modifier.padding(11.dp))
     }
     if(needsAttention)Box(Modifier.align(Alignment.TopEnd).size(9.dp).background(Ember,CircleShape).border(2.dp,Paper,CircleShape))
@@ -163,7 +169,7 @@ private fun hermesToolLabel(name:String):String=when{
      Column(Modifier.widthIn(max=790.dp).fillMaxWidth()){
       if(messages.isEmpty()&&hasConversation)Text("想从什么事开始？日历和账本会按真实来源回答。",fontSize=14.sp,color=Muted)
       if(vm.workProposalsFresh)proposals.take(2).forEach{proposal->
-       HermesProposalCard(proposal){activity=true}
+       HermesProposalCard(proposal){openTasks()}
       }
      }
     }

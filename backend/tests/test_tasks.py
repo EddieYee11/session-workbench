@@ -39,6 +39,9 @@ def test_two_tasks_update_not_third_and_completion_outbox(tmp_path):
     asyncio.run(controller.poll());asyncio.run(controller.poll())
     assert len([m for m in chat.snapshot()['messages'] if m['role']=='assistant'])==2
     assert all(t['status']=='execution_finished' for t in store.list())
+    receipts=[m['text'] for m in chat.snapshot()['messages'] if m['role']=='assistant']
+    assert all('执行结束，待验收' in text and 'verified output' in text for text in receipts)
+    assert all('execution_finished' not in text for text in receipts)
     # Simulate crash after conversation insert, before outbox acknowledgement.
     with store.db() as db:db.execute('UPDATE outbox SET delivered=0')
     TaskStore(tmp_path).deliver(PersonalConversation(tmp_path))

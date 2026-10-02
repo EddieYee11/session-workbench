@@ -2,14 +2,12 @@ package work.eddie.sessions
 
 import android.Manifest
 import android.content.ComponentName
-import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
-import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -96,13 +94,10 @@ object PhoneContext{
  /** 手机本地日历今日事件数 */
  fun todayCalendarCount(context:Context):Int{
   if(!calendarGranted(context))return 0
-  return runCatching{
-   val start=System.currentTimeMillis()
-   val end=start+24*3600*1000L
-   val b=CalendarContract.Instances.CONTENT_URI.buildUpon()
-   ContentUris.appendId(b,start);ContentUris.appendId(b,end)
-   context.contentResolver.query(b.build(),arrayOf(CalendarContract.Instances.EVENT_ID),null,null,null)?.use{it.count}?:0
-  }.getOrDefault(0)
+  val zone=java.time.ZoneId.systemDefault()
+  val today=java.time.LocalDate.now(zone)
+  val result=readPhoneCalendar(context,today,days=1,zone=zone)
+  return (result as? PhoneCalendarResult.Ready)?.let{phoneCalendarEventsOn(it.events,today,zone).size}?:0
  }
 }
 
@@ -153,7 +148,10 @@ private fun openListenerSettings(context:Context){
  val conGranted=remember(tick){PhoneContext.contactsGranted(context)}
  val calGranted=remember(tick){PhoneContext.calendarGranted(context)}
  val conCount=remember(tick){PhoneContext.contactCount(context)}
- val calCount=remember(tick){PhoneContext.todayCalendarCount(context)}
+ var calCount by remember{mutableStateOf<Int?>(null)}
+ LaunchedEffect(tick,calGranted){
+  calCount=if(calGranted)kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){PhoneContext.todayCalendarCount(context)}else null
+ }
  Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=22.dp).padding(bottom=28.dp)){
   Text("权限与上下文",fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
   Text("上下文直接来自手机：通知、日历、位置、通讯录。权限只在你要用它时才申请，随时可关。",Modifier.padding(top=4.dp,bottom=8.dp),fontSize=12.sp,lineHeight=18.sp,color=Muted)
@@ -183,8 +181,8 @@ private fun openListenerSettings(context:Context){
   }
 
   PermissionRow(Icons.Outlined.EventNote,"手机日历","本地日程也出现在今天页",calGranted,
-   "很多人日程只记在手机本地日历、不走 Google 同步。开启后，今天页会把这部分也算上。",{calLauncher.launch(Manifest.permission.READ_CALENDAR)}){
-   if(calGranted)Text("手机日历未来 24 小时 $calCount 条",Modifier.padding(top=4.dp),fontSize=11.sp,color=Muted)
+   "开启后，今天页直接读取手机可见日历中的日程。日历只在手机本地读取。",{calLauncher.launch(Manifest.permission.READ_CALENDAR)}){
+   if(calGranted)Text(calCount?.let{"手机日历今天 $it 条"}?:"正在读取手机日历…",Modifier.padding(top=4.dp),fontSize=11.sp,color=Muted)
   }
 
   PermissionRow(Icons.Outlined.Mic,"麦克风","快捷语音和 Hermes 语音输入",remember(tick){PhoneContext.micGranted(context)},

@@ -46,14 +46,17 @@ class MainActivity:ComponentActivity(){
  override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
    handleIntent(intent)
    if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)
-   val shortcuts=listOf(ShortcutInfo.Builder(this,"voice").setShortLabel("语音记账").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build())+listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
+   val shortcuts=listOf(
+    ShortcutInfo.Builder(this,"hermes-voice").setShortLabel("和 Hermes 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build(),
+    ShortcutInfo.Builder(this,"voice").setShortLabel("语音记账").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,ExpenseVoiceActivity::class.java).setAction(Intent.ACTION_VIEW)).build()
+   )+listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
    Thread { getSystemService(ShortcutManager::class.java).dynamicShortcuts=shortcuts }.start()
    androidx.work.WorkManager.getInstance(this).enqueueUniquePeriodicWork("session-updates",androidx.work.ExistingPeriodicWorkPolicy.KEEP,androidx.work.PeriodicWorkRequestBuilder<StatusWorker>(15,java.util.concurrent.TimeUnit.MINUTES).setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build()).build())
    if(SignalConfig.enabled(this))SignalSync.schedule(this)
    setContent{MaterialTheme(colorScheme=Palette){Workbench(vm,quick,workLaunch){quick=""}}}
  }
  override fun onStart(){super.onStart();vm.active=true;if(vm.store.token.isNotEmpty()){vm.refreshPersonalNow();vm.refreshHermesNow()};if(SignalConfig.enabled(this)&&SignalConfig.accessGranted(this))SignalSync.schedule(this)}
- override fun onStop(){vm.finishHermesVoice(false);vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;vm.personalFresh=false;vm.hermesFresh=false;vm.signalsFresh=false;vm.signalsHealthFresh=false;super.onStop()}
+ override fun onStop(){vm.finishHermesVoice(false);vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;vm.personalFresh=false;vm.hermesFresh=false;vm.signalsFresh=false;vm.signalsHealthFresh=false;vm.taskLedgerFresh=false;super.onStop()}
  override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);handleIntent(intent)}
  private fun handleIntent(intent:Intent){
   val sid=intent.getStringExtra("sid").orEmpty()
@@ -151,7 +154,7 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
   }
  Text("语音记账",fontWeight=FontWeight.Bold)
  Text("按住电源键，直接说出这笔支出（例如“午饭三十五”），3 秒后自动记账。小窗悬浮在当前应用上，不打断你正在做的事。",Modifier.padding(top=5.dp),fontSize=12.sp,color=Muted)
- TextButton(onClick={context.startActivity(Intent(context,QuickVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开语音记账",Modifier.padding(start=8.dp))}
+ TextButton(onClick={context.startActivity(Intent(context,ExpenseVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开语音记账",Modifier.padding(start=8.dp))}
  TextButton(onClick={context.startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS))}){Text("系统默认助手设置")}
  HorizontalDivider(Modifier.padding(vertical=12.dp),color=Line)
  Text("Mac mini",fontWeight=FontWeight.Bold);Text(if(vm.connected)"连接正常" else "首次使用需配对",color=Muted,fontSize=12.sp)

@@ -1,4 +1,50 @@
-# Hermes task loop — local review build
+# Hermes task loop
+
+## 2026-10-02: executable main-chat task loop
+
+This update applies to the live `会话工作台` source imported from mini's dot build (`3f3080b`). The older local-review record below remains historical evidence; its statements about unperformed native-worker testing do not describe this follow-up.
+
+### Main conversation and independent work
+
+- `create_task` sends a fixed authenticated `/personal/tasks/create` request. The backend verifies the source is an actual user message, its request ID belongs to that message, its Hermes session is the main conversation, and `source_quote` occurs verbatim in that message. A narrow direct-assignment check rejects feelings, vague wishes and consequential operations. The model remains responsible for interpreting which task the user meant; the backend does not continuously scan conversation text or invent tasks.
+- Automatic work supports Codex `read-only`, or `workspace-write` for explicit code changes, in an existing project under `AI_Work_System`. Pi full access, deletion, publishing, external messaging, deployment and authentication changes keep the concrete approval-proposal path. The task stores the original source quote, task goal, completion condition, directory and authorization snapshot. Native sandbox and approvals remain the execution boundary; prompt restrictions are not a filesystem sandbox.
+- Creation persists `queued` and returns `task_id` immediately. A separate task loop starts isolated native workers, with a limit of two active tasks. Same-directory writers serialize; two readers may run together. Unknown runs block conflicting work. A queued task survives restart; a claimed dispatch becomes unknown rather than being replayed.
+- Main chat receives bounded recent task context, delivery states, results, project root and executor capabilities. Active work is prioritized, avoiding the old newest-task omission after 30 records. `recent_work_sessions` now includes the actual working directory.
+- `update_task_constraints` supports `read_only`, `forbid_path` and `preserve_style`. Restrictions received while queued or awaiting approval remain `pending_start`, join the initial prompt and become `delivered` only after a confirmed native turn is returned. Restrictions on an active Codex turn use the original `expectedTurnId`. Arbitrary model notes remain blocked and do not enter the executable constraint list. Existing Pi tmux sessions explicitly report unsupported steer.
+- `get_task_status` reads the ledger. `cancel_task` references a real user stop request and the exact existing task ID. A queued task can be cancelled before starting. Active Codex cancellation targets the original native turn, rather than the newest turn in that session. The task stays `cancel_requested` until an actual interrupted event; uncertain cancellation remains uncertain on retry.
+- Native waiting events and failures are persisted. Final results use the last completed assistant record; tools, reasoning, streaming deltas and unrelated turns are excluded. Failure text includes the native turn error rather than an unexplained missing-result notice. Execution finished still requires acceptance; input delivery still does not prove compliance.
+
+### Mini runtime inspection and required deployment
+
+Read-only checks on mini confirmed:
+
+- `work.eddie.sessions` runs `~/.session-workbench/venv/bin/python -m uvicorn app:app` on `127.0.0.1:8650`; its `WorkingDirectory` is the synchronized project `backend/`.
+- Hermes `ai.hermes.com-personal` runs the isolated `com-personal` gateway profile; its API health on `8649` reports Hermes `0.21.5`. The profile starts this project's `backend/hermes_mcp.py` as a real stdio MCP process.
+- Before this follow-up's production restart, `/personal/tasks` returned 404 and `tasks.sqlite` was absent: source presence or an APK build alone did not mean the backend was loaded.
+- The dedicated profile MCP allowlist initially exposed only `personal_overview`, `recent_work_sessions`, `propose_work`, `work_proposal_status`. Deployment must append `personal_tasks`, `update_task_constraints`, `create_task`, `get_task_status`, `cancel_task` to `mcp_servers.com_workbench.tools.include`, preserving the other fields and credentials.
+- After synchronized source hashes match, restart only `work.eddie.sessions` and `ai.hermes.com-personal`, then verify health, the protected tasks API and a fresh Hermes tool list. No global authentication configuration or triage profile needs changing. Deployment and phone acceptance are coordinated by the main agent; this backend follow-up did not restart production services.
+
+### Current verification
+
+- Full backend suite: **62 passed**, one upstream Starlette/httpx deprecation warning. New cases cover verified human source, rejected wish/small-talk/consequential authorization, two tasks and a restriction without a third task, main-chat submission while dispatch is waiting, HTTP pairing/idempotency, restrictions before approval, queued restart/cancel, exact-turn cancellation, uncertain retry, recent context and expired proposal synchronization.
+- Python compile check and `git diff --check`: passed. The real Hermes Python environment successfully lists all nine MCP tools from the updated source.
+- Real mini Codex validation ran two `read-only` native threads/turns in an isolated synthetic fixture. A reported **2 ordinary files**, B reported **0 first-level directories**; both reached `execution_finished`. A received a real native `turn/steer` acknowledgement for its original turn and ledger delivery became `delivered`. A further conversational message was accepted; only two tasks existed; the fixture still contained only `alpha.txt` and `beta.txt`.
+- Successful native evidence is at `~/.session-workbench/task-loop-validation-20261002-1790926987/verification.json` on mini, with native event logs in the same directory. Task interpretation was supplied deterministically; this is a real adapter/worker test, not verification of Hermes' natural-language routing.
+- The first native attempt exposed a stale CLI-config model alias rejected by the ChatGPT account. Task workers now select the account's advertised `model/list` default, with its default effort, rather than hardcoding or changing global model configuration. The second native attempt completed successfully.
+
+### Completed production and phone checks
+
+The production services were restarted after synchronized hashes matched. The dedicated gateway allowlist now includes all nine tools. Real natural main-chat assignments created two independent Codex workers; the final pair returned 2 ordinary files and 0 first-level directories. The phone task page displayed their live ledger, and work finished after the phone returned to its launcher. Task receipts reached the same persistent main conversation.
+
+A follow-up read-only restriction targeted the original task ID and reached `delivered`; small talk stayed in conversation and created no extra task. The first natural test exposed a schema ambiguity: the model put `read_only` in `text` and omitted the restriction kind. `constraint_type` is now a required Literal enum with concrete tool descriptions and transport examples; the repeated natural test succeeded. Arbitrary notes still cannot grant execution authority. User-facing task receipts now use Chinese state labels.
+
+A separate actual native cancellation reached `cancelled` only after the native interrupted event. The original turn ID stayed associated with that request. Evidence is saved on mini at `~/.session-workbench/com15-live-acceptance/verification-final.json` and `verification-cancel.json`. These are real model/runtime checks, distinct from the historical mock tests below.
+
+Android 1.5.0 was installed on the Xiaomi phone with its existing local signing key. Main chat, real task details, floating Com2 navigation and direct local calendar reading were inspected; the four current events were shown and an event opened the actual system calendar. Current navigation tests passed seven checks at both narrow and wide emulator sizes. See `com-1.5.0.md` for the latest release record.
+
+Existing Pi RPC steer, automatic acceptance validation and recovery of unknown executions remain unimplemented boundaries. Physical fold/unfold and genuine user speech remain separate handheld acceptance paths.
+
+## Historical local-review build
 
 Baseline: `52013086570f87a0f645602972feb06ef0a5d8f4`; branch `hermes-task-loop`.
 First implementation commit: `d4300e240b84207bf6aa363f736debeef1137227`; follow-up commit contains durable input delivery and correctness checks.

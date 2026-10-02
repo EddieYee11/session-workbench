@@ -31,6 +31,9 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
 
     monkeypatch.setattr(app.runtime, "create", create)
     monkeypatch.setattr(app.runtime, "input", send)
+    async def models(agent):
+        return [{'id':'native-default','is_default':True,'default_effort':'low'}]
+    monkeypatch.setattr(app.runtime, "models", models)
     route = "/personal/work/proposals/" + proposal["id"] + "/approve"
     body = {"request_id": "user-approved-001", "explicit_authorization": True}
     with TestClient(app.app) as client:

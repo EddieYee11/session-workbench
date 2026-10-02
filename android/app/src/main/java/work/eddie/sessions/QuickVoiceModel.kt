@@ -13,7 +13,7 @@ import java.util.UUID
 import kotlin.math.ln
 
 /**
- * 悬浮语音记账：录音 → 转写 → 解析 → 3 秒后自动记账，说完就走。
+ * 快速语音共用录音和转写链；记账入口保留金额确认，对话入口直接投递 Hermes。
  * phase: ready | recording | transcribing | confirm | sending | sent
  */
 class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
@@ -37,9 +37,12 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
  private var recordingFile: File? = null
  private var timer: Job? = null
  private var started = 0L
+ var conversationMode by mutableStateOf(false); private set
  var isForeground by mutableStateOf(false); private set
 
  init { restored = true }
+
+ fun useConversationMode() { conversationMode = true }
 
  private fun captureFile(): File? = prefs.getString("quick-voice-file", null)?.let { name ->
   File(captureDir, File(name).name).takeIf { it.extension == "m4a" }
@@ -64,7 +67,7 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
  @Suppress("DEPRECATION")
  fun record() {
   if (!isForeground || phase in listOf("recording", "transcribing", "confirm", "sending", "sent")) return
-  if (!paired) { message = "先在 Com! 中完成 Mac mini 配对，再使用语音记账。"; return }
+  if (!paired) { message = "先在 Com! 中完成 Mac mini 配对，再使用快速语音。"; return }
   val file = File(captureDir, UUID.randomUUID().toString() + ".m4a")
   try {
    val r = MediaRecorder()
@@ -79,7 +82,7 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
    recordingFile = file
    started = SystemClock.elapsedRealtime(); seconds = 0
    levels = List(24) { 0f }; phase = "recording"; message = ""; transcript = ""; expense = null
-   val endpoint = SpeechEndpointDetector()
+   val endpoint = SpeechEndpointDetector(if(conversationMode)900 else 500)
    timer = viewModelScope.launch {
     while (phase == "recording") {
      delay(50)
@@ -88,7 +91,7 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
      seconds = ((SystemClock.elapsedRealtime() - started) / 1000).toInt()
      if (endpoint.sample(amplitude, SystemClock.elapsedRealtime())) finishRecording()
      else if (seconds >= 60) {
-      if (endpoint.heardSpeech) finishRecording() else { cancelRecording(); message = "没有检测到说话，未记账。点“重说”再来一次。" }
+      if (endpoint.heardSpeech) finishRecording() else { cancelRecording(); message = "没有检测到说话，未发送。点“重说”再来一次。" }
      }
     }
    }
@@ -137,13 +140,23 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
   if (phase == "recording") finishRecording(transcribe = false)
  }
 
+ /** 关闭助理小窗不保留未交办的录音；已经提交的请求继续按同一请求号完成。 */
+ fun cancelConversationCapture() {
+  if (phase == "recording") cancelRecording()
+  cancelPending()
+  if (phase != "sending" && phase != "sent") {
+   recordingFile?.delete(); recordingFile = null
+   captureFile()?.delete(); prefs.edit().remove("quick-voice-file").apply()
+  }
+ }
+
  fun transcribe() {
   val file = recordingFile ?: captureFile() ?: return
   if (phase !in listOf("ready", "failed")) return
   val capture = file.nameWithoutExtension
   pendingCapture = capture
   val request = OneTimeWorkRequestBuilder<QuickVoiceDelivery>()
-   .setInputData(workDataOf("step" to "transcribe", "capture" to capture))
+   .setInputData(workDataOf("step" to "transcribe", "capture" to capture,"conversation" to conversationMode))
    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
   phase = "transcribing"; message = ""
   WorkManager.getInstance(getApplication()).enqueueUniqueWork("voice-$capture", ExistingWorkPolicy.KEEP, request)
@@ -158,9 +171,10 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
      WorkInfo.State.RUNNING -> { phase = "transcribing" }
      WorkInfo.State.SUCCEEDED -> {
       transcript = info.outputData.getString("transcript").orEmpty()
-      expense = parseExpense(transcript)
+      expense = if(conversationMode)null else parseExpense(transcript)
       phase = "confirm"; message = ""
       transcribeWatch?.cancel()
+      if(conversationMode)sendConversation()
      }
      WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
       phase = "ready"; message = info.outputData.getString("error") ?: "没听清，请再说一次。"
@@ -176,13 +190,22 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
  fun confirmExpense() {
   val e = expense ?: return
   if (phase != "confirm" || e.amount == null) return
-  val capture = pendingCapture ?: UUID.randomUUID().toString()
-  val text = expenseMessage(e)
+  sendText(expenseMessage(e),false)
+ }
+
+ /** 识别成功自动调用；发送失败重试会继续复用同一 capture/request_id。 */
+ fun sendConversation() {
+  if(!conversationMode || phase != "confirm" || transcript.isBlank())return
+  sendText(transcript,true)
+ }
+
+ private fun sendText(text:String,conversation:Boolean) {
+  val capture = pendingCapture ?: UUID.randomUUID().toString().also{pendingCapture=it}
   val request = OneTimeWorkRequestBuilder<QuickVoiceDelivery>()
-   .setInputData(workDataOf("step" to "send", "capture" to capture, "text" to text))
+   .setInputData(workDataOf("step" to "send", "capture" to capture, "text" to text,"conversation" to conversation))
    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
   phase = "sending"; message = ""
-  WorkManager.getInstance(getApplication()).enqueueUniqueWork("expense-$capture", ExistingWorkPolicy.KEEP, request)
+  WorkManager.getInstance(getApplication()).enqueueUniqueWork("${if(conversation)"quickvoice"else"expense"}-$capture", ExistingWorkPolicy.KEEP, request)
   watchSend(request.id)
  }
 

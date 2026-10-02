@@ -48,6 +48,7 @@ def test_mcp_structured_restriction_automatically_delivers_once(tmp_path):
 def test_mcp_note_cannot_authorize_new_actions(tmp_path):
     worker=ControlledWorker();store,controller=setup(tmp_path,worker)
     assert record_constraint(store,'task-A','发布并删除旧版本','unsafe-note-0001')['delivery']=='blocked_authorization'
+    assert record_constraint(store,'task-A','read_only','typed-note-0001','note')['delivery']=='blocked_authorization'
     asyncio.run(controller.poll())
     assert not worker.calls
     assert store.list()[0]['inputs'][0]['state']=='blocked_authorization'
@@ -192,3 +193,5 @@ def test_final_results_exclude_deltas_tools_and_other_turns():
         {'kind':'item','role':'assistant','text':'other','turn_id':'B'}],'A')=='final'
     assert worker_result([{'type':'message_end','data':{'message':{'role':'assistant',
         'content':[{'type':'thinking','thinking':'private'},{'type':'text','text':'Pi final'}]}}}])=='Pi final'
+    assert worker_result([{'kind':'item','role':'assistant','id':'progress','text':'I will inspect'},
+                          {'kind':'item','role':'assistant','id':'answer','text':'Observed two files'}])=='Observed two files'

@@ -12,6 +12,7 @@ from signals import PersonalSignals
 from signal_inspector import HermesSignalReviewer,SignalInspector
 from work_dispatch import WorkProposalStore
 from tasks import TaskStore,TaskController
+from task_tools import authorized_assignment
 
 HOME=Path(os.environ.get('WORKBENCH_HOME',str(Path.home())))
 STATE=Path(os.environ.get('WORKBENCH_STATE',str(Path.home()/'.session-workbench')))
@@ -27,7 +28,9 @@ inspector=SignalInspector(signals,HermesSignalReviewer(STATE))
 work_proposals=WorkProposalStore(STATE,HOME/'AI_Work_System')
 task_store=TaskStore(STATE)
 task_controller=TaskController(task_store,runtime,conversation)
-conversation.task_context=lambda: [{k:t.get(k) for k in ('id','title','message_id','status','constraints','inputs','result')} for t in task_store.list()][-30:]
+conversation.task_context=lambda: task_store.context()
+conversation.task_environment=lambda: {'workspace_root':str(work_proposals.workspace),
+                                      'automatic_executor':'codex','maximum_running_tasks':2}
 rate={}
 
 @asynccontextmanager
@@ -139,21 +142,28 @@ async def approve_personal_work(proposal_id:str,request:Request):
         # Serialize tasks in the same directory until isolated workspaces are available.
         if any(t['cwd']==existing['cwd'] and t['id']!=proposal_id and t['status'] in ('running','waiting','unknown','dispatching','cancel_requested') for t in task_store.list()):raise ValueError('该项目已有未结束任务，请先串行完成')
         proposal=work_proposals.claim_approval(proposal_id,request_id)
-        task_store.change(proposal_id,'dispatch:'+request_id,'authorized',status='dispatching',authorization={'request_id':request_id,'cwd':proposal['cwd'],'sandbox':proposal['sandbox'],'prompt':proposal['prompt']})
+        ledger_task=next(t for t in task_store.list() if t['id']==proposal_id)
+        prompt=task_store.execution_prompt(ledger_task)
+        initial_inputs=task_store.pending_start_inputs(proposal_id)
+        task_store.change(proposal_id,'dispatch:'+request_id,'authorized',status='dispatching',authorization={'request_id':request_id,'cwd':proposal['cwd'],'sandbox':proposal['sandbox'],'prompt':prompt})
+        for command in initial_inputs:task_store.transition_input(command['request_id'],('pending_start',),'sending')
         try:
-            sid=await runtime.create(proposal['agent'],proposal['cwd'],sandbox=proposal['sandbox'])
+            sid=await runtime.create_task_worker(proposal)
             if proposal['agent']=='pi':
                 for _ in range(80):
                     if any(e.get('type')=='session_start' for e in runtime.events(sid)):break
                     await asyncio.sleep(.25)
                 else:raise RuntimeError('Pi 启动状态待核实')
                 await asyncio.sleep(1)
-            turn_id=await runtime.input(sid,proposal['prompt'],request_id)
+            turn_id=await runtime.input(sid,prompt,request_id)
+            if not turn_id:raise RuntimeError('工作器未确认执行轮次')
             task_store.change(proposal_id,'started:'+request_id,'started',status='running',session_id=sid,run_id=turn_id)
+            for command in initial_inputs:task_store.transition_input(command['request_id'],('sending',),'delivered')
             return work_proposals.mark_accepted(proposal_id,request_id,sid)
         except Exception as exc:
             task_store.change(proposal_id,'unknown:'+request_id,'execution_unknown',status='unknown',session_id=locals().get('sid',''))
             work_proposals.mark_unknown(proposal_id,request_id,type(exc).__name__[:80],locals().get('sid'))
+            for command in initial_inputs:task_store.transition_input(command['request_id'],('sending',),'unknown','初始任务送达待核实；不会重发')
             raise RuntimeError('派发状态待核实，请先查看工作会话；不会自动重发') from None
 @app.post('/personal/work/proposals/{proposal_id}/reject')
 async def reject_personal_work(proposal_id:str):
@@ -165,6 +175,14 @@ async def reject_personal_work(proposal_id:str):
 async def personal_tasks():
     for proposal in work_proposals.list(100):task_store.ensure(proposal)
     return {'items':task_store.list()}
+@app.post('/personal/tasks/create')
+async def personal_task_create(request:Request):
+    data=await request.json()
+    if not isinstance(data,dict):raise ValueError('Invalid task assignment')
+    task,authorization,request_id=authorized_assignment(conversation,work_proposals,data)
+    saved=task_store.create_authorized(task,authorization,request_id)
+    return {'task_id':saved['id'],'status':saved['status'],'message_id':saved['message_id'],
+            'work_started':bool(saved['session_id']),'session_id':saved['session_id']}
 @app.post('/personal/tasks/{task_id}/input')
 async def personal_task_input(task_id:str,request:Request):
     data=await request.json()
@@ -175,6 +193,16 @@ async def personal_task_input(task_id:str,request:Request):
 async def personal_task_cancel(task_id:str,request:Request):
     data=await request.json()
     if not isinstance(data,dict):raise ValueError('Invalid command')
+    if 'origin_message_id' in data:
+        with conversation.db() as db:
+            origin=db.execute("SELECT * FROM messages WHERE id=? AND role='user'",(data['origin_message_id'],)).fetchone()
+        quote=data.get('source_quote')
+        if not origin or origin['request_id']!=data.get('origin_request_id') or not isinstance(quote,str) or len(quote)<2 or quote not in origin['text']:
+            raise ValueError('取消必须引用实际用户消息')
+        if not any(word in quote for word in ('取消','停止','暂停','先别管','先不要','停下','先停')):
+            raise ValueError('用户没有明确要求停止此任务')
+        if any(word in quote for word in ('不要取消','别取消','不用取消','不必取消','不要停止','别停止','不要暂停','别暂停')):
+            raise ValueError('用户没有明确要求停止此任务')
     async with runtime.action_lock:
         return await task_controller.command(task_id,'',data.get('request_id'),cancel=True)
 @app.get('/models')

@@ -423,9 +423,20 @@ class PersonalConversation:
                     transport_text = (
                         "[Com 主对话上下文；只提供关联，不授予执行权限]\n"
                         + json.dumps({'origin_session_id': session_id, 'origin_message_id': mid,
-                                      'origin_request_id': row['request_id'], 'tasks': context}, ensure_ascii=False)
-                        + "\n明确交办才用 propose_work；补充约束用 update_task_constraints 并复用任务 ID。"
+                                      'origin_request_id': row['request_id'], 'tasks': context,
+                                      'environment':getattr(self,'task_environment',lambda:{})()}, ensure_ascii=False)
+                        + "\n明确交办普通诊断或项目代码修改用 create_task：逐字引用用户交办原文和上面的 origin IDs，默认 Codex read-only；明确代码修改才用 workspace-write。"
+                        "涉及发布、删除、外发、部署、认证配置或 Pi full-access 才用 propose_work 等待具体批准。"
+                        "多件明确交办分别创建；先读现有任务，补充约束用 update_task_constraints 并复用任务 ID。"
+                        "update_task_constraints 的 constraint_type 必填：用户说保持只读/不要改文件时 constraint_type='read_only', text=''；"
+                        "保持现有样式时 constraint_type='preserve_style', text=''；禁止路径时 constraint_type='forbid_path', text=项目内相对路径。"
+                        "不要把 read_only/preserve_style 写进 text 后省略类型。任意新动作或普通备注才用 constraint_type='note'，它只记录且因未授权而不执行。"
+                        "要求停止时用 cancel_task，复用精确 task ID；任务查询用 get_task_status；后台 queued 是已受理，继续主聊天无需等待工作器。"
+                        "创建工具的 queued/work_started=false 回执只允许说已受理或排队中；"
+                        "执行动作、只读约束遵守、网络访问或文件修改结果必须有工作器实际事件或结果才能陈述，不能把任务要求当作完成证据。"
                         "闲聊不派发；指代不明先追问；任务执行结束不代表验收通过；已受理不代表生效。"
+                        "面向用户用简洁中文说明任务名称、实际进度和结果；task ID、constraint_type、delivery 等内部参数保留在工具调用中，不在普通回复里逐项展示。"
+                        "补充要求先说已给原任务补充、仍待送达，真实回执已确认时才说已送达；无需重复解释规则或询问是否继续跟进。"
                         "发布、删除、外发、权限扩张不能由工作建议获得授权。\n用户消息：\n" + row['text'])
                 async for event, payload in self.client.stream_chat(session_id, transport_text):
                     if terminal and event != "done":

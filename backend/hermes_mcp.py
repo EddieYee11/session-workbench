@@ -1,7 +1,7 @@
-"""Narrow, read-only Com! tools for the isolated Hermes Personal Agent.
+"""Narrow Com! tools for the isolated Hermes Personal Agent.
 
 Hermes starts this file as a stdio MCP server. The server deliberately owns a
-fixed set of Com! GET routes; neither the model nor a tool argument can select
+fixed set of Com! routes; neither the model nor a tool argument can select
 an arbitrary URL or HTTP method.
 """
 
@@ -10,7 +10,8 @@ from __future__ import annotations
 import stat
 import re
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
+from pydantic import Field
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -67,6 +68,36 @@ def _get(route: str, params: dict[str, str] | None = None) -> dict[str, Any]:
     return data
 
 
+def _post(route: str, body: dict[str, Any]) -> dict[str, Any]:
+    if route != '/personal/tasks/create' and not re.fullmatch(r'/personal/tasks/(?:task|work)_[0-9a-f]{24}/cancel', route):
+        raise ValueError('Route is not allowed')
+    with httpx.Client(timeout=10, trust_env=False, follow_redirects=False) as client:
+        response = client.post(COM_BASE_URL+route, json=body,
+                               headers={'Authorization':'Bearer '+_token()})
+    if len(response.content) > MAX_RESPONSE_BYTES:
+        raise RuntimeError('Com response is too large')
+    data = response.json()
+    if response.status_code >= 400:
+        raise ValueError(data.get('detail','Task command was rejected'))
+    if not isinstance(data,dict):
+        raise RuntimeError('Com response is invalid')
+    return data
+
+
+@mcp.tool(description=(
+    'Create and queue an independent Codex task only for an explicit user assignment. '
+    'Copy source_quote exactly from the current user message, and copy all origin IDs from Com context. '
+    'Default read-only; workspace-write only for explicit code changes within the chosen existing project. '
+    'No deletion, publishing, external messaging, deployment, credentials or full-access Pi; use propose_work for those approvals. '
+    'Provide goal, constraints and completion_condition. Return immediately; queued is accepted, not started or complete. '
+    'For separate assignments create separate tasks with stable distinct request IDs; reuse an existing task for follow-ups. '
+    'Do not create tasks from small talk, feelings, vague wishes, or ambiguous references.'), annotations=PROPOSAL_ONLY)
+def create_task(agent: str, relative_cwd: str, title: str, prompt: str, sandbox: str,
+                completion_condition: str, source_quote: str, origin_session_id: str,
+                origin_message_id: str, origin_request_id: str, request_id: str) -> dict[str, Any]:
+    return _post('/personal/tasks/create', locals())
+
+
 @mcp.tool(
     description="Read the current Com! personal overview: upcoming calendar items and this month's bookkeeping summary. Read-only.",
     annotations=READ_ONLY,
@@ -107,6 +138,7 @@ def recent_work_sessions(limit: int = 5, agent: str = "") -> dict[str, Any]:
             "status": row.get("status"),
             "updated": row.get("updated"),
             "managed": row.get("managed"),
+            "cwd": row.get("cwd"),
         })
         if len(projected) >= limit:
             break
@@ -206,10 +238,37 @@ def personal_tasks() -> dict[str, Any]:
     return {'items': store.list()}
 
 
-@mcp.tool(description="Update an exact existing task ID; ask if ambiguous. Structured read_only or forbid_path restrictions are automatically queued within existing task authorization. Arbitrary note text is recorded but blocked pending explicit user authorization; it never grants new permissions. Receipt is not delivery or effect. No task is created.", annotations=PROPOSAL_ONLY)
-def update_task_constraints(task_id: str, text: str, request_id: str, constraint_type: str = 'note') -> dict[str, Any]:
+@mcp.tool(description=(
+    "Update an exact existing task ID; ask if ambiguous. constraint_type is REQUIRED: "
+    "choose read_only for 'keep read-only/do not modify files' and set text=''; "
+    "choose preserve_style for 'keep the current style' and set text=''; "
+    "choose forbid_path for a restricted project-relative path and put ONLY that path in text. "
+    "These structured restrictions are queued within existing task authorization, including before the worker starts. "
+    "Do not put 'read_only' or 'preserve_style' in text as a note. "
+    "Choose note only for arbitrary information/new-action text: it is recorded but blocked pending explicit user authorization. "
+    "Receipt is not delivery or effect. No task is created."), annotations=PROPOSAL_ONLY)
+def update_task_constraints(
+    task_id: str,
+    text: Annotated[str, Field(description="Empty string for read_only or preserve_style; a project-relative path for forbid_path; arbitrary information for blocked note only.")],
+    request_id: str,
+    constraint_type: Annotated[Literal['read_only','preserve_style','forbid_path','note'], Field(description="Required restriction kind. User says keep read-only/no file changes: read_only. Keep visual style: preserve_style. Protect a path: forbid_path. Other text: note, which cannot authorize execution.")],
+) -> dict[str, Any]:
     return record_constraint(TaskStore(Path.home() / '.session-workbench'),
                              task_id,text,request_id,constraint_type)
+
+
+@mcp.tool(description="Read the authoritative durable status, input delivery states, worker ID, events and result for an exact existing task ID. Execution finished is pending acceptance; delivered does not prove compliance. Read-only.", annotations=READ_ONLY)
+def get_task_status(task_id: str) -> dict[str, Any]:
+    task = next((t for t in TaskStore(Path.home()/'.session-workbench').list() if t['id']==task_id), None)
+    return {'found':bool(task),'task':task}
+
+
+@mcp.tool(description="Request cancellation of an exact existing task only when the user asks to stop it; ask if ambiguous. Copy the origin IDs and an exact source_quote from that user message. Cancellation stays pending until the worker actually reports interrupted; retries use the same request ID.", annotations=PROPOSAL_ONLY)
+def cancel_task(task_id: str, request_id: str, origin_message_id: str,
+                origin_request_id: str, source_quote: str) -> dict[str, Any]:
+    return _post('/personal/tasks/'+task_id+'/cancel', {'request_id':request_id,
+                 'origin_message_id':origin_message_id, 'origin_request_id':origin_request_id,
+                 'source_quote':source_quote})
 
 
 if __name__ == "__main__":

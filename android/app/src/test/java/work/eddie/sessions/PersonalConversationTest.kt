@@ -20,6 +20,6 @@ class PersonalConversationTest {
   assertEquals("正在思考",hermesPhaseStatus("thinking"))
   assertEquals("正在执行",hermesPhaseStatus("executing"))
   assertEquals("正在回复",hermesPhaseStatus("responding"))
-  assertEquals("已完成",hermesPhaseStatus("completed"))
+  assertEquals("回复结束",hermesPhaseStatus("completed"))
  }
 }
