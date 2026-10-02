@@ -16,6 +16,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from work_dispatch import WorkProposalStore
+from tasks import TaskStore
 
 
 COM_BASE_URL = "http://127.0.0.1:8650"
@@ -144,6 +145,7 @@ def propose_work(
         origin_request_id=origin_request_id,
         idempotency_key=idempotency_key,
     )
+    TaskStore(Path.home() / ".session-workbench").ensure(card)
     return {
         "proposal_id": card["id"],
         "status": card["status"],
@@ -188,10 +190,29 @@ def work_proposal_status(proposal_id: str) -> dict[str, Any]:
             work = _get("/sessions/" + sid)
             session = work.get("session") if isinstance(work.get("session"), dict) else {}
             result["work_status"] = session.get("status")
+            result["messages"] = work.get("messages", [])
             result["work_status_available"] = True
         except RuntimeError:
             result["work_status_available"] = False
     return result
+
+
+@mcp.tool(description="List durable task IDs, source messages, constraints and results. Do not infer a task from ambiguous references; ask the user.", annotations=READ_ONLY)
+def personal_tasks() -> dict[str, Any]:
+    store = TaskStore(Path.home() / '.session-workbench')
+    for card in WorkProposalStore(Path.home() / '.session-workbench').list(100):
+        store.ensure(card)
+    return {'items': store.list()}
+
+
+@mcp.tool(description="Record a constraint on an existing task, never create a new task. This acknowledges receipt only, does not authorize permission expansion or deliver to the worker. Use the exact task ID; ask if the reference is unclear.", annotations=PROPOSAL_ONLY)
+def update_task_constraints(task_id: str, text: str, request_id: str) -> dict[str, Any]:
+    if not isinstance(text, str) or not text.strip() or len(text)>6000:
+        raise ValueError('Invalid constraint')
+    task, _ = TaskStore(Path.home() / '.session-workbench').change(
+        task_id, request_id, 'input_accepted', text)
+    return {'task_id': task_id, 'status': task['status'], 'delivery': 'accepted_pending',
+            'constraints': task['constraints'], 'work_started': False}
 
 
 if __name__ == "__main__":

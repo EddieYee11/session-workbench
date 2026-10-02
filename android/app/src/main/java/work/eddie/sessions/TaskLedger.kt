@@ -83,7 +83,14 @@ fun buildLedgerTasks(runs:List<JSONObject>,messages:List<JSONObject>):List<Ledge
 
 /** 活动弹层里的任务分组：进行中置顶，点开展开事件时间线 */
 @Composable fun TaskLedgerSection(vm:WorkbenchModel,runs:List<JSONObject>,messages:List<JSONObject>){
- val tasks=remember(runs.toString(),messages.toString()){buildLedgerTasks(runs,messages)}
+ val tasks=vm.taskLedger.array("items").map{t->
+  val st=t.optString("status")
+  LedgerTask(t.optString("id"),t.optString("title"),t.optString("agent").uppercase(),
+   if(st in setOf("running","waiting","dispatching","cancel_requested"))"active" else if(st in setOf("unknown","failed","approval_required"))"attention" else "done",
+   when(st){"execution_finished"->"执行结束 · 待验收";"cancel_requested"->"取消待确认";"approval_required"->"待授权";"unknown"->"待核实";"cancelled"->"已停止";else->st},
+   t.optDouble("updated_at"),t.optString("message_id"),t.optString("session_id"),
+   t.array("events").map{e->LedgerEvent(e.optString("kind")+" · "+e.optString("text"),e.optDouble("at"))})
+ }.sortedByDescending{it.updatedAt}
  var expanded by remember{mutableStateOf<String?>(null)}
  HorizontalDivider(Modifier.padding(top=4.dp,bottom=14.dp),color=Line)
  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){
@@ -103,6 +110,16 @@ fun buildLedgerTasks(runs:List<JSONObject>,messages:List<JSONObject>):List<Ledge
     }
     Text("${task.agent} · ${task.statusText} · ${if(task.updatedAt>0)relTime(task.updatedAt) else "时间未知"}",Modifier.padding(top=4.dp,start=14.dp),fontSize=11.sp,color=Muted)
     if(expanded==task.id){
+     if(!vm.workProposalsFresh)Text("离线缓存，同步后才能操作",fontSize=12.sp,color=Muted)
+     Text(vm.taskControlNote,fontSize=12.sp,color=Muted)
+     var instruction by remember(task.id){mutableStateOf("")}
+     if(task.status=="active"){
+      OutlinedTextField(value=instruction,onValueChange={instruction=it},label={Text("补充约束")},modifier=Modifier.fillMaxWidth())
+      Row{
+       TextButton(onClick={vm.taskCommand(task.id,instruction)},enabled=instruction.isNotBlank()&&vm.workProposalsFresh&&vm.taskControlBusy.isBlank()){Text("提交指令")}
+       TextButton(onClick={vm.taskCommand(task.id,"",true)},enabled=vm.workProposalsFresh&&vm.taskControlBusy.isBlank()){Text("请求取消")}
+      }
+     }
      task.events.forEach{ev->
       Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically){
        Box(Modifier.size(5.dp).background(Line,CircleShape))

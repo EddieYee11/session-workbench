@@ -29,9 +29,9 @@ private fun proposalSandbox(agent:String,sandbox:String)=when{
  else->"权限待核实"
 }
 
-/** 最高权限模式：不再有“待你决定”状态；proposed 表示已自动接单执行中 */
+/** Task authorization is explicit and independent from refresh. */
 private fun proposalStatus(status:String)=when(status){
- "proposed"->"自动执行中"
+ "proposed"->"待授权"
  "dispatching"->"正在派发"
  "accepted"->"已启动"
  "unknown"->"派发结果待核实"
@@ -41,7 +41,7 @@ private fun proposalStatus(status:String)=when(status){
 }
 
 /**
- * Hermes 工作动态：最高权限下，工作建议自动执行、无需逐条确认。
+ * Hermes 工作动态与任务级授权。
  * 这里只做透明记录：让用户看到 Hermes 做了什么、为什么、进行到哪一步。
  */
 @Composable fun WorkProposalSection(vm:WorkbenchModel){
@@ -56,7 +56,7 @@ private fun proposalStatus(status:String)=when(status){
    Text(if(vm.workProposalsLoading)"刷新中" else "刷新",fontSize=12.sp)
   }
  }
- Text("Hermes 会自动执行工作建议，无需你逐条确认。这里只记录做了什么。",fontSize=12.sp,lineHeight=18.sp,color=Muted)
+ Text("请核对目录、指令与权限后批准此任务。刷新不会启动工作。",fontSize=12.sp,lineHeight=18.sp,color=Muted)
  if(!vm.workProposalsFresh&&items.isNotEmpty())Text("以下是上次保存的记录；同步后更新。",Modifier.padding(top=5.dp),fontSize=11.sp,color=AmberText)
  if(vm.workProposalsError.isNotBlank())Text(vm.workProposalsError,Modifier.padding(top=5.dp),fontSize=11.sp,color=AmberText)
  if(vm.workProposalNote.isNotBlank())Text(vm.workProposalNote,Modifier.padding(top=5.dp),fontSize=11.sp,color=AmberText)
@@ -74,6 +74,10 @@ private fun proposalStatus(status:String)=when(status){
     Text("原因：${proposal.optString("reason")}",Modifier.padding(top=7.dp),fontSize=12.sp,lineHeight=18.sp,color=Ink)
     SelectionContainer{Text("交给 ${if(agent=="pi")"Pi" else "Codex"} 的指令：\n${proposal.optString("prompt")}",Modifier.padding(top=7.dp),fontSize=12.sp,lineHeight=18.sp,color=Ink)}
     Text("有效至 ${proposalTime(proposal.optDouble("expires_at"))}",Modifier.padding(top=7.dp),fontSize=11.sp,color=Muted)
+    if(status=="proposed"&&!expired){
+     TextButton(onClick={vm.approveWorkProposal(id)},enabled=vm.workProposalsFresh&&vm.workProposalBusy.isBlank()){Text("批准此任务权限并启动")}
+     TextButton(onClick={vm.rejectWorkProposal(id)},enabled=vm.workProposalsFresh&&vm.workProposalBusy.isBlank()){Text("拒绝")}
+    }
     if(status=="unknown"||status=="dispatching")Text("请先去工作页核对实际会话；此卡不会自动重发。",Modifier.padding(top=6.dp),fontSize=11.sp,color=AmberText)
     if(status=="accepted"&&proposal.optString("work_session_id").isNotBlank()){
      TextButton(onClick={vm.openId(proposal.optString("work_session_id"));vm.externalWorkRoute++}){Text("进入工作会话",fontSize=12.sp)}

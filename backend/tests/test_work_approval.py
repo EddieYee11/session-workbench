@@ -32,7 +32,7 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
     monkeypatch.setattr(app.runtime, "create", create)
     monkeypatch.setattr(app.runtime, "input", send)
     route = "/personal/work/proposals/" + proposal["id"] + "/approve"
-    body = {"request_id": "user-approved-001"}
+    body = {"request_id": "user-approved-001", "explicit_authorization": True}
     with TestClient(app.app) as client:
         assert client.post(route, json=body).status_code == 401
         headers = {"Authorization": "Bearer " + app.TOKEN}
@@ -44,3 +44,22 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
         assert client.post(route, headers=headers, json={"request_id": "another-approval-001"}).status_code == 409
     assert [call[0] for call in calls] == ["create", "input"]
     assert calls[0][3]["sandbox"] == "workspace-write"
+
+
+def test_refresh_does_not_authorize_and_tasks_expose_source(tmp_path, monkeypatch):
+    (tmp_path / 'AI_Work_System' / 'example').mkdir(parents=True)
+    monkeypatch.setenv('WORKBENCH_HOME', str(tmp_path))
+    monkeypatch.setenv('WORKBENCH_STATE', str(tmp_path / 'state'))
+    import app
+    app=importlib.reload(app)
+    card=app.work_proposals.propose(agent='codex',relative_cwd='example',title='A',prompt='inspect',
+        sandbox='read-only',reason='explicit request',origin_message_id='source-A',idempotency_key='proposal-A-0001')
+    with TestClient(app.app) as client:
+        headers={'Authorization':'Bearer '+app.TOKEN}
+        route='/personal/work/proposals/'+card['id']+'/approve'
+        assert client.post(route,headers=headers,json={'request_id':'automatic-0001'}).status_code==409
+        items=client.get('/personal/tasks',headers=headers).json()['items']
+        assert items[0]['message_id']=='source-A'
+        assert items[0]['status']=='approval_required'
+        assert items[0]['authorization'] is None
+        assert client.get('/personal/tasks').status_code==401

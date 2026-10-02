@@ -297,6 +297,12 @@ class Runtime:
             if e.get('type')=='agent_start':status='running'
             if e.get('type')=='agent_end':status='completed'
         return status
+    async def steer_task(self,sid,turn_id,text):
+        m=self.h.managed().get(sid)
+        if not m or m['agent']!='codex' or not turn_id:
+            raise ValueError('Native running turn is unavailable')
+        return await self.call('turn/steer',{'threadId':m['native_id'],
+            'expectedTurnId':turn_id,'input':[{'type':'text','text':text}]})
     async def stop(self,sid):
         m=self.h.managed()[sid]
         if m['agent']=='pi':await self.tm('send-keys','-t',m['tmux'],'Escape')

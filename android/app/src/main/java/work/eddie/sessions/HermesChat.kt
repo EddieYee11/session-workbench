@@ -55,7 +55,7 @@ fun hermesMessageStatus(status:String):String=when(status){
  "completed"->"已完成"
  "failed"->"处理失败"
  "unknown"->"结果待核实 · 不会自动重发"
- "approval_required"->"已自动继续"
+ "approval_required"->"待授权"
  else->""
 }
 
@@ -236,7 +236,7 @@ private fun hermesToolLabel(name:String):String=when{
 
 @Composable private fun HermesProposalCard(proposal:JSONObject,openActivity:()->Unit){
  val statusText=when(proposal.optString("status")){
-  "proposed"->"已自动接单"
+  "proposed"->"待授权"
   "dispatching"->"正在派发"
   "accepted"->"已启动"
   else->"动态"

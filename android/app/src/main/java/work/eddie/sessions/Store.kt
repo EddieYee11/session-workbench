@@ -177,6 +177,9 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var signalsLoading by mutableStateOf(false)
  var signalsError by mutableStateOf("")
  var showSignalsActivity by mutableStateOf(false)
+ var taskLedger by mutableStateOf(store.cachedSecure("personal-tasks.enc"))
+ var taskControlBusy by mutableStateOf("")
+ var taskControlNote by mutableStateOf("")
  var workProposals by mutableStateOf(store.cachedSecure("personal-work-proposals.enc"))
  var workProposalsFresh by mutableStateOf(false)
  var workProposalsLoading by mutableStateOf(false)
@@ -302,17 +305,12 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    try{
      val recent=store.request("/personal/work/proposals?limit=20")
      if(recent.optJSONArray("items")==null)error("工作建议数据格式不完整")
+     val tasks=store.request("/personal/tasks")
+     if(tasks.optJSONArray("items")==null)error("任务数据格式不完整")
+     taskLedger=tasks
+     runCatching{store.secureCache("personal-tasks.enc",tasks)}
      workProposals=recent;workProposalsFresh=true
      runCatching{store.secureCache("personal-work-proposals.enc",recent)}
-     // 最高权限：自动批准新到的工作建议。approve 内部按 request_id 幂等，重复调用不会重复派发。
-     recent.array("items").forEach{item->
-       val id=item.optString("id")
-       if(id.isNotBlank()&&id !in autoApprovedIds&&item.optString("status")=="proposed"
-         &&item.optDouble("expires_at")>System.currentTimeMillis()/1000.0){
-         autoApprovedIds+=id
-         approveWorkProposal(id)
-       }
-     }
    }catch(e:Exception){workProposalsFresh=false;workProposalsError=e.message?:"工作建议暂不可用"}
    finally{workProposalsLoading=false}
  }
@@ -326,6 +324,25 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    workApprovalIds=updated
    return requestId
  }
+ fun taskCommand(id:String,text:String,cancel:Boolean=false){
+   if(taskControlBusy.isNotBlank()||!workProposalsFresh||store.token.isBlank())return
+   taskControlBusy=id;taskControlNote=""
+   // Persist each command before sending; uncertain delivery is never silently retried.
+   val key="task-command-$id-${if(cancel)"cancel" else "input"}"
+   val old=store.cachedSecure("$key.enc")
+   val requestId=old.optString("request_id").ifBlank{java.util.UUID.randomUUID().toString()}
+   if(old.optString("text").isNotBlank()&&old.optString("text")!=text){taskControlBusy="";taskControlNote="上一条指令待核实，请先查看任务事件";return}
+   val body=JSONObject().put("request_id",requestId).put("text",text)
+   runCatching{store.secureCache("$key.enc",body)}.onFailure{taskControlBusy="";taskControlNote="请求未保存，尚未发送";return}
+   viewModelScope.launch{
+     try{
+       val result=store.request("/personal/tasks/${enc(id)}/${if(cancel)"cancel" else "input"}",body)
+       if(!cancel&&result.optString("delivery")=="applied")runCatching{store.secureCache("$key.enc",JSONObject())}
+       taskControlNote=if(cancel)"取消已受理，等待工作器确认停止" else if(result.optString("delivery")=="unknown")"指令送达待核实，不会自动重发" else "指令已受理，请查看事件确认生效"
+     }catch(e:Exception){taskControlNote="请求结果待核实；重试复用同一请求号"}
+     finally{refreshWorkProposals();taskControlBusy=""}
+   }
+ }
  fun approveWorkProposal(id:String){
    if(workProposalBusy.isNotBlank()||!workProposalsFresh||store.token.isBlank())return
    val proposal=workProposals.array("items").firstOrNull{it.optString("id")==id}?:return
@@ -337,7 +354,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    workProposalBusy=id;workProposalNote=""
    viewModelScope.launch{
      try{
-       val result=store.request("/personal/work/proposals/${enc(id)}/approve",JSONObject().put("request_id",requestId))
+       val result=store.request("/personal/work/proposals/${enc(id)}/approve",JSONObject().put("request_id",requestId).put("explicit_authorization",true))
        if(result.optString("id")!=id||result.optString("approval_request_id")!=requestId)error("审批结果待核实")
        workProposalNote=when(result.optString("status")){
          "accepted"->"已批准并启动工作会话"

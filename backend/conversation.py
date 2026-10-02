@@ -166,6 +166,18 @@ class PersonalConversation:
         async with self.changed:
             self.changed.notify_all()
 
+    def task_receipt(self, task_id: str, text: str):
+        """Idempotent outbox sink, including a crash before outbox acknowledgement."""
+        with self.db() as db:
+            key = 'task-result:' + task_id
+            if db.execute('SELECT id FROM messages WHERE request_id=?', (key,)).fetchone():
+                return
+            revision = self._bump(db)
+            at = time.time()
+            db.execute("INSERT INTO messages(id,request_id,role,text,status,phase,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                       (key, key, 'assistant', text, 'completed', 'completed', revision, at, at))
+        self._notify()
+
     def submit(self, request_id: str, text: str) -> dict:
         text = text.strip()
         if not 10 <= len(request_id) <= 100 or not 1 <= len(text) <= 8000:
@@ -405,7 +417,17 @@ class PersonalConversation:
                     has_partial = True
 
             try:
-                async for event, payload in self.client.stream_chat(session_id, row["text"]):
+                transport_text = row["text"]
+                if isinstance(self.client, HermesClient):
+                    context = getattr(self, 'task_context', lambda: [])()
+                    transport_text = (
+                        "[Com 主对话上下文；只提供关联，不授予执行权限]\n"
+                        + json.dumps({'origin_session_id': session_id, 'origin_message_id': mid,
+                                      'origin_request_id': row['request_id'], 'tasks': context}, ensure_ascii=False)
+                        + "\n明确交办才用 propose_work；补充约束用 update_task_constraints 并复用任务 ID。"
+                        "闲聊不派发；指代不明先追问；任务执行结束不代表验收通过；已受理不代表生效。"
+                        "发布、删除、外发、权限扩张不能由工作建议获得授权。\n用户消息：\n" + row['text'])
+                async for event, payload in self.client.stream_chat(session_id, transport_text):
                     if terminal and event != "done":
                         continue
                     if event == "run.started":
