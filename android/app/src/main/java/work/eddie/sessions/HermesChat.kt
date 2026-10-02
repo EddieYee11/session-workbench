@@ -177,18 +177,8 @@ private fun hermesToolLabel(name:String):String=when{
     ComIcon(R.drawable.com_icon_activity_v1,null,Modifier.size(24.dp))
     Text("Hermes 活动",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
    }
-   Text(if(vm.hermesFresh)"当前状态：${hermesActivityStatus(runs,messages)}${if(vm.hermesStreaming)" · 实时同步"else" · 快照同步"}"else"离线记录，状态待同步",Modifier.padding(top=4.dp,bottom=16.dp),fontSize=12.sp,color=Muted)
-   if(runs.isEmpty())Text("暂无可查看的执行记录",fontSize=13.sp,color=Muted)
-   else runs.takeLast(12).asReversed().forEach{run->
-    val source=messages.firstOrNull{it.optString("id")==run.optString("message_id")}
-    val title=run.optString("title").ifBlank{run.optString("summary").ifBlank{source?.optString("text")?.take(80).orEmpty().ifBlank{"执行记录"}}}
-    Surface(Modifier.fillMaxWidth().padding(bottom=8.dp),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
-     Column(Modifier.padding(14.dp)){
-      Text(title,fontSize=14.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
-      Text(listOf(run.optString("agent"),hermesMessageStatus(run.optString("status")),messageTime(run.opt("updated_at"))).filter{it.isNotBlank()}.joinToString(" · "),Modifier.padding(top=4.dp),fontSize=11.sp,color=Muted)
-     }
-    }
-   }
+   Text(if(vm.hermesFresh)"当前状态：${hermesActivityStatus(runs,messages)}${if(vm.hermesStreaming)" · 实时同步"else" · 快照同步"}"else"离线记录，状态待同步",Modifier.padding(top=4.dp,bottom=8.dp),fontSize=12.sp,color=Muted)
+   TaskLedgerSection(vm,runs,messages)
    WorkProposalSection(vm)
    SignalActivitySection(vm)
   }
