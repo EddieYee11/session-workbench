@@ -44,6 +44,7 @@ class History:
             d.executescript('''PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,agent TEXT,native_id TEXT,path TEXT,cwd TEXT,title TEXT,updated REAL,signature TEXT,coverage TEXT);
             CREATE TABLE IF NOT EXISTS messages(sid TEXT,mid TEXT,position INTEGER,role TEXT,title TEXT,body TEXT,time REAL,PRIMARY KEY(sid,mid));
+            CREATE TABLE IF NOT EXISTS message_turns(sid TEXT,mid TEXT,turn_id TEXT,PRIMARY KEY(sid,mid));
             CREATE INDEX IF NOT EXISTS message_sid ON messages(sid,position);
             CREATE TABLE IF NOT EXISTS labels(sid TEXT PRIMARY KEY,title TEXT,pinned INTEGER DEFAULT 0,archived INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS managed(sid TEXT PRIMARY KEY,data TEXT);
@@ -96,6 +97,7 @@ class History:
                         if typ!='message':continue
                         v=r.get('message',{});role=v.get('role')
                         if v.get('timestamp'):mid='pi:'+str(v['timestamp'])
+                        if role=='user' and isinstance(v.get('com_request_id'),str):mid='pi:com:'+v['com_request_id']
                         if v.get('toolCallId'):mid=v['toolCallId']
                         if role not in ('user','assistant','toolResult','bashExecution'):continue
                         title=v.get('toolName','');body=text_content(v.get('content',v.get('output','')))
@@ -119,8 +121,13 @@ class History:
             if hp.exists():
                 try:
                     d=sqlite3.connect(f'file:{hp}?mode=ro',uri=True)
-                    rows=d.execute('SELECT item_id,item_json,created_at_ms FROM thread_items WHERE thread_id=? ORDER BY rollout_ordinal',(s['native_id'],)).fetchall();d.close()
-                    parsed=[codex_item(json.loads(v),i,t/1000) for i,v,t in rows]
+                    has_turn=any(r[1]=='turn_id' for r in d.execute('PRAGMA table_info(thread_items)'))
+                    rows=d.execute('SELECT item_id,item_json,created_at_ms,'+('turn_id' if has_turn else 'NULL')+' FROM thread_items WHERE thread_id=? ORDER BY rollout_ordinal',(s['native_id'],)).fetchall();d.close()
+                    parsed=[]
+                    for i,v,t,turn in rows:
+                        item=codex_item(json.loads(v),i,t/1000)
+                        if item and turn:item['turn_id']=turn
+                        parsed.append(item)
                     # Projection contains the complete canonical transcript when present.
                     if rows:out=[x for x in parsed if x and (x['text'] or x['role']=='tool')]
                 except sqlite3.Error:self.progress['unreadable']+=1
@@ -143,7 +150,9 @@ class History:
                         name,messages=self.parse(s);s['title']=name
                         d.execute('INSERT OR REPLACE INTO sessions VALUES(?,?,?,?,?,?,?,?,?)',tuple(s[k] for k in ('id','agent','native_id','path','cwd','title','updated','signature','coverage')))
                         d.execute('DELETE FROM messages WHERE sid=?',(s['id'],))
+                        d.execute('DELETE FROM message_turns WHERE sid=?',(s['id'],))
                         d.executemany('INSERT OR REPLACE INTO messages VALUES(?,?,?,?,?,?,?)',[(s['id'],m['id'],i,m['role'],m['title'],m['text'],m['time']) for i,m in enumerate(messages)])
+                        d.executemany('INSERT OR REPLACE INTO message_turns VALUES(?,?,?)',[(s['id'],m['id'],m['turn_id']) for m in messages if m.get('turn_id')])
                 except Exception:self.progress['unreadable']+=1
                 finally:self.progress['done']+=1
             self.progress['updated']=time.time()
@@ -174,7 +183,7 @@ class History:
             out.sort(key=lambda s:(s['pinned'],s['hit_count'] if q and sort=='relevance' else 0,s['updated']),reverse=True)
             return out
     def messages(self,sid):
-        with self.db() as d:return [dict(id=r['mid'],role=r['role'],title=r['title'],text=r['body'],time=r['time']) for r in d.execute('SELECT * FROM messages WHERE sid=? ORDER BY position',(sid,))]
+        with self.db() as d:return [dict(id=r['mid'],role=r['role'],title=r['title'],text=r['body'],time=r['time'],**({'turn_id':r['turn_id']} if r['turn_id'] else {})) for r in d.execute('SELECT m.*,t.turn_id FROM messages m LEFT JOIN message_turns t ON m.sid=t.sid AND m.mid=t.mid WHERE m.sid=? ORDER BY m.position',(sid,))]
     def managed(self):
         with self.db() as d:return {r[0]:json.loads(r[1]) for r in d.execute('SELECT sid,data FROM managed')}
     def save_managed(self,sid,value):

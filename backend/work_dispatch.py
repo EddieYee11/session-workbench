@@ -181,7 +181,9 @@ class WorkProposalStore:
             raise ValueError("Invalid limit")
         with self._db() as db:
             rows = db.execute(
-                "SELECT * FROM proposals ORDER BY created_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM proposals "
+                "ORDER BY CASE WHEN status='proposed' AND expires_at>? THEN 0 ELSE 1 END,"
+                "created_at DESC LIMIT ?", (time.time(), limit),
             ).fetchall()
             return [self._row(row) for row in rows]
 

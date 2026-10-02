@@ -27,7 +27,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
+import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -125,7 +125,7 @@ fun PlushDotMascot(
         if (!moving) return@LaunchedEffect
         var lastFrame = 0L
         while (isActive) {
-            withFrameNanos { now ->
+            withInfiniteAnimationFrameNanos { now ->
                 if (lastFrame != 0L) {
                     val dt = ((now - lastFrame) / 1_000_000_000f).coerceIn(0f, 0.05f)
                     seconds.floatValue = (seconds.floatValue + dt) % 3600f

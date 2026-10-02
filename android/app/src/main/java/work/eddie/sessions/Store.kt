@@ -22,8 +22,9 @@ import javax.crypto.spec.GCMParameterSpec
 fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull { optJSONObject(it) }
 fun JSONObject.array(key:String)=optJSONArray(key)?.objects()?:emptyList()
 fun String.shortPath()=trimEnd('/').substringAfterLast('/')
-fun statusLabel(s:String)=when(s){"running"->"运行中";"waiting"->"需要你回应";"completed"->"本轮完成";"interrupted"->"已中断";"ended"->"会话已结束";"failed"->"执行失败";"ready"->"可以开始";else->"历史记录"}
+fun statusLabel(s:String)=when(s){"running"->"运行中";"submitted"->"已发送，等待处理";"waiting"->"需要你回应";"completed"->"本轮完成";"interrupted"->"已中断";"ended"->"会话已结束";"failed"->"执行失败";"ready"->"可以开始";else->"历史记录"}
 data class ModelSelection(val model:String="",val effort:String="")
+class MessageNotSubmittedException(message:String):Exception(message)
 
 class Store(val context:Context) {
  val prefs=context.getSharedPreferences("workbench",0)
@@ -147,6 +148,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var allRows by mutableStateOf(store.cached("list.json").array("sessions"))
  var allRowsFresh by mutableStateOf(false)
  var rows by mutableStateOf(allRows)
+ var creatingMessage by mutableStateOf<OutgoingMessage?>(null)
+ var creatingAgent by mutableStateOf("pi")
  var selected by mutableStateOf(store.prefs.getString("selected","")?:"")
  var detail by mutableStateOf(if(selected.isNotEmpty())store.cached(store.detailCache(selected)) else JSONObject())
  var live by mutableStateOf(JSONObject())
@@ -154,6 +157,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var liveFresh by mutableStateOf(false)
  var error by mutableStateOf("")
  var connected by mutableStateOf(false)
+ var messageReferencesAvailable by mutableStateOf(false)
  var busy by mutableStateOf(false)
  var personal by mutableStateOf(store.cachedSecure("personal-overview.enc"))
  var personalFresh by mutableStateOf(false)
@@ -163,7 +167,12 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var hermesFresh by mutableStateOf(false)
  var hermesLoading by mutableStateOf(false)
  var hermesStreaming by mutableStateOf(false)
+ var hermesReactionSequence by mutableIntStateOf(0)
+ private val reactionFeedbackTracker=ReactionFeedbackTracker()
  var hermesError by mutableStateOf("")
+ val outgoingMessages=mutableStateListOf<OutgoingMessage>()
+ var hermesReference by mutableStateOf<JSONObject?>(null)
+ val workReferences=mutableStateMapOf<String,JSONObject>()
  var hermesSending by mutableStateOf(false)
  var hermesSendNote by mutableStateOf("")
  var hermesDraft by mutableStateOf(store.secureText("hermes-draft"))
@@ -200,6 +209,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var hermesVoicePhase by mutableStateOf("idle")
  var hermesVoiceSeconds by mutableIntStateOf(0)
  var hermesVoiceNote by mutableStateOf("")
+ var hermesVoiceAutoSend by mutableStateOf<String?>(null)
  var hermesVoiceSaved by mutableStateOf(store.prefs.getString("hermes-voice-file","").orEmpty())
  var externalWorkRoute by mutableIntStateOf(0)
  var voiceDelivery by mutableStateOf("")
@@ -286,11 +296,20 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
        updateHermesDraft(transcript)
        file.delete();hermesVoiceSaved="";store.prefs.edit().remove("hermes-voice-file").apply()
        hermesVoicePhase="idle"
-       if(hermesFresh){hermesVoiceNote="";sendHermes()}
+       if(hermesFresh){
+        hermesVoiceNote=""
+        // Let the visible composer lay out the transcription before it clears.
+        if(active&&hermesVisible)hermesVoiceAutoSend=transcript else sendHermes()
+       }
        else hermesVoiceNote="已转写到草稿；连接 Hermes 后点发送。"
      }catch(e:CancellationException){throw e}
       catch(e:Exception){hermesVoicePhase="idle";hermesVoiceNote="${e.message?:"转写失败"}；录音已保留，可重试或删除。"}
    }
+ }
+ fun consumeHermesVoiceSend(text:String):Boolean{
+  if(hermesVoiceAutoSend!=text)return false
+  hermesVoiceAutoSend=null
+  return hermesDraft==text&&hermesFresh&&!hermesSending&&hermesVoicePhase=="idle"
  }
  fun discardHermesVoice(){
    if(hermesVoicePhase!="idle")return
@@ -399,9 +418,9 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    }
  }
  fun rejectWorkProposal(id:String){
-   if(workProposalBusy.isNotBlank()||!workProposalsFresh||workApprovalId(id).isNotBlank()||store.token.isBlank())return
+   if(workProposalBusy.isNotBlank()||!workProposalsFresh||store.token.isBlank())return
    val proposal=workProposals.array("items").firstOrNull{it.optString("id")==id}?:return
-   if(proposal.optString("status")!="proposed")return
+   if(proposal.optString("status")!="proposed"||(!proposal.isNull("approval_request_id")&&proposal.optString("approval_request_id").isNotBlank()))return
    workProposalBusy=id;workProposalNote=""
    viewModelScope.launch{
      try{
@@ -450,10 +469,18 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    .put("run_id",message.opt("run_id")).put("status",message.optString("status"))
    .put("phase",message.optString("phase")).put("active_tool",message.opt("active_tool"))
    .put("received_at",message.opt("received_at"))})
+ private fun reactionEvents(messages:List<JSONObject>):List<ReactionFeedback> = messages.mapNotNull{message->
+   if(message.optString("role")!="user")return@mapNotNull null
+   val reaction=message.optJSONObject("reaction")?:return@mapNotNull null
+   val eventId=reaction.optString("event_id")
+   val emoji=reaction.optString("emoji")
+   if(eventId.isBlank()||emoji.isBlank())null else ReactionFeedback(message.optString("id"),eventId,emoji)
+ }
  private fun applyHermesEvent(kind:String,payload:JSONObject){
    if(kind=="snapshot"){
      if(payload.optJSONArray("messages")==null||payload.optJSONArray("runs")==null)return
      val snapshot=JSONObject(payload.toString())
+     reactionFeedbackTracker.baseline(reactionEvents(snapshot.array("messages")))
      if(snapshot.optString("conversation_id").isBlank())snapshot.put("conversation_id",hermes.optString("conversation_id").ifBlank{"personal-main"})
      hermes=snapshot;hermesFresh=true;hermesError="";hermesStreaming=true
      runCatching{store.secureCache("hermes-conversation.enc",snapshot)}
@@ -465,6 +492,13 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    val message=payload.optJSONObject("message")?:payload.optJSONObject("changed_message")
     ?:payload.takeIf{it.has("id")&&it.has("role")}
    val changedMessages=(payload.optJSONArray("messages")?.objects()?:emptyList())+listOfNotNull(message)
+   if(reactionFeedbackTracker.live(reactionEvents(changedMessages))!=null&&active&&hermesVisible)hermesReactionSequence++
+   val previousMessages=current.array("messages")
+   val proposalChanged=changedMessages.any{change->
+    val previous=previousMessages.firstOrNull{it.optString("id")==change.optString("id")}
+    previous?.optString("active_tool")?.endsWith("propose_work")==true||change.optString("status")=="completed"
+   }
+   if(proposalChanged)viewModelScope.launch{refreshWorkProposals()}
    if(changedMessages.isNotEmpty()){
      current.put("messages",mergeHermesRows(current.optJSONArray("messages"),changedMessages,"id"))
      current.put("runs",activeHermesRuns(current.optJSONArray("messages")))
@@ -484,35 +518,51 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      val data=store.request("/personal/conversation")
      if(data.optString("conversation_id").isBlank()||data.optJSONArray("messages")==null||data.optJSONArray("runs")==null)error("Hermes 对话数据格式不完整")
      if(data.has("revision")&&data.optLong("revision")<hermes.optLong("revision"))return
+     reactionFeedbackTracker.baseline(reactionEvents(data.array("messages")))
      hermes=data;hermesFresh=true;hermesError=""
      runCatching{store.secureCache("hermes-conversation.enc",data)}
    }catch(e:Exception){hermesFresh=false;hermesError=e.message?:"Hermes 暂时无法连接"}
    finally{hermesLoading=false}
  }
- fun sendHermes(){
+ fun sendHermes(requestId:String=UUID.randomUUID().toString()):String?{
    val message=hermesDraft.trim()
-   if(message.isBlank()||hermesSending||!hermesFresh)return
+   if(message.isBlank()||hermesSending||!hermesFresh)return null
    if(hermesPending.optString("text").isNotBlank()&&hermesPending.optString("text")!=message){
-     hermesSendNote="上一条发送结果待核实。请先核对并决定是否重试。"
-     return
+     hermesSendNote="上一条发送结果待核实。请先核对并决定是否重试。";return null
    }
+   val rid=hermesPending.optString("request_id").ifBlank{requestId}
+   val reference=if(hermesPending.optString("request_id").isNotBlank())hermesPending.optJSONObject("reference")else hermesReference
+   if(reference!=null&&!messageReferencesAvailable){hermesSendNote="当前服务尚未启用消息引用，草稿已保留。连接新版本后再发送。";return null}
+   hermesPending=JSONObject().put("request_id",rid).put("text",message).put("reference",reference?:JSONObject.NULL)
+   try{store.saveSecureText("hermes-pending",hermesPending.toString(),durable=true)}catch(e:Exception){hermesSendNote=e.message?:"发送状态保存失败，草稿已保留";return null}
+   if(outgoingMessages.none{it.id==rid})recordOutgoing(OutgoingMessage(rid,"personal-main",message,reference,previousIds=hermes.array("messages").map{it.optString("id")}.toSet()))
+   else updateOutgoing(rid,"sending")
+   hermesSending=true;hermesSendNote="";hermesError="";updateHermesDraft("");hermesReference=null
    viewModelScope.launch{
-     hermesSending=true;hermesSendNote="";hermesError=""
      try{
-       val requestId=hermesPending.optString("request_id").ifBlank{UUID.randomUUID().toString()}
-       hermesPending=JSONObject().put("request_id",requestId).put("text",message)
-       store.saveSecureText("hermes-pending",hermesPending.toString())
-       val receipt=store.request("/personal/conversation/messages",JSONObject().put("request_id",requestId).put("text",message))
-       if(receipt.optString("status") !in setOf("accepted","queued","sending","completed","failed","unknown")||receipt.optString("message_id").isBlank())error("Hermes 尚未确认接收这条消息")
-       if(receipt.optString("request_id")!=requestId)error("发送回执请求号不匹配")
-       store.saveSecureText("hermes-pending","")
-       hermesPending=JSONObject()
-       if(hermesDraft.trim()==message)updateHermesDraft("")
+       val receipt=store.request("/personal/conversation/messages",JSONObject(hermesPending.toString()))
+       if(receipt.optString("status") !in setOf("accepted","queued","sending","running","waiting","approval_required","completed","failed","unknown")||receipt.optString("message_id").isBlank())error("Hermes 尚未确认接收这条消息")
+       if(receipt.optString("request_id")!=rid)error("发送回执请求号不匹配")
+       updateOutgoing(rid,if(receipt.optString("status") in setOf("failed","unknown"))receipt.optString("status") else "sent",receipt.optString("message_id"))
+       store.saveSecureText("hermes-pending","");hermesPending=JSONObject()
        hermesSendNote=if(receipt.optString("status") in listOf("failed","unknown"))"请查看对话中的失败或待核实状态" else "Hermes 已接收，正在更新对话"
        refreshHermes()
-     }catch(e:Exception){hermesSendNote="发送结果待核实，草稿已保留；重试会复用同一请求号";hermesError=e.message?:"暂时无法发送"}
-     finally{hermesSending=false}
+     }catch(e:Exception){
+       updateOutgoing(rid,"unknown")
+       if(hermesDraft.isBlank()){updateHermesDraft(message);hermesReference=reference}
+       hermesSendNote="发送结果待核实，草稿已保留；重试会复用同一请求号";hermesError=e.message?:"暂时无法发送"
+     }finally{hermesSending=false}
    }
+   return rid
+ }
+ private fun recordOutgoing(message:OutgoingMessage){
+   outgoingMessages.add(message)
+   while(outgoingMessages.count{it.scope==message.scope}>32)outgoingMessages.removeAt(outgoingMessages.indexOfFirst{it.scope==message.scope})
+   while(outgoingMessages.size>128)outgoingMessages.removeAt(0)
+ }
+ private fun updateOutgoing(id:String,status:String,serverId:String=""){
+   val index=outgoingMessages.indexOfFirst{it.id==id}
+   if(index>=0)outgoingMessages[index]=outgoingMessages[index].copy(status=status,serverId=serverId.ifBlank{outgoingMessages[index].serverId})
  }
  fun stopHermesRetry(){
    store.saveSecureText("hermes-pending","")
@@ -587,6 +637,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  }
  suspend fun refresh(){
    try{
+    val health=store.request("/health")
+    messageReferencesAvailable=health.optJSONObject("features")?.optBoolean("message_references_v1")==true
     val includeArchived=archived
     val all=store.request("/sessions?archived=$includeArchived")
     if(!includeArchived){store.cache("list.json",all);allRows=all.array("sessions")}
@@ -595,7 +647,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
     val after=if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0
     rows=if(q.isBlank()&&agent.isBlank()&&role.isBlank()&&cwd.isBlank()&&days==0)all.array("sessions") else store.request("/sessions?q=${enc(q)}&agent=$agent&role=$role&cwd=${enc(cwd)}&after=$after&sort=$sort&archived=$archived").array("sessions")
     rows.filter{it.optBoolean("managed")}.forEach{store.notifyStatus(it.getString("id"),it.optString("status"),it.optString("display_title"))}
-   }catch(e:Exception){connected=false;allRowsFresh=false;liveFresh=false;rows=store.offline(q,agent,role,cwd,if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0)}
+   }catch(e:Exception){messageReferencesAvailable=false;connected=false;allRowsFresh=false;liveFresh=false;rows=store.offline(q,agent,role,cwd,if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0)}
  }
  suspend fun refreshDetail(id:String){try{val d=store.request("/sessions/${enc(id)}");store.cache(store.detailCache(id),d);if(selected==id){
   val seed=detail.array("messages").firstOrNull{it.optString("id")=="accepted-first-message"}
@@ -611,42 +663,87 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
   detail=d
  }}catch(_:Exception){}}
  fun run(action:suspend ()->Unit){viewModelScope.launch{busy=true;try{action()}catch(e:Exception){error=e.message?:"操作失败"}finally{busy=false}}}
- suspend fun mutation(path:String,body:JSONObject):JSONObject{
+ suspend fun mutation(path:String,body:JSONObject,requestId:String?=null,expectedSid:String?=null):JSONObject{
    val key="pending:$path";val existing=store.prefs.getString(key,null)
    if(existing!=null){
     val result=store.request("/receipts/${enc(existing)}")
+    check(result.optString("request_id")==existing){"回执请求号不匹配，未重复发送"}
+    if(result.optString("status")=="rejected"&&result.optString("submission_state")=="not_submitted"){
+     check(store.prefs.edit().remove(key).remove("$key:body").commit()){"拒收回执保存失败，草稿已保留"}
+     throw MessageNotSubmittedException(result.optString("error","消息尚未提交，草稿已保留"))
+    }
     if(result.optString("status")=="accepted"){
+     check(expectedSid==null||result.optString("sid")==expectedSid){"回执会话不匹配，结果待核实"}
      val same=store.prefs.getString("$key:body",null)==body.toString()
-     store.prefs.edit().remove(key).remove("$key:body").apply()
+     check(store.prefs.edit().remove(key).remove("$key:body").commit()){"回执保存失败，结果待核实"}
      if(!same)error("上一条消息已送达。当前草稿已保留，请再次点击发送新内容。")
      return result
     }
     error("上次操作尚未确认。请查看会话或终端核实；请求号 $existing，未重复发送。")
    }
-   val rid=UUID.randomUUID().toString();store.prefs.edit().putString(key,rid).putString("$key:body",body.toString()).apply();body.put("request_id",rid)
+   val rid=requestId?:UUID.randomUUID().toString();check(store.prefs.edit().putString(key,rid).putString("$key:body",body.toString()).commit()){"请求号保存失败，草稿已保留"};body.put("request_id",rid)
    val result=store.request(path,body)
-   if(result.optString("status")!="accepted")error("操作结果待核实，未重复发送")
-   store.prefs.edit().remove(key).remove("$key:body").apply();return result
- }
- fun create(agentName:String,path:String,prompt:String,model:String,effort:String,sandbox:String)=run{
-   store.prefs.edit().putString("lastAgent",agentName).putString("lastCwd",path).apply()
-   val r=mutation("/sessions",JSONObject().put("agent",agentName).put("cwd",path).put("prompt",prompt).put("model",model).put("effort",effort).put("sandbox",sandbox))
-   chooseModel(agentName,r.getString("sid"),model,effort)
-   store.prefs.edit().remove("new-draft").apply();openId(r.getString("sid"))
-   // The server has accepted the message. Seed the destination while history catches up,
-   // so the continuous home-to-chat transition never passes through an empty page.
-   if(!detail.has("session")||detail.optJSONObject("session")?.has("agent")!=true){
-    val session=JSONObject().put("id",selected).put("agent",agentName).put("cwd",path).put("display_title",prompt.ifBlank{"新会话"}.take(60)).put("status",if(prompt.isBlank())"ready"else"running").put("managed",true).put("model",model).put("effort",effort).put("capabilities",JSONObject().put("input",true).put("terminal",agentName=="pi").put("resume",false))
-    val messages=JSONArray();if(prompt.isNotBlank())messages.put(JSONObject().put("id","accepted-first-message").put("role","user").put("text",prompt))
-    detail=JSONObject().put("session",session).put("messages",messages)
+   check(result.optString("request_id")==rid){"回执请求号不匹配，未重复发送"}
+   if(result.optString("status")=="rejected"&&result.optString("submission_state")=="not_submitted"){
+    check(store.prefs.edit().remove(key).remove("$key:body").commit()){"拒收回执保存失败，草稿已保留"}
+    throw MessageNotSubmittedException(result.optString("error","消息尚未提交，草稿已保留"))
    }
-   refresh()
+   check(expectedSid==null||result.optString("sid")==expectedSid){"回执会话不匹配，结果待核实"}
+   if(result.optString("status")!="accepted")error("操作结果待核实，未重复发送")
+   check(store.prefs.edit().remove(key).remove("$key:body").commit()){"回执保存失败，结果待核实"};return result
  }
- fun send(){val id=selected;val text=draft();if(text.isBlank())return;val agentName=detail.optJSONObject("session")?.optString("agent").orEmpty();val chosen=selection(agentName,id);run{
-   mutation("/sessions/${enc(id)}/input",JSONObject().put("text",text).put("model",chosen.model).put("effort",chosen.effort))
-   if(drafts[id]==text){drafts[id]="";store.prefs.edit().remove("draft:$id").apply()};refreshDetail(id)
- }}
- fun resume()=run{val id=selected;mutation("/sessions/${enc(id)}/resume",JSONObject());refreshDetail(id)}
+ fun create(agentName:String,path:String,prompt:String,model:String,effort:String,sandbox:String,requestId:String=UUID.randomUUID().toString()):String?{
+   if(busy||!connected)return null
+   val body=JSONObject().put("agent",agentName).put("cwd",path).put("prompt",prompt.trim()).put("model",model).put("effort",effort).put("sandbox",sandbox)
+   if(store.prefs.getString("pending:/sessions",null)!=null&&store.prefs.getString("pending:/sessions:body",null)!=body.toString()){run{mutation("/sessions",body)};return null}
+   val actualRid=store.prefs.getString("pending:/sessions",null)?:requestId
+   val pending=OutgoingMessage(actualRid,"creating:$actualRid",prompt.trim())
+   if(pending.text.isNotBlank())store.prefs.edit().putString("new-draft",pending.text).apply()
+   creatingMessage=pending.takeIf{it.text.isNotBlank()};creatingAgent=agentName;busy=true
+   viewModelScope.launch{
+    try{
+     store.prefs.edit().putString("lastAgent",agentName).putString("lastCwd",path).apply()
+     val r=mutation("/sessions",body,actualRid)
+     val sid=r.getString("sid")
+     if(pending.text.isNotBlank())recordOutgoing(pending.copy(scope=sid,status="sent"))
+     chooseModel(agentName,sid,model,effort)
+     store.prefs.edit().remove("new-draft").apply();openId(sid)
+     if(!detail.has("session")||detail.optJSONObject("session")?.has("agent")!=true){
+      val session=JSONObject().put("id",selected).put("agent",agentName).put("cwd",path).put("display_title",pending.text.take(60)).put("status",if(pending.text.isBlank())"ready"else"submitted").put("managed",true).put("model",model).put("effort",effort).put("capabilities",JSONObject().put("input",true).put("terminal",agentName=="pi").put("resume",false))
+      detail=JSONObject().put("session",session).put("messages",JSONArray())
+     }
+     refresh()
+    }catch(e:Exception){error=e.message?:"创建结果待核实，草稿已保留"}
+    finally{creatingMessage=null;busy=false}
+   }
+   return actualRid
+ }
+ fun send(requestId:String=UUID.randomUUID().toString()):String?{
+   val id=selected;val text=draft().trim();if(text.isBlank()||busy||!connected)return null
+   val agentName=detail.optJSONObject("session")?.optString("agent").orEmpty();val chosen=selection(agentName,id)
+   val path="/sessions/${enc(id)}/input"
+   val reference=workReferences[id]
+   if(reference!=null&&!messageReferencesAvailable){error="当前服务尚未启用消息引用，草稿已保留。连接新版本后再发送。";return null}
+   val body=JSONObject().put("text",text).put("model",chosen.model).put("effort",chosen.effort)
+   reference?.let{body.put("reference",it)}
+   val existing=store.prefs.getString("pending:$path",null)
+   if(existing!=null&&store.prefs.getString("pending:$path:body",null)!=body.toString()){run{mutation(path,body,expectedSid=id);refreshDetail(id)};return null}
+   val rid=existing?:requestId
+   val prior=(detail.array("messages")+live.array("items")).map{it.optString("id")}.toSet()
+   if(outgoingMessages.none{it.id==rid})recordOutgoing(OutgoingMessage(rid,id,text,reference,previousIds=prior)) else updateOutgoing(rid,"sending")
+   drafts[id]="";store.prefs.edit().remove("draft:$id").apply();workReferences.remove(id);busy=true
+   viewModelScope.launch{
+    try{
+     mutation(path,body,rid,id);updateOutgoing(rid,"sent");refreshDetail(id)
+    }catch(e:Exception){
+     updateOutgoing(rid,if(e is MessageNotSubmittedException)"failed"else"unknown")
+     if(drafts[id].isNullOrBlank()){drafts[id]=text;store.prefs.edit().putString("draft:$id",text).apply();reference?.let{workReferences[id]=it}}
+     error=e.message?:"发送结果待核实，未重复发送"
+    }finally{busy=false}
+   }
+   return rid
+ }
+ fun resume()=run{val id=selected;val receipt=mutation("/sessions/${enc(id)}/resume",JSONObject());val resumed=receipt.optString("sid",id);if(resumed!=selected)openId(resumed);refreshDetail(resumed);refresh()}
  fun stop()=run{store.request("/sessions/${enc(selected)}/stop",JSONObject())}
  fun end()=run{store.request("/sessions/${enc(selected)}/end",JSONObject());refreshDetail(selected);refresh()}
  fun label(id:String,patch:JSONObject)=run{store.request("/sessions/${enc(id)}/labels",patch);refresh();if(id==selected)refreshDetail(id)}

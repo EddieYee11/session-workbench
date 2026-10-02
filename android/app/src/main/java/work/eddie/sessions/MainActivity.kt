@@ -9,6 +9,7 @@ import android.graphics.drawable.Icon as AndroidIcon
 import android.webkit.*
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
 import androidx.activity.viewModels
@@ -17,6 +18,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -25,11 +29,15 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.*
 import androidx.compose.ui.viewinterop.AndroidView
 import io.noties.markwon.Markwon
@@ -44,10 +52,11 @@ class MainActivity:ComponentActivity(){
  var quick by mutableStateOf("")
  var workLaunch by mutableIntStateOf(0)
  override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
+   enableEdgeToEdge()
    handleIntent(intent)
    if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)
    val shortcuts=listOf(
-    ShortcutInfo.Builder(this,"hermes-voice").setShortLabel("和 Hermes 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build(),
+    ShortcutInfo.Builder(this,"hermes-voice").setShortLabel("和 Pi 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build(),
     ShortcutInfo.Builder(this,"voice").setShortLabel("语音记账").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,ExpenseVoiceActivity::class.java).setAction(Intent.ACTION_VIEW)).build()
    )+listOf("pi","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
    Thread { getSystemService(ShortcutManager::class.java).dynamicShortcuts=shortcuts }.start()
@@ -118,22 +127,50 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
 @Composable fun NewSession(vm:WorkbenchModel,quick:String,dismiss:()->Unit){
  var agent by remember{mutableStateOf(quick.ifBlank{vm.store.prefs.getString("lastAgent","pi")?:"pi"})};var cwd by remember{mutableStateOf(vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"")}
  var prompt by rememberSaveable{mutableStateOf("")};var model by remember(agent){mutableStateOf(vm.selection(agent).model)};var effort by remember(agent){mutableStateOf(vm.selection(agent).effort)};var advanced by remember{mutableStateOf(false)};var sandbox by remember{mutableStateOf("danger-full-access")};var browse by remember{mutableStateOf(false)};var modelPicker by remember{mutableStateOf(false)}
- ModalBottomSheet(onDismissRequest=dismiss,containerColor=Paper){Column(Modifier.padding(horizontal=24.dp).verticalScroll(rememberScrollState()).imePadding()){
+ val motion=LocalMessageSendMotion.current
+ val composerSource=remember{Any()}
+ val create:()->Unit={
+  val text=prompt.trim();val rid=UUID.randomUUID().toString()
+  vm.chooseModel(agent,"",model,effort)
+  if(text.isNotBlank())motion?.begin(rid,text,sourceKey=composerSource)
+  val accepted=vm.create(agent,cwd,text,model,effort,sandbox,rid)
+  if(accepted==null)motion?.cancel()else{motion?.retarget(rid,accepted);dismiss()}
+ }
+ // Material3's modal owns its window insets. The content consumes them once.
+ ModalBottomSheet(onDismissRequest=dismiss,containerColor=Paper,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)){Column(Modifier.padding(horizontal=24.dp).verticalScroll(rememberScrollState()).testTag("advanced-session-sheet")){
  StaggerIn(0){Column{Text("开启新的工作",fontSize=Type.SheetTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.3).sp);Text("运行在 Mac mini · 默认最高权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=13.sp,color=Muted)}}
  val (createPress,createMotion)=rememberPress(.97f)
  StaggerIn(1){Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){listOf("pi","codex").forEach{a->FilterChip(agent==a,{agent=a},label={Text(if(a=="pi")"Pi" else "Codex",fontSize=17.sp)},modifier=Modifier.height(48.dp))}}}
  Text("工作目录",Modifier.padding(top=16.dp),fontSize=12.sp,color=Muted)
  TextButton(onClick={browse=true}){Icon(Icons.Outlined.FolderOpen,null);Text(cwd,Modifier.padding(start=8.dp),fontSize=13.sp,maxLines=2)}
- OutlinedTextField(prompt,{prompt=it},Modifier.fillMaxWidth().heightIn(min=120.dp),placeholder={Text("想做什么？也可以先打开空会话。")},shape=RoundedCornerShape(Radii.Xl))
+ AdvancedSessionComposer(prompt,{prompt=it},motion,!vm.busy&&vm.connected,create,composerSource)
  TextButton(onClick={advanced=!advanced}){Text(if(advanced)"收起高级设置" else "高级设置")}
  if(advanced){
   TextButton(onClick={modelPicker=true;vm.loadModels(agent)}){Icon(Icons.Outlined.AutoAwesome,null);Text("${vm.catalogs[agent]?.firstOrNull{it.id==model}?.label?:model.ifBlank{"跟随 Mac 默认"}} · ${effort.ifBlank{"默认推理"}}",Modifier.padding(start=8.dp),maxLines=1)}
   if(agent=="codex")Choice(when(sandbox){"read-only"->"只读";"workspace-write"->"工作目录内写入";else->"最高权限（YOLO）"},listOf("最高权限（YOLO）","工作目录内写入","只读")){sandbox=when(it){"只读"->"read-only";"工作目录内写入"->"workspace-write";else->"danger-full-access"}}
  }
- StaggerIn(2){Button(onClick={vm.chooseModel(agent,"",model,effort);vm.create(agent,cwd,prompt,model,effort,sandbox);dismiss()},enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(54.dp).then(createMotion),shape=Radii.Pill,interactionSource=createPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text(if(prompt.isBlank())"打开空会话" else "开始会话",fontSize=15.sp,fontWeight=FontWeight.SemiBold)}}
+ StaggerIn(2){Button(onClick=create,enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(54.dp).then(createMotion),shape=Radii.Pill,interactionSource=createPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text(if(prompt.isBlank())"打开空会话" else "开始会话",fontSize=15.sp,fontWeight=FontWeight.SemiBold)}}
  }}
  if(browse)DirectoryPicker(vm,cwd,{cwd=it;browse=false}){browse=false}
  if(modelPicker)ModelPickerSheet(agent,vm.catalogs[agent].orEmpty(),model,effort,vm.catalogLoading[agent]==true,vm.catalogErrors[agent],{modelPicker=false},{chosen,level->model=chosen;effort=level;modelPicker=false},{vm.loadModels(agent,true)})
+}
+
+/** The exact measured text layout is also the source of the main-window send overlay. */
+@Composable internal fun AdvancedSessionComposer(text:String,change:(String)->Unit,motion:MessageSendMotionState?,enabled:Boolean,send:()->Unit,sourceKey:Any?=null){
+ var editing by remember{mutableStateOf(TextFieldValue(text,TextRange(text.length)))}
+ LaunchedEffect(text){if(editing.text!=text)editing=TextFieldValue(text,TextRange(text.length))}
+ val style=TextStyle(fontSize=15.sp,lineHeight=22.sp,color=Ink)
+ Surface(Modifier.fillMaxWidth().messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble,sourceKey=sourceKey),shape=RoundedCornerShape(Radii.Xl),color=UserBubble,border=BorderStroke(1.dp,Line)){
+  Column(Modifier.padding(16.dp)){
+   BasicTextField(editing,{editing=it;change(it.text)},Modifier.fillMaxWidth().heightIn(min=80.dp,max=200.dp).testTag("advanced-session-composer").messageSendComposerBounds(motion,sourceKey=sourceKey),
+    textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(enabled&&text.isNotBlank())send()}),
+    onTextLayout={motion?.updateComposerLayout(it,style,backgroundColor=UserBubble,cornerRadius=Radii.Xl,sourceKey=sourceKey)},cursorBrush=SolidColor(Ink),
+    decorationBox={inner->Box{if(text.isBlank())Text("想做什么？也可以先打开空会话。",style=style.copy(color=Faint));inner()}})
+   if(text.isNotBlank())Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){
+    IconButton(onClick={val start=editing.selection.min;val next=editing.text.replaceRange(start,editing.selection.max,"\n");editing=TextFieldValue(next,TextRange(start+1));change(next)},modifier=Modifier.size(32.dp)){Icon(Icons.Outlined.KeyboardReturn,"插入换行",Modifier.size(19.dp),tint=Muted)}
+   }
+  }
+ }
 }
 @Composable fun DirectoryPicker(vm:WorkbenchModel,initial:String,choose:(String)->Unit,dismiss:()->Unit){
  var path by remember{mutableStateOf(initial)};var data by remember{mutableStateOf(JSONObject())};var error by remember{mutableStateOf("")}
@@ -153,7 +190,7 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
    Text("Com! · 设置",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
   }
  Text("语音记账",fontWeight=FontWeight.Bold)
- Text("按住电源键，直接说出这笔支出（例如“午饭三十五”），3 秒后自动记账。小窗悬浮在当前应用上，不打断你正在做的事。",Modifier.padding(top=5.dp),fontSize=12.sp,color=Muted)
+ Text("电源键快捷小窗直接交给 Pi，可调用既有记账与收藏工具。语音记账入口会先显示金额，确认后交给 Pi；已接收不等于账本已写入，可在工作会话查看实际结果。",Modifier.padding(top=5.dp),fontSize=12.sp,color=Muted)
  TextButton(onClick={context.startActivity(Intent(context,ExpenseVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开语音记账",Modifier.padding(start=8.dp))}
  TextButton(onClick={context.startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS))}){Text("系统默认助手设置")}
  HorizontalDivider(Modifier.padding(vertical=12.dp),color=Line)

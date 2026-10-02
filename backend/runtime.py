@@ -240,11 +240,59 @@ class Runtime:
             return result.get('turn',{}).get('id')
         if changing:
             await self._set_pi_model(sid,m,model,effort)
+        if self.stable_input(sid):
+            await self.check_input_identity(sid)
+            payload=base64.urlsafe_b64encode(json.dumps({'requestId':request_id,'text':text},ensure_ascii=False).encode()).decode().rstrip('=')
+            command='/com-input '+payload
+            await self.tm('load-buffer','-b',request_id,'-',input=command.encode())
+            await self.tm('paste-buffer','-d','-p','-b',request_id,'-t',m['tmux'])
+            await asyncio.sleep(.08);await self.tm('send-keys','-t',m['tmux'],'Enter')
+            deadline=asyncio.get_running_loop().time()+8
+            while asyncio.get_running_loop().time()<deadline:
+                for event in reversed(self.events(sid)):
+                    data=event.get('data',{})
+                    if event.get('type')=='com_input_result' and data.get('requestId')==request_id:
+                        if not data.get('ok'):raise ValueError(data.get('error') or 'Pi 未确认消息')
+                        return request_id  # Preserve existing Pi task run_id semantics.
+                if not await self.alive(m['tmux']):raise RuntimeError('Pi 会话已退出，请核实发送状态')
+                await asyncio.sleep(.1)
+            raise RuntimeError('Pi 未确认实际消息，请核实发送状态；不要重复提交')
         # Bracketed paste sends literal text; shell metacharacters never become host commands.
         await self.tm('load-buffer','-b',request_id,'-',input=text.encode())
         await self.tm('paste-buffer','-d','-p','-b',request_id,'-t',m['tmux'])
         await asyncio.sleep(.08);await self.tm('send-keys','-t',m['tmux'],'Enter')
         return request_id
+    def stable_input(self,sid):
+        m=self.h.managed().get(sid)
+        return bool(m and (m.get('agent')=='codex' or m.get('agent')=='pi' and any(
+            e.get('type')=='com_input_capabilities' and e.get('data',{}).get('stable_message_identity_v1') is True
+            for e in self.events(sid))))
+    async def check_input_identity(self,sid):
+        m=self.h.managed().get(sid)
+        if not m or m.get('ended'):raise ValueError('请先继续会话')
+        if not self.stable_input(sid):
+            raise ValueError('这个旧 Pi 会话尚未加载可靠消息身份；请结束后从历史恢复，或重新开启会话')
+        if m['agent']=='pi' and await self.status(sid) not in ('ready','completed','failed','interrupted'):
+            raise ValueError('Pi 正在处理上一条消息，请完成后再发送')
+    async def legacy_pi_idle(self,sid):
+        """Only the managed native lifecycle can authorize a legacy restart."""
+        m=self.h.managed().get(sid)
+        if (not m or m.get('agent')!='pi' or m.get('ended') or self.stable_input(sid)
+                or not m.get('tmux') or not await self.alive(m['tmux'])):return False
+        source=self.h.get(sid)
+        path=Path(source.get('path','')) if source else None
+        if not path or not path.is_file():return False
+        try:
+            with path.open() as stream:meta=json.loads(stream.readline())
+            if meta.get('type')!='session' or meta.get('id')!=m.get('native_id'):return False
+        except (OSError,ValueError):return False
+        idle=False
+        for event in self.events(sid):
+            typ=event.get('type')
+            if typ in ('session_start','agent_settled'):idle=True
+            elif typ in ('agent_start','agent_end'):idle=False
+            elif typ=='queue_update' and (event.get('data',{}).get('steering') or event.get('data',{}).get('followUp')):idle=False
+        return idle
     def _save_model(self,m,model,effort):
         if model:
             m['model']=model

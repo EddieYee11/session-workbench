@@ -12,7 +12,7 @@ import java.net.URL
 /**
  * 快速语音及记账共用的幂等投递链：
  * - transcribe：只转写，输出 transcript；音频转完即删。
- * - send：把记账消息发给 Hermes（request_id 去重），关掉小窗也不会取消已确认的发送。
+ * - send：持久受理后交给原生 Pi（request_id 去重），关掉小窗也不会取消已确认的发送。
  */
 class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorker(context,params){
  override suspend fun doWork():Result{
@@ -49,24 +49,40 @@ class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorke
   val purpose=if(conversation)"quickvoice"else"expense"
   val dir=File(applicationContext.filesDir,"quick-voice").apply{mkdirs()}
   val receipt=File(dir,"$capture.$purpose.json")
-  if(receipt.exists())return Result.success(workDataOf("message_id" to JSONObject(receipt.readText()).optString("message_id")))
-  setProgress(workDataOf("phase" to "sending"))
-  // 与 Hermes 对话发送共用 request_id 去重语义：重放不会重复提交同一消息；这不是账本交易回执
   val requestId="$purpose-$capture"
-  val result=store.request("/personal/conversation/messages",
-   JSONObject().put("request_id",requestId).put("text",text))
-  val messageId=result.optString("message_id")
-  check(messageId.isNotBlank()){"Hermes 尚未确认接收这条消息"}
-  if(conversation){
-   check(result.optString("request_id")==requestId){"发送回执请求号不匹配，请重试核实"}
-   check(result.optString("status") in setOf("accepted","queued","sending","completed","failed","unknown")){"Hermes 尚未确认接收这条消息"}
+  if(receipt.exists()){
+   val saved=JSONObject(receipt.readText())
+   // A receipt issued by a previous Hermes build is not permission to replay it
+   // through another agent after an app update.
+   check(saved.optString("agent")=="pi"){"这条语音旧版已交给 Hermes，请先核实结果，不会再次交给派。"}
+   validateReceipt(saved,requestId,text)
+   return accepted(saved)
   }
+  setProgress(workDataOf("phase" to "sending"))
+  // A queue receipt confirms durable handoff, never a completed bookkeeping write.
+  val result=store.request("/personal/quick-voice/messages",
+   JSONObject().put("request_id",requestId).put("text",text)
+    .put("purpose",if(conversation)"conversation"else"expense"))
+  validateReceipt(result,requestId,text)
   val tmp=File(dir,"$capture.$purpose.tmp")
-  tmp.writeText(JSONObject().put("message_id",messageId).put("text",text).toString())
+  tmp.writeText(result.toString())
   check(tmp.renameTo(receipt))
-  return Result.success(workDataOf("message_id" to messageId))
+  return accepted(result)
  }
+
+ private fun validateReceipt(receipt:JSONObject,requestId:String,text:String){
+  check(receipt.optString("request_id")==requestId&&receipt.optString("agent")=="pi"&&receipt.optString("text")==text){"派的受理回执不匹配，请重试同一条消息核实。"}
+  check(receipt.optString("message_id").isNotBlank()){"派尚未确认受理这条消息。"}
+  val status=receipt.optString("status")
+  check(piVoiceAccepted(status)){receipt.optString("error").ifBlank{"派的投递结果待核实，可重试同一条消息查看；不会重复交办。"}}
+ }
+
+ private fun accepted(receipt:JSONObject)=Result.success(workDataOf(
+  "message_id" to receipt.optString("message_id"),"request_id" to receipt.optString("request_id"),
+  "status" to receipt.optString("status"),"session_id" to receipt.optString("session_id")))
 }
+
+internal fun piVoiceAccepted(status:String)=status in setOf("accepted","starting","sending","submitted","running","executing","responding","completed")
 
 internal suspend fun uploadVoice(store:Store,file:File,capture:String):JSONObject=withContext(Dispatchers.IO){
  require(store.base.startsWith("https://")){"请先在 Com! 中完成配对。"}

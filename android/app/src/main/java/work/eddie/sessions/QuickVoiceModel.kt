@@ -13,7 +13,7 @@ import java.util.UUID
 import kotlin.math.ln
 
 /**
- * 快速语音共用录音和转写链；记账入口保留金额确认，对话入口直接投递 Hermes。
+ * 快速语音共用录音和转写链；记账入口保留金额确认，两个入口均持久交办给原生 Pi。
  * phase: ready | recording | transcribing | confirm | sending | sent
  */
 class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
@@ -39,6 +39,8 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
  private var started = 0L
  var conversationMode by mutableStateOf(false); private set
  var isForeground by mutableStateOf(false); private set
+ var deliveryStatus by mutableStateOf(""); private set
+ var deliverySessionId by mutableStateOf(""); private set
 
  init { restored = true }
 
@@ -54,7 +56,7 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
   consumedOpenRecordingRequest = openRecordingRequest
   if (phase == "recording") return false
   transcribeWatch?.cancel(); sendWatch?.cancel()
-  phase = "ready"; message = ""; transcript = ""; expense = null
+  phase = "ready"; message = ""; transcript = ""; expense = null; deliveryStatus = ""; deliverySessionId = ""
   return true
  }
  fun permissionDenied() { message = "麦克风权限未开启。请在系统设置中允许 Com! 使用麦克风。" }
@@ -215,7 +217,11 @@ class QuickVoiceModel(app: Application) : AndroidViewModel(app) {
    WorkManager.getInstance(getApplication()).getWorkInfoByIdFlow(id).collect { info ->
     when (info?.state) {
      WorkInfo.State.RUNNING -> { phase = "sending" }
-     WorkInfo.State.SUCCEEDED -> { phase = "sent"; message = ""; sendWatch?.cancel() }
+     WorkInfo.State.SUCCEEDED -> {
+      deliveryStatus = info.outputData.getString("status").orEmpty()
+      deliverySessionId = info.outputData.getString("session_id").orEmpty()
+      phase = "sent"; message = ""; sendWatch?.cancel()
+     }
      WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
       phase = "confirm"; message = info.outputData.getString("error") ?: "发送结果待核实，可重试同一条消息。"
       sendWatch?.cancel()

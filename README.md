@@ -2,7 +2,7 @@
 
 Com! 是原「会话工作台」Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务。保留原包名以便原位升级和保留本机配对、缓存。可从手机发起和继续 Pi / Codex 会话，查看实时过程和终端，并检索 Mac mini 上保存的历史会话。
 
-当前 Android 工程版本为 **1.5.0**。使用 Coms! 图标、Com2 浮动胶囊底栏与日历卡片；「今天」直接读取手机日历。Hermes 主对话可派出独立 Codex 后台任务，任务、约束、回执和结果存放在 Mac mini，手机进入后台后继续执行。版本说明和本次实测见 [1.5.0 记录](docs/com-1.5.0.md)。给协作者介绍原工作台可阅读 [项目背景、功能与架构](docs/app-overview.md)；Personal Agent 的规划见 [产品与实施规划](docs/COM_PERSONAL_AGENT_PLAN.md)。旧模型与推理选择的验证边界见 [1.3.4 记录](docs/com-1.3.4.md)。
+当前 Android 工程版本为 **1.5.2**。使用 Coms! 图标、Com2 浮动胶囊底栏与日历卡片；「今天」直接读取手机日历。Hermes 主对话可派出独立 Codex 后台任务，任务、约束、回执和结果存放在 Mac mini，手机进入后台后继续执行。本轮统一发送文字 Morph、真实消息行让位、输入法发送键与键盘同步避让，并上线持久引用和请求号匹配的原生回显。螃蟹状态动画、透明渐变标题、分色对话、Hermes 表情反馈，以及直接交给 Pi 的快捷语音继续保留；主对话和任务页均可直接允许或拒绝待授权卡。版本说明和实测见 [1.5.2 记录](docs/com-1.5.2.md)，此前体验升级见 [1.5.1 记录](docs/com-1.5.1.md)，任务闭环见 [1.5.0 记录](docs/com-1.5.0.md)。给协作者介绍原工作台可阅读 [项目背景、功能与架构](docs/app-overview.md)；Personal Agent 的规划见 [产品与实施规划](docs/COM_PERSONAL_AGENT_PLAN.md)。旧模型与推理选择的验证边界见 [1.3.4 记录](docs/com-1.3.4.md)。
 
 - `backend/`：只读历史索引、Pi/Codex 会话运行时、Hermes 主对话与流式服务、个人概览、通知收件箱和待审批工作建议。
 - `android/`：Kotlin / Compose 原生会话、Hermes 主线与「今天」页、通知采集、离线缓存与 xterm.js 终端。

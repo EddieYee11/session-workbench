@@ -26,6 +26,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.*
 import org.json.JSONObject
+import org.json.JSONArray
+import java.util.UUID
 
 private data class CompanionAnchor(val rect:Rect,val clip:Rect,val agent:String,val state:String,val interactive:Boolean)
 private class CompanionStage {
@@ -57,13 +59,15 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
 ){
  val context=LocalContext.current
  val stage=remember{CompanionStage()}
- val route=vm.selected.ifBlank{"home"}
+ val motion=LocalMessageSendMotion.current?:rememberMessageSendMotionState(vm.active)
+ val creating=vm.creatingMessage
+ val route=vm.selected.ifBlank{creating?.scope?:"home"}
  val home=route=="home"
  var prompt by rememberSaveable{mutableStateOf(vm.store.prefs.getString("new-draft","")?:"")}
  var modelPicker by remember{mutableStateOf(false)}
  var terminal by rememberSaveable(vm.selected){mutableStateOf(false)}
  val session=vm.detail.optJSONObject("session")?:JSONObject()
- val pickerAgent=if(home)agent else session.optString("agent",agent)
+ val pickerAgent=if(home)agent else if(creating!=null)vm.creatingAgent else session.optString("agent",agent)
  val pickerSid=if(home)"" else route
  val modelSelection=vm.selection(pickerAgent,pickerSid)
  val caps=session.optJSONObject("capabilities")?:JSONObject()
@@ -74,6 +78,7 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
  val anchor=routeAnchor?:lastAnchor
  SideEffect{stage.anchors[route]?.let{lastAnchor=it}}
  val voice:()->Unit={context.startActivity(Intent(context,QuickVoiceActivity::class.java))}
+ Box(Modifier.fillMaxSize()){
  Column(Modifier.fillMaxSize()){
   Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned{origin=it.positionInRoot()}){
    CompositionLocalProvider(LocalCompanionStage provides stage){
@@ -88,7 +93,9 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
        var snapshot by remember(scene){mutableStateOf(ConversationSnapshot(scene,vm.detail,vm.live,vm.liveFresh&&vm.liveSessionId==scene))}
        val current=if(vm.selected==scene)ConversationSnapshot(scene,vm.detail,vm.live,vm.liveFresh&&vm.liveSessionId==scene) else snapshot
        SideEffect{if(vm.selected==scene)snapshot=current}
-       ChatPage(vm,menu,new,current,terminal,{terminal=it},scene==route)
+       val pending=creating?.takeIf{it.scope==scene}
+       val displayed=if(pending==null)current else ConversationSnapshot(scene,JSONObject().put("session",JSONObject().put("agent",vm.creatingAgent).put("display_title",pending.text.take(60)).put("status","ready").put("capabilities",JSONObject().put("input",true))).put("messages",JSONArray(mergeOutgoingMessages(emptyList(),listOf(pending)))),JSONObject(),true)
+       ChatPage(vm,menu,new,displayed,terminal,{terminal=it},scene==route,motion)
       }
       if(scene!=route)Box(Modifier.matchParentSize().pointerInput(Unit){awaitPointerEventScope{while(true){awaitPointerEvent().changes.forEach{it.consume()}}}})
       }
@@ -131,18 +138,26 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
     Row(Modifier.padding(Spacing.M),verticalAlignment=Alignment.CenterVertically){ThinkingDots();Text(vm.voiceDelivery,Modifier.weight(1f).padding(start=12.dp),fontSize=Type.Caption,color=Ink)}
    }
   }
-  AnimatedVisibility((home||caps.optBoolean("input"))&&!terminal,enter=fadeIn(tween(180))+expandVertically(Motion.Resize),exit=fadeOut(tween(100))+shrinkVertically(Motion.Resize)){
+  AnimatedVisibility((home||creating!=null||caps.optBoolean("input"))&&!terminal,enter=fadeIn(tween(180))+expandVertically(Motion.Resize),exit=fadeOut(tween(100))+shrinkVertically(Motion.Resize)){
    Column{
+    vm.workReferences[route]?.let{MessageReferencePreview(it){vm.workReferences.remove(route)}}
     Composer(
      if(home)prompt else vm.draft(),
      {if(home){prompt=it;vm.store.prefs.edit().putString("new-draft",it).apply()}else vm.setDraft(it)},
-     if(home)"交给 ${if(agent=="pi")"Pi"else"Codex"} 做点什么…" else if(status=="running")"写下补充内容…"else"继续和 ${session.optString("agent")} 聊聊…",
+     if(home)"交给 ${if(agent=="pi")"Pi"else"Codex"} 做点什么…" else if(creating!=null)"正在创建 ${vm.creatingAgent} 会话…" else if(status=="running")"写下补充内容…"else"继续和 ${session.optString("agent")} 聊聊…",
      vm.connected&&!vm.busy,!home&&status in listOf("running","waiting"),{modelPicker=true;vm.loadModels(pickerAgent)},
-     {if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",prompt,modelSelection.model,modelSelection.effort,"danger-full-access")else vm.send()},
-     {vm.stop()},voice,modelSelection.model.isNotBlank()||modelSelection.effort.isNotBlank(),
+     {val text=if(home)prompt.trim() else vm.draft().trim();val rid=UUID.randomUUID().toString();motion.begin(rid,text)
+      val sent=if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",text,modelSelection.model,modelSelection.effort,"danger-full-access",rid)else vm.send(rid)
+      if(sent==null)motion.cancel()else{motion.retarget(rid,sent);if(home)prompt=""}},
+     {vm.stop()},voice,modelSelection.model.isNotBlank()||modelSelection.effort.isNotBlank(),motion,creating!=null,
     )
    }
   }
+ }
+ }
+ LaunchedEffect(vm.busy,route){
+  if(!vm.busy&&home&&prompt.isBlank())prompt=vm.store.prefs.getString("new-draft","").orEmpty()
+  if(!vm.busy&&home&&motion.messageId!=null&&vm.outgoingMessages.none{it.id==motion.messageId})motion.cancel()
  }
  LaunchedEffect(route){if(!home&&vm.store.prefs.getString("new-draft",null)==null)prompt=""}
  if(modelPicker)ModelPickerSheet(

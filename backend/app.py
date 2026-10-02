@@ -13,6 +13,8 @@ from signal_inspector import HermesSignalReviewer,SignalInspector
 from work_dispatch import WorkProposalStore
 from tasks import TaskStore,TaskController
 from task_tools import authorized_assignment
+from quick_voice import QuickVoice
+from message_references import MessagePresentations, canonical_reference
 
 HOME=Path(os.environ.get('WORKBENCH_HOME',str(Path.home())))
 STATE=Path(os.environ.get('WORKBENCH_STATE',str(Path.home()/'.session-workbench')))
@@ -21,6 +23,8 @@ TOKEN_FILE=STATE/'token'
 if not TOKEN_FILE.exists():TOKEN_FILE.write_text(secrets.token_urlsafe(40));TOKEN_FILE.chmod(0o600)
 TOKEN=TOKEN_FILE.read_text().strip()
 history=History(HOME,STATE);runtime=Runtime(history,TOKEN)
+presentations=MessagePresentations(STATE)
+quick_voice=QuickVoice(STATE,runtime,HOME/'AI_Work_System')
 personal=PersonalBridge(STATE)
 conversation=PersonalConversation(STATE)
 signals=PersonalSignals(STATE)
@@ -32,6 +36,17 @@ conversation.task_context=lambda: task_store.context()
 conversation.task_environment=lambda: {'workspace_root':str(work_proposals.workspace),
                                       'automatic_executor':'codex','maximum_running_tasks':2}
 rate={}
+
+def reference_message(source_session_id, message_id):
+    if source_session_id=='personal-main':
+        with conversation.db() as db:
+            row=db.execute('SELECT id,role,text FROM messages WHERE id=?',(message_id,)).fetchone()
+            return dict(row) if row else None
+    stored=presentations.project(source_session_id,history.messages(source_session_id))
+    actual_live=presentations.project(source_session_id,live_items(runtime.events(source_session_id)))
+    return next((m for m in actual_live+stored if m.get('id')==message_id),None)
+
+conversation.reference_lookup=reference_message
 
 @asynccontextmanager
 async def lifespan(app):
@@ -50,12 +65,14 @@ async def lifespan(app):
                 async with runtime.action_lock:await task_controller.poll()
             await asyncio.sleep(1)
     ledger_loop=asyncio.create_task(task_loop())
+    quick_voice.start()
     conversation.start()
     inspector.start()
     yield
     task.cancel()
     ledger_loop.cancel()
     with contextlib.suppress(asyncio.CancelledError):await ledger_loop
+    await quick_voice.stop()
     await inspector.stop()
     await conversation.stop()
     if runtime.rpc:await runtime.rpc.close()
@@ -72,7 +89,7 @@ async def auth(request,call_next):
 @app.exception_handler(RuntimeError)
 async def failure(request,exc):return JSONResponse({'detail':str(exc)},409)
 @app.get('/health')
-async def health():return {'service':'mini-sessions','version':'1.0.0'}
+async def health():return {'service':'mini-sessions','version':'1.0.0','features':{'message_references_v1':True,'stable_message_identity_v1':True}}
 @app.post('/pair')
 async def pair(request:Request):
     ip=request.client.host;now=time.time();attempts=[x for x in rate.get(ip,[]) if now-x<300]
@@ -105,7 +122,21 @@ async def personal_conversation_stream(request:Request):
 async def personal_message(request:Request):
     data=await request.json()
     if not isinstance(data,dict) or not isinstance(data.get('request_id'),str) or not isinstance(data.get('text'),str):raise ValueError('消息格式无效')
-    return conversation.submit(data['request_id'],data['text'])
+    if quick_voice.receipt(data['request_id']):raise ValueError('这条语音已交办给派，请查看原受理回执；不会再次交给 Hermes。')
+    return conversation.submit(data['request_id'],data['text'],data.get('reference'))
+@app.post('/personal/quick-voice/messages')
+async def quick_voice_message(request:Request):
+    data=await request.json()
+    if not isinstance(data,dict):raise ValueError('语音消息格式无效')
+    return quick_voice.submit(data.get('request_id'),data.get('text'),data.get('purpose','conversation'))
+@app.get('/personal/quick-voice')
+async def quick_voice_snapshot():
+    return quick_voice.snapshot()
+@app.get('/personal/quick-voice/receipts/{request_id}')
+async def quick_voice_receipt(request_id:str):
+    receipt=quick_voice.receipt(request_id)
+    if receipt is None:raise HTTPException(404,'尚无语音受理记录')
+    return receipt
 @app.post('/personal/signals')
 async def personal_signal_batch(request:Request):
     data=await request.json()
@@ -232,15 +263,21 @@ async def detail(sid:str):
     s=history.get(sid)
     if not s:raise HTTPException(404,'会话不存在')
     m=history.managed().get(sid);s['status']=await runtime.status(sid);alive=bool(m and not m.get('ended') and (m['agent']=='codex' or await runtime.alive(m['tmux'])))
-    s['capabilities']={'history':True,'input':alive,'terminal':alive and (s['agent']=='pi' or bool(history.messages(sid))),'resume':False if alive else await runtime.resumable(s),'queue':False,'steer':False}
+    stable_identity=runtime.stable_input(sid)
+    legacy_restart=alive and not stable_identity and s['agent']=='pi'
+    can_resume=await runtime.legacy_pi_idle(sid) if legacy_restart else False if alive else await runtime.resumable(s)
+    s['capabilities']={'history':True,'input':alive and stable_identity,'stable_message_identity_v1':stable_identity,'restart_for_identity':legacy_restart,'terminal':alive and (s['agent']=='pi' or bool(history.messages(sid))),'resume':can_resume,'queue':False,'steer':False}
     s['managed']=bool(m);s['source']=(m or {}).get('source','Mac mini 历史')
     if m:s['model']=m.get('model','');s['effort']=m.get('effort','')
     s.pop('signature',None);s.pop('path',None)
-    return {'session':s,'messages':await asyncio.to_thread(history.messages,sid)}
+    messages=await asyncio.to_thread(history.messages,sid)
+    # Bind live Codex item IDs before projecting their persisted history rows.
+    presentations.project(sid,live_items(runtime.events(sid)))
+    return {'session':s,'messages':presentations.project(sid,messages)}
 @app.get('/sessions/{sid}/live')
 async def live(sid:str,after:int=-1):
     events=runtime.events(sid)
-    return {'status':await runtime.status(sid),'events':[], 'items':live_items(events), 'cursor':events[-1]['seq'] if events else -1,'approvals':[{k:v for k,v in a.items() if k!='rpc_id'} for a in runtime.approvals.values() if a['sid']==sid]}
+    return {'status':await runtime.status(sid),'features':{'stable_message_identity_v1':runtime.stable_input(sid)},'events':[], 'items':presentations.project(sid,live_items(events)), 'cursor':events[-1]['seq'] if events else -1,'approvals':[{k:v for k,v in a.items() if k!='rpc_id'} for a in runtime.approvals.values() if a['sid']==sid]}
 def live_items(events):
     items={}
     for e in events:
@@ -255,7 +292,10 @@ def live_items(events):
             m=data.get('message',{});role=m.get('role')
             if role not in ('user','assistant','toolResult'):continue
             key=m.get('toolCallId') or 'pi:'+str(m.get('timestamp',0))
+            request_id=m.get('com_request_id') if role=='user' else None
+            if isinstance(request_id,str):key='pi:com:'+request_id
             items[key]={'id':key,'role':'tool' if role=='toolResult' else role,'title':m.get('toolName',''),'text':text_content(m.get('content','')),'time':ts}
+            if request_id:items[key]['native_request_id']=request_id
         elif typ in ('tool_execution_start','tool_execution_update','tool_execution_end'):
             key=data.get('toolCallId','tool');result=data.get('result',data.get('partialResult',{}))
             body=text_content(result.get('content','')) if isinstance(result,dict) else str(result)
@@ -277,7 +317,7 @@ async def receipt(rid:str):
     with history.db() as d:r=d.execute('SELECT data FROM receipts WHERE id=?',(rid,)).fetchone()
     if not r:raise HTTPException(404,'尚无发送记录')
     return json.loads(r[0])
-async def once(data,action):
+async def once(data,action,preflight=None):
     rid=data.get('request_id','')
     if len(rid)<10 or len(rid)>100:raise ValueError('缺少有效请求标识')
     fingerprint=hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
@@ -287,6 +327,13 @@ async def once(data,action):
             if old:
                 if old[0]!=fingerprint:raise ValueError('请求标识冲突')
                 return json.loads(old[1])
+        if preflight:
+            try:await preflight()
+            except ValueError as error:
+                result={'status':'rejected','submission_state':'not_submitted','request_id':rid,'error':str(error)}
+                with history.db() as d:d.execute('INSERT INTO receipts VALUES(?,?,?)',(rid,fingerprint,json.dumps(result)))
+                return result
+        with history.db() as d:
             d.execute('INSERT INTO receipts VALUES(?,?,?)',(rid,fingerprint,json.dumps({'status':'unknown','request_id':rid})))
         try:result=await action()
         except Exception as e:
@@ -299,8 +346,11 @@ async def once(data,action):
 @app.post('/sessions')
 async def create(request:Request):
     data=await request.json()
+    reference=canonical_reference(data.get('reference'),reference_message,'personal-main')
+    if reference and not data.get('prompt','').strip():raise ValueError('引用消息需要本条消息')
     async def action():
         sid=await runtime.create(data.get('agent','pi'),data.get('cwd',str(HOME/'AI_Work_System')),data.get('model',''),data.get('effort',''),data.get('sandbox','danger-full-access'))
+        turn_id=None
         if data.get('prompt'):
             # Wait for Pi TUI initialization before literal input. Codex uses structured RPC.
             if data.get('agent','pi')=='pi':
@@ -309,21 +359,49 @@ async def create(request:Request):
                     await asyncio.sleep(.25)
                 else:raise RuntimeError('Pi 启动未就绪，请在会话中检查终端；不要重复提交')
                 await asyncio.sleep(1)
-            await runtime.input(sid,data['prompt'],data['request_id'],data.get('model','') if data.get('agent','pi')=='codex' else '',data.get('effort','') if data.get('agent','pi')=='codex' else '')
-        return {'sid':sid}
+            transport=presentations.record(sid,data['request_id'],data['prompt'],reference)
+            turn_id=await runtime.input(sid,transport,data['request_id'],data.get('model','') if data.get('agent','pi')=='codex' else '',data.get('effort','') if data.get('agent','pi')=='codex' else '')
+            presentations.bind_turn(sid,data['request_id'],turn_id)
+            presentations.project(sid,live_items(runtime.events(sid)))
+        return {'sid':sid,'turn_id':turn_id,'submission_state':'submitted' if data.get('prompt') else 'ready',
+                **presentations.identity(sid,data['request_id']),
+                **({'text':data['prompt'],'reference':reference} if reference else {})}
     return await once(data,action)
 @app.post('/sessions/{sid}/resume')
 async def resume(sid:str,request:Request):
     data=await request.json();s=history.get(sid)
     if not s:raise HTTPException(404,'会话不存在')
-    async def action():return {'sid':await runtime.create(s['agent'],s['cwd'],resume=s)}
-    return await once(dict(data,sid=sid,action='resume'),action)
+    async def legacy():
+        m=history.managed().get(sid)
+        return m if m and m.get('agent')=='pi' and not m.get('ended') and not runtime.stable_input(sid) and await runtime.alive(m['tmux']) else None
+    async def preflight():
+        if await legacy():
+            if not await runtime.legacy_pi_idle(sid):raise ValueError('旧 Pi 会话仍在运行或状态未确认；等会话闲置后才能升级并恢复')
+        elif not await runtime.resumable(s):raise ValueError('会话正在使用或状态无法确认，保持只读')
+    async def action():
+        m=await legacy()
+        if m:
+            if not await runtime.legacy_pi_idle(sid):raise ValueError('Pi 已开始运行，未结束会话；请稍后核实恢复状态')
+            # Explicit resume is the only path that restarts this legacy managed
+            # process. History and the phone's draft are never submitted here.
+            await runtime.tm('kill-session','-t',m['tmux'])
+            m['ended']=True;history.save_managed(sid,m)
+        return {'sid':await runtime.create(s['agent'],s['cwd'],resume=s)}
+    return await once(dict(data,sid=sid,action='resume'),action,preflight)
 @app.post('/sessions/{sid}/input')
 async def send(sid:str,request:Request):
     data=await request.json()
-    if not data.get('text','').strip():raise ValueError('输入为空')
-    async def action():return {'sid':sid,'turn_id':await runtime.input(sid,data['text'],data['request_id'],data.get('model'),data.get('effort'))}
-    return await once(dict(data,sid=sid,action='input'),action)
+    if not isinstance(data,dict) or not isinstance(data.get('text'),str) or not data['text'].strip():raise ValueError('输入为空')
+    reference=canonical_reference(data.get('reference'),reference_message,sid)
+    async def action():
+        quick_voice.revoke(sid)
+        transport=presentations.record(sid,data['request_id'],data['text'],reference)
+        turn_id=await runtime.input(sid,transport,data['request_id'],data.get('model'),data.get('effort'))
+        presentations.bind_turn(sid,data['request_id'],turn_id)
+        presentations.project(sid,live_items(runtime.events(sid)))
+        return {'sid':sid,'turn_id':turn_id,'submission_state':'submitted',**presentations.identity(sid,data['request_id']),
+                **({'text':data['text'],'reference':reference} if reference else {})}
+    return await once(dict(data,sid=sid,action='input'),action,lambda:runtime.check_input_identity(sid))
 @app.post('/sessions/{sid}/stop')
 async def stop(sid:str):await runtime.stop(sid);return {'ok':True}
 @app.post('/sessions/{sid}/end')
@@ -343,7 +421,9 @@ async def terminal(ws:WebSocket,sid:str):
     try:
         hello=await asyncio.wait_for(ws.receive_json(),5)
         if not hmac.compare_digest(str(hello.get('token','')),TOKEN):await ws.close(1008);return
-        m=history.managed().get(sid)
+        async with runtime.action_lock:
+            quick_voice.revoke(sid)
+            m=history.managed().get(sid)
         if not m or m.get('ended'):await ws.close(1008);return
         if m['agent']=='codex':await runtime.ensure_terminal(sid)
         if not await runtime.alive(m['tmux']):await ws.close(1008);return

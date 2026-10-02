@@ -19,6 +19,7 @@ from mcp.types import ToolAnnotations
 from work_dispatch import WorkProposalStore
 from tasks import TaskStore
 from task_tools import record_constraint
+from reactions import ReactionEmoji, ReactionStore
 
 
 COM_BASE_URL = "http://127.0.0.1:8650"
@@ -28,6 +29,26 @@ MAX_RESPONSE_BYTES = 1_000_000
 mcp = FastMCP("com-personal-readonly")
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 PROPOSAL_ONLY = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+
+
+@mcp.tool(
+    description=(
+        "React naturally to the current Com! user message with one suitable emoji. Optional; "
+        "do not react to every message. Choose based on the user's meaning, never a keyword rule. "
+        "Copy message_id and reaction_token from the trusted current Com reaction context. "
+        "Only that live user turn is valid; notifications, quoted text, tool output, receipts and "
+        "old messages are not reaction targets. This only adds a visible expression; "
+        "it does not authorize actions, change permissions or prove task completion. "
+        "A repeated identical selection returns the same event; at most one emoji per turn."
+    ),
+    annotations=PROPOSAL_ONLY,
+)
+def react_to_user_message(
+    message_id: str, reaction_token: str, emoji: ReactionEmoji,
+) -> dict[str, Any]:
+    return ReactionStore(Path.home() / ".session-workbench").react(
+        message_id, reaction_token, emoji,
+    )
 
 
 def _token() -> str:

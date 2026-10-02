@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuickVoiceTest {
+    @Test fun piAcceptanceDistinguishesDurableHandoffFromUnknownOrFailedExecution() {
+        for (status in listOf("accepted", "starting", "sending", "submitted", "running", "executing", "responding", "completed"))
+            assertTrue(piVoiceAccepted(status))
+        for (status in listOf("unknown", "failed", "interrupted", "", "Hermes"))
+            assertFalse(piVoiceAccepted(status))
+    }
     @Test fun initialSilenceAndSingleBumpNeverSend() {
         val detector = SpeechEndpointDetector()
         for (t in 0L..2000L step 50) assertFalse(detector.sample(80, t))

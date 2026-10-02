@@ -2,11 +2,90 @@ import { appendFileSync } from 'node:fs';
 export default function(pi: any) {
   const path=process.env.SESSION_WORKBENCH_EVENTS;
   let last=0;
+  let pending: any = null;
+  const dispatched = new Set<string>();
+  function body(message: any) {
+    return typeof message?.content === 'string' ? message.content :
+      (message?.content || []).filter((x: any) => x.type === 'text').map((x: any) => x.text).join('\n');
+  }
   function write(type: string, data: any, ctx: any) {
     if (!path) return;
     try { appendFileSync(path, JSON.stringify({type,time:Date.now()/1000,sid:ctx.sessionManager.getSessionId(),file:ctx.sessionManager.getSessionFile(),data})+'\n',{mode:0o600}); } catch {}
   }
-  for(const type of ['session_start','agent_start','agent_end','agent_settled','queue_update','message_start','message_end','tool_execution_start','tool_execution_update','tool_execution_end'])
+  pi.on('session_start', (_e: any, ctx: any) => {
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type === 'message' && entry.message?.role === 'user' && entry.message?.com_request_id)
+        dispatched.add(entry.message.com_request_id);
+    }
+    write('com_input_capabilities', {stable_message_identity_v1:true}, ctx);
+  });
+  // The command owns this brief input preflight. Interactive input cannot be
+  // mistaken for its user echo, even when the wording happens to be identical.
+  pi.on('input', (event: any) => {
+    if (!pending) return {action:'continue'};
+    if (!pending.inputSeen && event.source === 'extension' && event.text === pending.text) {
+      pending.inputSeen = true;
+      return {action:'continue'};
+    }
+    return {action:'handled'};
+  });
+  pi.on('message_start', (event: any, ctx: any) => {
+    if (pending?.inputSeen && event.message?.role === 'user' && body(event.message) === pending.text) {
+      pending.message = event.message;
+      event.message.com_request_id = pending.requestId;
+    }
+    write('message_start', event, ctx);
+  });
+  pi.on('message_end', (event: any, ctx: any) => {
+    if (pending?.message === event.message && event.message?.role === 'user') {
+      const requestId = pending.requestId;
+      const message = {...event.message, com_request_id:requestId};
+      write('message_end', {...event, message}, ctx);
+      const resolve = pending.resolve;
+      pending = null;
+      // Confirm after Pi's message_end persistence, rather than treating the
+      // extension command or an in-memory message_start as durable acceptance.
+      setTimeout(() => {
+        const entry = ctx.sessionManager.getBranch().find((x: any) =>
+          x.type === 'message' && x.message?.role === 'user' && x.message?.com_request_id === requestId);
+        write('com_input_result', entry ?
+          {requestId, ok:true, messageId:'pi:com:'+requestId, nativeEntryId:entry.id} :
+          {requestId, ok:false, error:'Pi 未确认原生消息持久记录，请核实状态；不要重复提交'}, ctx);
+        resolve();
+      }, 0);
+      // Pi persists this real user message after message_end handlers return.
+      return {message};
+    }
+    write('message_end', event, ctx);
+  });
+  pi.registerCommand('com-input', {
+    description:'Submit a Com! user message with its durable request identity',
+    handler: async (arg: string, ctx: any) => {
+      let requestId = '';
+      let timer: any;
+      try {
+        if (!/^[A-Za-z0-9_-]{20,1500000}$/.test(arg)) throw new Error('无效的消息请求');
+        const data = JSON.parse(Buffer.from(arg, 'base64url').toString('utf8'));
+        requestId = data.requestId;
+        if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{10,100}$/.test(requestId)) throw new Error('无效的请求标识');
+        if (typeof data.text !== 'string' || !data.text.trim()) throw new Error('输入为空');
+        if (dispatched.has(requestId)) throw new Error('消息已交办，请核实原发送状态；不会再次执行');
+        if (pending || !ctx.isIdle() || ctx.hasPendingMessages()) throw new Error('Pi 正在处理消息，请完成后再发送');
+        dispatched.add(requestId);
+        await new Promise<void>((resolve, reject) => {
+          pending = {requestId, text:data.text, inputSeen:false, message:null, resolve};
+          timer = setTimeout(() => reject(new Error('Pi 未确认实际消息，请核实状态；不要重复提交')), 7000);
+          pi.sendUserMessage(data.text, {expandPromptTemplates:false});
+        });
+      } catch (error: any) {
+        if (requestId) write('com_input_result', {requestId, ok:false, error:String(error?.message || error)}, ctx);
+      } finally {
+        clearTimeout(timer);
+        if (pending?.requestId === requestId) pending = null;
+      }
+    },
+  });
+  for(const type of ['session_start','agent_start','agent_end','agent_settled','queue_update','tool_execution_start','tool_execution_update','tool_execution_end'])
     pi.on(type, (e:any,c:any)=>write(type,e,c));
   pi.on('message_update',(e:any,c:any)=>{ if(Date.now()-last>100){last=Date.now();write('message_update',e,c);} });
   // The Android composer sends only an opaque, base64url-encoded configuration

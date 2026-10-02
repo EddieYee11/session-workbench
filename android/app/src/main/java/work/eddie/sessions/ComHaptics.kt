@@ -10,7 +10,7 @@ import androidx.compose.ui.platform.LocalView
 import java.util.WeakHashMap
 
 /** Semantic feedback for completed user actions, never for recomposition or loading ticks. */
-enum class HapticCue { Selection, Commit, RecordingStart, RecordingStop, Expand, Reject }
+enum class HapticCue { Selection, Commit, RecordingStart, RecordingStop, Expand, Reject, Reaction }
 
 /** Uses the platform's device-tuned effects and respects both view and system haptic settings. */
 @Composable
@@ -45,6 +45,9 @@ private object ComHaptics {
     }
 
     private fun HapticCue.platformConstant(): Int = when (this) {
+        HapticCue.Reaction -> if (Build.VERSION.SDK_INT >= 30) {
+            HapticFeedbackConstants.CONTEXT_CLICK
+        } else HapticFeedbackConstants.CLOCK_TICK
         HapticCue.Selection -> if (Build.VERSION.SDK_INT >= 34) {
             HapticFeedbackConstants.SEGMENT_TICK
         } else HapticFeedbackConstants.CLOCK_TICK

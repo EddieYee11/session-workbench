@@ -18,6 +18,7 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONObject
 
 /** Opt-in live acceptance: fixture and HTTPS pairing are supplied outside the test APK. */
 @RunWith(AndroidJUnit4::class)
@@ -34,7 +35,14 @@ class QuickVoiceWindowTest {
   val capture=arguments.getString("capture")?.trim()
    ?:store.prefs.getString("quick-voice-file",null)?.removeSuffix(".m4a")
   require(capture!=null&&capture.matches(Regex("[a-f0-9-]{36}"))){"Pass capture=<UUID> for the prepared audio fixture"}
-  assertTrue("Prepare files/quick-voice/<capture>.m4a before this live test",File(context.filesDir,"quick-voice/$capture.m4a").length()>=512)
+  val captureFile=File(context.filesDir,"quick-voice/$capture.m4a")
+  arguments.getString("fixture")?.let{name->
+   require(name.matches(Regex("[a-z0-9_-]+\\.m4a"))){"Fixture must be a local audio filename"}
+   val fixture=File(context.getExternalFilesDir(null),name)
+   assertTrue("Prepare the fixture in the app's external files directory",fixture.length()>=512)
+   captureFile.parentFile?.mkdirs();fixture.copyTo(captureFile,overwrite=true)
+  }
+  assertTrue("Prepare files/quick-voice/<capture>.m4a before this live test",captureFile.length()>=512)
 
   val mainWasOpened=AtomicBoolean(false)
   val monitor=ActivityLifecycleMonitorRegistry.getInstance()
@@ -44,14 +52,15 @@ class QuickVoiceWindowTest {
   monitor.addLifecycleCallback(callback)
   var activity:QuickVoiceActivity?=null
   try{
-   context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+   launchFromSystem("am start -a android.settings.SETTINGS")
    await(10_000,"Settings did not become the foreground app"){
     resumedActivities().any{it.contains("com.android.settings/")}
    }
    val settingsTask=Regex("\\bt(\\d+)\\b").find(resumedActivities().first{it.contains("com.android.settings/")})
     ?.groupValues?.get(1)?.toInt()
    assertNotNull("Could not identify the previous app's task",settingsTask)
-   context.startActivity(Intent(Intent.ACTION_ASSIST).setClass(context,QuickVoiceActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+   // Launch through the system surface; a background app launch is a different Xiaomi permission.
+   launchFromSystem("am start -a android.intent.action.ASSIST -n work.eddie.sessions/.QuickVoiceActivity")
    await(10_000,"ASSIST did not open QuickVoiceActivity"){
     activity=onMain{monitor.getActivitiesInStage(Stage.RESUMED).filterIsInstance<QuickVoiceActivity>().firstOrNull()}
     activity!=null
@@ -82,7 +91,7 @@ class QuickVoiceWindowTest {
     check(store.prefs.edit().putString("quick-voice-file","$capture.m4a").commit())
     model.transcribe()
    }
-   await(120_000,"Quick voice did not receive a Hermes delivery receipt"){
+   await(120_000,"Quick voice did not receive a durable Pi handoff receipt"){
     assertFalse("Quick voice must never navigate to Com main",mainWasOpened.get())
     onMain{
      if(model.phase=="ready"||model.phase=="confirm")fail("Quick voice failed: ${model.message}")
@@ -90,6 +99,13 @@ class QuickVoiceWindowTest {
     }
    }
    assertTrue("The real ASR pipeline must return recognized text",onMain{model.transcript.isNotBlank()})
+   val receiptFile=File(context.filesDir,"quick-voice/$capture.quickvoice.json")
+   assertTrue("Pi handoff must survive closing the window",receiptFile.exists())
+   val receipt=JSONObject(receiptFile.readText())
+   assertEquals("pi",receipt.getString("agent"))
+   assertEquals("quickvoice-$capture",receipt.getString("request_id"))
+   assertEquals(onMain{model.transcript},receipt.getString("text"))
+   assertTrue("A handoff receipt must not declare an uncertain send successful",piVoiceAccepted(receipt.getString("status")))
    await(10_000,"Quick voice did not dismiss and restore Settings"){
     onMain{window.isDestroyed}&&resumedActivities().any{it.contains("com.android.settings/")}
    }
@@ -114,6 +130,11 @@ class QuickVoiceWindowTest {
    if(SystemClock.elapsedRealtime()>=deadline)fail(message)
    SystemClock.sleep(100)
   }
+ }
+
+ private fun launchFromSystem(command:String){
+  android.os.ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command))
+   .bufferedReader().use{it.readText()}
  }
 
  private fun resumedActivities():List<String>{

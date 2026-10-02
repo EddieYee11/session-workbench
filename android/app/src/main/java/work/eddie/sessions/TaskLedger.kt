@@ -68,7 +68,7 @@ fun ledgerStatus(status:String):Pair<String,String> = when(status){
  "running"->"active" to "执行中"
  "sending","dispatching"->"active" to "派发中"
  "queued"->"active" to "已受理 · 排队中"
- "waiting"->"active" to "等待工作器"
+ "waiting"->"active" to "等待你的授权或回应"
  "cancel_requested"->"active" to "取消待确认"
  "approval_required","proposed"->"attention" to "待授权"
  "failed"->"attention" to "执行失败"
@@ -138,6 +138,15 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
      if(task.source.isNotBlank())Text("交办原文：${task.source}",Modifier.padding(top=8.dp),fontSize=12.sp,color=Muted,maxLines=3,overflow=TextOverflow.Ellipsis)
      task.constraints.forEach{Text("约束 · $it",Modifier.padding(top=6.dp),fontSize=12.sp,color=Ink)}
      if(vm.taskControlTarget==task.id&&vm.taskControlNote.isNotBlank())Text(vm.taskControlNote,Modifier.padding(top=10.dp),fontSize=12.sp,color=Muted)
+     if(task.statusText=="待授权"){
+      val proposal=vm.workProposals.array("items").firstOrNull{it.optString("id")==task.id}
+      if(proposal!=null)WorkProposalActions(vm,proposal)
+      else{
+       Text("授权建议正在同步；允许与拒绝仅针对这项任务。",Modifier.padding(top=8.dp),fontSize=12.sp,color=AmberText)
+       TextButton(onClick={vm.refreshWorkProposalsNow()}){Text("刷新授权建议")}
+      }
+     }
+     if(task.sessionId.isNotBlank()&&task.status=="active")NativeTaskApprovals(vm,task.sessionId)
      var instruction by remember(task.id){mutableStateOf("")}
      if(task.status=="active"||task.statusText=="待授权"){
       OutlinedTextField(value=instruction,onValueChange={instruction=it},label={Text("补充约束")},modifier=Modifier.fillMaxWidth())
@@ -188,9 +197,34 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
     IconButton(onClick={vm.refreshWorkProposalsNow()},enabled=!vm.workProposalsLoading){Icon(Icons.Outlined.Refresh,"刷新任务")}
    }
    Text(if(vm.taskLedgerFresh)"任务在 Mac mini 上执行，关闭手机后仍继续。" else "${vm.taskLedgerError.ifBlank{"连接中，正在读取任务状态"}}",Modifier.padding(top=6.dp,bottom=14.dp),fontSize=12.sp,color=Muted)
+   WorkProposalSection(vm,pendingOnly=true)
    TaskLedgerSection(vm,vm.hermes.array("runs"),vm.hermes.array("messages"))
-   WorkProposalSection(vm)
+   WorkProposalSection(vm,historyOnly=true)
    SignalActivitySection(vm)
   }
  }
+}
+
+
+/** Native approvals stay bound to this task's execution session. */
+@Composable private fun NativeTaskApprovals(vm:WorkbenchModel,sid:String){
+ var approvals by remember(sid){mutableStateOf<List<JSONObject>>(emptyList())}
+ var error by remember(sid){mutableStateOf("")}
+ LaunchedEffect(sid,vm.active,vm.taskLedgerFresh){
+  if(!vm.active||!vm.taskLedgerFresh)return@LaunchedEffect
+  while(true){
+   try{
+    val live=vm.store.request("/sessions/${vm.enc(sid)}/live")
+    approvals=live.array("approvals").filter{it.optString("sid")==sid}
+    error=""
+   }catch(e:kotlinx.coroutines.CancellationException){throw e}
+    catch(e:Exception){error="执行器授权暂未同步，请进入执行会话核对。"}
+   kotlinx.coroutines.delay(3000)
+  }
+ }
+ if(vm.taskLedgerFresh)approvals.forEach{approval->
+  Text("执行器请求本次授权",Modifier.padding(top=10.dp),fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=AmberText)
+  Approval(vm,approval)
+ }
+ if(error.isNotBlank())Text(error,Modifier.padding(top=8.dp),fontSize=11.sp,color=AmberText)
 }

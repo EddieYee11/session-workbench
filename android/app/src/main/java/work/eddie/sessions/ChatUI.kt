@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.*
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -36,6 +38,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -56,6 +63,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 fun relTime(ts:Double):String{
  val age=(System.currentTimeMillis()-ts*1000).toLong()
@@ -64,6 +72,7 @@ fun relTime(ts:Double):String{
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun Workbench(vm:WorkbenchModel,quick:String,workLaunch:Int,clearQuick:()->Unit){
+ val sendMotion=rememberMessageSendMotionState(vm.active)
  var settings by remember{mutableStateOf(vm.store.token.isBlank())}
  var advanced by remember{mutableStateOf(false)}
  var page by remember{mutableStateOf(vm.rootPage)}
@@ -71,7 +80,7 @@ fun relTime(ts:Double):String{
  var history by rememberSaveable{mutableStateOf(false)}
  var more by rememberSaveable{mutableStateOf(false)}
  var permissions by rememberSaveable{mutableStateOf(false)}
- val navigate:(String)->Unit={target->page=target;more=false;history=false}
+ val navigate:(String)->Unit={target->sendMotion.cancel();page=target;more=false;history=false}
  LaunchedEffect(quick){if(quick.isNotBlank()){selectedAgent=quick;page="work";clearQuick()}}
  LaunchedEffect(workLaunch){if(workLaunch>0)page="work"}
  LaunchedEffect(vm.externalWorkRoute){if(vm.externalWorkRoute>0)page="work"}
@@ -90,37 +99,39 @@ fun relTime(ts:Double):String{
   }
  }
  LaunchedEffect(vm.q,vm.agent,vm.role,vm.cwd,vm.days,vm.sort,vm.archived){delay(250);vm.refresh()}
- val openActivity:()->Unit={page="activity"}
- val newChat:()->Unit={vm.close();vm.q="";vm.queryInSession="";history=false}
- val pick:(JSONObject)->Unit={vm.open(it);history=false}
+ val openActivity:()->Unit={sendMotion.cancel();page="activity"}
+ val newChat:()->Unit={sendMotion.cancel();vm.close();vm.q="";vm.queryInSession="";history=false}
+ val pick:(JSONObject)->Unit={sendMotion.cancel();vm.open(it);history=false}
  BackHandler(page!="hermes"||page=="work"&&vm.selected.isNotBlank()){
+  sendMotion.cancel()
   if(page=="work"&&vm.selected.isNotBlank())vm.close()else page="hermes"
  }
- Surface(Modifier.fillMaxSize(),color=Paper){Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()){
-  val imeVisible=WindowInsets.ime.getBottom(LocalDensity.current)>0
+ CompositionLocalProvider(LocalMessageSendMotion provides sendMotion){
+ Surface(Modifier.fillMaxSize(),color=Paper){Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().testTag("workbench-inset-root")){
   Column(Modifier.fillMaxSize()){
    Box(Modifier.weight(1f).fillMaxWidth()){
     when(page){
      "work"->Column(Modifier.fillMaxSize()){
-      Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
+      Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal=16.dp).testTag("work-fixed-header"),verticalAlignment=Alignment.CenterVertically){
        ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(23.dp))
        Text("工作 · Pi / Codex",Modifier.weight(1f).padding(start=10.dp),fontSize=14.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-       IconButton(onClick={history=true}){Icon(Icons.Outlined.History,"工作会话历史",tint=Muted)}
+       IconButton(onClick={sendMotion.cancel();history=true}){Icon(Icons.Outlined.History,"工作会话历史",tint=Muted)}
       }
       Box(Modifier.weight(1f)){
-       ConversationScene(vm,selectedAgent,{selectedAgent=it;vm.store.prefs.edit().putString("lastAgent",it).apply()},{history=true},{advanced=true},pick,newChat)
+       ConversationScene(vm,selectedAgent,{selectedAgent=it;vm.store.prefs.edit().putString("lastAgent",it).apply()},{sendMotion.cancel();history=true},{sendMotion.cancel();advanced=true},pick,newChat)
       }
      }
-     "calendar"->PhoneCalendarPage{page="sources"}
-     "finance"->PersonalDetailPage(vm,page){page="sources"}
-     "sources"->PersonalSourcesPage(vm){page="hermes"}
-     "activity"->TaskActivityPage(vm){page="hermes"}
-     else->HermesChat(vm,{more=true},true,openActivity)
+     "calendar"->PhoneCalendarPage{navigate("sources")}
+     "finance"->PersonalDetailPage(vm,page){navigate("sources")}
+     "sources"->PersonalSourcesPage(vm){navigate("hermes")}
+     "activity"->TaskActivityPage(vm){navigate("hermes")}
+     else->HermesChat(vm,{sendMotion.cancel();more=true},true,openActivity)
     }
    }
-   if(!imeVisible)ComBottomNavigation(page,navigate,openActivity,{more=true})
+   ImeAwareBottomNavigation{enabled->ComBottomNavigation(page,navigate,openActivity,{sendMotion.cancel();more=true},enabled)}
   }
   if(vm.busy)LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).align(Alignment.TopCenter),color=Ink,trackColor=Color.Transparent)
+  MessageSendMotionOverlay(sendMotion,Modifier.matchParentSize())
  }}
  if(history)ModalBottomSheet(onDismissRequest={history=false},containerColor=Paper,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)){
   Box(Modifier.fillMaxWidth().fillMaxHeight(.88f)){HistorySidebar(vm,pick,newChat,{history=false;settings=true})}
@@ -146,9 +157,59 @@ fun relTime(ts:Double):String{
  }
  if(advanced)NewSession(vm,selectedAgent){advanced=false}
  if(vm.error.isNotBlank())AlertDialog(onDismissRequest={vm.error=""},containerColor=Card,title={Text("操作提示",fontWeight=FontWeight.SemiBold)},text={SelectionContainer{Text(vm.error)}},confirmButton={TextButton(onClick={vm.error=""}){Text("知道了")}})
+ }
 }
 
-@Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,activity:()->Unit,more:()->Unit){
+/** Read the animated insets during layout, so the first IME frame never drops the composer. */
+@Composable internal fun ImeAwareBottomNavigation(modifier:Modifier=Modifier,ime:WindowInsets=WindowInsets.ime,navigation:WindowInsets=WindowInsets.navigationBars,content:@Composable (Boolean)->Unit){
+ val density=LocalDensity.current
+ var naturalHeight by remember{mutableIntStateOf(0)}
+ val enabled=ime.getBottom(density)<=navigation.getBottom(density)
+ Box(modifier.fillMaxWidth().clipToBounds().layout{measurable,constraints->
+  val child=measurable.measure(constraints.copy(minHeight=0))
+  naturalHeight=child.height
+  val height=keyboardNavigationHeight(child.height,ime.getBottom(this),navigation.getBottom(this))
+  layout(child.width,height){child.placeRelative(0,0)}
+ }.graphicsLayer{alpha=if(naturalHeight>0)keyboardNavigationHeight(naturalHeight,ime.getBottom(density),navigation.getBottom(density)).toFloat()/naturalHeight else 0f}
+  .testTag("workbench-bottom-navigation")
+  .then(if(enabled)Modifier else Modifier.clearAndSetSemantics{})){content(enabled)}
+}
+
+internal fun keyboardNavigationHeight(naturalHeight:Int,imeBottom:Int,navigationBottom:Int):Int=
+ (naturalHeight-(imeBottom-navigationBottom).coerceAtLeast(0)).coerceAtLeast(0)
+
+private data class MessageViewportPosition(val width:Int,val height:Int,val first:Int,val offset:Int,val following:Boolean,val count:Int,val lastHeight:Int,val beforePadding:Int,val afterPadding:Int,val scrolling:Boolean)
+
+/** Keep bottom readers at the bottom on IME/size changes; preserve a history reader's exact anchor. */
+@Composable fun MessageViewportAnchor(listState:LazyListState,key:Any,active:Boolean=true,motion:MessageSendMotionState?=null){
+ LaunchedEffect(listState,key,active){
+  if(!active)return@LaunchedEffect
+  var previous:MessageViewportPosition?=null
+  var resizeAnchor:MessageViewportPosition?=null
+  snapshotFlow{
+   val info=listState.layoutInfo
+   MessageViewportPosition(info.viewportSize.width,info.viewportSize.height,listState.firstVisibleItemIndex,listState.firstVisibleItemScrollOffset,
+    !listState.canScrollForward,info.totalItemsCount,info.visibleItemsInfo.lastOrNull{it.index==info.totalItemsCount-1}?.size?:0,
+    info.beforeContentPadding,info.afterContentPadding,listState.isScrollInProgress)
+  }.distinctUntilChanged().collect{position->
+   val old=previous
+   previous=position
+   if(position.scrolling||motion?.messageId!=null)resizeAnchor=null
+   if(old!=null&&(old.width!=position.width||old.height!=position.height)&&position.count>0&&!position.scrolling&&motion?.messageId==null){
+    // A native IME can deliver another size frame before the requested anchor
+    // remeasure has run. Keep the original reading intent across those frames.
+    val anchor=resizeAnchor?:old
+    resizeAnchor=anchor
+    if(anchor.following){
+     val available=(position.height-position.beforePadding-position.afterPadding).coerceAtLeast(1)
+     listState.requestScrollToItem(position.count-1,(anchor.lastHeight-available).coerceAtLeast(0))
+    }else if(anchor.count==position.count)listState.requestScrollToItem(anchor.first.coerceAtMost(position.count-1),anchor.offset)
+   }else resizeAnchor?.let{anchor->if(anchor.following&&position.following||!anchor.following&&position.first==anchor.first&&position.offset==anchor.offset)resizeAnchor=null}
+  }
+ }
+}
+
+@Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,activity:()->Unit,more:()->Unit,enabled:Boolean=true){
  BoxWithConstraints(Modifier.fillMaxWidth().padding(top=10.dp,bottom=10.dp),contentAlignment=Alignment.Center){
  val roomy=maxWidth>=360.dp&&LocalDensity.current.fontScale<=1.3f
  val labelWidth=(maxWidth-278.dp).coerceAtLeast(26.dp)
@@ -159,7 +220,7 @@ fun relTime(ts:Double):String{
     val background by animateColorAsState(if(selected)Color(0xFF252A31) else Color.Transparent,tween(180),label="导航选中")
     val foreground=if(selected)Color.White else Color(0xFF68727D)
     Row(Modifier.widthIn(min=48.dp).heightIn(min=48.dp).clip(RoundedCornerShape(50)).background(background)
-     .selectable(selected=selected,role=androidx.compose.ui.semantics.Role.Tab,onClick={when(target){"activity"->activity();"settings"->more();else->navigate(target)}})
+     .selectable(selected=selected,enabled=enabled,role=androidx.compose.ui.semantics.Role.Tab,onClick={when(target){"activity"->activity();"settings"->more();else->navigate(target)}})
      .padding(horizontal=if(roomy)15.dp else 12.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){
      ComPrimaryIcon(target,label,20.dp,foreground)
      if(roomy)AnimatedVisibility(selected,enter=expandHorizontally(tween(180))+fadeIn(tween(120)),exit=shrinkHorizontally(tween(140))+fadeOut(tween(100))){
@@ -385,30 +446,40 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
  Row(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(Radii.M)).background(if(selected)AccentSoft else Color.Transparent).clickable(onClick=click).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){Icon(icon,null,Modifier.size(20.dp),tint=tint);Text(text,Modifier.padding(start=12.dp),fontSize=14.5.sp,fontWeight=if(selected)FontWeight.Medium else FontWeight.Normal,color=tint)}
 }
 
-@Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null,modelConfigured:Boolean=false){
+@Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null,modelConfigured:Boolean=false,motion:MessageSendMotionState?=null,readOnly:Boolean=false){
  var focused by remember{mutableStateOf(false)}
  val line by animateColorAsState(if(focused)Muted.copy(alpha=.2f) else Color.Transparent,Motion.Tint,label="输入框描边")
  val haptics=rememberComHaptics()
+ var editing by remember{mutableStateOf(TextFieldValue(text,TextRange(text.length)))}
+ LaunchedEffect(text){if(editing.text!=text)editing=TextFieldValue(text,TextRange(text.length))}
+ val newline:()->Unit={val start=editing.selection.min;val next=editing.text.replaceRange(start,editing.selection.max,"\n");editing=TextFieldValue(next,TextRange(start+1));change(next)}
  val canSend=enabled&&text.isNotBlank()
- Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=RoundedCornerShape(32.dp),color=UserBubble,border=BorderStroke(1.dp,line),shadowElevation=0.dp){
+ val style=TextStyle(fontSize=15.sp,color=Ink,lineHeight=22.sp)
+ Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp).testTag("work-composer-surface"),shape=RoundedCornerShape(32.dp),color=UserBubble,border=BorderStroke(1.dp,line),shadowElevation=0.dp){
   Row(Modifier.padding(horizontal=6.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
-   IconButton(onClick={haptics(HapticCue.Selection);more()},modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,if(modelConfigured)"模型与推理 · 已自定义" else "选择模型与推理",Modifier.size(24.dp),tint=if(modelConfigured)EmberDeep else Ink)}
-   BasicTextField(text,change,Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).padding(vertical=10.dp,horizontal=5.dp).onFocusChanged{focused=it.isFocused},textStyle=TextStyle(fontSize=16.sp,color=Ink,lineHeight=24.sp),cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,fontSize=16.sp,color=Faint,maxLines=1);inner()}})
+   IconButton(onClick={haptics(HapticCue.Selection);more()},enabled=!readOnly,modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,if(modelConfigured)"模型与推理 · 已自定义" else "选择模型与推理",Modifier.size(24.dp),tint=if(modelConfigured)EmberDeep else Ink)}
+   BasicTextField(editing,{editing=it;change(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).padding(vertical=10.dp,horizontal=5.dp).onFocusChanged{focused=it.isFocused}.testTag("work-composer").messageSendComposerBounds(motion),readOnly=readOnly,textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(canSend)send()}),onTextLayout={motion?.updateComposerLayout(it,style,backgroundColor=UserBubble)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,style=style.copy(color=Faint),maxLines=1);inner()}})
+   if(text.isNotBlank()&&!readOnly)IconButton(onClick=newline,modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.KeyboardReturn,"插入换行",Modifier.size(19.dp),tint=Muted)}
    val (press,pressMod)=rememberPress(.97f)
    if(canSend)IconButton(onClick={haptics(HapticCue.Commit);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}
    else if(running)IconButton(onClick={haptics(HapticCue.RecordingStop);stop()},enabled=enabled,modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.Stop,"停止当前执行",tint=Color.White,modifier=Modifier.size(20.dp))}
-   else if(voice!=null)IconButton(onClick=voice,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.MicNone,"快速语音 · Pi",Modifier.size(23.dp),tint=Muted)}
+   else if(voice!=null)IconButton(onClick=voice,enabled=!readOnly,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.MicNone,"快速语音 · Pi",Modifier.size(23.dp),tint=Muted)}
   }
  }
 }
 
-@Composable fun ChatPage(vm:WorkbenchModel,menu:()->Unit,new:()->Unit,snapshot:ConversationSnapshot,terminal:Boolean,setTerminal:(Boolean)->Unit,active:Boolean=true){
+@Composable fun ChatPage(vm:WorkbenchModel,menu:()->Unit,new:()->Unit,snapshot:ConversationSnapshot,terminal:Boolean,setTerminal:(Boolean)->Unit,active:Boolean=true,motion:MessageSendMotionState?=null){
  val sid=snapshot.sid;val s=snapshot.detail.optJSONObject("session")?:JSONObject();val caps=s.optJSONObject("capabilities")?:JSONObject()
  var showMenu by remember{mutableStateOf(false)};var options by remember{mutableStateOf(false)};var search by rememberSaveable(sid){mutableStateOf(vm.queryInSession.isNotBlank())};var matchIndex by rememberSaveable(sid){mutableIntStateOf(0)}
- val messages=remember(snapshot.detail,snapshot.live){val merged=linkedMapOf<String,JSONObject>();snapshot.detail.array("messages").forEach{merged[it.optString("id")]=it};snapshot.live.array("items").forEach{merged[it.optString("id")]=it};val seed=merged["accepted-first-message"];if(seed!=null&&merged.values.any{it.optString("id")!="accepted-first-message"&&it.optString("role")=="user"&&it.optString("text")==seed.optString("text")})merged.remove("accepted-first-message");merged.values.toList()}
- val displayRows=remember(messages){transcriptRows(messages.map{it.optString("role")},messages.map{it.optString("id")})}
+ val nativeMessages=remember(snapshot.detail,snapshot.live){val merged=linkedMapOf<String,JSONObject>();snapshot.detail.array("messages").forEach{merged[it.optString("id")]=it};snapshot.live.array("items").forEach{merged[it.optString("id")]=it};val seed=merged["accepted-first-message"];if(seed!=null&&merged.values.any{it.optString("id")!="accepted-first-message"&&it.optString("role")=="user"&&it.optString("text")==seed.optString("text")})merged.remove("accepted-first-message");merged.values.toList()}
+ val outgoing=vm.outgoingMessages.filter{it.scope==sid}
+ val messages=remember(nativeMessages,outgoing){mergeOutgoingMessages(nativeMessages,outgoing)}
+ val displayRows=remember(messages){transcriptRows(messages.map{it.optString("role")},messages.map{messageMotionId(it)})}
  fun rowFor(id:String)=displayRows.indexOfFirst{row->row.indices.any{messages[it].optString("id")==id}}.coerceAtLeast(0)
  val list=rememberLazyListState();val scope=rememberCoroutineScope();val following by remember{derivedStateOf{!list.canScrollForward}}
+ val sendRow=motion?.messageId?.let{id->displayRows.indexOfFirst{row->row.indices.any{messageMotionId(messages[it])==id}}.takeIf{it>=0}}
+ MessageSendListScroll(motion,list,sendRow,active)
+ MessageViewportAnchor(list,sid,active,motion)
  val status=snapshot.live.optString("status",s.optString("status"))
  val sessionFresh=vm.connected&&snapshot.fresh
  val companion=rememberCompanionState(sid,status,sessionFresh&&caps.optBoolean("input"),snapshot.live.array("approvals").isNotEmpty())
@@ -416,9 +487,9 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
  LaunchedEffect(sid,active){if(!active)return@LaunchedEffect;val idx=vm.store.prefs.getInt("scroll:$sid",0);list.scrollToItem(idx.coerceAtMost(displayRows.size))}
  LaunchedEffect(sid,list,active){if(!active)return@LaunchedEffect;snapshotFlow{list.firstVisibleItemIndex}.collect{vm.store.prefs.edit().putInt("scroll:$sid",it).apply()}}
  LaunchedEffect(active,vm.targetMessage,messages.size){if(active&&vm.targetMessage.isNotBlank()){val i=messages.indexOfFirst{it.optString("id")==vm.targetMessage};if(i>=0){list.scrollToItem(rowFor(vm.targetMessage));vm.targetMessage=""}}}
- LaunchedEffect(active,messages.lastOrNull()?.toString()){if(active&&following&&vm.queryInSession.isBlank())list.animateScrollToItem(displayRows.size)}
+ LaunchedEffect(active,messages.lastOrNull()?.toString()){if(active&&following&&vm.queryInSession.isBlank()&&motion?.messageId==null)list.animateScrollToItem(displayRows.size)}
  Column(Modifier.fillMaxSize()){
-  Box(Modifier.fillMaxWidth().height(if(terminal)74.dp else 126.dp).padding(horizontal=16.dp,vertical=8.dp)){
+  Box(Modifier.fillMaxWidth().height(if(terminal)74.dp else 126.dp).padding(horizontal=16.dp,vertical=8.dp).testTag("work-session-header")){
    Box(Modifier.align(Alignment.TopStart)){RoundIcon(Icons.Outlined.ArrowBack,"返回首页",new)}
    Column(Modifier.align(Alignment.TopCenter).widthIn(max=280.dp).fillMaxWidth(.64f),horizontalAlignment=Alignment.CenterHorizontally){
     if(!terminal)CompanionLanding(s.optString("agent","pi"),companion,Modifier.size(68.dp),interactive=false)
@@ -428,18 +499,23 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
     if(!terminal)Text(if(!vm.connected)"离线记录"else if(!caps.optBoolean("input"))"只读历史"else if(sessionFresh)statusLabel(status)else"正在同步",Modifier.padding(top=4.dp),fontSize=10.sp,color=Muted)
    }
    Column(Modifier.align(Alignment.TopEnd),horizontalAlignment=Alignment.CenterHorizontally){
-    RoundIcon(if(terminal)Icons.Outlined.ChatBubbleOutline else Icons.Outlined.DesktopWindows,if(terminal)"返回对话"else"打开终端"){if(terminal||caps.optBoolean("terminal")&&vm.connected)setTerminal(!terminal)}
+    RoundIcon(if(terminal)Icons.Outlined.ChatBubbleOutline else Icons.Outlined.DesktopWindows,if(terminal)"返回对话"else"打开终端"){if(terminal||caps.optBoolean("terminal")&&vm.connected){motion?.cancel();setTerminal(!terminal)}}
     if(!terminal)IconButton(onClick={search=!search},modifier=Modifier.size(36.dp).padding(top=3.dp)){Icon(Icons.Outlined.Search,"查找本会话",Modifier.size(19.dp),tint=Muted)}
    }
   }
   if(search)Row(Modifier.padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){OutlinedTextField(vm.queryInSession,{vm.queryInSession=it;matchIndex=0},Modifier.weight(1f),placeholder={Text("查找内容",fontSize=13.sp)},singleLine=true,shape=RoundedCornerShape(Radii.Xxl));Text("${if(matches.isEmpty())0 else matchIndex+1}/${matches.size}",Modifier.padding(5.dp),fontSize=10.sp,color=Muted);listOf(-1 to Icons.Outlined.KeyboardArrowUp,1 to Icons.Outlined.KeyboardArrowDown).forEach{(delta,icon)->IconButton(enabled=matches.isNotEmpty(),onClick={matchIndex=(matchIndex+delta+matches.size)%matches.size;scope.launch{list.animateScrollToItem(rowFor(matches[matchIndex].optString("id")))}}){Icon(icon,if(delta<0)"上一个命中"else"下一个命中")}}}
   if(terminal&&caps.optBoolean("terminal"))Box(Modifier.weight(1f).fillMaxWidth()){Terminal(vm,sid)}
-  else Box(Modifier.weight(1f).fillMaxWidth()){
-   LazyColumn(state=list,contentPadding=PaddingValues(horizontal=20.dp,vertical=22.dp),verticalArrangement=Arrangement.spacedBy(26.dp)){
+  else Box(Modifier.weight(1f).fillMaxWidth().testTag("work-message-viewport")){
+   LazyColumn(state=list,modifier=Modifier.testTag("work-message-list"),contentPadding=PaddingValues(horizontal=20.dp,vertical=22.dp)){
     items(displayRows,key={it.key}){row->
-     RowAppear(active=row==displayRows.last()){
+     MessageSendRow(motion,row.key,trailingSpacing=26.dp){
       if(row.process)ProcessGroup(row.indices.map{messages[it]},vm.queryInSession,vm.font,status=="running"&&row==displayRows.last())
-      else Message(messages[row.indices.first()],vm.queryInSession,vm.font,s.optString("agent","pi"))
+      else{
+       val message=messages[row.indices.first()]
+       MessageSwipeActions(message,enabled=active&&!message.optBoolean("local"),onReply={vm.workReferences[sid]=messageReference(it,"reply",s.optString("agent","pi").replaceFirstChar{c->c.uppercase()},sid)},onForward={vm.workReferences[sid]=messageReference(it,"forward",s.optString("agent","pi").replaceFirstChar{c->c.uppercase()},sid)}){
+        Message(message,vm.queryInSession,vm.font,s.optString("agent","pi"),motion,active)
+       }
+      }
      }
     }
     item{
@@ -455,7 +531,8 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
    snapshot.live.array("approvals").forEach{Approval(vm,it)}
    if(!vm.connected)Text("连接中断 · 远端任务不会因此停止",Modifier.padding(horizontal=22.dp),fontSize=11.sp,color=Muted)
    if(!caps.optBoolean("input"))Column(Modifier.padding(horizontal=20.dp,vertical=12.dp)){
-    Button(onClick={vm.resume()},enabled=vm.connected&&!vm.busy&&caps.optBoolean("resume"),shape=RoundedCornerShape(Radii.Xxl),modifier=Modifier.fillMaxWidth().height(50.dp)){Text("继续这个会话",fontSize=15.sp,fontWeight=FontWeight.Medium)}
+    Button(onClick={vm.resume()},enabled=vm.connected&&!vm.busy&&caps.optBoolean("resume"),shape=RoundedCornerShape(Radii.Xxl),modifier=Modifier.fillMaxWidth().height(50.dp)){Text(if(caps.optBoolean("restart_for_identity"))"升级并恢复会话"else"继续这个会话",fontSize=15.sp,fontWeight=FontWeight.Medium)}
+    if(caps.optBoolean("restart_for_identity"))Text("重启空闲 Pi 进程，保留对话历史与草稿",Modifier.padding(top=8.dp),fontSize=11.sp,color=Muted)
     if(!caps.optBoolean("resume"))Text("只读历史 · 正在使用或状态未确认",Modifier.padding(top=8.dp),fontSize=11.sp,color=Faint)
    }
   }
@@ -484,7 +561,12 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
  }
 }
 
-@Composable fun Message(m:JSONObject,q:String,font:Float,agent:String="pi"){
+@Composable fun Message(m:JSONObject,q:String,font:Float,agent:String="pi",motion:MessageSendMotionState?=null,measureMotion:Boolean=true){
+ val motionId=messageMotionId(m)
+ val style=TextStyle(fontSize=font.sp,lineHeight=(font+8).sp,color=Ink)
+ val plain=classifyMessageSendTransition(m.optString("text"),1,1)==MessageSendTransitionKind.Morph
+ val bubbleColor=if(m.optString("role")=="user")HermesUserBubble else HermesAssistantBubble
+ val target=if(motion!=null)Modifier.messageSendMotionTarget(motion,motionId).then(if(measureMotion)Modifier.messageSendTargetBounds(motion,motionId)else Modifier).onGloballyPositioned{if(measureMotion&&(!plain||m.optJSONObject("reference")!=null))motion.updateTargetContent(motionId,MessageSendContentKind.RichText)}else Modifier
  val role=m.optString("role");val tool=role in listOf("tool","progress");val body=m.optString("text");var expanded by rememberSaveable(m.optString("id")){mutableStateOf(false)};val context=LocalContext.current
  if(tool){
   Column(Modifier.fillMaxWidth()){
@@ -498,8 +580,10 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
   }
  }else{
   Column(Modifier.fillMaxWidth(),horizontalAlignment=if(role=="user")Alignment.End else Alignment.Start){
-   Surface(Modifier.widthIn(max=680.dp).fillMaxWidth(if(role=="user").88f else .96f),color=UserBubble,shape=RoundedCornerShape(28.dp),shadowElevation=0.dp){
-    if(q.isNotBlank())SelectionContainer{Text(highlight(body,q),Modifier.padding(horizontal=16.dp,vertical=12.dp),fontSize=font.sp,lineHeight=(font+9).sp,color=Ink)}
+   Surface(target.widthIn(max=680.dp).fillMaxWidth(if(role=="user").88f else .96f),color=bubbleColor,shape=RoundedCornerShape(28.dp),shadowElevation=0.dp){
+    Column{
+    m.optJSONObject("reference")?.let{reference->Text("${if(reference.optString("mode")=="forward")"引用"else"回复"} · ${reference.optString("author")}\n${reference.optString("text")}",Modifier.padding(horizontal=16.dp,vertical=10.dp),fontSize=12.sp,lineHeight=17.sp,color=Muted,maxLines=3,overflow=TextOverflow.Ellipsis)}
+    if(q.isNotBlank()||role=="user"&&plain)SelectionContainer{Text(if(q.isNotBlank())highlight(body,q)else androidx.compose.ui.text.AnnotatedString(body),Modifier.padding(horizontal=16.dp,vertical=12.dp).then(if(measureMotion)Modifier.messageSendTargetBounds(motion,motionId,text=true)else Modifier),style=style,onTextLayout={if(measureMotion)motion?.updateTargetLayout(motionId,it,style,bubbleColor,if(m.optJSONObject("reference")!=null)MessageSendContentKind.RichText else MessageSendContentKind.Text)})}
     else AndroidView(factory={c->MarkdownTextView(c).apply{
      setTextColor(android.graphics.Color.rgb(13,13,13));setTextIsSelectable(true)
      val pad=(14*resources.displayMetrics.density).toInt();setPadding(pad,pad,pad,pad)
@@ -510,8 +594,10 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
      if(rendered.font!=font){v.textSize=font;rendered.font=font}
      if(rendered.text!=body){rendered.markwon.setMarkdown(v,body);rendered.text=body}
     })
+    }
    }
-   if(role=="assistant")Row(Modifier.padding(top=4.dp)){
+   if(role=="user")Text(when(m.optString("status",m.optString("delivery_status"))){"sending"->"发送中";"unknown"->"发送结果待核实";"failed"->"发送失败";else->"已发送"},Modifier.messageSendMetadata(motion,motionId).padding(top=4.dp,end=8.dp),fontSize=11.sp,color=Faint)
+   if(role=="assistant")Row(Modifier.messageSendMetadata(motion,motionId).padding(top=4.dp)){
     IconButton(onClick={(context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(ClipData.newPlainText("回复",body))},modifier=Modifier.size(32.dp)){Icon(Icons.Outlined.ContentCopy,"复制回复",Modifier.size(15.dp),tint=Faint)}
     IconButton(onClick={context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,body),"分享回复"))},modifier=Modifier.size(32.dp)){Icon(Icons.Outlined.IosShare,"分享回复",Modifier.size(16.dp),tint=Faint)}
    }

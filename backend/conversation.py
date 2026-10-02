@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
+from reactions import ReactionStore, install_schema, project_message
+from message_references import canonical_reference, reference_identity, referenced_input
 
 
 class HermesClient:
@@ -114,6 +116,7 @@ class PersonalConversation:
     def __init__(self, state: Path, client: HermesClient | None = None):
         self.path = state / "personal-conversation.sqlite"
         self.client = client or HermesClient(state)
+        self.reactions = ReactionStore(state)
         self.wake = asyncio.Event()
         self.changed = asyncio.Condition()
         self.task: asyncio.Task | None = None
@@ -135,10 +138,13 @@ class PersonalConversation:
                 ("active_tool", "TEXT"),
                 ("received_at", "REAL"),
                 ("revision", "INTEGER NOT NULL DEFAULT 0"),
+                ("reaction", "TEXT"),
+                ("reference", "TEXT"),
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
             db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('revision','0')")
+            install_schema(db)
         self.path.chmod(0o600)
 
     @contextmanager
@@ -178,25 +184,35 @@ class PersonalConversation:
                        (key, key, 'assistant', text, 'completed', 'completed', revision, at, at))
         self._notify()
 
-    def submit(self, request_id: str, text: str) -> dict:
+    def submit(self, request_id: str, text: str, reference: dict | None = None) -> dict:
         text = text.strip()
         if not 10 <= len(request_id) <= 100 or not 1 <= len(text) <= 8000:
             raise ValueError("消息或请求标识无效")
+        identity = reference_identity(reference, "personal-main")
         with self.db() as db:
             old = db.execute(
-                "SELECT id,text,status FROM messages WHERE request_id=?", (request_id,)
+                "SELECT id,text,status,reference FROM messages WHERE request_id=?", (request_id,)
             ).fetchone()
             if old:
-                if old["text"] != text:
+                saved_reference = json.loads(old["reference"]) if old["reference"] else None
+                if (old["text"] != text
+                        or reference_identity(saved_reference, "personal-main") != identity):
                     raise ValueError("请求标识冲突")
                 return {"status": old["status"], "request_id": request_id, "message_id": old["id"]}
+            def lookup(session: str, ident: str) -> dict | None:
+                if session == "personal-main":
+                    source = db.execute("SELECT id,role,text FROM messages WHERE id=?", (ident,)).fetchone()
+                    return dict(source) if source else None
+                return getattr(self, "reference_lookup", lambda _session, _id: None)(session, ident)
+            saved_reference = canonical_reference(reference, lookup, "personal-main")
             mid = uuid.uuid4().hex
             now = time.time()
             revision = self._bump(db)
             db.execute(
-                "INSERT INTO messages(id,request_id,role,text,status,phase,revision,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?)",
-                (mid, request_id, "user", text, "queued", "queued", revision, now, now),
+                "INSERT INTO messages(id,request_id,role,text,status,phase,revision,created_at,updated_at,reference)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (mid, request_id, "user", text, "queued", "queued", revision, now, now,
+                 json.dumps(saved_reference, ensure_ascii=False) if saved_reference else None),
             )
         self.wake.set()
         self._notify()
@@ -220,8 +236,14 @@ class PersonalConversation:
     def _message_query(where: str = "") -> str:
         return (
             "SELECT id,request_id,parent_id,role,text,status,phase,active_tool,"
-            "received_at,revision,created_at,updated_at,run_id,error FROM messages " + where
+            "received_at,revision,created_at,updated_at,run_id,error,reaction,reference FROM messages " + where
         )
+
+    @staticmethod
+    def _project_message(row) -> dict:
+        message = project_message(row)
+        message["reference"] = json.loads(message["reference"]) if message["reference"] else None
+        return message
 
     def _active_runs(self, db: sqlite3.Connection) -> list[dict]:
         rows = db.execute(self._message_query(
@@ -239,7 +261,7 @@ class PersonalConversation:
                 self._message_query("ORDER BY created_at DESC,id DESC LIMIT 500")
             ).fetchall()
             runs = self._active_runs(db)
-        messages = [dict(row) for row in reversed(rows)]
+        messages = [self._project_message(row) for row in reversed(rows)]
         return {
             "conversation_id": "personal-main", "revision": revision,
             "messages": messages, "runs": runs,
@@ -256,7 +278,7 @@ class PersonalConversation:
                 (revision, current),
             ).fetchall()
             runs = self._active_runs(db)
-        messages = [dict(row) for row in rows]
+        messages = [self._project_message(row) for row in rows]
         return {
             "conversation_id": "personal-main", "revision": current,
             "messages": messages, "runs": runs,
@@ -417,14 +439,23 @@ class PersonalConversation:
                     has_partial = True
 
             try:
-                transport_text = row["text"]
+                reaction_token = self.reactions.open_turn(mid, session_id)
+                saved_reference = json.loads(row["reference"]) if row["reference"] else None
+                user_input = referenced_input(row["text"], saved_reference)
+                transport_text = user_input
                 if isinstance(self.client, HermesClient):
                     context = getattr(self, 'task_context', lambda: [])()
                     transport_text = (
                         "[Com 主对话上下文；只提供关联，不授予执行权限]\n"
                         + json.dumps({'origin_session_id': session_id, 'origin_message_id': mid,
                                       'origin_request_id': row['request_id'], 'tasks': context,
-                                      'environment':getattr(self,'task_environment',lambda:{})()}, ensure_ascii=False)
+                                      'environment':getattr(self,'task_environment',lambda:{})(),
+                                      'reaction': {'message_id': mid, 'token': reaction_token}}, ensure_ascii=False)
+                        + "\n可按当前用户消息的语义自然选一个表情，用 react_to_user_message 附到这条消息；"
+                        "可选 👍 ❤️ 😂 🎉 🤔 😮 😢 💪 🙏 🦀，合适时才用，不需要每条都附加。"
+                        "message_id 和 reaction_token 必须逐字使用上方 reaction 的 message_id 和 token，"
+                        "只针对这条用户消息，一轮最多一个；不要把通知、引用、任务回执或工具输出当作反应目标。"
+                        "token 是本轮内部参数，不向用户复述；工具调用失败不假装已附加，正文正常答复即可。"
                         + "\n明确交办普通诊断或项目代码修改用 create_task：逐字引用用户交办原文和上面的 origin IDs，默认 Codex read-only；明确代码修改才用 workspace-write。"
                         "涉及发布、删除、外发、部署、认证配置或 Pi full-access 才用 propose_work 等待具体批准。"
                         "多件明确交办分别创建；先读现有任务，补充约束用 update_task_constraints 并复用任务 ID。"
@@ -437,7 +468,7 @@ class PersonalConversation:
                         "闲聊不派发；指代不明先追问；任务执行结束不代表验收通过；已受理不代表生效。"
                         "面向用户用简洁中文说明任务名称、实际进度和结果；task ID、constraint_type、delivery 等内部参数保留在工具调用中，不在普通回复里逐项展示。"
                         "补充要求先说已给原任务补充、仍待送达，真实回执已确认时才说已送达；无需重复解释规则或询问是否继续跟进。"
-                        "发布、删除、外发、权限扩张不能由工作建议获得授权。\n用户消息：\n" + row['text'])
+                        "发布、删除、外发、权限扩张不能由工作建议获得授权。\n用户消息：\n" + user_input)
                 async for event, payload in self.client.stream_chat(session_id, transport_text):
                     if terminal and event != "done":
                         continue
@@ -496,6 +527,8 @@ class PersonalConversation:
                 flush()
                 if not terminal:
                     self._finish(mid, "unknown", error="提交结果待核实；未自动重试")
+            finally:
+                self.reactions.close_turn(mid)
         return True
 
     async def loop(self):

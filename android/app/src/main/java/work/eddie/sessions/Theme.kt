@@ -52,6 +52,7 @@ val Ink=Color(0xFF141414);val Paper=Color(0xFFFAFAF8);val SidebarBg=Color(0xFFF5
 val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF686868);val Faint=Color(0xFF909090)
 val Line=Color(0xFFEAEAEA);val Track=Color(0xFFEDEDED);val ChipBg=Color(0xFFF1F1F1)
 val UserBubble=Color(0xFFECECEC);val ToolSurface=Color(0xFFF3F3F3)
+val HermesUserBubble=Color(0xFFE3EEE7);val HermesAssistantBubble=Color(0xFFF0F0ED)
 val Accent=Ink;val AccentSoft=Color(0xFFEDEDED);val AccentInk=Ink
 val CompanionCoral=Color(0xFFC57665);val CompanionBlue=Color(0xFF5F8794)
 val CompanionGlow=Color(0xFFE2EFF0);val CompanionBlush=Color(0xFFF8EAE3)
