@@ -70,6 +70,7 @@ fun relTime(ts:Double):String{
  var selectedAgent by rememberSaveable{mutableStateOf(vm.store.prefs.getString("lastAgent","pi")?:"pi")}
  var history by rememberSaveable{mutableStateOf(false)}
  var more by rememberSaveable{mutableStateOf(false)}
+ var permissions by rememberSaveable{mutableStateOf(false)}
  val navigate:(String)->Unit={target->page=target;more=false;history=false}
  LaunchedEffect(quick){if(quick.isNotBlank()){selectedAgent=quick;page="work";clearQuick()}}
  LaunchedEffect(workLaunch){if(workLaunch>0)page="work"}
@@ -119,23 +120,29 @@ fun relTime(ts:Double):String{
  if(more)ModalBottomSheet(onDismissRequest={more=false},containerColor=Paper){
   Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=32.dp),verticalArrangement=Arrangement.spacedBy(6.dp)){
    Text("Com!",Modifier.padding(bottom=12.dp),fontSize=24.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-   listOf("calendar" to "日历","finance" to "账本","settings" to "设置").forEach{(target,label)->
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable{more=false;if(target=="settings")settings=true else navigate(target)}.padding(horizontal=16.dp,vertical=18.dp),verticalAlignment=Alignment.CenterVertically){
-     ComPrimaryIcon(target,null,24.dp,Muted)
+   listOf("calendar" to "日历","finance" to "账本","permissions" to "权限与上下文","settings" to "设置").forEach{(target,label)->
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable{more=false;when(target){"settings"->settings=true;"permissions"->permissions=true;else->navigate(target)}}.padding(horizontal=16.dp,vertical=18.dp),verticalAlignment=Alignment.CenterVertically){
+     if(target=="permissions")Icon(Icons.Outlined.AdminPanelSettings,null,Modifier.size(24.dp),tint=Muted)
+     else ComPrimaryIcon(target,null,24.dp,Muted)
      Text(label,Modifier.weight(1f).padding(start=18.dp),fontSize=17.sp,color=Ink)
      Icon(Icons.Outlined.ChevronRight,null,Modifier.size(20.dp),tint=Faint)
     }
    }
   }
  }
- if(settings)Settings(vm){settings=false}
+ if(permissions)ModalBottomSheet(onDismissRequest={permissions=false},containerColor=Paper,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)){
+  Box(Modifier.fillMaxWidth().fillMaxHeight(.88f)){PermissionsSheetContent()}
+ }
+ if(settings)ModalBottomSheet(onDismissRequest={settings=false},containerColor=Paper,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)){
+  Box(Modifier.fillMaxWidth().fillMaxHeight(.92f)){SettingsSheet(vm){settings=false}}
+ }
  if(advanced)NewSession(vm,selectedAgent){advanced=false}
  if(vm.error.isNotBlank())AlertDialog(onDismissRequest={vm.error=""},containerColor=Card,title={Text("操作提示",fontWeight=FontWeight.SemiBold)},text={SelectionContainer{Text(vm.error)}},confirmButton={TextButton(onClick={vm.error=""}){Text("知道了")}})
 }
 
 @Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,activity:()->Unit,more:()->Unit){
- Box(Modifier.fillMaxWidth().height(84.dp).background(Paper).padding(horizontal=12.dp),contentAlignment=Alignment.Center){
-  Row(Modifier.widthIn(max=640.dp).fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+ FrostedBar(Modifier.fillMaxWidth()){
+  Row(Modifier.widthIn(max=640.dp).fillMaxWidth().height(84.dp).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){
    listOf("hermes" to "对话","sources" to "今天","activity" to "活动","work" to "工作","settings" to "更多").forEach{(target,label)->
     val selected=page==target||target=="sources"&&page in listOf("calendar","finance")
     Column(Modifier.weight(1f).height(68.dp).clip(Radii.Pill)

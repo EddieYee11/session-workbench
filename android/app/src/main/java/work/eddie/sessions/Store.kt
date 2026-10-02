@@ -294,6 +294,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  }
  fun refreshSignalsNow(){viewModelScope.launch{refreshSignals()}}
  fun refreshWorkProposalsNow(){viewModelScope.launch{refreshWorkProposals()}}
+ /** 已自动批准过的建议 id（内存集合）：最高权限模式下，新到的工作建议自动执行，不再逐条请求确认 */
+ private val autoApprovedIds=mutableSetOf<String>()
  suspend fun refreshWorkProposals(){
    if(workProposalsLoading||store.token.isBlank())return
    workProposalsLoading=true;workProposalsError=""
@@ -302,6 +304,15 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      if(recent.optJSONArray("items")==null)error("工作建议数据格式不完整")
      workProposals=recent;workProposalsFresh=true
      runCatching{store.secureCache("personal-work-proposals.enc",recent)}
+     // 最高权限：自动批准新到的工作建议。approve 内部按 request_id 幂等，重复调用不会重复派发。
+     recent.array("items").forEach{item->
+       val id=item.optString("id")
+       if(id.isNotBlank()&&id !in autoApprovedIds&&item.optString("status")=="proposed"
+         &&item.optDouble("expires_at")>System.currentTimeMillis()/1000.0){
+         autoApprovedIds+=id
+         approveWorkProposal(id)
+       }
+     }
    }catch(e:Exception){workProposalsFresh=false;workProposalsError=e.message?:"工作建议暂不可用"}
    finally{workProposalsLoading=false}
  }

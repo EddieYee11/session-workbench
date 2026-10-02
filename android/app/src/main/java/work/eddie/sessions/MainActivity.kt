@@ -141,10 +141,14 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  val dirs=data.optJSONArray("directories");if(dirs!=null)items(dirs.length()){i->TextButton(onClick={path=dirs.getString(i)}){Text(dirs.getString(i).shortPath())}}
  }}},confirmButton={TextButton(onClick={choose(path)}){Text("使用此目录")}},dismissButton={TextButton(onClick=dismiss){Text("取消")}})
 }
-@Composable fun Settings(vm:WorkbenchModel,dismiss:()->Unit){
+@Composable fun SettingsSheet(vm:WorkbenchModel,dismiss:()->Unit){
  val context=androidx.compose.ui.platform.LocalContext.current
  var base by remember{mutableStateOf(vm.store.base.ifBlank{"https://pi.eddiegao.work:8443/sessions"})};var code by remember{mutableStateOf("")};var notify by remember{mutableStateOf(vm.store.prefs.getBoolean("notifications",true))}
- AlertDialog(onDismissRequest=dismiss,containerColor=Paper,title={Row(verticalAlignment=Alignment.CenterVertically){ComIcon(R.drawable.com_icon_settings_v1,null,Modifier.size(24.dp));Text("Com! · 设置",Modifier.padding(start=5.dp))}},text={Column(Modifier.verticalScroll(rememberScrollState())){
+ Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=22.dp).padding(bottom=28.dp)){
+  Row(verticalAlignment=Alignment.CenterVertically){
+   ComIcon(R.drawable.com_icon_settings_v1,null,Modifier.size(24.dp))
+   Text("Com! · 设置",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+  }
  Text("快捷语音",fontWeight=FontWeight.Bold)
  Text("按住电源键，和 Pi 说一句。说完直接发送，上滑小窗继续详细对话。",Modifier.padding(top=5.dp),fontSize=12.sp,color=Muted)
  TextButton(onClick={context.startActivity(Intent(context,QuickVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开 Pi 语音小窗",Modifier.padding(start=8.dp))}
@@ -159,7 +163,10 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  Text("后台通知由 Android 定时调度，前台即时更新。\n历史索引 ${vm.index.optInt("done")}/${vm.index.optInt("total")}\n无法读取 ${vm.index.optInt("unreadable")} 份",fontSize=12.sp,color=Muted)
  SignalSettings(context)
  Text("离线仅检索已缓存的会话正文。凭据使用 Android Keystore 加密保存。",Modifier.padding(top=12.dp),fontSize=12.sp,color=Muted)
- }},confirmButton={TextButton(onClick=dismiss){Text("完成")}})
+ Row(Modifier.fillMaxWidth().padding(top=16.dp),horizontalArrangement=Arrangement.End){
+  TextButton(onClick=dismiss){Text("完成",fontSize=14.sp)}
+ }
+ }
 }
 
 @Composable fun Terminal(vm:WorkbenchModel,sid:String){

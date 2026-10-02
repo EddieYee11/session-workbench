@@ -47,7 +47,8 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
 // 中性表面承载内容，角色本身和少量状态色承担个性。
-val Ink=Color(0xFF141414);val Paper=Color(0xFFFFFFFF);val SidebarBg=Color(0xFFF5F5F5)
+// 暖白底（向 Muse 的视觉语言对齐：画布 90% 中性，点缀色只出现在可交互处）
+val Ink=Color(0xFF141414);val Paper=Color(0xFFFAFAF8);val SidebarBg=Color(0xFFF5F5F5)
 val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF686868);val Faint=Color(0xFF909090)
 val Line=Color(0xFFEAEAEA);val Track=Color(0xFFEDEDED);val ChipBg=Color(0xFFF1F1F1)
 val UserBubble=Color(0xFFECECEC);val ToolSurface=Color(0xFFF3F3F3)
@@ -100,6 +101,14 @@ fun Modifier.softShadow(elevation:Dp,shape:Shape=RoundedCornerShape(Radii.Xl),sp
 // 保留入口名称，页面背景改为稳定的单层表面。
 @Composable fun WashBackground(modifier:Modifier=Modifier,content:@Composable ()->Unit){
  Box(modifier.background(Paper)){content()}
+}
+
+// 毛玻璃底栏：半透明暖白 + 顶部细线；不用实时高斯模糊以保性能
+@Composable fun FrostedBar(modifier:Modifier=Modifier,content:@Composable ()->Unit){
+ Column(modifier.background(Paper.copy(alpha=.88f))){
+  Box(Modifier.fillMaxWidth().height(.5.dp).background(Line))
+  content()
+ }
 }
 
 // 统一卡片：白底和轻描边，无装饰性投影。

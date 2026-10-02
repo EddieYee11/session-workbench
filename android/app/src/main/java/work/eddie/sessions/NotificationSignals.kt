@@ -110,6 +110,9 @@ object SignalConfig{
  fun scope(context:Context)=prefs(context).getString("scope","messages")?:"messages"
  fun setScope(context:Context,value:String){require(value in setOf("messages","all"));prefs(context).edit().putString("scope",value).apply()}
  fun reminders(context:Context)=prefs(context).getBoolean("important_reminders",true)
+ /** 主动强度：quiet 安静 / standard 标准 / active 积极 */
+ fun intensity(context:Context)=prefs(context).getString("intensity","standard")?:"standard"
+ fun setIntensity(context:Context,value:String){require(value in setOf("quiet","standard","active"));prefs(context).edit().putString("intensity",value).apply()}
  fun setReminders(context:Context,value:Boolean){
   prefs(context).edit().putBoolean("important_reminders",value).apply()
   if(!value)context.getSystemService(NotificationManager::class.java).cancel(91314)

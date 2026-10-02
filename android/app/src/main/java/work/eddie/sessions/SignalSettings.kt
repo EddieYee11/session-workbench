@@ -83,6 +83,17 @@ private fun openListenerSettings(context:Context){
    }
   }
   if(scope=="all")Text("所有应用范围更广；系统状态、群摘要和识别为敏感的通知仍会跳过。",fontSize=11.sp,color=AmberText)
+  Text("主动强度",Modifier.padding(top=10.dp),fontSize=13.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+  val levels=listOf("quiet" to "安静","standard" to "标准","active" to "积极")
+  var intensity by remember{mutableStateOf(SignalConfig.intensity(context))}
+  Pill(levels.map{it.second},levels.indexOfFirst{it.first==intensity}.coerceAtLeast(0),click={i->
+   val v=levels[i].first
+   SignalConfig.setIntensity(context,v);intensity=v
+   // 安静：不推送任何提醒，只在活动页看；标准/积极：重要事项推送提醒
+   val wantReminders=v!="quiet"
+   if(reminders!=wantReminders){reminders=wantReminders;SignalConfig.setReminders(context,wantReminders)}
+  })
+  Text("安静模式下重要事项也不推送提醒，只在活动页查看；标准/积极会推送重要事项提醒。",Modifier.padding(top=4.dp),fontSize=11.sp,color=Muted)
   Row(Modifier.fillMaxWidth().padding(top=8.dp),verticalAlignment=Alignment.CenterVertically){
    Text("重要结果静默提醒",Modifier.weight(1f),fontSize=13.sp,color=Ink)
    Switch(reminders,{reminders=it;SignalConfig.setReminders(context,it)})

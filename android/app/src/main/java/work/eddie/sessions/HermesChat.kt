@@ -8,6 +8,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -54,7 +55,7 @@ fun hermesMessageStatus(status:String):String=when(status){
  "completed"->"已完成"
  "failed"->"处理失败"
  "unknown"->"结果待核实 · 不会自动重发"
- "approval_required"->"等待你审批"
+ "approval_required"->"已自动继续"
  else->""
 }
 
@@ -105,6 +106,7 @@ private fun hermesToolLabel(name:String):String=when{
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun HermesChat(vm:WorkbenchModel,menu:()->Unit,showMenu:Boolean){
  DisposableEffect(Unit){onDispose{vm.finishHermesVoice(false)}}
+ val haptics=rememberComHaptics()
  val data=vm.hermes
  val messages=data.array("messages")
  val runs=data.array("runs")
@@ -114,8 +116,8 @@ private fun hermesToolLabel(name:String):String=when{
  LaunchedEffect(activity){if(activity){vm.refreshSignalsNow();vm.refreshWorkProposalsNow()}}
  val hasConversation=data.optString("conversation_id").isNotBlank()
  val canSend=vm.hermesFresh&&!vm.hermesSending&&vm.store.token.isNotEmpty()
- val proposals=vm.workProposals.array("items").filter{it.optString("status")=="proposed"&&it.optDouble("expires_at")>System.currentTimeMillis()/1000.0}
- val needsAttention=proposals.isNotEmpty()||runs.any{it.optString("status") in setOf("waiting","approval_required","unknown")}
+ val proposals=vm.workProposals.array("items").filter{it.optString("status") !in setOf("rejected","expired")}.take(2)
+ val needsAttention=runs.any{it.optString("status") in setOf("waiting","unknown")}
  LaunchedEffect(messages.size,messages.lastOrNull()?.optString("id"),messages.lastOrNull()?.optString("text"),messages.lastOrNull()?.optString("phase")){
   val lastVisible=list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?:0
   if(messages.size>4&&lastVisible>=messages.size-1)list.scrollToItem(messages.size+1)
@@ -128,7 +130,7 @@ private fun hermesToolLabel(name:String):String=when{
    if(showMenu)Surface(onClick=menu,modifier=Modifier.align(Alignment.CenterStart).size(44.dp),shape=CircleShape,color=Card,border=BorderStroke(1.dp,Line)){
     ComIcon(R.drawable.com_icon_menu_v1,"打开导航",Modifier.padding(11.dp))
    }else Text("Com!",Modifier.align(Alignment.CenterStart),fontSize=17.sp,fontWeight=FontWeight.Bold,color=Ink)
-   Column(Modifier.align(Alignment.Center),horizontalAlignment=Alignment.CenterHorizontally){
+   Column(Modifier.align(Alignment.Center).clickable{activity=true},horizontalAlignment=Alignment.CenterHorizontally){
     Image(painterResource(R.drawable.hermes_companion_v1),"Hermes",Modifier.size(76.dp),contentScale=ContentScale.Fit)
     Text("Hermes",fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     Text(if(vm.hermesFresh)hermesActivityStatus(runs,messages) else if(vm.hermesLoading)"连接中" else "离线记录",fontSize=10.sp,color=if(vm.hermesFresh)Muted else AmberText,maxLines=1)
@@ -146,7 +148,7 @@ private fun hermesToolLabel(name:String):String=when{
    LazyColumn(state=list,modifier=Modifier.fillMaxSize(),contentPadding=PaddingValues(start=inset,end=inset,top=15.dp,bottom=18.dp),verticalArrangement=Arrangement.spacedBy(22.dp),horizontalAlignment=Alignment.CenterHorizontally){
     item(key="intro"){
      Column(Modifier.widthIn(max=790.dp).fillMaxWidth()){
-      if(messages.isEmpty())HermesHero(wideHero)
+      if(messages.isEmpty())HermesHero(wideHero){vm.updateHermesDraft(it)}
       if(vm.hermesError.isNotBlank()&&!vm.hermesFresh)Text("连接提示：${vm.hermesError}",Modifier.padding(top=8.dp),fontSize=12.sp,color=AmberText)
       if(hasConversation&&!vm.hermesFresh)Text("以下是上次保存的对话。联网并同步后才能继续发送。",fontSize=12.sp,color=AmberText)
      }
@@ -224,7 +226,7 @@ private fun hermesToolLabel(name:String):String=when{
  val body=when{
   status=="unknown"->"结果待核实，Com! 不会自动重发这条消息。"
   status=="failed"->message.optString("error").ifBlank{"这次处理失败，请查看活动记录。"}
-  status=="waiting"||status=="approval_required"->"需要你在活动中查看下一步。"
+  status=="waiting"->"需要你在活动中查看下一步。"
   !fresh->"上次同步时：${if(tool.isNotBlank())hermesToolLabel(tool) else label}"
   tool.isNotBlank()->hermesToolLabel(tool)
   phase=="responding"->"正在把回复写进这段对话"
@@ -243,14 +245,20 @@ private fun hermesToolLabel(name:String):String=when{
 }
 
 @Composable private fun HermesProposalCard(proposal:JSONObject,openActivity:()->Unit){
- Surface(onClick=openActivity,modifier=Modifier.fillMaxWidth().padding(top=12.dp),shape=RoundedCornerShape(Radii.Xl),color=Card,border=BorderStroke(1.dp,AmberLine)){
+ val statusText=when(proposal.optString("status")){
+  "proposed"->"已自动接单"
+  "dispatching"->"正在派发"
+  "accepted"->"已启动"
+  else->"动态"
+ }
+ Surface(onClick=openActivity,modifier=Modifier.fillMaxWidth().padding(top=12.dp),shape=RoundedCornerShape(Radii.Xl),color=Card,border=BorderStroke(1.dp,Line)){
   Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically){
    ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(24.dp))
    Column(Modifier.weight(1f).padding(horizontal=8.dp)){
-    Text("待你审阅 · ${proposal.optString("agent").uppercase(Locale.ROOT)} 工作建议",fontSize=11.sp,fontWeight=FontWeight.SemiBold,color=AmberText)
-    Text(proposal.optString("title").ifBlank{"工作建议"},Modifier.padding(top=3.dp),fontSize=14.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
+    Text("$statusText · ${proposal.optString("agent").uppercase(Locale.ROOT)} 工作动态",fontSize=11.sp,fontWeight=FontWeight.SemiBold,color=Muted)
+    Text(proposal.optString("title").ifBlank{"工作动态"},Modifier.padding(top=3.dp),fontSize=14.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
    }
-   ComIcon(R.drawable.com_icon_chevron_v1,"打开审阅",Modifier.size(24.dp))
+   ComIcon(R.drawable.com_icon_chevron_v1,"查看详情",Modifier.size(24.dp))
   }
  }
 }
@@ -260,6 +268,7 @@ private fun hermesToolLabel(name:String):String=when{
  val pending=vm.hermesPending.optString("text")
  val voice=vm.hermesVoicePhase
  val context=LocalContext.current
+ val haptics=rememberComHaptics()
  val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){granted->
   if(granted)vm.beginHermesVoice()else vm.hermesVoicePermissionDenied()
  }
@@ -289,7 +298,7 @@ private fun hermesToolLabel(name:String):String=when{
      else if(voice=="recording")Icon(Icons.Outlined.Stop,"结束录音并发送给 Hermes",Modifier.size(22.dp),tint=Color.White)
      else ComIcon(R.drawable.com_icon_mic_v1,"录音发送给 Hermes",Modifier.size(24.dp),tint=Muted)
     }
-   }else IconButton(onClick={vm.sendHermes()},enabled=enabled,modifier=Modifier.size(43.dp).background(if(enabled)Ink else ChipBg,CircleShape)){
+   }else IconButton(onClick={haptics(HapticCue.Commit);vm.sendHermes()},enabled=enabled,modifier=Modifier.size(43.dp).background(if(enabled)Ink else ChipBg,CircleShape)){
     if(vm.hermesSending)CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp,color=Muted)
     else ComIcon(R.drawable.com_icon_send_v1,"发送给 Hermes",Modifier.size(22.dp),alpha=if(enabled)1f else .45f,tint=if(enabled)Color.White else Muted)
    }
