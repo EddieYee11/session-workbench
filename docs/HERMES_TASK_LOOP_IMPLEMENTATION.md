@@ -36,11 +36,39 @@ Isolated Python 3.12 venv, temporary databases and fake workers only:
 - Existing regression suite alone (exclude new task test modules and new approval safety case): **34 passed**, one deselected. The earlier 37 result was the FULL suite at that point (34 existing + 3 new), not a selected subset.
 - Current additions: 18 test cases covering A/B/updateA/idle conversation fixed tool decisions; parent linkage; authorization blocking; native turn/scope; MCP safe automatic restrictions; queue acknowledgement versus delivery; unsupported transport; rejection/timeout; repeated command; restart before/after claim; scoped completion/final text; cancel pending versus stopped; idempotent crash outbox receipts.
 - `python -m compileall -q backend`, `git diff --check`: passed.
-- New Kotlin unit status test and Android instrumented parent-link test are provided but **not executed**.
+- Android final command: `testDebugUnitTest assembleDebug assembleDebugAndroidTest lintDebug` — **BUILD SUCCESSFUL**.
+- Android active JVM unit suite: **19 passed**, zero failures/errors/skips (18 existing active cases + new ledger status case). Six obsolete `VoiceSheetGestureTest` cases were removed: baseline commit `c370e52` replaced the expanding voice sheet with a floating expense window and deleted both tested helpers, while leaving their tests behind. Dead production helpers were not reintroduced merely to satisfy obsolete tests.
+- Main Kotlin and instrumented-test Kotlin compile; both main and AndroidTest APKs generated. Instrumented tests **compiled, not executed**.
+- Android Lint: **0 errors, 13 warnings**. Actual build discovery also fixed the baseline PhonePermissions location checks with an explicit permission guard and SecurityException handling, plus API-30 guard for notification detail settings. No permissions added; Manifest remains identical to the baseline.
+- APK signature verification passed (v2), one signer.
 
-`./gradlew testDebugUnitTest assembleDebug` was attempted twice and fails before Gradle because no Java Runtime is available. Read-only search checked standard Android Studio/JBR locations in /Applications and user Applications, JAVA_HOME/ANDROID_HOME/ANDROID_SDK_ROOT, system/user JavaVirtualMachines, Homebrew/local JDK/Caskroom locations, SDKMAN/asdf/mise candidates, local tool directories and the project local.properties. System JavaVirtualMachines is empty; no Studio/JBR/JDK/adb was found. The production local.properties points to `/opt/homebrew/share/android-commandlinetools`, which does not exist. `~/Library/Android/sdk` is also absent. No global setup or tool installation was performed.
+### Authorized local toolchain setup
 
-Thus Android compilation, existing JVM tests, instrumented tests, narrow/expanded rendering, offline/reconnect/repeated-click/back-navigation and physical-device regression are still unverified. Static review/diff checks are not compilation.
+After explicit user authorization, installed into the task workspace, with per-command environment variables only:
+
+- Eclipse Temurin JDK **17.0.20.1**, official Adoptium release/API; SHA-256 verified.
+- Google Mac ARM command-line tools **22.0**; official SHA-256 verified.
+- Android Platform **35** (revision 2), Build Tools **35.0.0**, Platform Tools **37.0.1**. Build Tools is pinned to 35.0.0 to stay within the approved component scope.
+- Gradle **8.11.1**, repository-fixed official distribution.
+
+Explicitly accepted **Android Software Development Kit License Agreement**, SDK package license ID `android-sdk-license`, for these components only. Official agreement/download page: https://developer.android.com/studio#command-tools . The sdkmanager component prompt displayed the January 16, 2019 package text under that license ID; the approved official download page displays the current agreement. Only the single required SDK license prompt was accepted; no blanket `yes sdkmanager --licenses`, emulator images or unrelated agreements.
+
+Initial Java Maven TLS connections intermittently failed. Official Google/Maven Central artifacts were downloaded with curl and checked against official published checksums; a task-local initialization script exclusively routes two affected dependency versions (`androidx.test:runner:1.6.2`, `org.jetbrains.kotlin:kotlin-reflect:1.6.10`) to those verified local files. All other dependencies retain the repository's configured official sources. TLS/certificate validation and system safety settings were not relaxed. Final build uses this temporary local workaround; it is not committed as a repository mirror configuration.
+
+Local evidence under `/Users/eddiegao/Documents/Codex/2026-10-02/task-2/`:
+
+- `toolchains/build_android.sh`: per-command environment wrapper.
+- `toolchains/android-build-final.log`: successful full Android build.
+- `toolchains/backend-test.log`: 52 backend tests passed.
+- `deliverables/verification.json`: exact JVM counts, lint counts, APK hashes and unexecuted-device flags.
+- `repo/android/app/build/reports/lint-results-debug.html` and `repo/android/app/build/reports/tests/testDebugUnitTest/index.html`: generated reports.
+
+APK deliverables (local only):
+
+- `deliverables/com-hermes-task-loop-debug.apk` (69,671,769 bytes), SHA-256 `3a6ed51a6bbd371ae7a6fab81e5f4972ee137b591e9559ed1204634b32b338d1`.
+- `deliverables/com-hermes-task-loop-androidTest.apk` (2,323,823 bytes), SHA-256 `ff385512b08400c036ff09aa93adcabbf196442d54846d9c8c58f2b2fc9eefc1`.
+
+No APK was installed on a phone. No emulator image was approved or installed. Thus actual narrow/expanded rendering, instrumented parent-link/navigation tests, offline/reconnect/repeated-click/back-navigation and physical-device regression remain unverified; compilation and Lint are not visual acceptance.
 
 ## Explicit remaining boundaries
 
@@ -53,6 +81,6 @@ Thus Android compilation, existing JVM tests, instrumented tests, narrow/expande
 
 ## Minimal next steps requiring separate setup/production authorization
 
-1. Make an existing approved JDK and Android SDK available, or authorize their installation; use per-command JAVA_HOME/SDK paths, compile and execute JVM/device tests at narrow and expanded widths.
+1. Toolchain, APK compilation, JVM tests and Lint are complete. Separately authorize an emulator image or test-device installation to execute instrumented UI tests and verify narrow/expanded widths, offline/reconnect/back behavior.
 2. In a nonproduction instance, authorize scoped native worker/model adapter tests; verify real Codex response/event versions and Pi cancellation/settlement. If desired, separately implement Pi RPC transport for new task sessions.
 3. Review local commits and permission boundaries; separately authorize push/PR/deploy and APK installation. No such action has happened.

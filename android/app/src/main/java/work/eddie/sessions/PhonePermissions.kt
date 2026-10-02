@@ -59,8 +59,9 @@ object PhoneContext{
 
  /** 主动刷新一次位置（需要已授权）；成功返回 true */
  fun refreshLocation(context:Context):Boolean{
-  if(!locationGranted(context))return false
-  return runCatching{
+  if(context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED
+   &&context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)!=PackageManager.PERMISSION_GRANTED)return false
+  return try{
    val lm=context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
    val loc=lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
     ?:lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
@@ -69,7 +70,8 @@ object PhoneContext{
    prefs(context).edit().putFloat("last_lat",loc.latitude.toFloat()).putFloat("last_lng",loc.longitude.toFloat())
     .putLong("last_loc_at",System.currentTimeMillis()).apply()
    true
-  }.getOrDefault(false)
+  }catch(_:SecurityException){false} // Permission can be revoked after the check.
+   catch(_:RuntimeException){false}
  }
 
  /** 通讯录联系人总数（用于展示“已可用”） */
@@ -105,9 +107,11 @@ object PhoneContext{
 }
 
 private fun openListenerSettings(context:Context){
- val detail=Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
-  .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,ComponentName(context,PersonalNotificationListener::class.java).flattenToString())
- if(runCatching{context.startActivity(detail)}.isSuccess)return
+ if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.R){
+  val detail=Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+   .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,ComponentName(context,PersonalNotificationListener::class.java).flattenToString())
+  if(runCatching{context.startActivity(detail)}.isSuccess)return
+ }
  runCatching{context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))}
 }
 

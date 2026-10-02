@@ -2,6 +2,7 @@ plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android'; id 'o
 android {
  namespace 'work.eddie.sessions'
  compileSdk 35
+ buildToolsVersion "35.0.0"
  defaultConfig { applicationId 'work.eddie.sessions'; minSdk 28; targetSdk 35; versionCode 10; versionName '1.4.1'; testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner' }
  buildFeatures { buildConfig true; compose true }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
