@@ -25,12 +25,12 @@ import org.json.JSONObject
  * 聊天内联的 Agent 工作过程卡：任务清单 + 实时动态流。
  *
  * 数据契约（与后端消息协议对齐）：
- * - message.optJSONArray("tasks")：[{id,title,status}]，status ∈ pending|running|done。
+ * - message.optJSONArray("tasks")：[{id,title,status}]，status ∈ pending|running|done|failed。
  *   后端暂未下发该字段时，任务区直接隐藏——绝不编造进度。
  * - 动态流由客户端根据 phase / active_tool 的变化逐行追加（按 message id 隔离记忆）。
  */
 
-/** pending 待做 | running 进行中 | done 已完成 */
+/** pending 待做 | running 进行中 | done 已完成 | failed 失败 */
 data class AgentWorkTask(val id:String,val title:String,val status:String)
 
 data class AgentWorkEvent(val kind:String,val text:String)
@@ -89,6 +89,7 @@ fun agentWorkEventFor(phase:String,tool:String):AgentWorkEvent?=when{
   when(task.status){
    "done"->Icon(Icons.Outlined.CheckCircle,"已完成",Modifier.size(20.dp),tint=Success)
    "running"->Icon(Icons.Outlined.RadioButtonChecked,"进行中",Modifier.size(20.dp),tint=Ink)
+   "failed"->Icon(Icons.Outlined.Close,"失败",Modifier.size(20.dp),tint=Danger)
    else->Icon(Icons.Outlined.RadioButtonUnchecked,"待做",Modifier.size(20.dp),tint=Faint)
   }
   Text("${index+1}.",Modifier.padding(start=8.dp),fontSize=Type.BodySm,color=Faint,fontWeight=FontWeight.Medium)

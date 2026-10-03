@@ -141,6 +141,7 @@ class PersonalConversation:
                 ("revision", "INTEGER NOT NULL DEFAULT 0"),
                 ("reaction", "TEXT"),
                 ("reference", "TEXT"),
+                ("tasks", "TEXT"),
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
@@ -238,7 +239,7 @@ class PersonalConversation:
     @staticmethod
     def _message_query(where: str = "") -> str:
         return (
-            "SELECT id,request_id,parent_id,role,text,status,phase,active_tool,"
+            "SELECT id,request_id,parent_id,role,text,status,phase,active_tool,tasks,"
             "received_at,revision,created_at,updated_at,run_id,error,reaction,reference FROM messages " + where
         )
 
@@ -246,6 +247,7 @@ class PersonalConversation:
     def _project_message(row) -> dict:
         message = project_message(row)
         message["reference"] = json.loads(message["reference"]) if message["reference"] else None
+        message["tasks"] = json.loads(message["tasks"]) if message["tasks"] else []
         return message
 
     def _active_runs(self, db: sqlite3.Connection) -> list[dict]:
@@ -338,6 +340,57 @@ class PersonalConversation:
             )
         self._notify()
 
+    @staticmethod
+    def _tool_task_title(name: str | None) -> str:
+        """工具调用转任务标题；与客户端 AgentWorkCard 的文案保持一致。"""
+        if not name:
+            return "调用工具"
+        if name.endswith("personal_overview"):
+            return "正在读取日历与账本概览"
+        if name.endswith("recent_work_sessions"):
+            return "正在核对工作会话"
+        if name.endswith("propose_work"):
+            return "正在准备工作建议"
+        if name.endswith("work_proposal_status"):
+            return "正在核对工作建议"
+        return f"正在使用 {name[:46]}"
+
+    def _record_tasks(self, mid: str, tasks: list) -> None:
+        """持久化某条用户消息的工作任务清单并通知订阅者。"""
+        with self.db() as db:
+            revision = self._bump(db)
+            db.execute(
+                "UPDATE messages SET tasks=?,revision=?,updated_at=? WHERE id=?",
+                (json.dumps(tasks, ensure_ascii=False), revision, time.time(), mid),
+            )
+        self._notify()
+
+    @staticmethod
+    def _finish_running_tasks(tasks: list, status: str) -> None:
+        for task in tasks:
+            if task.get("status") == "running":
+                task["status"] = status
+
+    def _finalize_tasks(self, db: sqlite3.Connection, mid: str) -> None:
+        """消息正常完成时，把还停留在 running 的任务收尾为 done。"""
+        row = db.execute("SELECT tasks FROM messages WHERE id=?", (mid,)).fetchone()
+        if not row or not row["tasks"]:
+            return
+        try:
+            tasks = json.loads(row["tasks"])
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(tasks, list):
+            return
+        changed = False
+        for task in tasks:
+            if isinstance(task, dict) and task.get("status") == "running":
+                task["status"] = "done"
+                changed = True
+        if changed:
+            db.execute("UPDATE messages SET tasks=? WHERE id=?",
+                       (json.dumps(tasks, ensure_ascii=False), mid))
+
     def _assistant(
         self, mid: str, text: str, *, append: bool = False,
         status: str = "streaming", phase: str = "responding",
@@ -415,6 +468,8 @@ class PersonalConversation:
                 " WHERE id=?",
                 (status, status, error, revision, now, mid),
             )
+            if status == "completed":
+                self._finalize_tasks(db, mid)
             db.execute("UPDATE user_events SET state=? WHERE message_id=?",(status,mid))
             if existing:
                 db.execute(
@@ -452,6 +507,8 @@ class PersonalConversation:
             completed = False
             terminal = False
             final_text = ""
+            work_tasks: list = []
+            tool_seq = 0
 
             def flush() -> None:
                 nonlocal pending, last_flush, has_partial
@@ -522,6 +579,8 @@ class PersonalConversation:
                             mid, "running", run_id if isinstance(run_id, str) else None,
                             phase="thinking", received=True,
                         )
+                        work_tasks = [{"id": "think", "title": "分析用户请求", "status": "running"}]
+                        self._record_tasks(mid, work_tasks)
                     elif event == "tool.started":
                         flush()
                         name = payload.get("tool_name")
@@ -530,8 +589,19 @@ class PersonalConversation:
                             active_tool=name[:120] if isinstance(name, str) else None,
                             received=True,
                         )
+                        self._finish_running_tasks(work_tasks, "done")
+                        tool_seq += 1
+                        work_tasks.append({
+                            "id": f"tool-{tool_seq}",
+                            "title": self._tool_task_title(name if isinstance(name, str) else None),
+                            "status": "running",
+                        })
+                        self._record_tasks(mid, work_tasks)
                     elif event in ("tool.completed", "tool.failed"):
                         self._set(mid, "running", phase="thinking")
+                        self._finish_running_tasks(
+                            work_tasks, "done" if event == "tool.completed" else "failed")
+                        self._record_tasks(mid, work_tasks)
                     elif event == "assistant.delta":
                         delta = payload.get("delta")
                         if isinstance(delta, str) and delta:
@@ -544,9 +614,15 @@ class PersonalConversation:
                         if isinstance(content, str):
                             final_text = content
                             self._assistant(mid, content, status="streaming")
+                        self._finish_running_tasks(work_tasks, "done")
+                        if not any(t.get("id") == "reply" for t in work_tasks):
+                            work_tasks.append({"id": "reply", "title": "撰写回复", "status": "running"})
+                        self._record_tasks(mid, work_tasks)
                     elif event == "run.completed":
                         flush()
                         completed = bool(final_text)
+                        self._finish_running_tasks(work_tasks, "done")
+                        self._record_tasks(mid, work_tasks)
                         self._finish(
                             mid, "completed" if completed else "unknown", final_text,
                             None if completed else "主助理未返回完整答复；结果待核实，未自动重试",

@@ -229,3 +229,44 @@ def test_personal_chat_requires_pairing(tmp_path, monkeypatch):
         )
         assert sent.status_code == 200
         assert sent.json()["message_id"]
+
+
+class FakeHermesWithTools:
+    def __init__(self):
+        self.created = 0
+
+    def key(self):
+        return "fixture"
+
+    async def create_session(self):
+        self.created += 1
+        return "com-personal-main"
+
+    async def stream_chat(self, session_id, text):
+        yield "run.started", {"run_id": "run_9"}
+        yield "tool.started", {"tool_name": "mcp__personal_overview"}
+        yield "tool.completed", {}
+        yield "tool.started", {"tool_name": "mcp__git_pull"}
+        yield "tool.failed", {}
+        yield "assistant.completed", {"content": "搞定了"}
+        yield "run.completed", {"completed": True}
+        yield "done", {}
+
+
+def test_work_tasks_recorded_on_user_message(tmp_path):
+    fake = FakeHermesWithTools()
+    convo = PersonalConversation(tmp_path, fake)
+    mid = convo.submit("request-00009", "帮我查一下")["message_id"]
+    asyncio.run(convo.process_one())
+    snap = convo.snapshot()
+    user_msg = next(m for m in snap["messages"] if m["id"] == mid)
+    assert user_msg["tasks"] == [
+        {"id": "think", "title": "分析用户请求", "status": "done"},
+        {"id": "tool-1", "title": "正在读取日历与账本概览", "status": "done"},
+        {"id": "tool-2", "title": "正在使用 mcp__git_pull", "status": "failed"},
+        {"id": "reply", "title": "撰写回复", "status": "done"},
+    ]
+    # 持久化：重开后任务清单仍在
+    reopened = PersonalConversation(tmp_path, fake).snapshot()
+    user_msg2 = next(m for m in reopened["messages"] if m["id"] == mid)
+    assert user_msg2["tasks"] == user_msg["tasks"]
