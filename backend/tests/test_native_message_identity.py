@@ -118,7 +118,7 @@ def test_health_advertises_loaded_reference_migrations(api):
         assert db.execute("SELECT COUNT(*) FROM dispatches").fetchone()[0] == 0
 
 
-def test_pi_main_cannot_write_through_unbound_legacy_worker(api,monkeypatch):
+def test_manual_native_work_no_longer_needs_an_artificial_task_binding(api,monkeypatch):
     app,client,headers=api
     monkeypatch.setattr(app,'MAIN_AGENT','pi')
     sid='codex:legacy-unbound'
@@ -126,16 +126,23 @@ def test_pi_main_cannot_write_through_unbound_legacy_worker(api,monkeypatch):
     with app.history.db() as db:
         db.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?)',(sid,'codex','legacy-unbound','',str(app.HOME),'旧任务',1,'','历史'))
     async def status(_):return 'completed'
-    async def forbidden(*args,**kwargs):raise AssertionError('未绑定任务不能调用原生执行器')
+    calls=[]
+    async def forbidden(*args,**kwargs):raise AssertionError('查看历史不能启动原生执行器')
+    async def native_input(*args,**kwargs):calls.append(args);return 'actual-native-turn'
     monkeypatch.setattr(app.runtime,'status',status)
     monkeypatch.setattr(app.runtime,'stable_input',lambda _:True)
     monkeypatch.setattr(app.runtime,'create',forbidden)
-    monkeypatch.setattr(app.runtime,'input',forbidden)
+    monkeypatch.setattr(app.runtime,'input',native_input)
+    monkeypatch.setattr(app.runtime,'events',lambda _:[])
     caps=client.get('/sessions/'+sid,headers=headers).json()['session']['capabilities']
-    assert not caps['input'] and not caps['resume']
+    assert caps['input'] and not caps['resume'] and calls==[]
     result=client.post('/sessions/'+sid+'/input',headers=headers,json={'request_id':'legacy-unbound-001','text':'请修改文件'}).json()
-    assert result['status']=='rejected' and result['submission_state']=='not_submitted'
-    assert client.post('/sessions/'+sid+'/resume',headers=headers,json={'request_id':'legacy-resume-001'}).status_code==409
+    assert result['status']=='accepted' and result['submission_state']=='submitted'
+    assert len(calls)==1 and calls[0][0]==sid
+    assert client.post('/sessions/'+sid+'/input',headers=headers,json={'request_id':'legacy-unbound-001','text':'请修改文件'}).json()==result
+    assert len(calls)==1
+    blocked=client.post('/sessions/'+sid+'/resume',headers=headers,json={'request_id':'legacy-resume-001'}).json()
+    assert blocked['status']=='rejected' and blocked['submission_state']=='not_submitted'
 
 
 @pytest.mark.parametrize("busy", [False, True])
@@ -206,7 +213,8 @@ def test_explicit_legacy_pi_upgrade_requires_native_idle_and_keeps_history(api, 
         calls.append(args)
         assert args == ("kill-session", "-t", "s-legacy")
         return ""
-    async def create(agent, cwd, resume):
+    async def create(agent, cwd, resume, sandbox):
+        assert sandbox=='danger-full-access'
         calls.append(("create", agent, cwd, resume["path"]))
         assert app.history.managed()[sid]["ended"] is True
         assert resume["native_id"] == "legacy" and resume["path"] == str(native)

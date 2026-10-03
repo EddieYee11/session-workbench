@@ -54,8 +54,7 @@ def test_proposal_rejects_fake_pi_sandbox_and_directory_escape(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     store = WorkProposalStore(tmp_path / "state", workspace)
-    with pytest.raises(ValueError, match="full-access"):
-        proposal(store, agent="pi", sandbox="read-only")
+    assert proposal(store, agent="pi", sandbox="read-only")['sandbox'] == 'danger-full-access'
     with pytest.raises(ValueError, match="outside"):
         proposal(store, relative_cwd="..")
     with pytest.raises(ValueError, match="relative"):

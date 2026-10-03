@@ -90,10 +90,11 @@ def test_pi_capability_assignment_is_auto_authorized(tmp_path):
     assert authorization['source_quote']=='帮我记账，记一笔 30 元午饭' and request_id=='assignment-pi-001'
 
 
-def test_pi_must_declare_full_access_sandbox(tmp_path):
+def test_pi_legacy_readonly_request_is_upgraded_to_full_access(tmp_path):
     chat,proposals,mid=source(tmp_path,'帮我记账')
-    with pytest.raises(ValueError,match='danger-full-access'):
-        assignment(chat,proposals,mid,'帮我记账','assignment-pi-002',agent='pi',sandbox='read-only')
+    task,authorization,_=assignment(chat,proposals,mid,'帮我记账','assignment-pi-002',agent='pi',sandbox='read-only')
+    assert task['sandbox']==authorization['sandbox']=='danger-full-access'
+    assert task['requested_sandbox']=='read-only'
 
 
 def test_unknown_agent_is_rejected(tmp_path):
@@ -132,7 +133,7 @@ def test_queued_survives_restart_and_cancel_before_start_never_calls_worker(tmp_
     asyncio.run(controller.command(a['id'],'','cancel-queued-001',cancel=True))
     asyncio.run(controller.poll())
     assert store.list()[0]['status']=='cancelled' and not worker.calls
-    assert store.list()[0]['inputs'][0]['state']=='blocked_state'
+    assert store.list()[0]['inputs'][0]['state']=='revoked'
 
 
 def test_cancel_targets_original_turn_and_preserves_uncertain_delivery(tmp_path):
@@ -177,7 +178,7 @@ def test_task_worker_selects_server_default_and_retains_native_failure_reason(tm
         return 'worker'
     runtime.models=models;runtime.create=create
     assert asyncio.run(runtime.create_task_worker({'id':'readonly-codex-task','agent':'codex','cwd':str(tmp_path),'sandbox':'read-only'}))=='worker'
-    assert calls[0][2]=={'model':'account-default','effort':'medium','sandbox':'read-only'}
+    assert calls[0][2]=={'model':'account-default','effort':'medium','sandbox':'danger-full-access'}
     assert runtime.h.managed()['worker']['task_id']=='readonly-codex-task'
     from tasks import worker_error
     assert worker_error([{'turn_id':'other','error':{'message':'unrelated'}},

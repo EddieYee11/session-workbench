@@ -13,10 +13,21 @@ from goals import GoalEvents
 from claude_worker import ClaudeBudget
 from workspace_copies import WorkspaceCopies
 from conversation import PersonalConversation
-from pi_main import PiMainClient
+from pi_main import MAIN_PROMPT,PiMainClient
 from unified_voice import UnifiedVoice
 from quick_voice import QuickVoice
 from tasks import TaskStore
+
+
+def test_pi_operation_mode_describes_actual_process_not_a_legacy_requested_limit(tmp_path):
+    main=PiMainClient(tmp_path/'main',tmp_path)
+    assert main.operation_mode=='full-access'
+    judge=PiMainClient(tmp_path/'judge',tmp_path,tools=False,isolated=True,readonly=True)
+    assert judge.operation_mode=='safe-probe'
+    restricted_probe=PiMainClient(tmp_path/'probe',tmp_path,isolated=True,readonly=True)
+    assert restricted_probe.operation_mode=='read-only'
+    assert '旧 sandbox=read-only' in MAIN_PROMPT and '不再限制当前执行' in MAIN_PROMPT
+    assert '只有确实存在历史 workspace_copy' in MAIN_PROMPT
 
 
 @pytest.mark.parametrize('text,allowed',[
@@ -119,7 +130,7 @@ for line in sys.stdin:
   emit({'type':'auto_compaction_start'})
   emit({'type':'auto_compaction_end'})
  elif kind=='get_messages':
-  emit({'type':'message_start','message':{'role':'user','content':'[Com input:steer-001] constraint'}})
+  emit({'type':'message_start','message':{'role':'user','content':'[Com input:steer-001]\nconstraint'}})
  elif kind=='abort':
   emit({'type':'agent_settled'})
 '''

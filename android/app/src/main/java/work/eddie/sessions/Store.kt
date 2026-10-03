@@ -68,16 +68,23 @@ class Store(val context:Context) {
    val edit=prefs.edit().apply{if(value.isBlank())remove(name) else putString(name,encrypt(value))}
    if(durable)check(edit.commit()){ "加密状态保存失败" } else edit.apply()
  }
+ @Synchronized fun saveSecureTexts(values:Map<String,String>,durable:Boolean=false){
+   val encrypted=values.mapValues{(_,value)->if(value.isBlank())"" else encrypt(value)}
+   values.keys.forEach{persistJobs.remove(it)?.cancel();persistPending.remove(it)}
+   val edit=prefs.edit()
+   encrypted.forEach{(name,value)->if(value.isBlank())edit.remove(name) else edit.putString(name,value)}
+   if(durable)check(edit.commit()){ "加密状态保存失败" } else edit.apply()
+ }
  private val persistScope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
  private val persistPending=java.util.concurrent.ConcurrentHashMap<String,()->Unit>()
  private val persistJobs=java.util.concurrent.ConcurrentHashMap<String,Job>()
- private fun persistSoon(key:String,write:()->Unit){
+ @Synchronized private fun persistSoon(key:String,write:()->Unit){
    persistPending[key]=write
    persistJobs.remove(key)?.cancel()
    persistJobs[key]=persistScope.launch{delay(350);runPending(key)}
  }
- private fun runPending(key:String){persistPending.remove(key)?.invoke()}
- fun flushPending(){persistJobs.values.forEach{it.cancel()};persistJobs.clear();persistPending.keys.toList().forEach{::runPending}}
+ @Synchronized private fun runPending(key:String){persistPending.remove(key)?.invoke()}
+ fun flushPending(){persistJobs.values.forEach{it.cancel()};persistJobs.clear();persistPending.keys.toList().forEach{runPending(it)}}
  fun saveSecureTextSoon(name:String,value:String)=persistSoon(name){saveSecureText(name,value)}
  fun savePrefSoon(name:String,value:String)=persistSoon(name){prefs.edit().putString(name,value).apply()}
  fun secureCache(name:String,value:JSONObject){
@@ -194,13 +201,15 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var hermesReactionSequence by mutableIntStateOf(0)
  private val reactionFeedbackTracker=ReactionFeedbackTracker()
  var hermesError by mutableStateOf("")
- val outgoingMessages=mutableStateListOf<OutgoingMessage>()
+ var hermesOutbox by mutableStateOf(readConversationOutbox(store.secureText("hermes-outbox"),store.secureText("hermes-pending")))
+ val outgoingMessages=mutableStateListOf<OutgoingMessage>().apply{addAll(hermesOutbox.map{it.outgoing()})}
+ private val hermesSendJobs=mutableMapOf<String,Job>()
  var hermesReference by mutableStateOf<JSONObject?>(null)
  val workReferences=mutableStateMapOf<String,JSONObject>()
  var hermesSending by mutableStateOf(false)
  var hermesSendNote by mutableStateOf("")
  var hermesDraft by mutableStateOf(store.secureText("hermes-draft"))
- var hermesPending by mutableStateOf(runCatching{JSONObject(store.secureText("hermes-pending"))}.getOrDefault(JSONObject()))
+ val hermesPending:JSONObject get()=hermesOutbox.firstOrNull{it.state=="unknown"}?.body()?:JSONObject()
  var hermesVisible by mutableStateOf(true)
  var rootPage by mutableStateOf("hermes")
  var signals by mutableStateOf(store.cachedSecure("personal-signals-review.enc"))
@@ -225,6 +234,12 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  private var workApprovalIds=runCatching{JSONObject(store.secureText("work-approval-ids"))}.getOrDefault(JSONObject())
  private var hermesReconcile:Job?=null
  var externalHermesRoute by mutableIntStateOf(0)
+ var externalTaskRoute by mutableIntStateOf(0)
+ var taskDetailId by mutableStateOf("")
+ var taskReturnMessageId by mutableStateOf("")
+ var taskReturnPage by mutableStateOf("hermes")
+ var taskFilter by mutableStateOf("all")
+ var hermesTargetMessageId by mutableStateOf("")
  private val hermesVoiceDir=File(app.filesDir,"hermes-voice").apply{mkdirs()}
  private var hermesRecorder:MediaRecorder?=null
  private var hermesRecordingFile:File?=null
@@ -275,7 +290,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  fun hermesVoicePermissionDenied(){hermesVoiceNote="请在系统设置中允许 Com! 使用麦克风。"}
  @Suppress("DEPRECATION")
  fun beginHermesVoice(){
-   if(hermesVoicePhase!="idle"||hermesVoiceSaved.isNotBlank()||hermesDraft.isNotBlank()||hermesPending.optString("text").isNotBlank()||store.token.isBlank())return
+   if(hermesVoicePhase!="idle"||hermesVoiceSaved.isNotBlank()||hermesDraft.isNotBlank()||store.token.isBlank())return
    val file=File(hermesVoiceDir,"${UUID.randomUUID()}.m4a")
    try{
      val recorder=MediaRecorder()
@@ -333,7 +348,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  fun consumeHermesVoiceSend(text:String):Boolean{
   if(hermesVoiceAutoSend!=text)return false
   hermesVoiceAutoSend=null
-  return hermesDraft==text&&hermesFresh&&!hermesSending&&hermesVoicePhase=="idle"
+  return hermesDraft==text&&hermesFresh&&hermesVoicePhase=="idle"
  }
  fun discardHermesVoice(){
    if(hermesVoicePhase!="idle")return
@@ -343,6 +358,26 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  }
  fun refreshSignalsNow(){viewModelScope.launch{refreshSignals()}}
  fun refreshWorkProposalsNow(){viewModelScope.launch{refreshWorkProposals()}}
+ fun resumeTask(id:String){
+   if(taskControlBusy.isNotBlank()||!taskLedgerFresh||store.token.isBlank())return
+   val task=taskLedger.array("items").firstOrNull{it.optString("id")==id}?:return
+   if(task.optString("status")!="paused")return
+   taskControlBusy=id;taskControlTarget=id;taskControlNote=""
+   val key="task-resume-$id.enc"
+   val old=store.cachedSecure(key)
+   val body=JSONObject().put("request_id",old.optString("request_id").ifBlank{UUID.randomUUID().toString()})
+   runCatching{store.secureCache(key,body)}.onFailure{taskControlBusy="";taskControlNote="继续请求未保存，尚未发送";return}
+   viewModelScope.launch{
+     try{
+       val receipt=store.request("/personal/tasks/${enc(id)}/resume",body)
+       taskControlNote=if(receipt.optString("status")=="unknown")"继续结果待核实，请查看执行事件" else "继续请求已受理"
+       if(receipt.optString("status")!="unknown")runCatching{store.secureCache(key,JSONObject())}
+       refreshWorkProposals()
+     }catch(e:CancellationException){throw e}
+      catch(e:Exception){taskControlNote="继续结果待核实，不会自动重复请求。"}
+     finally{taskControlBusy=""}
+   }
+ }
  suspend fun refreshWorkProposals(){
    if(workProposalsLoading||store.token.isBlank())return
    workProposalsLoading=true;workProposalsError=""
@@ -502,6 +537,16 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    val emoji=reaction.optString("emoji")
    if(eventId.isBlank()||emoji.isBlank())null else ReactionFeedback(message.optString("id"),eventId,emoji)
  }
+ private fun applyHermesTasks(payload:JSONObject,snapshot:Boolean){
+   val full=payload.optJSONArray("tasks")
+   val changed=payload.array("changed_tasks")+listOfNotNull(payload.optJSONObject("task"))
+   if(full==null&&changed.isEmpty())return
+   taskLedger=if(full!=null)JSONObject().put("items",JSONArray(full.toString())) else
+    JSONObject(taskLedger.toString()).put("items",mergeHermesRows(taskLedger.optJSONArray("items"),changed,"id"))
+   if(snapshot||full!=null)taskLedgerFresh=true
+   taskLedgerError=""
+   runCatching{store.secureCache("personal-tasks.enc",taskLedger)}
+ }
  private fun applyHermesEvent(kind:String,payload:JSONObject){
    if(kind=="snapshot"){
      if(payload.optJSONArray("messages")==null||payload.optJSONArray("runs")==null)return
@@ -509,10 +554,14 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      reactionFeedbackTracker.baseline(reactionEvents(snapshot.array("messages")))
      if(snapshot.optString("conversation_id").isBlank())snapshot.put("conversation_id",hermes.optString("conversation_id").ifBlank{"personal-main"})
      hermes=snapshot;hermesFresh=true;hermesError="";hermesStreaming=true
+     applyHermesTasks(payload,true)
+     reconcileHermesOutbox(snapshot.array("messages"))
+     dispatchQueuedHermes()
      runCatching{store.secureCache("hermes-conversation.enc",snapshot)}
      return
    }
    if(kind!="update")return
+   applyHermesTasks(payload,false)
    val current=JSONObject().apply{hermes.keys().forEach{key->put(key,hermes.opt(key))}}
    if(payload.has("revision")&&payload.optLong("revision")<=current.optLong("revision"))return
    val message=payload.optJSONObject("message")?:payload.optJSONObject("changed_message")
@@ -528,10 +577,11 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    if(changedMessages.isNotEmpty()){
      current.put("messages",mergeHermesRows(current.optJSONArray("messages"),changedMessages,"id"))
      current.put("runs",activeHermesRuns(current.optJSONArray("messages")))
+     reconcileHermesOutbox(changedMessages)
    }else payload.optJSONArray("runs")?.let{current.put("runs",JSONArray(it.toString()))}
    if(payload.has("revision"))current.put("revision",payload.optLong("revision"))
    if(current.optString("conversation_id").isBlank())current.put("conversation_id","personal-main")
-   if(changedMessages.isNotEmpty()||payload.has("runs")||payload.has("run")){
+   if(changedMessages.isNotEmpty()||payload.has("runs")||payload.has("run")||payload.has("changed_tasks")||payload.has("task")){
      hermes=current;hermesFresh=true;hermesError="";hermesStreaming=true
    }
    hermesReconcile?.cancel()
@@ -546,54 +596,114 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      if(data.has("revision")&&data.optLong("revision")<hermes.optLong("revision"))return
      reactionFeedbackTracker.baseline(reactionEvents(data.array("messages")))
      hermes=data;hermesFresh=true;hermesError=""
+     applyHermesTasks(data,true)
+     reconcileHermesOutbox(data.array("messages"))
+     dispatchQueuedHermes()
      runCatching{store.secureCache("hermes-conversation.enc",data)}
-   }catch(e:Exception){hermesFresh=false;hermesError=e.message?:"Pi 暂时无法连接"}
+   }catch(e:CancellationException){throw e}
+    catch(e:Exception){hermesFresh=false;hermesError=e.message?:"Pi 暂时无法连接"}
    finally{hermesLoading=false}
  }
  fun sendHermes(requestId:String=UUID.randomUUID().toString()):String?{
    val message=hermesDraft.trim()
-   if(message.isBlank()||hermesSending||!hermesFresh)return null
-   if(hermesPending.optString("text").isNotBlank()&&hermesPending.optString("text")!=message){
-     hermesSendNote="上一条发送结果待核实。请先核对并决定是否重试。";return null
-   }
-   val rid=hermesPending.optString("request_id").ifBlank{requestId}
-   val reference=if(hermesPending.optString("request_id").isNotBlank())hermesPending.optJSONObject("reference")else hermesReference
+   if(message.isBlank()||store.token.isBlank())return null
+   val rid=requestId
+   val reference=hermesReference?.let{JSONObject(it.toString())}
    if(reference!=null&&!messageReferencesAvailable){hermesSendNote="当前服务尚未启用消息引用，草稿已保留。连接新版本后再发送。";return null}
-   hermesPending=JSONObject().put("request_id",rid).put("text",message).put("reference",reference?:JSONObject.NULL)
-   try{store.saveSecureText("hermes-pending",hermesPending.toString(),durable=true)}catch(e:Exception){hermesSendNote=e.message?:"发送状态保存失败，草稿已保留";return null}
-   if(outgoingMessages.none{it.id==rid})recordOutgoing(OutgoingMessage(rid,"personal-main",message,reference,previousIds=hermes.array("messages").map{it.optString("id")}.toSet()))
-   else updateOutgoing(rid,"sending")
-   hermesSending=true;hermesSendNote="";hermesError="";updateHermesDraft("");hermesReference=null
-   viewModelScope.launch{
-     try{
-       val receipt=store.request("/personal/conversation/messages",JSONObject(hermesPending.toString()))
-       if(receipt.optString("status") !in setOf("accepted","queued","sending","running","waiting","approval_required","completed","failed","unknown")||receipt.optString("message_id").isBlank())error("Pi 尚未确认接收这条消息")
-       if(receipt.optString("request_id")!=rid)error("发送回执请求号不匹配")
-       updateOutgoing(rid,if(receipt.optString("status") in setOf("failed","unknown"))receipt.optString("status") else "sent",receipt.optString("message_id"))
-       store.saveSecureText("hermes-pending","");hermesPending=JSONObject()
-       hermesSendNote=if(receipt.optString("status") in listOf("failed","unknown"))"请查看对话中的失败或待核实状态" else "Pi 已接收，正在更新对话"
-       refreshHermes()
-     }catch(e:Exception){
-       updateOutgoing(rid,"unknown")
-       if(hermesDraft.isBlank()){updateHermesDraft(message);hermesReference=reference}
-       hermesSendNote="发送结果待核实，草稿已保留；重试会复用同一请求号";hermesError=e.message?:"暂时无法发送"
-     }finally{hermesSending=false}
+   if(reference?.optString("mode")=="reply"&&outboxDependencyBlocked(reference.optString("id"),hermesOutbox)){
+     hermesSendNote="这条补充依赖的消息尚未确认接收，请先核对原消息；其他独立消息仍可发送。";return null
    }
+   if(hermesOutbox.any{it.id==rid})return null
+   val entry=ConversationOutboxEntry(rid,message,reference,state=if(hermesFresh)"prepared" else "queued_local")
+   hermesSending=true
+   try{saveHermesOutbox(hermesOutbox+entry,clearDraft=true)}catch(e:Exception){hermesSendNote=e.message?:"发送状态保存失败，草稿已保留";return null}
+   finally{hermesSending=false}
+   recordOutgoing(entry.outgoing())
+   hermesSendNote="";hermesError="";hermesDraft="";hermesReference=null
+   if(hermesFresh)deliverHermes(entry) else hermesSendNote="已保存到手机，连接恢复后发送。"
    return rid
+ }
+ private fun saveHermesOutbox(entries:List<ConversationOutboxEntry>,clearDraft:Boolean=false){
+   // Keep every uncertain entry; bound only acknowledged history.
+   val keep=entries.filter{it.state!="accepted"}+entries.filter{it.state=="accepted"}.takeLast(64)
+   val ordered=keep.sortedBy{it.createdAt}
+   val values=mutableMapOf("hermes-outbox" to serializeConversationOutbox(ordered),"hermes-pending" to "")
+   if(clearDraft)values["hermes-draft"]=""
+   store.saveSecureTexts(values,durable=true)
+   hermesOutbox=ordered
+ }
+ private fun settleHermesOutbox(id:String,state:String,serverId:String=""){
+   val updated=hermesOutbox.map{if(it.id==id)it.copy(state=state,serverId=serverId.ifBlank{it.serverId}) else it}
+   saveHermesOutbox(updated)
+   updateOutgoing(id,if(state=="accepted")"sent" else if(state=="sending")"sending" else "unknown",serverId)
+ }
+ private fun reconcileHermesOutbox(messages:List<JSONObject>){
+   val updated=reconcileConversationOutbox(hermesOutbox,messages)
+   if(updated==hermesOutbox)return
+   runCatching{saveHermesOutbox(updated)}.onFailure{hermesSendNote="回执已找到，本地记录保存失败；不会自动重发。"}
+   updated.forEach{entry->if(entry.state=="accepted")updateOutgoing(entry.id,"sent",entry.serverId)}
+ }
+ private fun deliverHermes(entry:ConversationOutboxEntry){
+   if(hermesSendJobs.containsKey(entry.id))return
+   val rid=entry.id
+   updateOutgoing(rid,"sending")
+   hermesSendJobs[rid]=viewModelScope.launch(start=CoroutineStart.LAZY){
+     try{
+       settleHermesOutbox(rid,"sending")
+       val receipt=store.request("/personal/conversation/messages",entry.body())
+       if(!conversationReceiptConfirmed(receipt.optString("status"),receipt.optString("message_id"),receipt.optString("request_id"),rid))error("Pi 尚未确认接收这条消息")
+       if(receipt.optString("request_id")!=rid)error("发送回执请求号不匹配")
+       settleHermesOutbox(rid,"accepted",receipt.optString("message_id"))
+       updateOutgoing(rid,if(receipt.optString("status") in setOf("failed","unknown"))receipt.optString("status") else "sent",receipt.optString("message_id"))
+       hermesSendNote=if(receipt.optString("status") in listOf("failed","unknown"))"Pi 已接收，请查看这条消息的执行状态。" else "Pi 已接收"
+       // Receipt releases the local send immediately. The snapshot is independent.
+       viewModelScope.launch{refreshHermes()}
+     }catch(e:CancellationException){
+       runCatching{settleHermesOutbox(rid,"unknown")};throw e
+     }catch(e:Exception){
+       runCatching{settleHermesOutbox(rid,"unknown")}
+       updateOutgoing(rid,"unknown")
+       hermesSendNote="这条发送结果待核实，已保留在待核实列表；其他消息可继续发送。";hermesError=e.message?:"暂时无法发送"
+     }finally{hermesSendJobs.remove(rid)}
+   }
+   hermesSendJobs[rid]?.start()
+ }
+ private fun dispatchQueuedHermes(){
+   if(!hermesFresh||store.token.isBlank())return
+   // These entries have never reached the network. Unknown entries are excluded.
+   hermesOutbox.filter{it.state=="queued_local"}.forEach{deliverHermes(it)}
+ }
+ fun retryHermes(requestId:String){
+   val entry=hermesOutbox.firstOrNull{it.id==requestId&&canRetryOutbox(it.state)}?:return
+   if(!hermesFresh||store.token.isBlank())return
+   hermesSendNote="正在核对同一请求号的接收状态"
+   deliverHermes(entry)
  }
  private fun recordOutgoing(message:OutgoingMessage){
    outgoingMessages.add(message)
-   while(outgoingMessages.count{it.scope==message.scope}>32)outgoingMessages.removeAt(outgoingMessages.indexOfFirst{it.scope==message.scope})
-   while(outgoingMessages.size>128)outgoingMessages.removeAt(0)
+   while(outgoingMessages.count{it.scope==message.scope&&it.status=="sent"}>64)outgoingMessages.removeAt(outgoingMessages.indexOfFirst{it.scope==message.scope&&it.status=="sent"})
  }
  private fun updateOutgoing(id:String,status:String,serverId:String=""){
    val index=outgoingMessages.indexOfFirst{it.id==id}
    if(index>=0)outgoingMessages[index]=outgoingMessages[index].copy(status=status,serverId=serverId.ifBlank{outgoingMessages[index].serverId})
  }
- fun stopHermesRetry(){
-   store.saveSecureText("hermes-pending","")
-   hermesPending=JSONObject()
-   hermesSendNote="已停止重试上一条；发送新消息前请核对对话记录。"
+ fun stopHermesRetry(requestId:String=hermesPending.optString("request_id")){
+   runCatching{settleHermesOutbox(requestId,"abandoned")}
+    .onSuccess{hermesSendNote="这条消息继续保留为待核实，不再显示重试操作。"}
+    .onFailure{hermesSendNote="本地状态未保存，请稍后再试。"}
+ }
+ fun openTaskDetail(taskId:String,messageId:String=""){
+  if(taskDetailId.isBlank())taskReturnPage=rootPage
+  taskDetailId=taskId;taskReturnMessageId=messageId
+  externalTaskRoute++
+ }
+ /** Opens the task list under a status filter; the chip row owns the same state. */
+ fun openTaskList(filter:String){
+  taskFilter=filter;taskDetailId="";taskReturnMessageId=""
+  externalTaskRoute++
+ }
+ fun returnToHermes(messageId:String=taskReturnMessageId){
+   hermesTargetMessageId=messageId;taskDetailId="";taskReturnMessageId="";externalHermesRoute++
  }
  override fun onCleared(){
    hermesVoiceTimer?.cancel();runCatching{hermesRecorder?.stop()};runCatching{hermesRecorder?.release()};hermesRecordingFile?.delete()
@@ -728,9 +838,9 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    if(result.optString("status")!="accepted")error("操作结果待核实，未重复发送")
    check(store.prefs.edit().remove(key).remove("$key:body").commit()){"回执保存失败，结果待核实"};return result
  }
- fun create(agentName:String,path:String,prompt:String,model:String,effort:String,sandbox:String,requestId:String=UUID.randomUUID().toString()):String?{
+ fun create(agentName:String,path:String,prompt:String,model:String,effort:String,requestId:String=UUID.randomUUID().toString()):String?{
    if(busy||!connected)return null
-   val body=JSONObject().put("agent",agentName).put("cwd",path).put("prompt",prompt.trim()).put("model",model).put("effort",effort).put("sandbox",sandbox)
+   val body=JSONObject().put("agent",agentName).put("cwd",path).put("prompt",prompt.trim()).put("model",model).put("effort",effort).put("sandbox","danger-full-access")
    if(store.prefs.getString("pending:/sessions",null)!=null&&store.prefs.getString("pending:/sessions:body",null)!=body.toString()){run{mutation("/sessions",body)};return null}
    val actualRid=store.prefs.getString("pending:/sessions",null)?:requestId
    val pending=OutgoingMessage(actualRid,"creating:$actualRid",prompt.trim())

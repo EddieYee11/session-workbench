@@ -147,7 +147,7 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
      if(home)"交给 ${agentDisplayName(agent)} 做点什么…" else if(creating!=null)"正在创建 ${vm.creatingAgent} 会话…" else if(status=="running")"写下补充内容…"else"继续和 ${session.optString("agent")} 聊聊…",
      vm.connected&&!vm.busy,!home&&status in listOf("running","waiting"),{modelPicker=true;vm.loadModels(pickerAgent)},
      {val text=if(home)prompt.trim() else vm.draft().trim();val rid=UUID.randomUUID().toString();motion.begin(rid,text)
-      val sent=if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",text,modelSelection.model,modelSelection.effort,"danger-full-access",rid)else vm.send(rid)
+      val sent=if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",text,modelSelection.model,modelSelection.effort,rid)else vm.send(rid)
       if(sent==null)motion.cancel()else{motion.retarget(rid,sent);if(home)prompt=""}},
      {vm.stop()},voice,modelSelection.model.isNotBlank()||modelSelection.effort.isNotBlank(),motion,creating!=null,
     )

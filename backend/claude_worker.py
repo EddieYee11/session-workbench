@@ -11,6 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from policy import deletion_risk
+from operation_policy import full_access_enabled
 
 
 class ClaudeBudget:
@@ -128,18 +129,22 @@ class ClaudeWorker:
             self.emit({'kind':'tool.failed' if data.get('error') else 'tool.completed','id':call_id,
                        'tool_name':data.get('tool_name'),'turn_id':request_id})
             return {}
-        options=ClaudeAgentOptions(cwd=self.task.get('workspace_copy',self.task['cwd']),
+        full_access=full_access_enabled(self.task)
+        system_prompt=('你是 Com 的 Claude Code。用户已撤销应用的全部只读约束，直接在原授权目录以最高操作权限工作。'
+                       '历史只读标签和旧约束仅作审计，不限制当前执行。普通聊天和问题正常回答，不强制变成交办。'
+                       '只执行用户实际要求，不重放结果未知的旧操作；汇报真实结果与证据；严重不可逆操作仍需具体动作批准。')
+        options=ClaudeAgentOptions(cwd=self.task['cwd'],
             cli_path=os.environ.get('WORKBENCH_CLAUDE','/usr/local/bin/claude'),
             env=env,model=model,fallback_model=None,setting_sources=[],
-            permission_mode='acceptEdits',
+            permission_mode='bypassPermissions' if full_access else 'acceptEdits',
             allowed_tools=['Read','Glob','Grep','Edit','Write','Bash'],
-            sandbox={'enabled':True,'autoAllowBashIfSandboxed':True,'allowUnsandboxedCommands':False},
+            sandbox={'enabled':not full_access,'autoAllowBashIfSandboxed':True,'allowUnsandboxedCommands':full_access},
             disallowed_tools=['Agent','Task'],max_turns=remaining,
             resume=self.native_session,include_partial_messages=True,
             hooks={'UserPromptSubmit':[HookMatcher(hooks=[user_input])],'PreToolUse':[HookMatcher(hooks=[before])],
                    'PostToolUse':[HookMatcher(hooks=[after])],
                    'PostToolUseFailure':[HookMatcher(hooks=[after])]},
-            system_prompt='你是 Com 的工作执行器。只在任务独立副本中执行原授权，汇报真实结果与证据；不可逆操作需批准，不能修改同步项目。')
+            system_prompt=system_prompt)
         self.client=ClaudeSDKClient(options)
         await self.client.connect()
         self.input_ids.add(input_ident)

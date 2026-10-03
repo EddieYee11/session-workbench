@@ -1,12 +1,16 @@
-# Com!
+# Com
 
-Com! 是 Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务，保留原包名、配对和历史。当前版本 **1.6.1**：主页由 Pi 持续负责，使用现有 Flash；工作页提供 Claude / Codex，旧 Pi 从工作历史只读访问。
+Com! 是 Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务，保留原包名、配对和历史。当前版本 **1.7.0**：主页由 Pi 持续负责，使用现有 Flash；工作页提供 Claude / Codex。用户已撤销应用的只读限制，全部工作会话统一最高操作权限；历史恢复仍检查实际进程是否占用。
+
+1.7.0 整合 Muse 工作过程卡、头像状态卡与总结卡，任务和真实步骤挂回原交办消息；状态卡紧贴形象下方，仅显示图标和状态，空闲时隐藏。手机逐条持久发送、主线原生补话、来源关联与工作说明保持连续；普通语音可直接按具体费用记账，中文金额沿真实原文核对。工作页 Codex／Claude Code 支持普通聊天，不要求每句话都改成交办句。独立计划节点按依赖推进，程序检查后可选择无工具 Judge 复核要求覆盖。执行结束、送达未知、验收通过和待合入分别呈现。[本轮说明与验收路径](docs/COM_1.7_UPGRADE.md)。
 
 主 Pi 可直接使用 Shell、读写文件和业务工具，自主决定直接执行或委派独立 Pi / Claude / Codex，不强制派活。“A + 地址”等选项续答沿真实上文继续。主页支持 Markdown，工作页简称 Claude，统一字体与布局；减少重复历史注入、JSON 复制和流式轮询开销。共同能力目录区分发现、加载与真实验证；任务显示真实工具步骤、送达状态、结果和验收。主聊天与快捷语音使用同一请求登记。明确授权范围内执行，严重不可逆动作显示具体审批卡。
 
-后台项目写任务在 mini 的同步目录外副本执行，包含当前未提交修改；验收后检查基线与 Syncthing，串行合入。主线普通文件编辑保留恢复副本，高风险删除/覆盖需要具体审批。目标与事件已落入 SQLite，09:30 目标调度在真机验收前保持关闭。仅 Com 的 Claude worker 使用 Flash，继承原第三方 endpoint/凭据，未改全局配置。
+全部新工作任务直接在原授权目录执行，旧副本产物仍须按实际执行轮次验收与合入。主线普通文件编辑保留恢复副本，高风险删除/覆盖需要具体审批。目标与事件已落入 SQLite，09:30 目标调度沿当前设置关闭。仅 Com 的 Claude worker 使用 Flash，继承原第三方 endpoint/凭据，未改全局配置。
 
-实现与真实验证见 [Pi 主线实施记录](docs/COM_PI_MAIN_IMPLEMENTATION.md)，当前决策见 [路线图](docs/COM_MUSE_ROADMAP.md) 与 [任务层契约](docs/TASK_LAYER_CONTRACT.md)。以前的版本说明和 Hermes 规划保留为历史资料。安装包见 [Com! 1.6.1 Release](https://github.com/EddieYee11/session-workbench/releases/tag/v1.6.1)。
+今天页以待处理和今日时间轴为主；任务页将同一任务合并为一张卡，筛选区分待你决定、执行中、待验收、已完成和已结束。条目进入对应任务详情，返回保留来源页面，原文沿真实来源身份定位。通知巡检独立放入更多。[页面改版与实际范围](docs/COM_UX_RESTRUCTURE.md)。
+
+实现与真实验证见 [1.7.0 升级说明](docs/COM_1.7_UPGRADE.md) 与 [Pi 主线实施记录](docs/COM_PI_MAIN_IMPLEMENTATION.md)，当前决策见 [路线图](docs/COM_MUSE_ROADMAP.md) 与 [任务层契约](docs/TASK_LAYER_CONTRACT.md)。以前的版本说明和 Hermes 规划保留为历史资料。1.7.0 本地安装包保存在 `verification/com-1.7.0/`；上个公开安装包见 [Com! 1.6.1 Release](https://github.com/EddieYee11/session-workbench/releases/tag/v1.6.1)。
 
 - `backend/`：历史索引、持续主线、共同工具、能力目录、RPC/SDK 执行器、任务/目标/事件服务。
 - `android/`：Kotlin / Compose 原生应用、底部导航、语音、通知、离线缓存与历史。
@@ -17,7 +21,7 @@ Com! 是 Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务，�
 
 Android 工程位于 `android/`，可用 Android Studio 打开，或在配置好 JDK 17+ 与 Android SDK 后运行 `./gradlew assembleDebug`。Mac mini 端需要 Python 3.12+、Pi、Claude Code、Codex、tmux 和 Caddy；`backend/install-mini.py` 是针对当前 Mac mini 的部署脚本，运行前应先核对其中的 Caddy 路径和路由。服务状态与会话数据保存在 Mac mini 的 `~/.session-workbench/`，不属于此仓库。
 
-Mac mini 使用 `~/.session-workbench/agent-config.json` 选择主线、Com Claude 模型及执行主机。实际生产已设置 Pi；没有此文件的新环境仍保留 Hermes 兼容入口，不能据此宣称已切换。Pi RPC 是新增适配器，不复用旧 tmux 输入与微信会话。Claude 使用本地 Agent SDK，Codex 沿用 app-server。来源、具体动作、文件隔离与预算在执行处校验。切换前后不重放已投递或 uncertain 操作，回滚方法见实施记录。
+Mac mini 使用 `~/.session-workbench/agent-config.json` 选择主线、Com Claude 模型及执行主机。实际生产已设置 Pi；没有此文件的新环境仍保留 Hermes 兼容入口，不能据此宣称已切换。Pi RPC 是新增适配器，不复用旧 tmux 输入与微信会话。Claude 使用本地 Agent SDK，Codex 沿用 app-server。来源、具体动作与预算在执行处校验。切换前后不重放已投递或 uncertain 操作，回滚方法见实施记录。
 
 Android 1.1.0 使用已选定的「灵动伙伴」界面：暖白底色、圆角会话卡片和本地流体圆脸 Bot。首页卡片读取真实会话，点开历史仍是只读；对话、终端、搜索和新建入口保持原有结构。网页 `docs/ai-style-directions.html` 仍是使用模拟数据的风格对照页。
 

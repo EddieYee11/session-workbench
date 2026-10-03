@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -62,6 +63,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 fun hermesMessageStatus(status:String):String=when(status){
+ "queued_local"->"已保存 · 联网后发送"
  "delegated"->"已交给工作执行器"
  "queued"->"已排队"
  "sending"->"正在交给 Pi"
@@ -103,17 +105,25 @@ private fun messageTime(value:Any?):String=runCatching{
  instant.atZone(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.ofPattern("M月d日 HH:mm",Locale.CHINA))
 }.getOrDefault("")
 
-private fun hermesActivityStatus(runs:List<JSONObject>,messages:List<JSONObject>):String{
- val activeMessage=messages.lastOrNull{it.optString("phase") in setOf("received","read","thinking","executing","tool","responding","replying","streaming")}
- if(activeMessage!=null&&activeMessage.optString("status") !in setOf("completed","failed","unknown"))return hermesPhaseStatus(activeMessage.optString("phase"))
- val active=runs.lastOrNull{it.optString("status") in listOf("running","sending","queued","waiting","approval_required","unknown")}
- return when(active?.optString("status")){
-  "running","sending"->"正在处理"
-  "queued"->"任务已排队"
-  "waiting","approval_required"->"等待你回应"
-  "unknown"->"状态待核实"
-  else->"空闲"
+data class HermesAvatarActivity(val kind:String,val messageIndex:Int?=null,val workerIndex:Int?=null)
+
+/** Historical uncertain tasks stay in the ledger; the companion describes current activity. */
+fun hermesAvatarActivity(messageStates:List<Pair<String,String>>,workerStatuses:List<String>,createdAt:List<Double> = emptyList()):HermesAvatarActivity{
+ val current=avatarActiveMessageIndex(messageStates)
+ val worker=workerStatuses.indexOfFirst{it in setOf("running","sending","dispatching")}.takeIf{it>=0}
+ if(current!=null){
+  val (status,phase)=messageStates[current]
+  if(status in setOf("running","executing","responding","streaming","thinking")||
+   (status=="sending"&&phase in setOf("executing","tool","responding","replying","streaming")))return HermesAvatarActivity("message",messageIndex=current)
  }
+ if(worker!=null)return HermesAvatarActivity("worker",workerIndex=worker)
+ if(current!=null)return HermesAvatarActivity("message",messageIndex=current)
+ val candidates=messageStates.indices.filter{messageStates[it].first.isNotBlank()}
+ // Unmatched local messages are appended for display, so their position is not chronology.
+ // Legacy records without timestamps keep their existing server ordering.
+ val latest=if(candidates.all{createdAt.getOrNull(it)?.let{at->at.isFinite()&&at>0}==true})
+  candidates.maxWithOrNull(compareBy<Int>{createdAt[it]}.thenBy{it}) else candidates.lastOrNull()
+ return if(latest!=null&&messageStates[latest].first=="unknown")HermesAvatarActivity("unknown") else HermesAvatarActivity("idle")
 }
 
 private fun hermesToolLabel(name:String):String=when{
@@ -140,21 +150,49 @@ private fun hermesToolLabel(name:String):String=when{
  val outgoing=vm.outgoingMessages.filter{it.scope=="personal-main"}
  val messages=remember(data,outgoing){mergeOutgoingMessages(data.array("messages"),outgoing)}
  val runs=data.array("runs")
- val backgroundTasks=buildLedgerTasks(vm.taskLedger.array("items"),messages)
+ val workerRecords=vm.taskLedger.array("items")
+ val backgroundTasks=buildLedgerTasks(workerRecords,messages)
+ val avatarActivity=hermesAvatarActivity(messages.map{if(it.optString("role")=="user")it.optString("status") to it.optString("phase") else "" to ""},if(vm.taskLedgerFresh)workerRecords.map{it.optString("status")} else emptyList(),messages.map{it.optDouble("created_at",0.0)})
+ val current=avatarActivity.messageIndex?.let{messages[it]}
+ val worker=avatarActivity.workerIndex?.let{workerRecords[it]}
+ val phase=current?.optString("phase").orEmpty()
+ val status=current?.optString("status").orEmpty()
+ val runtimeText=when{
+  current!=null&&current.optBoolean("local")->hermesMessageStatus(status).ifBlank{"消息待送达"}
+  current!=null->avatarWorkStatus(if(status in setOf("queued","waiting","approval_required"))status else phase.ifBlank{status},if(current.isNull("active_tool"))"" else current.optString("active_tool"))
+  worker!=null->"${worker.optString("agent").uppercase().ifBlank{"执行器"}} · ${agentTaskStatusText(worker.optString("status"))}"
+  avatarActivity.kind=="unknown"->"状态待核实"
+  else->"空闲"
+ }
+ val avatarPillText=when{
+  vm.hermesVoicePhase=="recording"->"正在倾听"
+  vm.hermesVoicePhase=="transcribing"->"正在转写"
+  vm.hermesFresh->runtimeText
+  vm.hermesLoading->"连接中"
+  else->"离线记录"
+ }
  val activeTasks=backgroundTasks.count{it.status=="active"}
  val list=rememberLazyListState()
  MessageViewportAnchor(list,"hermes",vm.hermesVisible,motion)
  var positionedAtLatest by remember{mutableStateOf(false)}
  MessageSendListScroll(motion,list,messages.indexOfFirst{messageMotionId(it)==motion.messageId}.takeIf{it>=0}?.plus(1))
- var activity by remember{mutableStateOf(false)}
- LaunchedEffect(vm.showSignalsActivity){if(vm.showSignalsActivity){activity=true;vm.showSignalsActivity=false}}
- LaunchedEffect(activity){if(activity){vm.refreshSignalsNow();vm.refreshWorkProposalsNow()}}
+ LaunchedEffect(vm.showSignalsActivity){if(vm.showSignalsActivity){vm.showSignalsActivity=false;openTasks()}}
  val hasConversation=data.optString("conversation_id").isNotBlank()
- val canSend=vm.hermesFresh&&!vm.hermesSending&&vm.store.token.isNotEmpty()
+ val canSend=vm.store.token.isNotEmpty()
  val proposals=vm.workProposals.array("items").filter{it.optString("status")=="proposed"}
  val needsAttention=runs.any{it.optString("status") in setOf("waiting","unknown")}
+ LaunchedEffect(vm.hermesTargetMessageId,messages.map{it.optString("id")}){
+  val target=vm.hermesTargetMessageId
+  if(target.isBlank())return@LaunchedEffect
+  val index=messages.indexOfFirst{it.optString("id")==target||messageMotionId(it)==target}
+  if(index<0)return@LaunchedEffect
+  withFrameNanos{}
+  list.scrollToItem(index+1)
+  positionedAtLatest=true
+  vm.hermesTargetMessageId=""
+ }
  LaunchedEffect(messages.size,messages.lastOrNull()?.optString("id"),messages.lastOrNull()?.optString("text"),messages.lastOrNull()?.optString("phase")){
-  if(motion.messageId!=null)return@LaunchedEffect
+  if(motion.messageId!=null||vm.hermesTargetMessageId.isNotBlank())return@LaunchedEffect
   val lastVisible=list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?:0
   if(messages.size>4&&(!positionedAtLatest||lastVisible>=messages.size-1)){
    list.scrollToItem(messages.size+1)
@@ -171,18 +209,25 @@ private fun hermesToolLabel(name:String):String=when{
   BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()){
    val inset=if(maxWidth>=700.dp)32.dp else 15.dp
    val wideHero=maxWidth>=700.dp
-   LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("hermes-message-list"),contentPadding=PaddingValues(start=inset,end=inset,top=88.dp,bottom=18.dp),horizontalAlignment=Alignment.CenterHorizontally){
+   val headerHeight=if(avatarPillText=="空闲")80.dp else (78f+22f*LocalDensity.current.fontScale).dp
+   LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("hermes-message-list"),contentPadding=PaddingValues(start=inset,end=inset,top=headerHeight+12.dp,bottom=18.dp),horizontalAlignment=Alignment.CenterHorizontally){
     item(key="intro"){
      Column(Modifier.widthIn(max=790.dp).fillMaxWidth()){
       if(messages.isEmpty())HermesHero(wideHero){vm.updateHermesDraft(it)}
       if(vm.hermesError.isNotBlank()&&!vm.hermesFresh)Text("连接提示：${vm.hermesError}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=AmberText)
-      if(hasConversation&&!vm.hermesFresh)Text("以下是上次保存的对话。联网并同步后才能继续发送。",fontSize=Type.Caption,color=AmberText)
+      if(hasConversation&&!vm.hermesFresh)Text("以下是上次保存的对话。新消息会先保存到手机，联网后发送。",fontSize=Type.Caption,color=AmberText)
      }
     }
     items(messages,key={messageMotionId(it).ifBlank{it.toString()}}){message->
      MessageSendRow(motion,messageMotionId(message),Modifier.widthIn(max=790.dp).fillMaxWidth(),trailingSpacing=22.dp){Column{
       MessageSwipeActions(message,enabled=!message.optBoolean("local"),onReply={vm.hermesReference=messageReference(it,"reply","Pi","personal-main")},onForward={vm.hermesReference=messageReference(it,"forward","Pi","personal-main")}){HermesMessage(message,motion,vm.font)}
-      if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){HermesProgressCard(message,vm.hermesFresh)}
+      if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){
+       val openTask:(String)->Unit={id->vm.openTaskDetail(id,message.optString("id"))}
+       // Task identity and execution evidence come from the server, including reconnect history.
+       if(taskSummary(message)!=null)TaskSummaryCard(message,openTask)
+       else if(agentWorkTasks(message).isNotEmpty()||agentWorkEvents(message).isNotEmpty()||message.optString("status") in setOf("queued","sending","running"))AgentWorkCard(message,vm.hermesFresh,openTask)
+       else HermesProgressCard(message,vm.hermesFresh)
+      }
      }}
     }
     item(key="tail"){
@@ -193,40 +238,26 @@ private fun hermesToolLabel(name:String):String=when{
      }
     }
    }
-   // Keep text out of the controls; fade only below the 76dp header row.
-   Box(Modifier.fillMaxWidth().height(98.dp).align(Alignment.TopCenter)
-    .background(Brush.verticalGradient(0f to Paper,.78f to Paper,1f to Color.Transparent))
+   // The companion and status occupy separate layout rows, never an overlay.
+   Box(Modifier.fillMaxWidth().height(headerHeight+22.dp).align(Alignment.TopCenter)
+    .background(Brush.verticalGradient(0f to Paper,.86f to Paper,1f to Color.Transparent))
     .testTag("hermes-fading-header")){
-    Row(Modifier.fillMaxWidth().height(76.dp).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
+    Row(Modifier.fillMaxWidth().height(headerHeight).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
      if(showMenu)Surface(onClick=menu,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.8f)){
       ComIcon(R.drawable.com_icon_menu_v1,"打开导航",Modifier.padding(11.dp))
      }else Text("Com!",fontSize=17.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-     Row(Modifier.weight(1f).clickable{openTasks()},horizontalArrangement=Arrangement.Center,verticalAlignment=Alignment.CenterVertically){
-      val current=messages.lastOrNull{it.optString("role")=="user"}
-      val phase=current?.optString("phase").orEmpty()
-      val status=current?.optString("status").orEmpty()
+     Column(Modifier.weight(1f).fillMaxHeight().clickable{openTasks()},horizontalAlignment=Alignment.CenterHorizontally){
       val visual=when{
        vm.hermesVoicePhase=="recording"->"listening"
        !vm.hermesFresh&&!vm.hermesLoading->"offline"
-       vm.hermesSending||(!vm.hermesFresh&&vm.hermesLoading)||vm.hermesVoicePhase=="transcribing"->"thinking"
-       status in setOf("failed","unknown")->"error"
-       status in setOf("queued","sending","running")->when(phase){"responding","replying","streaming"->"responding";"executing","tool"->"working";else->"thinking"}
+       (!vm.hermesFresh&&vm.hermesLoading)||vm.hermesVoicePhase=="transcribing"->"thinking"
+       worker!=null->"working"
+       current!=null&&status !in setOf("waiting","approval_required")->when(phase){"responding","replying","streaming"->"responding";"executing","tool"->"working";else->"thinking"}
+       avatarActivity.kind=="unknown"->"error"
        else->"idle"
       }
-      HermesCompanion(visual,Modifier.size(58.dp),compact=true,animationActive=vm.active&&vm.hermesVisible)
-      Column(Modifier.padding(start=3.dp),verticalArrangement=Arrangement.spacedBy(2.dp)){
-       Text("Pi",fontSize=Type.Body,fontWeight=FontWeight.SemiBold,color=Ink)
-       val label=when{
-        vm.hermesVoicePhase=="recording"->"正在倾听"
-        vm.hermesFresh&&vm.taskLedgerFresh&&activeTasks>0->"$activeTasks 项后台任务"
-        vm.hermesFresh->hermesActivityStatus(runs,messages)
-        vm.hermesLoading->"连接中"
-        else->"离线记录"
-       }
-       AnimatedContent(label,transitionSpec={fadeIn(tween(150)) togetherWith fadeOut(tween(90))},label="Pi实际阶段"){
-        Text(it,fontSize=Type.Micro,color=if(vm.hermesFresh)Muted else AmberText,maxLines=1)
-       }
-      }
+      HermesCompanion(visual,Modifier.size(64.dp).testTag("hermes-header-avatar"),compact=true,animationActive=vm.active&&vm.hermesVisible)
+      if(avatarPillText!="空闲")AvatarStatusPill(avatarPillText,Modifier.widthIn(min=96.dp,max=220.dp))
      }
      Box{
       Surface(onClick=openTasks,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.8f)){
@@ -241,18 +272,6 @@ private fun hermesToolLabel(name:String):String=when{
   HermesComposer(vm,canSend,motion)
  }
  if(sharedMotion==null)MessageSendMotionOverlay(motion,Modifier.fillMaxSize())
- }
- if(activity)ModalBottomSheet(onDismissRequest={activity=false},containerColor=Paper){
-  Column(Modifier.fillMaxWidth().heightIn(max=560.dp).verticalScroll(rememberScrollState()).padding(horizontal=22.dp).padding(bottom=28.dp)){
-   Row(verticalAlignment=Alignment.CenterVertically){
-    ComIcon(R.drawable.com_icon_activity_v1,null,Modifier.size(24.dp))
-    Text("Pi 活动",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-   }
-   Text(if(vm.hermesFresh)"当前状态：${hermesActivityStatus(runs,messages)}${if(vm.hermesStreaming)" · 实时同步"else" · 快照同步"}"else"离线记录，状态待同步",Modifier.padding(top=4.dp,bottom=8.dp),fontSize=Type.Caption,color=Muted)
-   TaskLedgerSection(vm,runs,messages)
-   WorkProposalSection(vm)
-   SignalActivitySection(vm)
-  }
  }
 }
 
@@ -339,7 +358,7 @@ private fun hermesToolLabel(name:String):String=when{
 
 @Composable private fun HermesComposer(vm:WorkbenchModel,enabled:Boolean,motion:MessageSendMotionState){
  val style=TextStyle(fontSize=Type.Body,lineHeight=22.sp,color=Ink)
- val send:()->Unit={if(enabled&&vm.hermesDraft.isNotBlank()){val rid=vm.hermesPending.optString("request_id").ifBlank{UUID.randomUUID().toString()};motion.begin(rid,vm.hermesDraft.trim());if(vm.sendHermes(rid)==null)motion.cancel()}}
+ val send:()->Unit={if(enabled&&vm.hermesDraft.isNotBlank()){val rid=UUID.randomUUID().toString();motion.begin(rid,vm.hermesDraft.trim());if(vm.sendHermes(rid)==null)motion.cancel()}}
  LaunchedEffect(vm.hermesVoiceAutoSend){
   val text=vm.hermesVoiceAutoSend?:return@LaunchedEffect
   // External draft -> TextFieldValue -> text layout, then use the same submit path.
@@ -351,16 +370,27 @@ private fun hermesToolLabel(name:String):String=when{
  var editing by remember{mutableStateOf(TextFieldValue(value,TextRange(value.length)))}
  LaunchedEffect(value){if(editing.text!=value)editing=TextFieldValue(value,TextRange(value.length))}
  val newline:()->Unit={val start=editing.selection.min;val next=editing.text.replaceRange(start,editing.selection.max,"\n");editing=TextFieldValue(next,TextRange(start+1));vm.updateHermesDraft(next)}
- val pending=vm.hermesPending.optString("text")
+ val pending=vm.hermesOutbox.filter{it.state=="unknown"}
  val voice=vm.hermesVoicePhase
  val context=LocalContext.current
  val haptics=rememberComHaptics()
  val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){granted->
   if(granted)vm.beginHermesVoice()else vm.hermesVoicePermissionDenied()
  }
- if(pending.isNotBlank()&&!vm.hermesSending)Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=3.dp),verticalAlignment=Alignment.CenterVertically){
-  Text("上一条发送结果待核实：${pending.take(48)}",Modifier.weight(1f),fontSize=Type.Caption,color=AmberText,maxLines=2,overflow=TextOverflow.Ellipsis)
-  TextButton(onClick={vm.stopHermesRetry()}){Text("停止重试",fontSize=Type.Caption)}
+ if(pending.isNotEmpty()){
+  var showPending by remember{mutableStateOf(false)}
+  Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=3.dp),verticalAlignment=Alignment.CenterVertically){
+   Text("${pending.size} 条接收结果待核实",Modifier.weight(1f),fontSize=Type.Caption,color=AmberText)
+   TextButton(onClick={vm.refreshHermesNow()}){Text("核对回执",fontSize=Type.Caption)}
+   TextButton(onClick={showPending=!showPending}){Text(if(showPending)"收起" else "查看",fontSize=Type.Caption)}
+  }
+  if(showPending)Column(Modifier.heightIn(max=150.dp).verticalScroll(rememberScrollState())){pending.forEach{entry->
+   Row(Modifier.fillMaxWidth().padding(horizontal=20.dp),verticalAlignment=Alignment.CenterVertically){
+    Text(entry.text,Modifier.weight(1f),fontSize=Type.Caption,color=Muted,maxLines=2,overflow=TextOverflow.Ellipsis)
+    TextButton(onClick={vm.retryHermes(entry.id)},enabled=enabled&&vm.hermesFresh){Text("重试原消息",fontSize=Type.Caption)}
+    TextButton(onClick={vm.stopHermesRetry(entry.id)}){Text("保留待核实",fontSize=Type.Caption)}
+   }
+  }}
  }
  if(vm.hermesSendNote.isNotBlank())Text(vm.hermesSendNote,Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=2.dp),fontSize=Type.Caption,color=AmberText)
  if(vm.hermesVoiceNote.isNotBlank())Text(vm.hermesVoiceNote,Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=2.dp),fontSize=Type.Caption,color=AmberText)
@@ -375,7 +405,7 @@ private fun hermesToolLabel(name:String):String=when{
    BasicTextField(editing,{editing=it;vm.updateHermesDraft(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=120.dp).padding(horizontal=9.dp,vertical=10.dp).testTag("hermes-composer").messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).messageSendComposerBounds(motion),readOnly=voice!="idle",textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(voice=="idle")send()}),onTextLayout={motion.updateComposerLayout(it,style)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(value.isBlank())Text(if(voice=="recording")"录音中 ${vm.hermesVoiceSeconds} 秒…"else"消息",style=style.copy(color=Faint));inner()}})
    if(value.isNotBlank()&&voice=="idle")IconButton(onClick=newline,modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.KeyboardReturn,"插入换行",Modifier.size(19.dp),tint=Muted)}
    if(value.isBlank()||voice!="idle"){
-    val voiceEnabled=voice=="recording"||voice=="idle"&&pending.isBlank()&&vm.hermesVoiceSaved.isBlank()&&vm.store.token.isNotBlank()
+    val voiceEnabled=voice=="recording"||voice=="idle"&&vm.hermesVoiceSaved.isBlank()&&vm.store.token.isNotBlank()
     IconButton(onClick={
      if(voice=="recording")vm.finishHermesVoice()
      else if(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)vm.beginHermesVoice()
@@ -392,4 +422,5 @@ private fun hermesToolLabel(name:String):String=when{
   }
  }
  if(!enabled)Text(if(vm.store.token.isBlank())"配对后可与 Pi 对话"else if(vm.hermesSending)"正在发送"else"Pi 未连接，草稿会保留",Modifier.fillMaxWidth().padding(start=24.dp,bottom=7.dp),fontSize=Type.Caption,color=AmberText)
+ else if(!vm.hermesFresh)Text("离线 · 新消息会先保存在手机",Modifier.fillMaxWidth().padding(start=24.dp,bottom=7.dp),fontSize=Type.Caption,color=Muted)
 }

@@ -1,6 +1,7 @@
 """Com-owned Pi RPC supervisor. Native ACK never means execution or delivery."""
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,28 @@ def assistant_text(message):
     return '\n'.join(b.get('text', '') for b in content if isinstance(b, dict) and b.get('type') == 'text')
 
 
+def rejection_labels(error):
+    """Fixed diagnostic labels only; native errors can contain auth values."""
+    value = str(error).lower()
+    patterns = {'permission_denied': r'eperm|eacces|permission denied|operation not permitted',
+                'auth_lock': r'auth\.json\.lock|auth storage lock',
+                'auth_file': r'auth\.json', 'missing_api_key': r'no api key|api key (?:not found|missing)|missing api key',
+                'source_mismatch': r'com input source mismatch',
+                'file_missing': r'enoent|no such file', 'session_file': r'session',
+                'mkdir': r'\bmkdir\b', 'utime': r'\butimes?\b', 'rmdir': r'\brmdir\b',
+                'unlink': r'\bunlink\b', 'chmod': r'\bchmod\b', 'open': r'\bopen\b',
+                'timeout': r'timeout|timed out'}
+    return sorted(name for name, pattern in patterns.items() if re.search(pattern, value)) or ['unclassified']
+
+
+class PiRPCRejected(ValueError):
+    def __init__(self, command, labels, native_started):
+        self.command, self.labels, self.native_started = command, labels, native_started
+        self.reason_code = ('auth_lock_denied' if 'auth_lock' in labels and 'permission_denied' in labels
+                            else 'auth_unavailable' if 'missing_api_key' in labels else 'native_prompt_rejected')
+        super().__init__('Pi RPC 拒绝 ' + command + '（' + ','.join(labels) + '）')
+
+
 class PiRPC:
     def __init__(self, state, name, cwd, *, argv=None, emit=None, env=None, tools=True,isolated=False,readonly=False):
         self.root = Path(state) / 'pi-rpc' / name
@@ -29,7 +52,8 @@ class PiRPC:
         self.env.pop('PI_GATEWAY_LANE', None)
         self.env['PATH'] = os.pathsep.join(dict.fromkeys([str(Path.home()/'bin'), '/usr/local/bin', '/opt/homebrew/bin', *self.env.get('PATH',os.defpath).split(os.pathsep)]))
         self.env.update(COM_PI_CONTEXT=str(self.root / 'context.json'),
-                        COM_STATE=str(state), TZ='Asia/Shanghai', PI_OFFLINE='1')
+                        COM_STATE=str(state), TZ='Asia/Shanghai', PI_OFFLINE='1',
+                        COM_PI_OPERATIONAL_TOOLS='1' if tools else '0')
         self.tools = tools
         self.isolated,self.readonly=isolated,readonly
         self.state=Path(state)
@@ -51,6 +75,9 @@ class PiRPC:
         if saved.exists():
             self.session = json.loads(saved.read_text()).get('sessionFile')
         self.context = {}
+        self.input_contexts = {}
+        self.command_lock = asyncio.Lock()
+        self.native_started = False
 
     @property
     def alive(self):
@@ -70,6 +97,18 @@ class PiRPC:
         temp.chmod(0o600)
         temp.replace(target)
 
+    def stage_input(self, request_id, context):
+        """Private source records are selected only by a real native user echo."""
+        if not isinstance(request_id, str) or not request_id or any(char in request_id for char in ']\r\n\0'):
+            raise ValueError('Pi input 标识无效')
+        self.input_contexts[request_id] = dict(context)
+        directory = self.root / 'inputs'
+        directory.mkdir(exist_ok=True)
+        directory.chmod(0o700)
+        target = directory / (hashlib.sha256(request_id.encode()).hexdigest() + '.json')
+        target.write_text(json.dumps({'request_id': request_id, 'context': context}, ensure_ascii=False))
+        target.chmod(0o600)
+
     def command(self):
         if self.argv:
             return self.argv
@@ -80,6 +119,9 @@ class PiRPC:
         if self.name == 'main':
             from pi_main import MAIN_PROMPT
             args += ['--system-prompt',MAIN_PROMPT]
+        # Do not use --tools here: native Pi treats it as an allowlist that
+        # removes extension tools too. com-pi activates loaded tools through
+        # the official API when COM_PI_OPERATIONAL_TOOLS is enabled.
         settings = Path.home() / '.pi/agent/settings.json'
         if self.tools and settings.exists():
             cfg = json.loads(settings.read_text())
@@ -152,13 +194,19 @@ class PiRPC:
                 except ValueError:
                     continue
                 typ = event.get('type')
+                if typ in {'message_start', 'agent_start', 'tool_execution_start'}:
+                    self.native_started = True
                 if typ == 'response':
                     future = self.pending.get(event.get('id'))
                     if future and not future.done():
                         if event.get('success', True):
                             future.set_result(event)
                         else:
-                            future.set_exception(ValueError('Pi RPC 拒绝 ' + str(event.get('command', 'command'))))
+                            command = event.get('command')
+                            command = command if command in {'prompt', 'steer', 'get_state', 'clear_queue', 'abort'} else 'command'
+                            labels = rejection_labels(event.get('error', ''))
+                            self.record({'kind': 'rpc.rejected', 'command': command, 'error_labels': labels})
+                            future.set_exception(PiRPCRejected(command, labels, self.native_started))
                     continue
                 if typ == 'extension_ui_request':
                     # RPC has no human UI; confirmations fail closed, notifications get no reply.
@@ -168,11 +216,16 @@ class PiRPC:
                     continue
                 if typ == 'message_start' and event.get('message', {}).get('role') == 'user':
                     text = assistant_text(event['message'])
-                    marker = '[Com input:'
-                    if marker in text:
-                        for ident in re.findall(r'\[Com input:([^\]]+)\]',text):
+                    marker = re.match(r'^\[Com input:([^\]\n]+)\]\n', text)
+                    if marker:
+                        ident = marker.group(1)
+                        # Markers inside quotes or tool output cannot claim a source.
+                        if ident in self.input_contexts:
+                            self.bind(self.input_contexts[ident])
                             self.delivered.add(ident)
                             self.record({'kind': 'input.delivered', 'request_id': ident})
+                            if self.queue is not None:
+                                await self.queue.put({'type': 'com_input_delivered', 'request_id': ident})
                 saved=event
                 if typ=='message_update':
                     msg=event.get('message',{})
@@ -198,15 +251,19 @@ class PiRPC:
                 if self.queue is not None:
                     await self.queue.put({'type': 'com_disconnected'})
 
-    async def stream(self, text, request_id=None):
+    async def stream(self, text, request_id=None, *, context=None):
         async with self.turn_lock:
             await self.start()
             self.run_id = request_id or uuid.uuid4().hex
+            self.native_started = False
+            self.stage_input(self.run_id, context or self.context)
+            self.bind(context or self.context)
             self.queue = asyncio.Queue()
             self.busy = True
             try:
                 yield 'run.started', {'run_id': self.run_id}
-                await self.request({'type': 'prompt', 'message': f'[Com input:{self.run_id}]\n{text}'})
+                async with self.command_lock:
+                    await self.request({'type': 'prompt', 'message': f'[Com input:{self.run_id}]\n{text}'})
                 yield 'input.accepted', {'request_id':self.run_id}
                 final = ''
                 error = False
@@ -214,7 +271,9 @@ class PiRPC:
                 while True:
                     event = await asyncio.wait_for(self.queue.get(), max(.01, deadline - time.monotonic()))
                     typ = event.get('type')
-                    if typ == 'message_update':
+                    if typ == 'com_input_delivered':
+                        yield 'input.delivered', {'request_id': event['request_id'], 'run_id': self.run_id}
+                    elif typ == 'message_update':
                         delta = event.get('assistantMessageEvent', {})
                         if delta.get('type') == 'text_delta':
                             yield 'assistant.delta', {'delta': delta.get('delta', '')}
@@ -233,8 +292,28 @@ class PiRPC:
                         yield 'error', {'uncertain': True}
                         break
                     elif typ == 'agent_settled':
+                        # An idle race can ACK a steer after the run settled. Remove
+                        # that queue before another prompt can replay it implicitly.
+                        async with self.command_lock:
+                            await self.request({'type': 'clear_queue'})
                         yield ('error' if error else 'run.completed'), {'run_id': self.run_id, 'uncertain': error}
                         break
+                yield 'done', {}
+            except asyncio.CancelledError:
+                with contextlib.suppress(Exception):
+                    await self.abort()
+                raise
+            except PiRPCRejected as error:
+                # Native 0.99.2 reports a rejected prompt only before its
+                # preflight-success callback. Any observed start remains unknown.
+                not_sent = (error.command == 'prompt' and not error.native_started
+                            and self.run_id not in self.delivered)
+                if not not_sent:
+                    with contextlib.suppress(Exception):
+                        await self.abort()
+                yield 'error', {'uncertain': not not_sent, 'native_rejection': True,
+                                'delivery': 'not_sent' if not_sent else 'unknown',
+                                'reason_code': error.reason_code, 'native_started': error.native_started}
                 yield 'done', {}
             except (asyncio.TimeoutError, RuntimeError, ValueError):
                 with contextlib.suppress(Exception):
@@ -243,14 +322,19 @@ class PiRPC:
                 yield 'done', {}
             finally:
                 self.queue = None
+                self.busy = False
 
-    async def steer(self, text, request_id):
-        if not self.alive or not self.busy:
-            raise ValueError('Pi 没有活动 turn')
-        await self.request({'type': 'steer', 'message': f'[Com input:{request_id}]\n{text}'})
+    async def steer(self, text, request_id, *, context=None):
+        async with self.command_lock:
+            if not self.alive or not self.busy:
+                return {'state': 'not_sent'}
+            self.stage_input(request_id, context or self.context)
+            await self.request({'type': 'steer', 'message': f'[Com input:{request_id}]\n{text}'})
         return {'state': 'delivered' if request_id in self.delivered else 'worker_queued'}
 
     async def abort(self):
+        # Pi abort resumes queued inputs unless the native queue is cleared first.
+        await self.request({'type': 'clear_queue'})
         await self.request({'type': 'abort'})
 
     async def stop(self):

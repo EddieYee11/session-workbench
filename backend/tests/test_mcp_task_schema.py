@@ -22,3 +22,19 @@ def test_constraint_tool_requires_explicit_enum_without_authorizing_notes():
     assert set(kind['enum'])=={'read_only','preserve_style','forbid_path','note'}
     assert 'default' not in kind
     assert "text=''" in tool.description and 'blocked' in tool.description
+
+
+def test_delegation_schema_defaults_to_full_access_but_keeps_real_source_required():
+    pytest.importorskip('mcp')
+    import hermes_mcp
+    tools=asyncio.run(hermes_mcp.mcp.list_tools())
+    for name in ('create_task','task_submit'):
+        tool=next(t for t in tools if t.name==name)
+        schema=tool.inputSchema
+        assert schema['properties']['sandbox']['default']=='danger-full-access'
+        assert 'sandbox' not in schema['required']
+        assert {'source_quote','origin_message_id','origin_request_id','origin_session_id'}<=set(schema['required'])
+        assert 'audit' in tool.description and 'danger-full-access' in tool.description
+        assert tool.annotations.readOnlyHint is False
+    merge=next(t for t in tools if t.name=='task_merge')
+    assert 'historical workspace_copy' in merge.description and 'need no merge' in merge.description

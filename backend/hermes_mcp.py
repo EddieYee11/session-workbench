@@ -28,7 +28,7 @@ COM_BASE_URL = "http://127.0.0.1:8650"
 COM_TOKEN_FILE = Path.home() / ".session-workbench" / "token"
 MAX_RESPONSE_BYTES = 1_000_000
 
-mcp = FastMCP("com-personal-readonly")
+mcp = FastMCP("com-personal")
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 PROPOSAL_ONLY = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 
@@ -126,14 +126,16 @@ def _post(route: str, body: dict[str, Any]) -> dict[str, Any]:
     'agent="pi" with sandbox="danger-full-access" for the pre-installed Pi capabilities shown in the Com context '
     '(bookkeeping, reminders, calendar, collecting links, video transcripts, images, NAS files) — when the user '
     'asks for one of those, queue it directly instead of asking whether to do it. '
-    'agent="codex" for work on project files: read-only by default, workspace-write only for explicit code changes. '
+    'Pi, Claude Code and Codex all run with sandbox="danger-full-access". '
+    'The owner revoked Com read-only restrictions; old sandbox/read_only fields remain audit data, not execution limits. '
     'Only irreversible deletion, clearing or wiping needs propose_work; everything else the user explicitly asked for goes straight through. '
     'Provide goal, constraints and completion_condition. Return immediately; queued is accepted, not started or complete. '
     'For separate assignments create separate tasks with stable distinct request IDs; reuse an existing task for follow-ups. '
     'Do not create tasks from small talk, feelings, vague wishes, or ambiguous references.'), annotations=PROPOSAL_ONLY)
-def create_task(agent: str, relative_cwd: str, title: str, prompt: str, sandbox: str,
+def create_task(agent: str, relative_cwd: str, title: str, prompt: str,
                 completion_condition: str, source_quote: str, origin_session_id: str,
-                origin_message_id: str, origin_request_id: str, request_id: str) -> dict[str, Any]:
+                origin_message_id: str, origin_request_id: str, request_id: str,
+                sandbox: str = 'danger-full-access') -> dict[str, Any]:
     return task_submit(**locals())
 
 
@@ -189,8 +191,8 @@ def recent_work_sessions(limit: int = 5, agent: str = "") -> dict[str, Any]:
         "Propose for the user's explicit approval an action that must not run unattended — "
         "irreversible deletion or clearing of files or data. "
         "This saves a proposal card only; it cannot start work or approve itself. "
-        "Pi currently has full workspace access, so its sandbox must be "
-        "danger-full-access and the approval card will show that fact."
+        "Pi, Claude Code and Codex currently use danger-full-access; "
+        "the approval card records that permission while requiring approval for this specific destructive action."
     ),
     annotations=PROPOSAL_ONLY,
 )
@@ -270,7 +272,7 @@ def personal_tasks() -> dict[str, Any]:
 
 @mcp.tool(description=(
     "Update an exact existing task ID; ask if ambiguous. constraint_type is REQUIRED: "
-    "choose read_only for 'keep read-only/do not modify files' and set text=''; "
+    "legacy read_only is audit-only under the owner's revoked read-only restrictions; set text=''; "
     "choose preserve_style for 'keep the current style' and set text=''; "
     "choose forbid_path for a restricted project-relative path and put ONLY that path in text. "
     "These structured restrictions are queued within existing task authorization, including before the worker starts. "
@@ -281,7 +283,7 @@ def update_task_constraints(
     task_id: str,
     text: Annotated[str, Field(description="Empty string for read_only or preserve_style; a project-relative path for forbid_path; arbitrary information for blocked note only.")],
     request_id: str,
-    constraint_type: Annotated[Literal['read_only','preserve_style','forbid_path','note'], Field(description="Required restriction kind. User says keep read-only/no file changes: read_only. Keep visual style: preserve_style. Protect a path: forbid_path. Other text: note, which cannot authorize execution.")],
+    constraint_type: Annotated[Literal['read_only','preserve_style','forbid_path','note'], Field(description="Required recorded requirement kind. read_only is legacy audit data and cannot reduce Com's current full-access permission. Keep visual style: preserve_style. Protect a path: forbid_path. Other text: note, which cannot fabricate authorization.")],
 ) -> dict[str, Any]:
     return _shared('task_send',{'task_id':task_id,'text':text,'request_id':request_id,
                               'constraint_type':constraint_type},_active_source())
@@ -303,7 +305,7 @@ def cancel_task(task_id: str, request_id: str, origin_message_id: str,
 
 
 def _shared(name:str,args:dict[str,Any],context:dict[str,Any]|None=None)->dict[str,Any]:
-    if name not in {'capability_search','task_submit','task_status','task_send','task_cancel','propose_work'}:
+    if name not in {'capability_search','task_submit','task_status','task_send','task_cancel','task_resume','task_verify','task_merge','propose_work'}:
         raise ValueError('Route is not allowed')
     with httpx.Client(timeout=10,trust_env=False,follow_redirects=False) as client:
         response=client.post(COM_BASE_URL+'/internal/agent/'+name,
@@ -319,9 +321,11 @@ def capability_search(query:str='',runtime:str='')->dict[str,Any]:
     return _shared('capability_search',{'query':query,'runtime':runtime or None})
 
 
-@mcp.tool(description='Queue an explicit, source-bound assignment through the common Com service. ACK is not execution.',annotations=PROPOSAL_ONLY)
-def task_submit(agent:str,relative_cwd:str,title:str,prompt:str,sandbox:str,completion_condition:str,
-                source_quote:str,origin_session_id:str,origin_message_id:str,origin_request_id:str,request_id:str)->dict[str,Any]:
+@mcp.tool(description='Queue an explicit, source-bound assignment through the common Com service. Pi/Claude/Codex use danger-full-access; previous read-only constraints are audit-only. ACK is not execution. Do not replay unknown side effects.',annotations=PROPOSAL_ONLY)
+def task_submit(agent:str,relative_cwd:str,title:str,prompt:str,completion_condition:str,
+                source_quote:str,origin_session_id:str,origin_message_id:str,origin_request_id:str,request_id:str,
+                goal_id:str='',plan_node_id:str='',depends_on:list[str]|None=None,
+                acceptance_criteria:list[dict[str,str]]|None=None,sandbox:str='danger-full-access')->dict[str,Any]:
     data=locals()
     context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
     return _shared('task_submit',data,context)
@@ -332,7 +336,7 @@ def task_status(task_id:str='')->dict[str,Any]:
     return _shared('task_status',{'task_id':task_id})
 
 
-@mcp.tool(description='Send a source-bound task restriction or existing authorized continuation. ACK is not delivery.',annotations=PROPOSAL_ONLY)
+@mcp.tool(description='Send a source-bound current task requirement or existing authorized continuation. Previous read_only restrictions remain audit-only under full access. ACK is not delivery.',annotations=PROPOSAL_ONLY)
 def task_send(task_id:str,text:str,request_id:str,origin_session_id:str,origin_message_id:str,
               origin_request_id:str,constraint_type:Literal['read_only','preserve_style','forbid_path','note']='note')->dict[str,Any]:
     data=locals()
@@ -345,6 +349,28 @@ def task_cancel(task_id:str,request_id:str,origin_session_id:str,origin_message_
     data=locals()
     context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
     return _shared('task_cancel',data,context)
+
+
+@mcp.tool(description='Resume a confirmed not-yet-started paused task from a real user continuation. Never replay uncertain work.',annotations=PROPOSAL_ONLY)
+def task_resume(task_id:str,request_id:str,origin_session_id:str,origin_message_id:str,origin_request_id:str)->dict[str,Any]:
+    data=locals()
+    context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
+    return _shared('task_resume',data,context)
+
+
+@mcp.tool(description='Verify actual files/tests and optional semantic requirement coverage for a source-linked finished task.',annotations=PROPOSAL_ONLY)
+def task_verify(task_id:str,checks:list[dict[str,Any]],origin_session_id:str,origin_message_id:str,
+                origin_request_id:str,quality_review:bool=False)->dict[str,Any]:
+    data=locals()
+    context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
+    return _shared('task_verify',data,context)
+
+
+@mcp.tool(description='Merge a verified historical workspace_copy under the persisted authorized scope. Current full-access tasks run directly in the original directory and need no merge.',annotations=PROPOSAL_ONLY)
+def task_merge(task_id:str,origin_session_id:str,origin_message_id:str,origin_request_id:str)->dict[str,Any]:
+    data=locals()
+    context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
+    return _shared('task_merge',data,context)
 
 
 if __name__ == "__main__":

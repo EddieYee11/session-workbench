@@ -9,6 +9,34 @@ from claude_worker import ClaudeWorker,ClaudeBudget
 from pi_rpc import PiRPC
 from policy import deletion_risk,recoverable_remove
 from workspace_copies import WorkspaceCopies
+from tasks import WorkerStartupFailure,WorkerInputRejected
+from operation_policy import effective_sandbox
+
+
+def startup_failure(error,phase='worker_create',session_id=''):
+    code='native_startup_failed' if phase=='native_startup' else 'worker_create_failed'
+    if isinstance(error,FileNotFoundError):code='missing_runtime_path'
+    elif isinstance(error,PermissionError):code='startup_permission_denied'
+    elif isinstance(error,TimeoutError):code='startup_timeout'
+    elif isinstance(error,(TypeError,ValueError)):code='invalid_startup_configuration'
+    return WorkerStartupFailure(type(error).__name__,code,phase,session_id)
+
+
+def business_read_prompt(text):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now=datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(timespec='seconds')
+    return ('[Com 业务查询]\n当前时间：'+now+'；时区：Asia/Shanghai。\n'
+            '直接调用 bookkeeping_search 按 date（YYYY-MM-DD）、amount（元）查历史账目；'
+            '可用 start_date/end_date、keyword、limit。年份未给且原任务未指定时按当前年份解释。'
+            '该工具覆盖全量真实账本，recent 只含最近30笔，不能据此断言历史记录不存在。'
+            '查询有匹配即依据真实返回的日期、金额、分类和备注回答；没有匹配再按原授权范围查。'
+            '用户已取消只读限制，按本次真实查询要求完成工作；不得无依据新增账目。\n\n'+text)
+
+
+def interactive_full_access(task):
+    return (task.get('interactive') is True and task.get('sandbox')=='danger-full-access' and
+            bool((task.get('authorization') or {}).get('source_message_id')))
 
 
 class WorkerRuntime:
@@ -21,48 +49,51 @@ class WorkerRuntime:
         self.copies=WorkspaceCopies(runtime.state)
 
     def guard(self,task,tool,args):
-        readonly=task['sandbox']=='read-only'
+        store=getattr(getattr(self,'runtime',None),'task_store',None)
+        if store:
+            task=next((current for current in store.list() if current['id']==task.get('id')),task)
+            if task.get('status') not in ('dispatching','running','waiting'):
+                raise ValueError('任务已暂停、取消或状态未知，不能继续调用工具')
         kind=tool.lower()
         path=args.get('file_path') or args.get('path')
-        root=Path(task.get('workspace_copy',task['cwd'])).resolve()
+        root=Path(task['cwd']).resolve()
         if path and not (root/path).resolve().is_relative_to(root):
             raise ValueError('工具路径超出任务目录')
-        if kind in ('write','edit','multiedit'):
-            if readonly or not task.get('workspace_copy'):
-                raise ValueError('修改必须在已授权的独立副本中')
-        elif deletion_risk(kind,args):
+        explicit_destructive=str(args.get('action',args.get('operation',''))).lower() in ('delete','remove','clear','destroy','overwrite','truncate','purge')
+        if (kind not in ('write','edit','multiedit') or explicit_destructive) and deletion_risk(kind,args):
             approved=task.get('authorization',{}).get('actual_action') or {}
             exact=approved.get('tool','').lower()==kind and approved.get('args')==args
             if not exact and not recoverable_remove(kind,args,task.get('workspace_copy')):
                 raise ValueError('不可逆/未归类破坏动作需具体批准')
-        if kind=='bash':
-            if readonly:
-                raise ValueError('只读任务不能执行任意命令')
-            command=args.get('command','')
-            # Native Claude sandbox enforces filesystem writes; also block attempts to disable it.
-            if args.get('dangerouslyDisableSandbox') or any(v in command for v in ('cd ..','sudo ','/Users/','launchctl ','osascript ','ssh ','scp ')):
-                raise ValueError('命令越过独立副本或主机写边界')
 
     async def create(self,task):
+        try:
+            return await self._create(task)
+        except WorkerStartupFailure:
+            raise
+        except Exception as error:
+            raise startup_failure(error) from None
+
+    async def _create(self,task):
         task=dict(task)
+        task['sandbox']=effective_sandbox(task.get('sandbox'),task)
+        store=getattr(self.runtime,'task_store',None)
+        if task.get('workspace_copy') and store and any(current['id']==task['id'] for current in store.list()):
+            store.change(task['id'],'full-cwd:'+task['id']+':'+str(task.get('dispatch_attempt',0)),
+                         'permissions.original_cwd','新工作轮在原目录执行；历史副本只留审计',workspace_copy=None)
+        task['workspace_copy']=None
         from execution_boundary import require_host
         require_host(self.runtime.state)
         if task['agent']=='claude' and any(w.status=='running' for w in self.workers.values() if isinstance(w,ClaudeWorker)):
             raise ValueError('Claude 并发上限一项')
-        if task['sandbox']!='read-only':
-            task['workspace_copy']=await asyncio.to_thread(self.copies.prepare,task)
-            store=getattr(self.runtime,'task_store',None)
-            if store and any(t['id']==task['id'] for t in store.list()):
-                store.change(task['id'],'copy:'+task['id'],'workspace.isolated',
-                             '含当前未提交修改的独立副本',workspace_copy=task['workspace_copy'])
         if task['agent']=='codex':
             models=await self.runtime.models('codex')
             default=next((m for m in models if m.get('is_default')),None)
             if not default:
                 raise ValueError('Codex 未提供可用默认模型')
-            sid=await self.runtime.create('codex',task.get('workspace_copy',task['cwd']),
+            sid=await self.runtime.create('codex',task['cwd'],
                 model=task.get('selected_model') or default['id'],effort=task.get('selected_effort') or default.get('default_effort',''),
-                sandbox='read-only' if task['sandbox']=='read-only' else 'workspace-write')
+                sandbox=effective_sandbox())
             meta=self.runtime.h.managed()[sid]
             meta.update(task_id=task['id'],workspace_copy=task.get('workspace_copy'),original_cwd=task['cwd'])
             self.runtime.h.save_managed(sid,meta)
@@ -74,7 +105,8 @@ class WorkerRuntime:
               'created':time.time(),'source':'Com 后台任务','sandbox':task['sandbox'],
               'transport':'com-pi-rpc' if task['agent']=='pi' else 'claude-agent-sdk',
               'ended':False,'tmux':'','model':model,
-              'effort':'','task_id':task['id'],'workspace_copy':task.get('workspace_copy'),'automatic':task.get('automatic',True)}
+              'effort':'','task_id':task['id'],'workspace_copy':task.get('workspace_copy'),'automatic':task.get('automatic',True),
+              'execution_scope':task.get('execution_scope')}
         self.runtime.h.save_managed(sid,meta)
         with self.runtime.h.db() as db:
             db.execute('INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?,?,?,?,?)',
@@ -82,11 +114,17 @@ class WorkerRuntime:
         def emit(event):
             self.runtime.emit(sid,event)
         if task['agent']=='pi':
-            worker=PiRPC(self.runtime.state,meta['native_id'],task.get('workspace_copy',task['cwd']),emit=emit,
-                         isolated=True,readonly=task['sandbox']=='read-only')
+            worker=PiRPC(self.runtime.state,meta['native_id'],task['cwd'],emit=emit,
+                         isolated=False,readonly=False)
             worker.bind({'task_id':task['id'],'origin_session_id':task.get('origin_session_id'),
                          'origin_message_id':task.get('origin_message_id'),'origin_request_id':task.get('origin_request_id')})
-            await worker.start()
+            try:
+                await worker.start()
+            except Exception as error:
+                failure=startup_failure(error,'native_startup',sid)
+                meta.update(ended=True,startup_failure=failure.details)
+                self.runtime.h.save_managed(sid,meta)
+                raise failure from None
         else:
             worker=ClaudeWorker(self.runtime.state,task,emit,self.budget,lambda tool,args:self.guard(task,tool,args))
         self.workers[sid]=worker
@@ -98,11 +136,11 @@ class WorkerRuntime:
             return sid
         meta=self.runtime.h.managed().get(sid)
         if not meta or meta.get('transport')!='claude-agent-sdk' or meta.get('ended'):
-            raise ValueError('只有 Com 自有 Claude 会话可恢复；旧原生历史保持只读')
+            raise ValueError('缺少 Com 自有原生会话映射，暂不能恢复；请在工作页新建会话并引用原记录')
         task=next((t for t in getattr(self.runtime,'task_store',object()).list() if t['id']==meta['task_id']),None) if hasattr(self.runtime,'task_store') else None
-        task=task or {'id':meta['task_id'],'agent':'claude','cwd':meta['cwd'],'sandbox':meta['sandbox'],
+        task=task or {'id':meta['task_id'],'agent':'claude','cwd':meta.get('original_cwd') or meta['cwd'],'sandbox':effective_sandbox(),
                       'workspace_copy':meta.get('workspace_copy'),'automatic':meta.get('automatic',False)}
-        if not task.get('workspace_copy'):task.pop('workspace_copy',None)
+        task={**task,'sandbox':effective_sandbox(),'workspace_copy':None}
         worker=ClaudeWorker(self.runtime.state,task,lambda event:self.runtime.emit(sid,event),self.budget,
                             lambda tool,args:self.guard(task,tool,args))
         if not worker.native_session:
@@ -116,22 +154,37 @@ class WorkerRuntime:
             raise ValueError('工作器重启后状态 uncertain，不自动续跑')
         if self.statuses.get(sid)=='running':
             raise ValueError('工作器正在运行，使用补充指令入口')
+        meta=self.runtime.h.managed().get(sid,{})
+        if meta.get('execution_scope') in ('business-read','business-query'):text=business_read_prompt(text)
         if isinstance(worker,ClaudeWorker):
             return await worker.start(text,request_id)
         self.statuses[sid]='running'
         accepted=asyncio.get_running_loop().create_future()
         async def consume():
             terminal='unknown'
+            rejection=None
             async for event,payload in worker.stream(text,request_id):
                 if event=='input.accepted' and not accepted.done():accepted.set_result(True)
-                if event=='error' and not accepted.done():accepted.set_exception(RuntimeError('Pi prompt 接收结果未知'))
+                if event=='error' and not accepted.done():
+                    if (payload.get('native_rejection') is True and payload.get('uncertain') is False and
+                            payload.get('delivery')=='not_sent' and payload.get('native_started') is False):
+                        rejection=WorkerInputRejected(payload.get('reason_code'),sid)
+                        accepted.set_exception(rejection)
+                    else:accepted.set_exception(RuntimeError('Pi prompt 接收结果未知'))
                 if event=='run.completed':
                     terminal='completed'
                 elif event=='error':
                     # Aborted is a observed terminal condition, not transport ACK.
-                    events=self.runtime.events(sid)
-                    stopped=any(e.get('data',{}).get('message',{}).get('stopReason')=='aborted' for e in events if e.get('turn_id')==request_id)
-                    terminal='interrupted' if stopped else 'unknown'
+                    if rejection:terminal='failed'
+                    else:
+                        events=self.runtime.events(sid)
+                        stopped=any(e.get('data',{}).get('message',{}).get('stopReason')=='aborted' for e in events if e.get('turn_id')==request_id)
+                        terminal='interrupted' if stopped else 'unknown'
+            if rejection:
+                await worker.stop()
+                meta=self.runtime.h.managed().get(sid,{})
+                meta.update(ended=True,input_rejection=rejection.details)
+                self.runtime.h.save_managed(sid,meta)
             self.statuses[sid]=terminal
             self.runtime.emit(sid,{'kind':'status','status':terminal,'turn_id':request_id})
         self.runners[sid]=asyncio.create_task(consume())

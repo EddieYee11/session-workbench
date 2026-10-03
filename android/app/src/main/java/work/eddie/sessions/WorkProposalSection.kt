@@ -21,14 +21,6 @@ private fun proposalTime(seconds:Double):String=if(seconds<=0)"未知" else runC
   .format(DateTimeFormatter.ofPattern("M月d日 HH:mm",Locale.CHINA))
 }.getOrDefault("未知")
 
-private fun proposalSandbox(agent:String,sandbox:String)=when{
- agent=="pi"->"全权限"
- sandbox=="read-only"->"只读"
- sandbox=="workspace-write"->"工作目录内写入"
- sandbox=="danger-full-access"->"全权限"
- else->"权限待核实"
-}
-
 /** Task authorization is explicit and independent from refresh. */
 private fun proposalStatus(status:String)=when(status){
  "proposed"->"待授权"
@@ -58,7 +50,7 @@ private fun proposalStatus(status:String)=when(status){
    Text(if(vm.workProposalsLoading)"刷新中" else "刷新",fontSize=Type.Caption)
   }
  }
- Text("请核对目录、指令与权限后批准此任务。刷新不会启动工作。",fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
+ Text("请核对目录与指令后批准此任务。刷新不会启动工作。",fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
  if(!vm.workProposalsFresh&&items.isNotEmpty())Text("以下是上次保存的记录；同步后更新。",Modifier.padding(top=5.dp),fontSize=Type.Caption,color=AmberText)
  if(vm.workProposalsError.isNotBlank())Text(vm.workProposalsError,Modifier.padding(top=5.dp),fontSize=Type.Caption,color=AmberText)
  if(vm.workProposalNote.isNotBlank())Text(vm.workProposalNote,Modifier.padding(top=5.dp),fontSize=Type.Caption,color=AmberText)
@@ -75,7 +67,7 @@ private fun proposalStatus(status:String)=when(status){
   Surface(Modifier.fillMaxWidth().padding(top=10.dp),shape=RoundedCornerShape(Radii.L),color=if(status=="proposed"&&!expired)AmberBg else Card,border=BorderStroke(1.dp,if(status=="proposed"&&!expired)AmberLine else Line)){
    Column(Modifier.padding(14.dp)){
     Text(proposal.optString("title").ifBlank{"工作建议"},fontSize=Type.Body,fontWeight=FontWeight.SemiBold,color=Ink)
-    Text("${agent.uppercase(Locale.ROOT)} · ${proposalSandbox(agent,proposal.optString("sandbox"))} · ${if(expired&&status=="proposed")"已过期" else proposalStatus(status)}",Modifier.padding(top=5.dp),fontSize=Type.Caption,color=if(agent=="pi"||proposal.optString("sandbox")=="danger-full-access")AmberText else Muted)
+    Text("${agent.uppercase(Locale.ROOT)} · ${if(expired&&status=="proposed")"已过期" else proposalStatus(status)}",Modifier.padding(top=5.dp),fontSize=Type.Caption,color=Muted)
     Text("工作目录：${proposal.optString("cwd")}",Modifier.padding(top=6.dp),fontSize=Type.Caption,lineHeight=17.sp,color=Muted)
     Text("原因：${proposal.optString("reason")}",Modifier.padding(top=7.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Ink)
     WorkProposalActions(vm,proposal)

@@ -1,4 +1,5 @@
 """Single consumer uses the same Pi turn lock and original authorization context."""
+import asyncio
 import json
 from pi_main import MAIN_PROMPT
 
@@ -13,6 +14,18 @@ class BackgroundEvents:
         event=self.events.claim()
         if not event:
             return False
+        try:
+            return await self._process_event(event)
+        except asyncio.CancelledError:
+            self.events.finish(event['id'], 'uncertain')
+            raise
+        except Exception:
+            # Claim was durable; a source/adapter/receipt failure is uncertain,
+            # never a reason to replay that event or kill the shared consumer.
+            self.events.finish(event['id'], 'uncertain')
+            return True
+
+    async def _process_event(self, event):
         data=event['data']
         if event['kind']=='goal_due':
             current=next((g for g in self.events.list() if g['id']==data.get('goal',{}).get('id')),None)

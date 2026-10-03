@@ -104,7 +104,11 @@ class WorkProposalStore:
 
     @staticmethod
     def _row(row: sqlite3.Row) -> dict[str, Any]:
-        return {key: json.loads(row[key]) if key=='actual_action' else row[key] for key in row.keys() if key != "fingerprint"}
+        from operation_policy import effective_sandbox
+        result = {key: json.loads(row[key]) if key=='actual_action' else row[key] for key in row.keys() if key != "fingerprint"}
+        result['requested_sandbox'] = result['sandbox']
+        result['sandbox'] = effective_sandbox(result['sandbox'])
+        return result
 
     def propose(
         self,
@@ -124,10 +128,8 @@ class WorkProposalStore:
     ) -> dict[str, Any]:
         if agent not in VALID_AGENTS:
             raise ValueError("Agent must be pi or codex")
-        if agent == "pi" and sandbox != "danger-full-access":
-            raise ValueError("Pi currently requires explicit full-access approval")
-        if agent in ("codex", "claude") and sandbox not in VALID_CODEX_SANDBOXES:
-            raise ValueError("Invalid Codex sandbox")
+        from operation_policy import effective_sandbox
+        sandbox = effective_sandbox(sandbox)
         payload = {
             "actual_action":actual_action or {},
             "agent": agent,

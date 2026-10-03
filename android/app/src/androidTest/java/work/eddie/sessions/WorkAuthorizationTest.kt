@@ -1,15 +1,19 @@
 package work.eddie.sessions
 
 import android.app.Application
+import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Rule
 import org.junit.Test
+import org.junit.Assert.*
+import java.io.File
 
 /** Emulator-only UI fixtures; never invoke approval against a live task. */
 class WorkAuthorizationTest {
@@ -39,7 +43,8 @@ class WorkAuthorizationTest {
     @Test fun pendingAuthorizationIsVisibleAtTopOfTaskPage() {
         val vm = model(true)
         ui.setContent { MaterialTheme(colorScheme = Palette) { TaskActivityPage(vm, {}) } }
-        ui.onNodeWithText("待授权 · 1").assertIsDisplayed()
+        ui.onNodeWithTag("task-filter-decision").assertIsDisplayed()
+        ui.onNodeWithTag("task-ledger-pending-A").performClick()
         ui.onNodeWithText("允许并启动").assertIsDisplayed().assertIsEnabled()
         ui.onNodeWithText("拒绝").assertIsDisplayed().assertIsEnabled()
         ui.onNodeWithText("查看完整执行指令").performClick()
@@ -52,6 +57,47 @@ class WorkAuthorizationTest {
         ui.onNodeWithText("核对记账通道").performClick()
         ui.onNodeWithText("允许并启动").assertIsDisplayed().assertIsEnabled()
         ui.onNodeWithText("拒绝").assertIsDisplayed().assertIsEnabled()
+        ui.onNodeWithText("工作任务 · example").assertIsDisplayed()
+        ui.onNodeWithText("只读检查").assertDoesNotExist()
+    }
+
+    @Test fun workSourceReturnsToConfirmedNativeMessageInsteadOfHiddenMainParent() {
+        val vm = model(true)
+        val oldBase = vm.store.base
+        ui.runOnUiThread {
+            vm.store.base = "https://127.0.0.1:9"
+            vm.taskLedger = JSONObject().put("items", JSONArray().put(JSONObject()
+                .put("id", "native-task").put("title", "工作页交办").put("agent", "codex").put("status", "unknown")
+                .put("message_id", "hidden-main-parent").put("source_session_id", "native-source-session")
+                .put("source_message_id", "native-source-message")))
+            vm.workProposals = JSONObject().put("items", JSONArray())
+        }
+        try {
+            ui.setContent { MaterialTheme(colorScheme = Palette) { Column { TaskLedgerSection(vm, emptyList(), emptyList(), "native-task") } } }
+            ui.onNodeWithTag("task-source-native-task").performClick()
+            ui.runOnIdle {
+                assertEquals("native-source-session", vm.selected)
+                assertEquals("native-source-message", vm.targetMessage)
+                assertEquals(1, vm.externalWorkRoute)
+                assertEquals(0, vm.externalHermesRoute)
+            }
+        } finally { ui.runOnUiThread { vm.store.prefs.edit().putString("base", oldBase).apply() } }
+    }
+
+    @Test fun newWorkAlwaysUsesFullPermissionWithoutRestrictedChoices() {
+        val vm = model(false)
+        ui.runOnUiThread { vm.connected = false }
+        ui.setContent { MaterialTheme(colorScheme = Palette) { NewSession(vm, "codex", {}) } }
+        ui.onNodeWithText("高级设置").performClick()
+        ui.onNodeWithTag("work-operation-permission").assertIsDisplayed().assertHasNoClickAction()
+        ui.onNodeWithText("只读", substring = false).assertDoesNotExist()
+        ui.onNodeWithText("工作目录内写入", substring = false).assertDoesNotExist()
+        ui.onNodeWithText("Claude", substring = false).performClick()
+        ui.onNodeWithTag("work-operation-permission").assertIsDisplayed().assertHasNoClickAction()
+        val image = ui.onNodeWithTag("advanced-session-sheet").captureToImage().asAndroidBitmap()
+        File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null), "com-work-full-permission.png").outputStream().use {
+            image.compress(Bitmap.CompressFormat.PNG, 100, it)
+        }
     }
 
     @Test fun cachedAuthorizationNeverAllowsOfflineExecution() {

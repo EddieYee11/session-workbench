@@ -20,7 +20,7 @@ class SendEntryGuardsTest {
  @Test fun unavailableReferenceServicePreservesHermesDraftAndDoesNotAllocateRequest(){
   val vm=model()
   InstrumentationRegistry.getInstrumentation().runOnMainSync {
-   vm.hermesPending=JSONObject();vm.messageReferencesAvailable=false
+   vm.hermesOutbox=emptyList();vm.messageReferencesAvailable=false
    vm.updateHermesDraft("请解释这段引用")
    vm.hermesReference=JSONObject().put("mode","reply").put("id","source")
    assertNull(vm.sendHermes("guard-reference-request"))

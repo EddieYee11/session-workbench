@@ -120,23 +120,80 @@ private fun scopeText(calendar:JSONObject):String{
  }
 }
 
-@Composable fun PersonalSourcesPage(vm:WorkbenchModel,back:()->Unit){
+private fun financeTodayExpense(finance:JSONObject):String{
+ val totals=finance.optJSONObject("totals")?:return ""
+ val currency=totals.keys().asSequence().toList().sorted().singleOrNull()?:return ""
+ val row=totals.optJSONObject(currency)?:return ""
+ return "今日支出 ${formatMinorAmount(row.optLong("today_expense_minor"),currency)}"
+}
+
+private fun todayDateLabel():String=runCatching{
+ LocalDate.now(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M月d日 EEEE",Locale.CHINA))
+}.getOrDefault("")
+
+/** 页头一句话替代原技术副标题：先告诉你今天要做什么决定。 */
+@Composable private fun TodayStatusLine(vm:WorkbenchModel){
+ val finance=vm.personal.optJSONObject("finance")?:JSONObject()
+ val decisions=todayDecisionItems(vm).count{!it.signals}
+ val ongoing=todayOngoingTasks(vm).size
+ val parts=mutableListOf("${decisions} 件待你决定","${ongoing} 件在执行")
+ val expense=if(finance.optBoolean("available"))financeTodayExpense(finance) else ""
+ if(expense.isNotBlank())parts+=expense
+ Text(parts.joinToString(" · "),Modifier.padding(top=6.dp,bottom=14.dp),fontSize=Type.Caption,color=if(decisions>0)Ink else Muted)
+}
+
+/** 账本降为一行数字，不再占一张卡。 */
+@Composable private fun FinanceSummaryLine(finance:JSONObject,fresh:Boolean,hasSnapshot:Boolean,open:()->Unit){
+ val available=finance.optBoolean("available")
+ val totals=finance.optJSONObject("totals")?:JSONObject()
+ val currencies=totals.keys().asSequence().toList().sorted()
+ val currency=currencies.firstOrNull()
+ val row=currency?.let{totals.optJSONObject(it)}?:JSONObject()
+ val summary=when{
+  !hasSnapshot->"连接后读取 ezBookkeeping 月概况"
+  !available->sourceProblem(finance.optString("error_code"))
+  currency==null->"本月暂无记账数据"
+  else->"本月支出 ${formatMinorAmount(row.optLong("expense_minor"),currency)} · 今日 ${formatMinorAmount(row.optLong("today_expense_minor"),currency)}"+(if(currencies.size>1)" · 等 ${currencies.size} 种币种" else "")
+ }
+ PolishCard(Modifier.fillMaxWidth(),onClick=open){
+  Row(Modifier.padding(horizontal=18.dp,vertical=16.dp),verticalAlignment=Alignment.CenterVertically){
+   ComIcon(R.drawable.com_icon_finance_v1,null,Modifier.size(22.dp))
+   Column(Modifier.weight(1f).padding(start=10.dp)){
+    Text("本月账本",fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Ink)
+    Text(summary,Modifier.padding(top=2.dp),fontSize=Type.Caption,color=if(hasSnapshot&&available)Muted else AmberText,maxLines=1,overflow=TextOverflow.Ellipsis)
+   }
+   ComIcon(R.drawable.com_icon_chevron_v1,"打开账本",Modifier.size(20.dp))
+  }
+ }
+ if(hasSnapshot&&available)SourceLine(finance.optString("source","ezBookkeeping"),finance,fresh)
+}
+
+/** 今天只回答一个问题：我现在要做什么决定。 */
+@Composable fun PersonalSourcesPage(
+ vm:WorkbenchModel,
+ openTask:(String,String)->Unit,
+ openTasks:(String)->Unit,
+ openDetail:(String)->Unit,
+ openSignals:()->Unit,
+){
  val overview=vm.personal
- val calendar=overview.optJSONObject("calendar")?:JSONObject()
  val finance=overview.optJSONObject("finance")?:JSONObject()
  val hasSnapshot=overview.has("generated_at")
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally){
   Column(Modifier.widthIn(max=820.dp).fillMaxWidth()){
    Row(verticalAlignment=Alignment.CenterVertically){
-    IconButton(onClick=back){ComIcon(R.drawable.com_icon_back_v1,"返回 Pi",Modifier.size(24.dp))}
-    Text("今天",Modifier.weight(1f).padding(start=7.dp),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+    Text("今天${todayDateLabel().let{if(it.isBlank())"" else " · $it"}}",Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     IconButton(onClick={vm.refreshPersonalNow()},enabled=!vm.personalLoading&&vm.store.token.isNotEmpty()){ComIcon(R.drawable.com_icon_refresh_v1,"刷新来源",Modifier.size(24.dp),alpha=if(vm.personalLoading).5f else 1f)}
    }
-   Text("手机日历直接读取 · 账本与任务由 Mac mini 同步",Modifier.padding(start=54.dp,bottom=14.dp),fontSize=Type.Caption,color=Muted)
-   PhoneCalendarCard()
+   if(vm.personalError.isNotBlank()&&!vm.personalFresh)Text(vm.personalError,Modifier.padding(top=6.dp),fontSize=Type.Caption,color=AmberText)
+   TodayStatusLine(vm)
+   TodayDecisionCard(vm,openTask,{openTasks("all")},openSignals)
    Spacer(Modifier.height(14.dp))
-   FinanceOverviewCard(finance,vm.personalFresh,hasSnapshot,false){}
-   TodaySections(vm){vm.showSignalsActivity=true;back()}
+   TodayTimelineCard{openDetail("calendar")}
+   Spacer(Modifier.height(14.dp))
+   TodayWorkLine(vm){openTasks("active")}
+   Spacer(Modifier.height(14.dp))
+   FinanceSummaryLine(finance,vm.personalFresh,hasSnapshot){openDetail("finance")}
   }
  }
 }

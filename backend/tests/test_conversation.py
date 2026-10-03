@@ -34,6 +34,16 @@ class FakeHermes:
         yield "done", {}
 
 
+def test_task_result_is_linked_to_real_human_source_and_delivered_once(tmp_path):
+    convo = PersonalConversation(tmp_path, FakeHermes())
+    source = convo.submit('task-source-message-001', '帮我查询九月五号的消费')['message_id']
+    convo.task_receipt_for_message('query-real-run', '已查到实际记录', source)
+    convo.task_receipt_for_message('query-real-run', '已查到实际记录', source)
+    with convo.db() as db:
+        rows = db.execute("SELECT parent_id,text FROM messages WHERE request_id='task-result:query-real-run'").fetchall()
+    assert len(rows) == 1 and rows[0]['parent_id'] == source and rows[0]['text'] == '已查到实际记录'
+
+
 def test_persistent_main_chat_and_duplicate_delivery(tmp_path):
     fake = FakeHermes()
     convo = PersonalConversation(tmp_path, fake)
@@ -229,3 +239,48 @@ def test_personal_chat_requires_pairing(tmp_path, monkeypatch):
         )
         assert sent.status_code == 200
         assert sent.json()["message_id"]
+
+
+class FakeHermesWithTools:
+    def __init__(self):
+        self.created = 0
+
+    def key(self):
+        return "fixture"
+
+    async def create_session(self):
+        self.created += 1
+        return "com-personal-main"
+
+    async def stream_chat(self, session_id, text):
+        yield "run.started", {"run_id": "run_9"}
+        yield "tool.started", {"tool_name": "mcp__personal_overview"}
+        yield "tool.completed", {}
+        yield "tool.started", {"tool_name": "mcp__git_pull"}
+        yield "tool.failed", {}
+        yield "assistant.completed", {"content": "搞定了"}
+        yield "run.completed", {"completed": True}
+        yield "done", {}
+
+
+def test_work_tasks_recorded_on_user_message(tmp_path):
+    fake = FakeHermesWithTools()
+    convo = PersonalConversation(tmp_path, fake)
+    mid = convo.submit("request-00009", "帮我查一下")["message_id"]
+    asyncio.run(convo.process_one())
+    snap = convo.snapshot()
+    user_msg = next(m for m in snap["messages"] if m["id"] == mid)
+    assert [{key: task[key] for key in ('id', 'title', 'status')} for task in user_msg['tasks']] == [
+        {"id": "think", "title": "分析用户请求", "status": "done"},
+        {"id": "tool-1", "title": "正在读取日历与账本概览", "status": "done"},
+        {"id": "tool-2", "title": "正在使用 mcp__git_pull", "status": "failed"},
+        {"id": "reply", "title": "撰写回复", "status": "done"},
+    ]
+    for task in user_msg['tasks'][1:3]:
+        assert task['kind'] == 'tool'
+        assert task['finished_at'] >= task['started_at']
+        assert task['duration_ms'] >= 0
+    # 持久化：重开后任务清单仍在
+    reopened = PersonalConversation(tmp_path, fake).snapshot()
+    user_msg2 = next(m for m in reopened["messages"] if m["id"] == mid)
+    assert user_msg2["tasks"] == user_msg["tasks"]

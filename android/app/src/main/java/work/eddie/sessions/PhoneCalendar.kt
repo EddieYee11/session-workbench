@@ -282,6 +282,41 @@ private val CalendarEmber=Color(0xFFB4552D)
  }
 }
 
+/** 「今天」的时间轴骨架：只显示今天，全天事项折叠为一行；完整 7 天视图在日历页。 */
+@Composable fun TodayTimelineCard(openCalendar:()->Unit){
+ val state=rememberPhoneCalendar()
+ val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){state.refresh()}
+ var askedPermission by remember{mutableStateOf(false)}
+ val allow:()->Unit={askedPermission=true;permission.launch(Manifest.permission.READ_CALENDAR)}
+ val allEvents=(state.result as? PhoneCalendarResult.Ready)?.events.orEmpty()
+ val events=remember(allEvents,state.today,state.zone){phoneCalendarEventsOn(allEvents,state.today,state.zone)}
+ val timed=events.filter{!it.allDay}
+ val allDay=events.filter{it.allDay}
+ Surface(onClick=openCalendar,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(20.dp),color=Color.White,border=BorderStroke(1.dp,CalendarLine),shadowElevation=0.dp){
+  Column(Modifier.padding(horizontal=18.dp,vertical=16.dp)){
+   Row(verticalAlignment=Alignment.CenterVertically){
+    Text("今天",Modifier.weight(1f),fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=CalendarInk)
+    Text("打开日历",fontSize=Type.Caption,color=CalendarMuted)
+    Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp),tint=CalendarFaint)
+   }
+   when(val result=state.result){
+    PhoneCalendarResult.NoPermission->Row(Modifier.fillMaxWidth().padding(top=10.dp).clickable(onClick=allow),verticalAlignment=Alignment.CenterVertically){
+     Text(if(askedPermission)"未授权，到系统设置开启日历" else "读取手机日历",Modifier.weight(1f),fontSize=Type.BodySm,color=CalendarInk)
+     Text("授权",fontSize=Type.Caption,color=CalendarEmber)
+    }
+    PhoneCalendarResult.Loading->Text("读取手机日历…",Modifier.padding(top=10.dp),fontSize=Type.BodySm,color=CalendarMuted)
+    is PhoneCalendarResult.Failed->Text(result.message,Modifier.padding(top=10.dp),fontSize=Type.BodySm,color=CalendarMuted)
+    is PhoneCalendarResult.Ready->Column(Modifier.padding(top=4.dp)){
+     if(timed.isEmpty()&&allDay.isEmpty())Text("今天没有安排，好好休息。",Modifier.padding(top=6.dp),fontSize=Type.BodySm,color=CalendarMuted)
+     timed.take(3).forEach{event->key(event.instanceKey){PhoneCalendarEventRow(event,state.today,state.zone)}}
+     if(timed.size>3)Text("还有 ${timed.size-3} 项日程",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=CalendarMuted)
+     if(allDay.isNotEmpty())Text("全天 · ${allDay.joinToString("、"){it.title}}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=CalendarMuted,maxLines=1,overflow=TextOverflow.Ellipsis)
+    }
+   }
+  }
+ }
+}
+
 @Composable private fun PhoneCalendarEventRow(event:PhoneCalendarEvent,date:LocalDate,zone:ZoneId){
  val context=LocalContext.current
  Row(Modifier.fillMaxWidth().clickable(role=Role.Button){

@@ -130,19 +130,19 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun NewSession(vm:WorkbenchModel,quick:String,dismiss:()->Unit){
  var agent by remember{mutableStateOf(quick.takeIf{it in listOf("claude","codex")}?:vm.store.prefs.getString("lastAgent","claude").takeIf{it in listOf("claude","codex")}?:"claude")};var cwd by remember{mutableStateOf(vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"")}
- var prompt by rememberSaveable{mutableStateOf("")};var model by remember(agent){mutableStateOf(vm.selection(agent).model)};var effort by remember(agent){mutableStateOf(vm.selection(agent).effort)};var advanced by remember{mutableStateOf(false)};var sandbox by remember{mutableStateOf("danger-full-access")};var browse by remember{mutableStateOf(false)};var modelPicker by remember{mutableStateOf(false)}
+ var prompt by rememberSaveable{mutableStateOf("")};var model by remember(agent){mutableStateOf(vm.selection(agent).model)};var effort by remember(agent){mutableStateOf(vm.selection(agent).effort)};var advanced by remember{mutableStateOf(false)};var browse by remember{mutableStateOf(false)};var modelPicker by remember{mutableStateOf(false)}
  val motion=LocalMessageSendMotion.current
  val composerSource=remember{Any()}
  val create:()->Unit={
   val text=prompt.trim();val rid=UUID.randomUUID().toString()
   vm.chooseModel(agent,"",model,effort)
   if(text.isNotBlank())motion?.begin(rid,text,sourceKey=composerSource)
-  val accepted=vm.create(agent,cwd,text,model,effort,sandbox,rid)
+  val accepted=vm.create(agent,cwd,text,model,effort,rid)
   if(accepted==null)motion?.cancel()else{motion?.retarget(rid,accepted);dismiss()}
  }
  // Material3's modal owns its window insets. The content consumes them once.
  ModalBottomSheet(onDismissRequest=dismiss,containerColor=Paper,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)){Column(Modifier.padding(horizontal=24.dp).verticalScroll(rememberScrollState()).testTag("advanced-session-sheet")){
- StaggerIn(0){Column{Text("开启新的工作",fontSize=Type.SheetTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.3).sp);Text("运行在 Mac mini · 默认最高权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=Type.BodySm,color=Muted)}}
+ StaggerIn(0){Column{Text("开启新的工作",fontSize=Type.SheetTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.3).sp);Text("运行在 Mac mini · 完整操作权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=Type.BodySm,color=Muted)}}
  val (createPress,createMotion)=rememberPress(.97f)
  StaggerIn(1){Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){listOf("claude","codex").forEach{a->FilterChip(agent==a,{agent=a},label={Text(agentDisplayName(a),fontSize=17.sp)},modifier=Modifier.height(48.dp))}}}
  Text("工作目录",Modifier.padding(top=16.dp),fontSize=Type.Caption,color=Muted)
@@ -151,7 +151,7 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  TextButton(onClick={advanced=!advanced}){Text(if(advanced)"收起高级设置" else "高级设置")}
  if(advanced){
   TextButton(onClick={modelPicker=true;vm.loadModels(agent)}){Icon(Icons.Outlined.AutoAwesome,null);Text("${vm.catalogs[agent]?.firstOrNull{it.id==model}?.label?:model.ifBlank{"跟随 Mac 默认"}} · ${effort.ifBlank{"默认推理"}}",Modifier.padding(start=8.dp),maxLines=1)}
-  if(agent in listOf("claude","codex"))Choice(when(sandbox){"read-only"->"只读";"workspace-write"->"工作目录内写入";else->"最高权限（YOLO）"},listOf("最高权限（YOLO）","工作目录内写入","只读")){sandbox=when(it){"只读"->"read-only";"工作目录内写入"->"workspace-write";else->"danger-full-access"}}
+  Text("完整操作权限",Modifier.padding(horizontal=8.dp,vertical=6.dp).testTag("work-operation-permission"),fontSize=Type.Caption,color=Muted)
  }
  StaggerIn(2){Button(onClick=create,enabled=!vm.busy&&vm.connected,modifier=Modifier.fillMaxWidth().padding(top=12.dp,bottom=28.dp).height(54.dp).then(createMotion),shape=Radii.Pill,interactionSource=createPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text(if(prompt.isBlank())"打开空会话" else "开始会话",fontSize=Type.Body,fontWeight=FontWeight.SemiBold)}}
  }}

@@ -90,7 +90,7 @@ class MainActivityKeyboardTest {
             model.hermesVoicePhase = "idle"
             model.hermesVoiceNote = ""
             model.hermesSendNote = ""
-            model.hermesPending = JSONObject()
+            model.hermesOutbox = emptyList()
             model.hermesReference = null
             model.hermesDraft = ""
             model.hermesFresh = false

@@ -32,17 +32,16 @@ def setup(tmp_path,worker=None):
     return store,TaskController(store,worker or ControlledWorker(),chat)
 
 
-def test_mcp_structured_restriction_automatically_delivers_once(tmp_path):
+def test_mcp_old_readonly_restriction_is_audit_only_and_never_delivered(tmp_path):
     worker=ControlledWorker();store,controller=setup(tmp_path,worker)
     result=record_constraint(store,'task-A','', 'restrict-readonly-01','read_only')
-    assert result['delivery']=='queued' and not result['work_started']
-    assert store.list()[0]['inputs'][0]['state']=='queued'
+    assert result['delivery']=='revoked' and not result['work_started']
+    assert store.list()[0]['inputs'][0]['state']=='revoked'
     asyncio.run(controller.poll());asyncio.run(controller.poll())
-    assert len(worker.calls)==1
-    assert worker.calls[0][:3]==('task-A','native-turn-A','restrict-readonly-01')
-    assert store.list()[0]['inputs'][0]['state']=='delivered'
-    assert [e['kind'] for e in store.list()[0]['events']][-3:]==['input_accepted','input_sending','input_delivered']
-    assert record_constraint(store,'task-A','', 'restrict-readonly-01','read_only')['delivery']=='delivered'
+    assert not worker.calls
+    assert store.list()[0]['constraints']==['只读约束：不要修改、删除、发布或外发任何内容。']
+    assert store.list()[0]['events'][-1]['kind']=='input_revoked'
+    assert record_constraint(store,'task-A','', 'restrict-readonly-01','read_only')['delivery']=='revoked'
 
 
 def test_mcp_note_cannot_authorize_new_actions(tmp_path):
@@ -60,7 +59,7 @@ def test_mcp_note_cannot_authorize_new_actions(tmp_path):
 def test_unsupported_is_terminal_visible_not_permanent_pending(tmp_path,agent):
     worker=ControlledWorker(support=False);store,controller=setup(tmp_path,worker)
     store.change('task-A','agent-change-001','agent_selected',agent=agent)
-    record_constraint(store,'task-A','', 'unsupported-0001','read_only')
+    record_constraint(store,'task-A','', 'unsupported-0001','preserve_style')
     asyncio.run(controller.poll());asyncio.run(controller.poll())
     assert not worker.calls
     assert store.list()[0]['inputs'][0]['state']=='unsupported'
@@ -121,7 +120,8 @@ def test_codex_adapter_checks_native_ack_and_original_scope(tmp_path):
     assert asyncio.run(runtime.deliver_task_input(task,command))['state']=='delivered'
     assert calls[0][0]=='turn/steer'
     assert calls[0][1]['threadId']=='thread-A' and calls[0][1]['expectedTurnId']=='native-A'
-    assert 'Do not expand permissions' in calls[0][1]['input'][0]['text']
+    assert 'full access' in calls[0][1]['input'][0]['text']
+    assert 'Do not invent actions or repeat uncertain operations' in calls[0][1]['input'][0]['text']
     async def wrong(method,params):return {'turnId':'another-turn'}
     runtime.call=wrong
     assert asyncio.run(runtime.deliver_task_input(task,command))['state']=='unknown'

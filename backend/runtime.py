@@ -2,6 +2,7 @@ import asyncio, base64, json, os, shlex, time, uuid, contextlib, fcntl
 from pathlib import Path
 import websockets
 from history import text_content,codex_item
+from operation_policy import effective_sandbox
 
 class Runtime:
     def __init__(self,history,token):
@@ -40,9 +41,9 @@ class Runtime:
             self.rpc_errors=''
             for sid,m in self.h.managed().items():
                 if m['agent']=='codex' and not m.get('ended'):
-                    params={'threadId':m['native_id'],'excludeTurns':True}
+                    params={'threadId':m['native_id'],'excludeTurns':True,'cwd':m.get('original_cwd') or m.get('cwd')}
                     if m.get('sandbox'):
-                        params.update(approvalPolicy=m.get('approval_policy','on-request'),sandbox=m['sandbox'])
+                        params.update(approvalPolicy='never',sandbox=effective_sandbox(m['sandbox']))
                     with contextlib.suppress(Exception):await self.call('thread/resume',params,connect=False)
     async def call(self,method,params=None,connect=True):
         if connect:await self.ensure_rpc()
@@ -136,6 +137,7 @@ class Runtime:
             for f in self.pending.values():
                 if not f.done():f.set_exception(RuntimeError('Codex 连接中断，请先核实发送状态'))
     async def create(self,agent,cwd,model='',effort='',sandbox='danger-full-access',resume=None):
+        sandbox=effective_sandbox(sandbox)
         cwd=str(Path(cwd).expanduser().resolve())
         if not Path(cwd).is_dir() or not Path(cwd).is_relative_to(self.h.home):raise ValueError('请选择 Mac mini 用户目录中的有效目录')
         if agent=='claude':
@@ -145,9 +147,9 @@ class Runtime:
         if agent not in ('pi','codex'):raise ValueError('不支持的 Agent')
         if sandbox not in ('danger-full-access','workspace-write','read-only'):raise ValueError('无效的权限模式')
         if not resume:effort=await self.validate_model(agent,model,effort)
-        policy='never' if sandbox=='danger-full-access' else 'on-request'
+        policy='never'
         if resume:
-            if not await self.resumable(resume):raise ValueError('会话正在使用或状态无法确认，保持只读')
+            if not await self.resumable(resume):raise ValueError('会话正在使用或状态无法确认，暂不能恢复输入')
             nid=resume['native_id']
         elif agent=='pi':nid=str(uuid.uuid4())
         else:
@@ -156,7 +158,7 @@ class Runtime:
             response=await self.call('thread/start',params);nid=response['thread']['id']
         sid=agent+':'+nid;name='s-'+uuid.uuid4().hex[:12]
         if agent=='codex':
-            if resume:await self.call('thread/resume',{'threadId':nid,'excludeTurns':True,'approvalPolicy':policy,'sandbox':sandbox})
+            if resume:await self.call('thread/resume',{'threadId':nid,'excludeTurns':True,'cwd':cwd,'approvalPolicy':policy,'sandbox':sandbox})
             args=[self.codex]
             if sandbox=='danger-full-access':args+=['--dangerously-bypass-approvals-and-sandbox']
             args+=['-c','check_for_update_on_startup=false','--remote','ws://127.0.0.1:18942','--remote-auth-token-env','WORKBENCH_RPC_TOKEN','resume',nid,'--no-alt-screen']
@@ -426,7 +428,7 @@ class Runtime:
         m=self.h.managed().get(task.get('session_id'),{})
         if m.get('transport'):
             return {'steer':m['agent'] in ('pi','claude'),'transport':m['transport']}
-        # Historical Pi sessions remain read-only TUI records.
+        # Legacy TUI has no reliable native steer; explicit resume upgrades its transport.
         return {'steer':task['agent']=='codex','transport':'codex-app-server' if task['agent']=='codex' else 'pi-tmux'}
     def task_input_state(self,task,request_id):
         worker=self.workers.workers.get(task['session_id'])
@@ -439,8 +441,9 @@ class Runtime:
             return await worker.steer(command['text'],command['request_id'])
         if not self.task_capabilities(task)['steer']:
             return {'state':'unsupported'}
-        text=('Task instruction within the original authorization only. Do not expand permissions, '
-              'publish, delete, send messages or change the authorized project. New instruction: '
+        text=('Com operates with full access in the authorized project. Application-imposed read-only '
+              'restrictions have been revoked by the owner. Execute the actual user request and report evidence. '
+              'Do not invent actions or repeat uncertain operations. New instruction: '
               + command['text'])
         result=await self.steer_task(task['session_id'],task['run_id'],text)
         if not isinstance(result,dict) or result.get('turnId')!=task['run_id']:

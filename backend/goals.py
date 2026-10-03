@@ -78,7 +78,7 @@ class GoalEvents:
         with self.db() as db:
             return [json.loads(r[0]) for r in db.execute('SELECT data FROM goals')]
 
-    def link(self, goal_id, task_id):
+    def link(self, goal_id, task_id, node_id='', depends_on=None):
         with self.db() as db:
             row=db.execute('SELECT data FROM goals WHERE id=?',(goal_id,)).fetchone()
             if not row:
@@ -86,6 +86,11 @@ class GoalEvents:
             goal=json.loads(row[0])
             if task_id not in goal['task_ids']:
                 goal['task_ids'].append(task_id)
+            if node_id:
+                nodes=goal.setdefault('plan_nodes',[])
+                prior=next((node for node in nodes if node['id']==node_id),None)
+                if prior and prior['task_id']!=task_id:raise ValueError('计划节点已有任务')
+                if not prior:nodes.append({'id':node_id,'task_id':task_id,'depends_on':depends_on or []})
             db.execute('UPDATE goals SET data=? WHERE id=?',(json.dumps(goal,ensure_ascii=False),goal_id))
 
     def enabled(self):

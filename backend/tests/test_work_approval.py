@@ -50,8 +50,8 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
         assert first.json()["work_session_id"] == "codex:verified-001"
         assert client.post(route, headers=headers, json={"request_id": "another-approval-001"}).status_code == 409
     assert [call[0] for call in calls] == ["create", "input"]
-    assert calls[0][3]["sandbox"] == "workspace-write"
-    assert Path(calls[0][2]).is_relative_to(tmp_path/'state/worker-copies')
+    assert calls[0][3]["sandbox"] == "danger-full-access"
+    assert Path(calls[0][2]) == root/'example'
 
 
 def test_refresh_does_not_authorize_and_tasks_expose_source(tmp_path, monkeypatch):
