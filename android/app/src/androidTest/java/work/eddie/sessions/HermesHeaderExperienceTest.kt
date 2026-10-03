@@ -46,7 +46,7 @@ class HermesHeaderExperienceTest {
   val header=ui.onNodeWithTag("hermes-fading-header",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
   assertTrue("Card must start below the complete companion: avatar=$avatar card=$card",card.top>=avatar.bottom-1f)
   assertTrue(card.width>avatar.width)
-  assertTrue("Status must remain a thin single row",card.height<avatar.height*.75f)
+  assertTrue("Status must remain a single row at the configured font size",card.height<avatar.height*.75f*ui.activity.resources.configuration.fontScale.coerceAtLeast(1f))
   assertTrue("Header must contain enlarged card text",card.bottom<=header.bottom)
   ui.onNodeWithTag("agent-task-think",useUnmergedTree=true).assertHasNoClickAction()
   ui.onNodeWithTag("agent-task-reply",useUnmergedTree=true).assertHasNoClickAction()

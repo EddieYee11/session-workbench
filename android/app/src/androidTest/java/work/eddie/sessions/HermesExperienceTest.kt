@@ -1,6 +1,7 @@
 package work.eddie.sessions
 
 import android.app.Application
+import androidx.compose.ui.graphics.asAndroidBitmap
 import android.graphics.Bitmap
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
@@ -32,7 +33,7 @@ class HermesExperienceTest {
         }
     }
 
-    @Test fun gradientHeaderOverlaysListAndReactionsStayAttachedToUser() {
+    @Test fun transparentHeaderOverlaysListAndReactionsStayAttachedToUser() {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as Application
         lateinit var vm: WorkbenchModel
         ui.runOnUiThread {
@@ -55,6 +56,39 @@ class HermesExperienceTest {
         val list = ui.onNodeWithTag("hermes-message-list").fetchSemanticsNode().boundsInRoot
         check(kotlin.math.abs(header.top - list.top) < 1f) { "Header must overlay scrolling content" }
         capture("conversation")
+    }
+
+    @Test fun scrolledTextRemainsVisibleThroughEmptyHeaderSpace() {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as Application
+        lateinit var vm: WorkbenchModel
+        ui.runOnUiThread {
+            vm = WorkbenchModel(app)
+            vm.active = false
+            vm.hermesFresh = true
+            vm.hermesLoading = false
+            vm.hermes = JSONObject().put("messages", JSONArray().put(JSONObject()
+                .put("id", "reading").put("role", "assistant").put("status", "completed")
+                .put("text", (1..80).joinToString("\n") { "第 $it 行：这是持续阅读的正文，顶部空白处也应该看得见。" })))
+        }
+        ui.setContent { MaterialTheme(colorScheme = Palette) { Workbench(vm, "", 0) {} } }
+        if (ui.onAllNodesWithText("完成").fetchSemanticsNodes().isNotEmpty()) ui.onNodeWithText("完成").performClick()
+        ui.onNodeWithText("记一笔").assertDoesNotExist()
+        ui.onNodeWithText("今日日程").assertDoesNotExist()
+        ui.onNodeWithTag("hermes-message-list").performScrollToIndex(1)
+            .performTouchInput { swipeUp() }
+        ui.waitForIdle()
+        val header = ui.onNodeWithTag("hermes-fading-header").fetchSemanticsNode().boundsInRoot
+        val bitmap = ui.onRoot().captureToImage().asAndroidBitmap()
+        // This strip is outside both control backings. Text must survive the header overlay.
+        var inkPixels = 0
+        for (y in (header.top + 8).toInt() until (header.bottom - 8).toInt()) {
+            for (x in (header.left + header.width * .08f).toInt() until (header.left + header.width * .25f).toInt()) {
+                val pixel = bitmap.getPixel(x, y)
+                if (android.graphics.Color.red(pixel) < 140 && android.graphics.Color.green(pixel) < 140) inkPixels++
+            }
+        }
+        check(inkPixels > 30) { "The empty header area obscures the scrolled text: $inkPixels ink pixels" }
+        capture("transparent-header-reading")
     }
 
     @Test fun nativeAvatarStatesRemainDistinct() {

@@ -50,6 +50,8 @@ class ComNavigationTest {
 
  @Test fun destinationsStayBelowConversation(){
   open()
+  ui.onNodeWithText("记一笔").assertDoesNotExist()
+  ui.onNodeWithText("今日日程").assertDoesNotExist()
   val message=ui.onNodeWithText("今天想把 Com! 整理得更轻盈一点。").fetchSemanticsNode().boundsInRoot
   val tabs=listOf("对话","今天","工作").map{
    ui.onNodeWithContentDescription(it).assertIsDisplayed().fetchSemanticsNode().boundsInRoot

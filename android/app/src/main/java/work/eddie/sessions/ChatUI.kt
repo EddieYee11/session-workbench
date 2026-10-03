@@ -227,12 +227,12 @@ private data class MessageViewportPosition(val width:Int,val height:Int,val firs
 }
 
 @Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,enabled:Boolean=true){
- BoxWithConstraints(Modifier.fillMaxWidth().padding(top=10.dp,bottom=10.dp),contentAlignment=Alignment.Center){
+ BoxWithConstraints(Modifier.fillMaxWidth().padding(top=4.dp,bottom=4.dp),contentAlignment=Alignment.Center){
  val roomy=maxWidth>=360.dp&&LocalDensity.current.fontScale<=1.3f
  val itemHeight=maxOf(48f,24f+22f*LocalDensity.current.fontScale).dp
  val labelWidth=(maxWidth-130.dp).coerceAtLeast(26.dp)
  Surface(shape=RoundedCornerShape(50),color=Card,border=BorderStroke(1.dp,Color(0xFFE5E8EC)),shadowElevation=8.dp){
-  Row(Modifier.padding(horizontal=8.dp,vertical=6.dp),horizontalArrangement=Arrangement.spacedBy(2.dp),verticalAlignment=Alignment.CenterVertically){
+  Row(Modifier.padding(horizontal=8.dp,vertical=3.dp),horizontalArrangement=Arrangement.spacedBy(2.dp),verticalAlignment=Alignment.CenterVertically){
    listOf("hermes" to "对话","sources" to "今天","work" to "工作").forEach{(target,label)->
     val selected=page==target||target=="sources"&&page in listOf("calendar","finance","signals")
     val background by animateColorAsState(if(selected)Color(0xFF252A31) else Color.Transparent,tween(180),label="导航选中")

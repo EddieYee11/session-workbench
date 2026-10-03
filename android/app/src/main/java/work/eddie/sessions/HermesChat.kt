@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -36,7 +35,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -210,8 +208,8 @@ private fun hermesToolLabel(name:String):String=when{
   BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()){
    val inset=if(maxWidth>=700.dp)32.dp else 15.dp
    val wideHero=maxWidth>=700.dp
-   val headerHeight=if(avatarPillText=="空闲")80.dp else (78f+22f*LocalDensity.current.fontScale).dp
-   LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("hermes-message-list"),contentPadding=PaddingValues(start=inset,end=inset,top=headerHeight+12.dp,bottom=18.dp),horizontalAlignment=Alignment.CenterHorizontally){
+   val headerHeight=if(avatarPillText=="空闲")56.dp else (54f+22f*LocalDensity.current.fontScale).dp
+   LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("hermes-message-list"),contentPadding=PaddingValues(start=inset,end=inset,top=headerHeight+4.dp,bottom=8.dp),horizontalAlignment=Alignment.CenterHorizontally){
     item(key="intro"){
      Column(Modifier.widthIn(max=790.dp).fillMaxWidth()){
       if(messages.isEmpty())HermesHero(wideHero){vm.updateHermesDraft(it)}
@@ -243,9 +241,8 @@ private fun hermesToolLabel(name:String):String=when{
      }
     }
    }
-   // The companion and status occupy separate layout rows, never an overlay.
-   Box(Modifier.fillMaxWidth().height(headerHeight+22.dp).align(Alignment.TopCenter)
-    .background(Brush.verticalGradient(0f to Paper,.86f to Paper,1f to Color.Transparent))
+   // Only the controls have a light backing; empty header space exposes the scrolling text.
+   Box(Modifier.fillMaxWidth().height(headerHeight).align(Alignment.TopCenter)
     .testTag("hermes-fading-header")){
     Row(Modifier.fillMaxWidth().height(headerHeight).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
      Spacer(Modifier.size(44.dp))
@@ -260,27 +257,22 @@ private fun hermesToolLabel(name:String):String=when{
        else->"idle"
       }
       Box{
-       HermesCompanion(visual,Modifier.size(64.dp).testTag("hermes-header-avatar"),compact=true,animationActive=vm.active&&vm.hermesVisible)
+       HermesCompanion(visual,Modifier.size(48.dp).background(Paper.copy(alpha=.72f),CircleShape).testTag("hermes-header-avatar"),compact=true,animationActive=vm.active&&vm.hermesVisible)
        if(needsAttention)Box(Modifier.align(Alignment.TopEnd).size(9.dp).background(Ember,CircleShape).border(2.dp,Paper,CircleShape))
       }
-      if(avatarPillText!="空闲")AvatarStatusPill(avatarPillText,Modifier.widthIn(min=96.dp,max=220.dp))
+      if(avatarPillText!="空闲")AvatarStatusPill(avatarPillText,Modifier.widthIn(min=96.dp,max=220.dp),compact=true)
      }
-     Surface(onClick=menu,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.8f)){
+     Surface(onClick=menu,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.72f)){
       ComIcon(R.drawable.com_icon_menu_v1,"更多",Modifier.padding(11.dp))
      }
     }
    }
   }
   vm.hermesReference?.let{MessageReferencePreview(it){vm.hermesReference=null}}
-  HermesComposer(vm,canSend,motion,openCalendar)
+  HermesComposer(vm,canSend,motion)
  }
  if(sharedMotion==null)MessageSendMotionOverlay(motion,Modifier.fillMaxSize())
  }
-}
-
-/** 高频动作直接放在输入区上方，不藏在「更多」里。 */
-@Composable private fun ComQuickEntry(label:String,onClick:()->Unit){
- Surface(onClick=onClick,shape=Radii.Pill,color=ChipBg){Text(label,Modifier.padding(horizontal=12.dp,vertical=6.dp),fontSize=Type.Caption,color=Ink)}
 }
 
 @Composable private fun HermesMessage(message:JSONObject,motion:MessageSendMotionState,font:Float){
@@ -364,7 +356,7 @@ private fun hermesToolLabel(name:String):String=when{
  }
 }
 
-@Composable private fun HermesComposer(vm:WorkbenchModel,enabled:Boolean,motion:MessageSendMotionState,openCalendar:()->Unit){
+@Composable private fun HermesComposer(vm:WorkbenchModel,enabled:Boolean,motion:MessageSendMotionState){
  val style=TextStyle(fontSize=Type.Body,lineHeight=22.sp,color=Ink)
  val send:()->Unit={if(enabled&&vm.hermesDraft.isNotBlank()){val rid=UUID.randomUUID().toString();motion.begin(rid,vm.hermesDraft.trim());if(vm.sendHermes(rid)==null)motion.cancel()}}
  LaunchedEffect(vm.hermesVoiceAutoSend){
@@ -407,13 +399,9 @@ private fun hermesToolLabel(name:String):String=when{
   TextButton(onClick={vm.transcribeHermesVoice()}){Text("重试转写",fontSize=Type.Caption)}
   TextButton(onClick={vm.discardHermesVoice()}){Text("删除",fontSize=Type.Caption)}
  }
- Row(Modifier.fillMaxWidth().padding(horizontal=20.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
-  ComQuickEntry("记一笔"){context.startActivity(Intent(context,ExpenseVoiceActivity::class.java))}
-  ComQuickEntry("今日日程",openCalendar)
- }
- Surface(Modifier.widthIn(max=810.dp).fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=RoundedCornerShape(32.dp),color=UserBubble){
-  Row(Modifier.padding(horizontal=8.dp,vertical=5.dp),verticalAlignment=Alignment.Bottom){
-   BasicTextField(editing,{editing=it;vm.updateHermesDraft(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=120.dp).padding(horizontal=9.dp,vertical=10.dp).testTag("hermes-composer").messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).messageSendComposerBounds(motion),readOnly=voice!="idle",textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(voice=="idle")send()}),onTextLayout={motion.updateComposerLayout(it,style)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(value.isBlank())Text(if(voice=="recording")"录音中 ${vm.hermesVoiceSeconds} 秒…"else"消息",style=style.copy(color=Faint));inner()}})
+ Surface(Modifier.widthIn(max=810.dp).fillMaxWidth().padding(horizontal=16.dp,vertical=4.dp),shape=RoundedCornerShape(32.dp),color=UserBubble){
+  Row(Modifier.padding(horizontal=8.dp,vertical=3.dp),verticalAlignment=Alignment.Bottom){
+   BasicTextField(editing,{editing=it;vm.updateHermesDraft(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=120.dp).padding(horizontal=9.dp,vertical=8.dp).testTag("hermes-composer").messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).messageSendComposerBounds(motion),readOnly=voice!="idle",textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(voice=="idle")send()}),onTextLayout={motion.updateComposerLayout(it,style)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(value.isBlank())Text(if(voice=="recording")"录音中 ${vm.hermesVoiceSeconds} 秒…"else"消息",style=style.copy(color=Faint));inner()}})
    if(value.isNotBlank()&&voice=="idle")IconButton(onClick=newline,modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.KeyboardReturn,"插入换行",Modifier.size(19.dp),tint=Muted)}
    if(value.isBlank()||voice!="idle"){
     val voiceEnabled=voice=="recording"||voice=="idle"&&vm.hermesVoiceSaved.isBlank()&&vm.store.token.isNotBlank()
@@ -432,6 +420,6 @@ private fun hermesToolLabel(name:String):String=when{
    }
   }
  }
- if(!enabled)Text(if(vm.store.token.isBlank())"配对后可与 Pi 对话"else if(vm.hermesSending)"正在发送"else"Pi 未连接，草稿会保留",Modifier.fillMaxWidth().padding(start=24.dp,bottom=7.dp),fontSize=Type.Caption,color=AmberText)
- else if(!vm.hermesFresh)Text("离线 · 新消息会先保存在手机",Modifier.fillMaxWidth().padding(start=24.dp,bottom=7.dp),fontSize=Type.Caption,color=Muted)
+ if(!enabled)Text(if(vm.store.token.isBlank())"配对后可与 Pi 对话"else if(vm.hermesSending)"正在发送"else"Pi 未连接，草稿会保留",Modifier.fillMaxWidth().padding(start=24.dp,bottom=3.dp),fontSize=Type.Caption,color=AmberText)
+ else if(!vm.hermesFresh)Text("离线 · 新消息会先保存在手机",Modifier.fillMaxWidth().padding(start=24.dp,bottom=3.dp),fontSize=Type.Caption,color=Muted)
 }
