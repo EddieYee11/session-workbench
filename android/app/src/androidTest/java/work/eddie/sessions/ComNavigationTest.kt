@@ -31,7 +31,11 @@ class ComNavigationTest {
   }
   ui.setContent{MaterialTheme(colorScheme=Palette){Workbench(vm,"",0){}}}
   // A clean emulator opens the pairing sheet; dismiss it without changing credentials.
-  if(ui.onAllNodesWithText("完成").fetchSemanticsNodes().isNotEmpty())ui.onNodeWithText("完成").performClick()
+  ui.waitForIdle()
+  if(ui.onAllNodesWithText("Com! · 设置").fetchSemanticsNodes().isNotEmpty()){
+   InstrumentationRegistry.getInstrumentation().uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+   ui.waitUntil(5000){ui.onAllNodesWithText("Com! · 设置").fetchSemanticsNodes().isEmpty()}
+  }
   ui.waitForIdle()
   return vm
  }

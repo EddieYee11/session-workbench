@@ -133,13 +133,12 @@ private fun todayDateLabel():String=runCatching{
 
 /** 页头一句话替代原技术副标题：先告诉你今天要做什么决定。 */
 @Composable private fun TodayStatusLine(vm:WorkbenchModel){
- val finance=vm.personal.optJSONObject("finance")?:JSONObject()
- val decisions=todayDecisionItems(vm).count{!it.signals}
+ val state=todayReadState(vm)
+ val decisions=todayDecisionItems(vm).size
  val ongoing=todayOngoingTasks(vm).size
- val parts=mutableListOf("${decisions} 件待你决定","${ongoing} 件在执行")
- val expense=if(finance.optBoolean("available"))financeTodayExpense(finance) else ""
- if(expense.isNotBlank())parts+=expense
- Text(parts.joinToString(" · "),Modifier.padding(top=6.dp,bottom=14.dp),fontSize=Type.Caption,color=if(decisions>0)Ink else Muted)
+ val note=when{state.current->"已同步 · ${state.timeLabel}";state.saved->"部分来源未同步 · ${state.timeLabel}";else->"主对话、任务与工作建议"}
+ Text("${state.count(decisions,"待你决定")} · ${state.count(ongoing,"在执行")}\n$note",Modifier.padding(top=6.dp,bottom=14.dp),fontSize=Type.Caption,color=if(state.current)Muted else AmberText)
+
 }
 
 /** 账本降为一行数字，不再占一张卡。 */
@@ -155,8 +154,8 @@ private fun todayDateLabel():String=runCatching{
   currency==null->"本月暂无记账数据"
   else->"本月支出 ${formatMinorAmount(row.optLong("expense_minor"),currency)} · 今日 ${formatMinorAmount(row.optLong("today_expense_minor"),currency)}"+(if(currencies.size>1)" · 等 ${currencies.size} 种币种" else "")
  }
- PolishCard(Modifier.fillMaxWidth(),onClick=open){
-  Row(Modifier.padding(horizontal=18.dp,vertical=16.dp),verticalAlignment=Alignment.CenterVertically){
+ Surface(onClick=open,modifier=Modifier.fillMaxWidth(),color=Paper){
+  Row(Modifier.padding(horizontal=4.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
    ComIcon(R.drawable.com_icon_finance_v1,null,Modifier.size(22.dp))
    Column(Modifier.weight(1f).padding(start=10.dp)){
     Text("本月账本",fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Ink)
@@ -196,8 +195,8 @@ private fun todayDateLabel():String=runCatching{
    Spacer(Modifier.height(14.dp))
    TodayWorkLine(vm,{openTasks("active")},{openTasks("all")})
    Spacer(Modifier.height(14.dp))
-   FinanceSummaryLine(finance,vm.personalFresh,hasSnapshot){openDetail("finance")}
    TodayAwarenessCard(vm,openSignals)
+   FinanceSummaryLine(finance,vm.personalFresh,hasSnapshot){openDetail("finance")}
   }
  }
 }

@@ -89,7 +89,8 @@ internal fun todayOngoingTasks(vm:WorkbenchModel):List<LedgerTask> =
 /** 主页主卡：只收需要用户决定的事项；知情项在单独的知情区。 */
 @Composable fun TodayDecisionCard(vm:WorkbenchModel,openTask:(String,String)->Unit,openAll:()->Unit){
  val items=todayDecisionItems(vm)
- val fresh=vm.workProposalsFresh&&vm.hermesFresh&&vm.signalsFresh&&vm.taskLedgerFresh
+ val state=todayReadState(vm)
+ val fresh=state.current
  Surface(Modifier.fillMaxWidth(),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
   Column(Modifier.padding(horizontal=18.dp,vertical=16.dp)){
    Row(verticalAlignment=Alignment.CenterVertically){
@@ -100,8 +101,8 @@ internal fun todayOngoingTasks(vm:WorkbenchModel):List<LedgerTask> =
     Spacer(Modifier.weight(1f))
     TextButton(onClick=openAll){Text("全部任务",fontSize=Type.Caption)}
    }
-   if(!fresh)Text("部分条目来自本机缓存，联网后刷新",Modifier.padding(top=2.dp),fontSize=Type.Caption,color=AmberText)
-   if(items.isEmpty())Text(if(fresh)"当前没有待处理项"else"缓存中没有待处理项",Modifier.padding(top=10.dp),fontSize=Type.BodySm,color=Muted)
+   if(!fresh)Text(if(state.saved)"上次记录 · ${state.timeLabel}，部分来源待刷新" else "正在核对主对话、任务和工作建议",Modifier.padding(top=2.dp),fontSize=Type.Caption,color=AmberText)
+   if(items.isEmpty())Text(if(fresh)"当前没有待处理项"else if(state.saved)"上次记录没有待处理项，当前待核对" else "连接后核对待处理事项",Modifier.padding(top=10.dp),fontSize=Type.BodySm,color=Muted)
    items.take(3).forEachIndexed{index,item->
     if(index>0)HorizontalDivider(Modifier.padding(vertical=2.dp),color=Line)
     TodayActionRow(item){when{
@@ -130,18 +131,19 @@ internal fun todayOngoingTasks(vm:WorkbenchModel):List<LedgerTask> =
 /** 在途工作降为一行摘要；完整台账只在任务页（二级页）。 */
 @Composable fun TodayWorkLine(vm:WorkbenchModel,openActive:()->Unit,openAll:()->Unit){
  val tasks=todayOngoingTasks(vm)
+ val state=todayReadState(vm)
  val total=buildLedgerTasks(ledgerTaskRecords(vm,vm.hermes.array("messages")),vm.hermes.array("messages")).size
  Surface(onClick=openActive,modifier=Modifier.fillMaxWidth().testTag("today-ongoing"),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
   Row(Modifier.padding(horizontal=18.dp,vertical=16.dp),verticalAlignment=Alignment.CenterVertically){
    ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(22.dp))
    Column(Modifier.weight(1f).padding(start=10.dp)){
-    Text("进行中 ${tasks.size} 项",fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Ink)
+    Text(state.count(tasks.size,"在执行"),fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Ink)
     Text(
      if(tasks.isEmpty())if(vm.taskLedgerFresh)"当前没有在途工作" else "正在同步任务"
      else tasks.joinToString(" / "){it.title}.take(64),
      Modifier.padding(top=2.dp),fontSize=Type.Caption,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
    }
-   Text("全部 $total",Modifier.testTag("today-all-work").clip(RoundedCornerShape(Radii.M)).clickable(onClick=openAll).padding(horizontal=6.dp,vertical=4.dp),fontSize=Type.Caption,color=Muted)
+   Text(if(state.current)"全部 $total" else "查看记录",Modifier.testTag("today-all-work").clip(RoundedCornerShape(Radii.M)).clickable(onClick=openAll).padding(horizontal=6.dp,vertical=4.dp),fontSize=Type.Caption,color=Muted)
    ComIcon(R.drawable.com_icon_chevron_v1,"查看任务进度",Modifier.size(20.dp))
   }
  }

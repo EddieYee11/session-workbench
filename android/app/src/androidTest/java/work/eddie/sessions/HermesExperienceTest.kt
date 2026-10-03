@@ -71,15 +71,21 @@ class HermesExperienceTest {
                 .put("text", (1..80).joinToString("\n") { "第 $it 行：这是持续阅读的正文，顶部空白处也应该看得见。" })))
         }
         ui.setContent { MaterialTheme(colorScheme = Palette) { Workbench(vm, "", 0) {} } }
-        if (ui.onAllNodesWithText("完成").fetchSemanticsNodes().isNotEmpty()) ui.onNodeWithText("完成").performClick()
+        ui.waitForIdle()
+        if(ui.onAllNodesWithText("Com! · 设置").fetchSemanticsNodes().isNotEmpty()){
+         InstrumentationRegistry.getInstrumentation().uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+         ui.waitUntil(5000){ui.onAllNodesWithText("Com! · 设置").fetchSemanticsNodes().isEmpty()}
+        }
         ui.onNodeWithText("记一笔").assertDoesNotExist()
         ui.onNodeWithText("今日日程").assertDoesNotExist()
         ui.onNodeWithTag("hermes-message-list").performScrollToIndex(1)
             .performTouchInput { swipeUp() }
         ui.waitForIdle()
-        val header = ui.onNodeWithTag("hermes-fading-header").fetchSemanticsNode().boundsInRoot
-        val bitmap = ui.onRoot().captureToImage().asAndroidBitmap()
-        // This strip is outside both control backings. Text must survive the header overlay.
+        ui.onNodeWithTag("hermes-fading-header").assertDoesNotExist()
+        val viewport = ui.onNodeWithTag("hermes-message-list").fetchSemanticsNode().boundsInRoot
+        val header = viewport.copy(bottom=viewport.top+140f)
+        val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+        // Reading hides the controls; the former header strip now contains complete text.
         var inkPixels = 0
         for (y in (header.top + 8).toInt() until (header.bottom - 8).toInt()) {
             for (x in (header.left + header.width * .08f).toInt() until (header.left + header.width * .25f).toInt()) {

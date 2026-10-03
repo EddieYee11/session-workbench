@@ -115,11 +115,33 @@ class Store(val context:Context) {
     data
    }finally{con.disconnect()}
  }
- suspend fun streamConversation(onEvent:suspend (String,JSONObject)->Unit)=withContext(Dispatchers.IO){
+ suspend fun downloadArtifact(id:String,name:String):File=withContext(Dispatchers.IO){
+   require(id.matches(Regex("art_[a-f0-9]{32}"))){"成果身份无效"}
+   val folder=File(context.filesDir,"artifacts/$id").apply{mkdirs()}
+   val safeName=name.substringAfterLast('/').substringAfterLast('\\').ifBlank{"成果"}
+   val target=File(folder,safeName);val temp=File(folder,"download.tmp")
+   val con=URL(base+"/personal/artifacts/$id").openConnection() as HttpURLConnection
+   con.connectTimeout=12000;con.readTimeout=60000;con.instanceFollowRedirects=false
+   con.setRequestProperty("Authorization","Bearer $token")
+   try{
+    val code=con.responseCode
+    if(code !in 200..299){
+     val error=runCatching{JSONObject(con.errorStream.bufferedReader().use{it.readText()}).optString("detail")}.getOrDefault("")
+     error(error.ifBlank{"成果下载失败：$code"})
+    }
+    con.inputStream.use{input->temp.outputStream().use{output->
+     val buffer=ByteArray(32768);var count=0L
+     while(true){val size=input.read(buffer);if(size<0)break;count+=size;check(count<=100*1024*1024){"成果超过下载上限"};output.write(buffer,0,size)}
+    }}
+    check(temp.renameTo(target)){"成果保存失败"};target
+   }finally{temp.delete();con.disconnect()}
+ }
+ suspend fun streamConversation(afterRevision:Long?=null,onEvent:suspend (String,JSONObject)->Unit)=withContext(Dispatchers.IO){
    require(base.startsWith("https://")){"请先设置 HTTPS 服务地址"}
    val con=URL(base+"/personal/conversation/stream").openConnection() as HttpURLConnection
    con.connectTimeout=12000;con.readTimeout=45000;con.instanceFollowRedirects=false
    con.setRequestProperty("Accept","text/event-stream")
+   afterRevision?.let{con.setRequestProperty("Last-Event-ID",it.toString())}
    con.setRequestProperty("Cache-Control","no-cache")
    con.setRequestProperty("Authorization","Bearer $token")
    val closeOnCancel=CoroutineScope(currentCoroutineContext()).launch(Dispatchers.IO){
@@ -178,6 +200,9 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  val store=Store(app)
  var allRows by mutableStateOf(store.cached("list.json").array("sessions"))
  var allRowsFresh by mutableStateOf(false)
+ private var sessionsLoading=false
+ private var sessionsRefreshAgain=false
+ private val detailReads=mutableSetOf<String>()
  var rows by mutableStateOf(allRows)
  var creatingMessage by mutableStateOf<OutgoingMessage?>(null)
  var creatingAgent by mutableStateOf("claude")
@@ -217,7 +242,16 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var hermesDraft by mutableStateOf(store.secureText("hermes-draft"))
  val hermesPending:JSONObject get()=hermesOutbox.firstOrNull{it.state=="unknown"}?.body()?:JSONObject()
  var hermesVisible by mutableStateOf(true)
+ var historyLoading by mutableStateOf(false)
+ var historyError by mutableStateOf("")
+ var historyExhausted by mutableStateOf(false)
  var rootPage by mutableStateOf("hermes")
+ var incomingShare by mutableStateOf(store.cachedSecure("incoming-share.enc"))
+ fun receiveShare(text:String,source:String){
+  val value=JSONObject().put("text",text.take(100000)).put("source",source)
+  store.secureCache("incoming-share.enc",value);incomingShare=value
+ }
+ fun clearShare(){store.secureCache("incoming-share.enc",JSONObject());incomingShare=JSONObject()}
  var signals by mutableStateOf(store.cachedSecure("personal-signals-review.enc"))
  var signalsHealth by mutableStateOf(store.cachedSecure("personal-signals-health.enc"))
  var signalsFresh by mutableStateOf(false)
@@ -272,26 +306,27 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  val catalogErrors=mutableStateMapOf<String,String>()
  var active by mutableStateOf(true)
  var font by mutableFloatStateOf(store.prefs.getFloat("font",16f))
- init {viewModelScope.launch{snapshotFlow{q to queryInSession}.collectLatest{(global,local)->delay(400);store.prefs.edit().putString("search",global).putString("session-search",local).apply()}};viewModelScope.launch{while(true){if(active&&store.token.isNotEmpty())refreshPersonal();delay(60_000)}};viewModelScope.launch{snapshotFlow{active&&hermesVisible}.collectLatest{visible->
+ init {reactionFeedbackTracker.baseline(reactionEvents(hermes.array("messages")));viewModelScope.launch{snapshotFlow{q to queryInSession}.collectLatest{(global,local)->delay(400);store.prefs.edit().putString("search",global).putString("session-search",local).apply()}};viewModelScope.launch{while(true){if(active&&store.token.isNotEmpty())refreshPersonal();delay(60_000)}};viewModelScope.launch{snapshotFlow{active&&hermesVisible}.collectLatest{visible->
   hermesStreaming=false
+  var reconnectDelay=1500L
   if(visible)while(currentCoroutineContext().isActive){
    if(store.token.isBlank()){delay(1000);continue}
-   refreshHermes()
-   try{store.streamConversation{kind,payload->applyHermesEvent(kind,payload)}}
+   if(!hermes.has("revision"))refreshHermes()
+   try{store.streamConversation(hermes.optLong("revision").takeIf{hermes.has("revision")}){kind,payload->applyHermesEvent(kind,payload);reconnectDelay=1500L}}
    catch(e:CancellationException){throw e}
-   catch(_:Exception){}
-   finally{hermesStreaming=false}
-   delay(1500)
+   catch(_:Exception){reconnectDelay=(reconnectDelay*2).coerceAtMost(30000L)}
+   finally{hermesStreaming=false;hermesFresh=false;taskLedgerFresh=false}
+   delay(reconnectDelay)
   }
  }};viewModelScope.launch{var tick=0;while(true){if(active&&store.token.isNotEmpty()){
-   if(tick%5==0)refresh()
+   if(tick==0 || rootPage=="work"&&tick%5==0 || rootPage!="work"&&tick%30==0)refresh()
    val id=selected
-   if(id.isNotEmpty()){
+   if(id.isNotEmpty()&&rootPage=="work"){
     try{val l=store.request("/sessions/${enc(id)}/live");if(selected==id&&active){live=l;liveSessionId=id;liveFresh=true}}catch(_:Exception){if(selected==id)liveFresh=false}
     if(tick%5==0)refreshDetail(id)
    }
    tick++
- };delay(800)}}}
+ };delay(if(rootPage=="work"&&selected.isNotBlank()&&detail.optJSONObject("session")?.optString("status")=="running")1000 else 5000)}}}
  fun enc(s:String)=URLEncoder.encode(s,"UTF-8")
  suspend fun refreshReminders(){
   try{reminderState=store.request("/personal/reminders");reminderFresh=true}
@@ -430,6 +465,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    try{
      val recent=store.request("/personal/work/proposals?limit=20")
      if(recent.optJSONArray("items")==null)error("工作建议数据格式不完整")
+     recent.put("synced_at",System.currentTimeMillis()/1000.0)
      workProposals=recent;workProposalsFresh=true
      runCatching{store.secureCache("personal-work-proposals.enc",recent)}
    }catch(e:CancellationException){workProposalsLoading=false;throw e}
@@ -437,6 +473,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    try{
      val tasks=store.request("/personal/tasks")
      if(tasks.optJSONArray("items")==null)error("任务数据格式不完整")
+     tasks.put("synced_at",System.currentTimeMillis()/1000.0)
      taskLedger=tasks;taskLedgerFresh=true;taskLedgerError=""
      runCatching{store.secureCache("personal-tasks.enc",tasks)}
      for(task in tasks.array("items")){
@@ -585,7 +622,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      val index=rows.indexOfFirst{it.optString(key)==id}
      if(index<0)rows.add(JSONObject(change.toString())) else rows[index]=JSONObject(change.toString())
    }
-   return JSONArray(rows)
+   return JSONArray(if(key=="id"&&rows.any{it.has("created_at")})rows.sortedWith(compareBy<JSONObject>{it.optDouble("created_at")}.thenBy{it.optString("id")})else rows)
  }
  private fun activeHermesRuns(messages:JSONArray?):JSONArray=JSONArray((messages?.objects()?:emptyList())
   .filter{it.optString("role")=="user"&&it.optString("status") in setOf("queued","sending","running","unknown","approval_required")}
@@ -608,14 +645,18 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
     JSONObject(taskLedger.toString()).put("items",mergeHermesRows(taskLedger.optJSONArray("items"),changed,"id"))
    if(snapshot||full!=null)taskLedgerFresh=true
    taskLedgerError=""
-   runCatching{store.secureCache("personal-tasks.enc",taskLedger)}
+   taskLedger.put("synced_at",System.currentTimeMillis()/1000.0)
+   store.secureCache("personal-tasks.enc",taskLedger)
  }
  private fun applyHermesEvent(kind:String,payload:JSONObject){
+   if(payload.has("revision")&&payload.optLong("revision")<hermes.optLong("revision"))return
    if(kind=="snapshot"){
      if(payload.optJSONArray("messages")==null||payload.optJSONArray("runs")==null)return
      val snapshot=JSONObject(payload.toString())
      reactionFeedbackTracker.baseline(reactionEvents(snapshot.array("messages")))
      if(snapshot.optString("conversation_id").isBlank())snapshot.put("conversation_id",hermes.optString("conversation_id").ifBlank{"personal-main"})
+     snapshot.put("synced_at",System.currentTimeMillis()/1000.0)
+     snapshot.put("messages",mergeHermesRows(hermes.optJSONArray("messages"),snapshot.array("messages"),"id"))
      hermes=snapshot;hermesFresh=true;hermesError="";hermesStreaming=true
      applyHermesTasks(payload,true)
      reconcileHermesOutbox(snapshot.array("messages"))
@@ -624,9 +665,15 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      return
    }
    if(kind!="update")return
-   applyHermesTasks(payload,false)
    val current=JSONObject().apply{hermes.keys().forEach{key->put(key,hermes.opt(key))}}
-   if(payload.has("revision")&&payload.optLong("revision")<=current.optLong("revision"))return
+   if(payload.has("revision")&&payload.optLong("revision")<current.optLong("revision"))return
+   if(payload.has("revision")&&payload.optLong("revision")==current.optLong("revision")){
+    hermes=JSONObject(hermes.toString()).put("synced_at",System.currentTimeMillis()/1000.0)
+    taskLedger=JSONObject(taskLedger.toString()).put("synced_at",System.currentTimeMillis()/1000.0)
+    hermesFresh=true;hermesStreaming=true;hermesError=""
+    taskLedgerFresh=true;dispatchQueuedHermes();return
+   }
+   applyHermesTasks(payload,false)
    val message=payload.optJSONObject("message")?:payload.optJSONObject("changed_message")
     ?:payload.takeIf{it.has("id")&&it.has("role")}
    val changedMessages=(payload.optJSONArray("messages")?.objects()?:emptyList())+listOfNotNull(message)
@@ -645,6 +692,9 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    if(payload.has("revision"))current.put("revision",payload.optLong("revision"))
    if(current.optString("conversation_id").isBlank())current.put("conversation_id","personal-main")
    if(changedMessages.isNotEmpty()||payload.has("runs")||payload.has("run")||payload.has("changed_tasks")||payload.has("task")){
+     current.put("synced_at",System.currentTimeMillis()/1000.0)
+     // Commit projection and cursor together; a crash replays only read events.
+     store.secureCache("hermes-conversation.enc",current)
      hermes=current;hermesFresh=true;hermesError="";hermesStreaming=true
    }
    hermesReconcile?.cancel()
@@ -658,6 +708,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      if(data.optString("conversation_id").isBlank()||data.optJSONArray("messages")==null||data.optJSONArray("runs")==null)error("Pi 对话数据格式不完整")
      if(data.has("revision")&&data.optLong("revision")<hermes.optLong("revision"))return
      reactionFeedbackTracker.baseline(reactionEvents(data.array("messages")))
+     data.put("synced_at",System.currentTimeMillis()/1000.0)
+     data.put("messages",mergeHermesRows(hermes.optJSONArray("messages"),data.array("messages"),"id"))
      hermes=data;hermesFresh=true;hermesError=""
      applyHermesTasks(data,true)
      reconcileHermesOutbox(data.array("messages"))
@@ -773,18 +825,61 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    super.onCleared()
  }
  suspend fun refreshPersonal(){
-   refreshHeartbeat()
-   refreshReminders()
    if(personalLoading)return
    personalLoading=true
-   try{
-     val overview=store.request("/personal/overview")
-     if(overview.optInt("schema_version")!=1)error("个人概览版本暂不支持")
-     personal=overview;personalFresh=true;personalError=""
-     runCatching{store.secureCache("personal-overview.enc",overview)}
-   }catch(e:Exception){personalFresh=false;personalError=e.message?:"个人概览暂时无法连接"}
-   finally{personalLoading=false}
+   try{coroutineScope{
+    launch{refreshHeartbeat()}
+    launch{refreshReminders()}
+    launch{
+     try{
+      val overview=store.request("/personal/overview")
+      if(overview.optInt("schema_version")!=1)error("个人概览版本暂不支持")
+      personal=overview;personalFresh=true;personalError=""
+      runCatching{store.secureCache("personal-overview.enc",overview)}
+     }catch(e:CancellationException){throw e}
+      catch(e:Exception){personalFresh=false;personalError=e.message?:"个人概览暂时无法连接"}
+    }
+   }}finally{personalLoading=false}
  }
+ fun loadOlderHermes(){
+  val before=hermes.array("messages").firstOrNull()?.optString("id").orEmpty()
+  if(before.isBlank()||historyLoading||historyExhausted)return
+  viewModelScope.launch{
+   historyLoading=true;historyError=""
+   try{
+    val page=store.request("/personal/conversation/history?before=${enc(before)}&limit=60")
+    val merged=mergeHermesRows(hermes.optJSONArray("messages"),page.array("messages"),"id").objects().sortedWith(compareBy<JSONObject>{it.optDouble("created_at")}.thenBy{it.optString("id")})
+    val state=JSONObject(hermes.toString()).put("messages",JSONArray(merged))
+    store.secureCache("hermes-conversation.enc",state);hermes=state
+    historyExhausted=!page.optBoolean("has_more")
+   }catch(e:CancellationException){throw e}
+    catch(e:Exception){historyError=e.message?:"历史暂时无法读取"}
+   finally{historyLoading=false}
+  }
+ }
+ fun locateHermesMessage(id:String){
+  if(hermes.array("messages").any{it.optString("id")==id}){returnToHermes(id);return}
+  if(historyLoading)return
+  viewModelScope.launch{
+   historyLoading=true;historyError=""
+   try{
+    var before=hermes.array("messages").firstOrNull()?.optString("id").orEmpty()
+    while(currentCoroutineContext().isActive){
+     val page=store.request("/personal/conversation/history?before=${enc(before)}&limit=100")
+     val rows=mergeHermesRows(hermes.optJSONArray("messages"),page.array("messages"),"id").objects().sortedWith(compareBy<JSONObject>{it.optDouble("created_at")}.thenBy{it.optString("id")})
+     val state=JSONObject(hermes.toString()).put("messages",JSONArray(rows))
+     store.secureCache("hermes-conversation.enc",state);hermes=state
+     if(rows.any{it.optString("id")==id}){returnToHermes(id);break}
+     val next=page.optString("next_before")
+     if(!page.optBoolean("has_more")||next.isBlank()||next==before){historyExhausted=true;error("原消息未找到，请刷新后核对来源")}
+     before=next
+    }
+   }catch(e:CancellationException){throw e}
+    catch(e:Exception){historyError=e.message?:"未能定位原消息";hermesTargetMessageId=""}
+   finally{historyLoading=false}
+  }
+ }
+
  fun followVoiceDelivery(workId:String){
   val id=runCatching{UUID.fromString(workId)}.getOrNull()?:return
   voiceWatch?.cancel();voiceDelivery="正在接收你的语音"
@@ -837,6 +932,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    }
  }
  suspend fun refresh(){
+   if(sessionsLoading){sessionsRefreshAgain=true;return}
+   sessionsLoading=true
    try{
     // A proven pre-submission refusal can release the old create request without replay.
     store.prefs.getString("pending:/sessions",null)?.let{rid->
@@ -858,9 +955,11 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
     val after=if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0
     rows=if(q.isBlank()&&agent.isBlank()&&role.isBlank()&&cwd.isBlank()&&days==0)all.array("sessions") else store.request("/sessions?q=${enc(q)}&agent=$agent&role=$role&cwd=${enc(cwd)}&after=$after&sort=$sort&archived=$archived").array("sessions")
     rows.filter{it.optBoolean("managed")}.forEach{store.notifyStatus(it.getString("id"),it.optString("status"),it.optString("display_title"))}
-   }catch(e:Exception){messageReferencesAvailable=false;connected=false;allRowsFresh=false;liveFresh=false;rows=store.offline(q,agent,role,cwd,if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0)}
+   }catch(e:CancellationException){throw e}
+   catch(e:Exception){messageReferencesAvailable=false;connected=false;allRowsFresh=false;liveFresh=false;rows=store.offline(q,agent,role,cwd,if(days>0)System.currentTimeMillis()/1000.0-days*86400 else 0.0)}
+   finally{sessionsLoading=false;if(sessionsRefreshAgain){sessionsRefreshAgain=false;viewModelScope.launch{refresh()}}}
  }
- suspend fun refreshDetail(id:String){try{val d=store.request("/sessions/${enc(id)}");store.cache(store.detailCache(id),d);if(selected==id){
+ suspend fun refreshDetail(id:String){if(!detailReads.add(id))return;try{val d=store.request("/sessions/${enc(id)}");store.cache(store.detailCache(id),d);if(selected==id){
   val seed=detail.array("messages").firstOrNull{it.optString("id")=="accepted-first-message"}
   if(seed!=null&&d.array("messages").isEmpty())d.put("messages",JSONArray().put(seed))
   val session=d.optJSONObject("session")
@@ -872,7 +971,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    }
   }
   detail=d
- }}catch(_:Exception){}}
+ }}catch(e:CancellationException){throw e}catch(_:Exception){}finally{detailReads.remove(id)}}
  fun run(action:suspend ()->Unit){viewModelScope.launch{busy=true;try{action()}catch(e:Exception){error=e.message?:"操作失败"}finally{busy=false}}}
  suspend fun mutation(path:String,body:JSONObject,requestId:String?=null,expectedSid:String?=null):JSONObject{
    val key="pending:$path";val existing=store.prefs.getString(key,null)

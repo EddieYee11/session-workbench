@@ -1,5 +1,6 @@
 package work.eddie.sessions
 
+import kotlinx.coroutines.launch
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -174,6 +175,11 @@ private fun hermesToolLabel(name:String):String=when{
  val list=rememberLazyListState()
  MessageViewportAnchor(list,"hermes",vm.hermesVisible,motion)
  var positionedAtLatest by remember{mutableStateOf(false)}
+ val readingHistory by remember{derivedStateOf{list.canScrollForward&&positionedAtLatest}}
+ var searchOpen by remember{mutableStateOf(false)}
+ var highlightedId by remember{mutableStateOf("")}
+ LaunchedEffect(highlightedId){if(highlightedId.isNotBlank()){kotlinx.coroutines.delay(2500);highlightedId=""}}
+ if(searchOpen)ConversationSearchSheet(vm){searchOpen=false}
  MessageSendListScroll(motion,list,messages.indexOfFirst{messageMotionId(it)==motion.messageId}.takeIf{it>=0}?.plus(1))
  LaunchedEffect(vm.showSignalsActivity){if(vm.showSignalsActivity){vm.showSignalsActivity=false;openTasks()}}
  val hasConversation=data.optString("conversation_id").isNotBlank()
@@ -184,16 +190,17 @@ private fun hermesToolLabel(name:String):String=when{
   val target=vm.hermesTargetMessageId
   if(target.isBlank())return@LaunchedEffect
   val index=messages.indexOfFirst{it.optString("id")==target||messageMotionId(it)==target}
-  if(index<0)return@LaunchedEffect
+  if(index<0){vm.locateHermesMessage(target);return@LaunchedEffect}
   withFrameNanos{}
   list.scrollToItem(index+1)
   positionedAtLatest=true
+  highlightedId=target
   vm.hermesTargetMessageId=""
  }
  LaunchedEffect(messages.size,messages.lastOrNull()?.optString("id"),messages.lastOrNull()?.optString("text"),messages.lastOrNull()?.optString("phase")){
   if(motion.messageId!=null||vm.hermesTargetMessageId.isNotBlank())return@LaunchedEffect
   val lastVisible=list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?:0
-  if(messages.size>4&&(!positionedAtLatest||lastVisible>=messages.size-1)){
+  if(messages.isNotEmpty()&&(!positionedAtLatest||lastVisible>=messages.size-1)){
    list.scrollToItem(messages.size+1)
    positionedAtLatest=true
   }
@@ -211,18 +218,21 @@ private fun hermesToolLabel(name:String):String=when{
    val headerHeight=if(avatarPillText=="空闲")56.dp else (54f+22f*LocalDensity.current.fontScale).dp
    LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("hermes-message-list"),contentPadding=PaddingValues(start=inset,end=inset,top=headerHeight+4.dp,bottom=8.dp),horizontalAlignment=Alignment.CenterHorizontally){
     item(key="intro"){
-     Column(Modifier.widthIn(max=790.dp).fillMaxWidth()){
+     Column(Modifier.widthIn(max=640.dp).fillMaxWidth()){
+      if(messages.isNotEmpty()&&!vm.historyExhausted)TextButton(onClick={vm.loadOlderHermes()},enabled=!vm.historyLoading){Text(if(vm.historyLoading)"正在读取历史…" else "读取更早的对话")}
+      if(vm.historyError.isNotBlank())Text(vm.historyError,fontSize=Type.Caption,color=AmberText)
       if(messages.isEmpty())HermesHero(wideHero){vm.updateHermesDraft(it)}
       if(vm.hermesError.isNotBlank()&&!vm.hermesFresh)Text("连接提示：${vm.hermesError}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=AmberText)
       if(hasConversation&&!vm.hermesFresh)Text("以下是上次保存的对话。新消息会先保存到手机，联网后发送。",fontSize=Type.Caption,color=AmberText)
      }
     }
     items(messages,key={messageMotionId(it).ifBlank{it.toString()}}){message->
-     MessageSendRow(motion,messageMotionId(message),Modifier.widthIn(max=790.dp).fillMaxWidth(),trailingSpacing=22.dp){Column{
+     MessageSendRow(motion,messageMotionId(message),Modifier.widthIn(max=640.dp).fillMaxWidth().testTag("conversation-message-${message.optString("id")}").background(if(message.optString("id")==highlightedId)AmberBg else Color.Transparent,RoundedCornerShape(28.dp)),trailingSpacing=22.dp){Column{
       MessageSwipeActions(message,enabled=!message.optBoolean("local"),onReply={vm.hermesReference=messageReference(it,"reply","Pi","personal-main")},onForward={vm.hermesReference=messageReference(it,"forward","Pi","personal-main")}){HermesMessage(message,motion,vm.font)}
       if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){Column(Modifier.fillMaxWidth()){
        val openTask:(String)->Unit={id->vm.openTaskDetail(id,message.optString("id"))}
        // 真正派发的后台任务在消息下直接露面；同轮工具步骤继续走工作过程卡。
+       ArtifactCards(ledgerArtifacts(message))
        MessageReminderCards(vm,message)
        SupplementCards(vm,message)
        MessageTaskCards(message,vm.taskLedgerFresh,openTask){filter->vm.openTaskList(filter)}
@@ -234,7 +244,7 @@ private fun hermesToolLabel(name:String):String=when{
      }}
     }
     item(key="tail"){
-     Column(Modifier.widthIn(max=790.dp).fillMaxWidth()){
+     Column(Modifier.widthIn(max=640.dp).fillMaxWidth()){
       if(messages.isEmpty()&&hasConversation)Text("想从什么事开始？日历和账本会按真实来源回答。",fontSize=Type.BodySm,color=Muted)
       proposals.forEach{proposal->WorkProposalCard(vm,proposal)}
       if(vm.workProposalNote.isNotBlank())Text(vm.workProposalNote,Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
@@ -242,10 +252,10 @@ private fun hermesToolLabel(name:String):String=when{
     }
    }
    // Only the controls have a light backing; empty header space exposes the scrolling text.
-   Box(Modifier.fillMaxWidth().height(headerHeight).align(Alignment.TopCenter)
+   androidx.compose.animation.AnimatedVisibility(visible=!readingHistory,modifier=Modifier.align(Alignment.TopCenter),enter=fadeIn(tween(150)),exit=fadeOut(tween(100))){Box(Modifier.fillMaxWidth().height(headerHeight)
     .testTag("hermes-fading-header")){
     Row(Modifier.fillMaxWidth().height(headerHeight).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
-     Spacer(Modifier.size(44.dp))
+     IconButton(onClick={searchOpen=true},modifier=Modifier.size(44.dp).background(Card.copy(alpha=.72f),CircleShape)){Icon(Icons.Outlined.Search,"搜索主对话",tint=Muted)}
      Column(Modifier.weight(1f).fillMaxHeight(),horizontalAlignment=Alignment.CenterHorizontally){
       val visual=when{
        vm.hermesVoicePhase=="recording"->"listening"
@@ -266,8 +276,12 @@ private fun hermesToolLabel(name:String):String=when{
       ComIcon(R.drawable.com_icon_menu_v1,"更多",Modifier.padding(11.dp))
      }
     }
-   }
+   }}
   }
+  if(readingHistory){val scope=rememberCoroutineScope();Row(Modifier.fillMaxWidth().padding(horizontal=16.dp),horizontalArrangement=Arrangement.End){
+   TextButton(onClick={searchOpen=true}){Text("搜索对话")}
+   TextButton(onClick={scope.launch{list.animateScrollToItem(messages.size+1)}}){Text("回到最新 ↓")}
+  }}
   vm.hermesReference?.let{MessageReferencePreview(it){vm.hermesReference=null}}
   HermesComposer(vm,canSend,motion)
  }
@@ -284,7 +298,7 @@ private fun hermesToolLabel(name:String):String=when{
  val text=message.optString("text")
  val color=if(user)HermesUserBubble else HermesAssistantBubble
  Column(Modifier.fillMaxWidth(),horizontalAlignment=if(user)Alignment.End else Alignment.Start){
-  Surface(Modifier.messageSendMotionTarget(motion,motionId).messageSendTargetBounds(motion,motionId).testTag(if(user)"hermes-user-bubble" else "hermes-assistant-bubble").widthIn(max=680.dp).fillMaxWidth(if(user).88f else .96f),shape=RoundedCornerShape(28.dp),color=color){
+  Surface(Modifier.messageSendMotionTarget(motion,motionId).messageSendTargetBounds(motion,motionId).testTag(if(user)"hermes-user-bubble" else "hermes-assistant-bubble").widthIn(max=620.dp).fillMaxWidth(if(user).88f else .96f),shape=RoundedCornerShape(28.dp),color=color){
    Column(Modifier.padding(horizontal=15.dp,vertical=12.dp)){
     message.optJSONObject("reference")?.let{reference->Text("${if(reference.optString("mode")=="forward")"引用"else"回复"} · ${reference.optString("author")}\n${reference.optString("text")}",Modifier.padding(bottom=8.dp),fontSize=Type.Caption,lineHeight=17.sp,color=Muted,maxLines=3,overflow=TextOverflow.Ellipsis)}
     if(user||text.isBlank()){
@@ -301,7 +315,7 @@ private fun hermesToolLabel(name:String):String=when{
  val activeTool=if(message.isNull("active_tool"))"" else message.optString("active_tool").take(48)
  val state=phase.ifBlank{hermesMessageStatus(status)}.let{if(phase=="正在执行"&&activeTool.isNotBlank())"$it · $activeTool" else it}
   val time=messageTime(message.opt("created_at"))
-  val compactState=if(user&&status in setOf("queued","sending","running","unknown","failed","approval_required"))"" else state
+  val compactState=if(status in setOf("completed","received","sent","read","delegated"))"" else if(user&&status in setOf("queued","sending","running","unknown","failed","approval_required"))"" else state
   if(compactState.isNotBlank()||time.isNotBlank())Text(listOf(time,compactState).filter{it.isNotBlank()}.joinToString(" · "),Modifier.messageSendMetadata(motion,motionId).padding(start=8.dp,end=8.dp,top=4.dp),fontSize=Type.Caption,color=if(status in listOf("failed","unknown"))Danger else Faint)
   if(status in listOf("failed","unknown")&&message.optString("error").isNotBlank())Text(message.optString("error"),Modifier.messageSendMetadata(motion,motionId).padding(horizontal=8.dp,vertical=2.dp),fontSize=Type.Caption,color=Danger)
  }
@@ -316,7 +330,7 @@ private fun hermesToolLabel(name:String):String=when{
  val tool=if(message.isNull("active_tool"))"" else message.optString("active_tool")
  val terminal=status in setOf("failed","unknown")
  val body=when{
-  status=="unknown"->"结果待核实，Com! 不会自动重发这条消息。"
+  status=="unknown"->"正在核实是否送达，可进入详情查看回执。"
   status=="failed"->message.optString("error").ifBlank{"这次处理失败，请查看活动记录。"}
   status=="waiting"->"需要你在活动中查看下一步。"
   !fresh->"上次同步时：${if(tool.isNotBlank())hermesToolLabel(tool) else label}"

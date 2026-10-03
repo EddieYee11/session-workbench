@@ -66,9 +66,16 @@ class MainActivity:ComponentActivity(){
  }
  override fun onStart(){super.onStart();vm.active=true;if(vm.store.token.isNotEmpty()){vm.refreshPersonalNow();vm.refreshHermesNow()};if(SignalConfig.enabled(this)&&SignalConfig.accessGranted(this))SignalSync.schedule(this)}
  override fun onPause(){vm.store.flushPending();super.onPause()}
- override fun onStop(){vm.store.flushPending();vm.finishHermesVoice(false);vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;vm.personalFresh=false;vm.hermesFresh=false;vm.signalsFresh=false;vm.signalsHealthFresh=false;vm.taskLedgerFresh=false;super.onStop()}
+ override fun onStop(){vm.store.flushPending();vm.finishHermesVoice(false);vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;vm.personalFresh=false;vm.hermesFresh=false;vm.signalsFresh=false;vm.signalsHealthFresh=false;vm.taskLedgerFresh=false;vm.workProposalsFresh=false;vm.reminderFresh=false;super.onStop()}
  override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);handleIntent(intent)}
  private fun handleIntent(intent:Intent){
+  if(intent.action==Intent.ACTION_SEND&&intent.type?.startsWith("text/")==true){
+   val text=intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
+   if(text.isNotBlank()){
+    vm.receiveShare(text,referrer?.host.orEmpty())
+    intent.removeExtra(Intent.EXTRA_TEXT)
+   }
+  }
   val sid=intent.getStringExtra("sid").orEmpty()
   quick=intent.getStringExtra("agent").orEmpty()
   if(sid.isNotBlank()){vm.openId(sid);workLaunch++} else if(quick.isNotBlank()){vm.close();workLaunch++}

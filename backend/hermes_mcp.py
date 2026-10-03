@@ -331,6 +331,13 @@ def task_submit(agent:str,relative_cwd:str,title:str,prompt:str,completion_condi
     return _shared('task_submit',data,context)
 
 
+@mcp.tool(description='Register an existing workspace deliverable on the current human message for authenticated mobile preview/download.',annotations=PROPOSAL_ONLY)
+def artifact_register(path:str,origin_session_id:str,origin_message_id:str,origin_request_id:str)->dict[str,Any]:
+    data=locals()
+    context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
+    return _shared('artifact_register',{'path':path},context)
+
+
 @mcp.tool(description='Read authoritative task state, real timeline, structured result and acceptance status.',annotations=READ_ONLY)
 def task_status(task_id:str='')->dict[str,Any]:
     return _shared('task_status',{'task_id':task_id})

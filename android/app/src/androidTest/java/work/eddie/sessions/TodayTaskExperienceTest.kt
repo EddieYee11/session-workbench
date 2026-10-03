@@ -50,7 +50,11 @@ class TodayTaskExperienceTest {
   }
   ui.setContent{MaterialTheme(colorScheme=Palette){Workbench(model,"",0,{})}}
   // A clean emulator opens the pairing sheet; dismiss it without changing credentials.
-  if(ui.onAllNodesWithText("完成").fetchSemanticsNodes().isNotEmpty())ui.onNodeWithText("完成").performClick()
+  ui.waitForIdle()
+  if(ui.onAllNodesWithText("Com! · 设置").fetchSemanticsNodes().isNotEmpty()){
+   InstrumentationRegistry.getInstrumentation().uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+   ui.waitUntil(5000){ui.onAllNodesWithText("Com! · 设置").fetchSemanticsNodes().isEmpty()}
+  }
   return model
  }
  @After fun restoreFixtureConfiguration(){vm?.let{model->ui.runOnUiThread{model.store.prefs.edit().putString("base",savedBase).apply();model.store.token=savedToken;model.active=false}}}

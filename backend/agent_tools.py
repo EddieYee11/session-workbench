@@ -77,6 +77,10 @@ class AgentTools:
         if name=='authorize_tool':
             return self.authorize_tool(args,context)
         row=source(self.conversation,context)
+        if name=='artifact_register':
+            artifact=self.artifact_access.register(row['id'],args['path'])
+            self.conversation.attach_artifact(row['id'],artifact)
+            return artifact
         if name=='bookkeeping_search':
             self.authorize_tool({'tool':'bookkeeping_search','args':{**args,'action':'search'}},context)
             from bookkeeping_search import search

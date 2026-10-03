@@ -55,7 +55,7 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
 /** One input surface and one mascot survive navigation, including interrupted transitions. */
 @Composable fun ConversationScene(
  vm:WorkbenchModel,agent:String,select:(String)->Unit,menu:()->Unit,
- advanced:()->Unit,pick:(JSONObject)->Unit,new:()->Unit,
+ advanced:()->Unit,pick:(JSONObject)->Unit,new:()->Unit,more:()->Unit={},
 ){
  val context=LocalContext.current
  val stage=remember{CompanionStage()}
@@ -88,7 +88,7 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
     },label="连续会话场景"){scene->
      CompositionLocalProvider(LocalSceneKey provides scene){
       Box(Modifier.fillMaxSize().then(if(scene!=route)Modifier.clearAndSetSemantics{} else Modifier)){
-      if(scene=="home")NewChatHome(vm,agent,select,menu,advanced,pick)
+      if(scene=="home")NewChatHome(vm,agent,select,menu,advanced,pick,more)
       else{
        var snapshot by remember(scene){mutableStateOf(ConversationSnapshot(scene,vm.detail,vm.live,vm.liveFresh&&vm.liveSessionId==scene))}
        val current=if(vm.selected==scene)ConversationSnapshot(scene,vm.detail,vm.live,vm.liveFresh&&vm.liveSessionId==scene) else snapshot

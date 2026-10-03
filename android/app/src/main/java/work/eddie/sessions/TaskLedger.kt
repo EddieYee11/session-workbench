@@ -190,7 +190,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
 }
 
 /** 活动弹层里的任务分组：进行中置顶，点开展开事件时间线 */
-@Composable fun TaskLedgerSection(vm:WorkbenchModel,runs:List<JSONObject>,messages:List<JSONObject>,taskId:String="",filtered:Boolean=false){
+@Composable fun TaskLedgerSection(vm:WorkbenchModel,runs:List<JSONObject>,messages:List<JSONObject>,taskId:String="",filtered:Boolean=false,tagPrefix:String="task-ledger"){
  val allTasks=buildLedgerTasks(ledgerTaskRecords(vm,messages),messages)
  val tasks=allTasks.filter{if(taskId.isNotBlank())it.id==taskId else !filtered||vm.taskFilter=="all"||ledgerFilterGroup(it)==ledgerFilterKey(vm.taskFilter)}
  var expanded by rememberSaveable(taskId){mutableStateOf<String?>(taskId.takeIf{it.isNotBlank()})}
@@ -206,7 +206,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
   return
  }
  tasks.forEach{task->
-  Surface(onClick={if(filtered&&taskId.isBlank())vm.openTaskDetail(task.id,task.messageId.orEmpty()) else expanded=if(expanded==task.id)null else task.id},Modifier.fillMaxWidth().padding(top=10.dp).testTag("task-ledger-${task.id}"),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
+  Surface(onClick={if(filtered&&taskId.isBlank())vm.openTaskDetail(task.id,task.messageId.orEmpty()) else expanded=if(expanded==task.id)null else task.id},Modifier.fillMaxWidth().padding(top=10.dp).testTag("$tagPrefix-${task.id}"),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
    Column(Modifier.padding(14.dp)){
     Row(verticalAlignment=Alignment.CenterVertically){
      if(ledgerGroup(task)=="active"&&vm.taskLedgerFresh)StatusDot(PiGreen) else Box(Modifier.size(6.dp).background(if(ledgerGroup(task)=="decision"&&vm.taskLedgerFresh)AmberText else Faint,CircleShape))
@@ -219,6 +219,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
      var executionDetails by rememberSaveable(task.id){mutableStateOf(false)}
      var timeline by rememberSaveable(task.id){mutableStateOf(false)}
      if(!vm.taskLedgerFresh)Text("离线缓存，同步后才能操作",fontSize=Type.Caption,color=AmberText)
+     ArtifactCards(task.artifacts)
      if(task.progress.isNotEmpty())Text(task.progress.joinToString(" → "),Modifier.padding(top=8.dp),fontSize=Type.Micro,color=Muted)
      // 现在到哪一步：进度在上，来源与细节折叠到下面
      Text("${task.scope} · ${task.directory.substringAfterLast('/').ifBlank{"目录待核对"}}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
@@ -247,7 +248,6 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
      if(task.status=="active"||task.rawStatus in setOf("waiting","proposed","approval_required"))TextButton(onClick={vm.taskCommand(task.id,"",true)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("请求停止")}
      // 2. 结果与产物
      if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink)}
-     ArtifactCards(task.artifacts)
      // 3. 步骤：默认只展示最近几步，其余折叠
      if(task.events.isNotEmpty()){
       val recent=task.events.takeLast(3)
@@ -303,17 +303,29 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
 }
 
 @Composable fun TaskActivityPage(vm:WorkbenchModel,back:()->Unit){
- Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally){
-  Column(Modifier.widthIn(max=820.dp).fillMaxWidth()){
-   Row(verticalAlignment=Alignment.CenterVertically){
-    if(vm.taskDetailId.isNotBlank())IconButton(onClick=back){Icon(Icons.Outlined.ArrowBack,"返回上一页")}
-    Text(if(vm.taskDetailId.isBlank())"任务" else "任务详情",Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-    IconButton(onClick={vm.refreshWorkProposalsNow()},enabled=!vm.workProposalsLoading){Icon(Icons.Outlined.Refresh,"刷新任务")}
+ BoxWithConstraints(Modifier.fillMaxSize()){
+  val wide=maxWidth>=660.dp*androidx.compose.ui.platform.LocalDensity.current.fontScale.coerceAtLeast(1f)&&vm.taskDetailId.isNotBlank()
+  val listScroll=rememberScrollState()
+  val detailScroll=rememberScrollState()
+  @Composable fun Pane(id:String,list:Boolean=false){
+   Column(Modifier.fillMaxSize().verticalScroll(if(list)listScroll else detailScroll).padding(horizontal=16.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally){
+    Column(Modifier.widthIn(max=820.dp).fillMaxWidth()){
+     Row(verticalAlignment=Alignment.CenterVertically){
+      if(id.isNotBlank())IconButton(onClick=back){Icon(Icons.Outlined.ArrowBack,"返回上一页")}
+      Text(if(id.isBlank())"任务" else "任务详情",Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+      IconButton(onClick={vm.refreshWorkProposalsNow()},enabled=!vm.workProposalsLoading){Icon(Icons.Outlined.Refresh,"刷新任务")}
+     }
+     Text(if(vm.taskLedgerFresh)"任务在 Mac mini 上执行，关闭手机后仍继续。" else vm.taskLedgerError.ifBlank{"正在核对任务状态；保存的记录仍可查看"},Modifier.padding(top=6.dp,bottom=14.dp),fontSize=Type.Caption,color=Muted)
+     if(vm.workProposalNote.isNotBlank())Text(vm.workProposalNote,Modifier.padding(bottom=8.dp),fontSize=Type.Caption,color=Muted)
+     TaskLedgerSection(vm,vm.hermes.array("runs"),vm.hermes.array("messages"),id,filtered=true,tagPrefix=if(wide&&!list)"task-detail" else "task-ledger")
+    }
    }
-   Text(if(vm.taskLedgerFresh)"任务在 Mac mini 上执行，关闭手机后仍继续。" else "${vm.taskLedgerError.ifBlank{"连接中，正在读取任务状态"}}",Modifier.padding(top=6.dp,bottom=14.dp),fontSize=Type.Caption,color=Muted)
-   if(vm.workProposalNote.isNotBlank())Text(vm.workProposalNote,Modifier.padding(bottom=8.dp),fontSize=Type.Caption,color=Muted)
-   TaskLedgerSection(vm,vm.hermes.array("runs"),vm.hermes.array("messages"),vm.taskDetailId,filtered=true)
   }
+  if(wide)Row(Modifier.fillMaxSize().testTag("task-list-detail")){
+   Box(Modifier.weight(.44f)){Pane("",true)}
+   VerticalDivider(color=Line)
+   Box(Modifier.weight(.56f)){Pane(vm.taskDetailId)}
+  }else Pane(vm.taskDetailId,vm.taskDetailId.isBlank())
  }
 }
 

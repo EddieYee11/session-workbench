@@ -147,6 +147,7 @@ class PersonalConversation:
                 ("supplement_to_message_id", "TEXT"),
                 ("work_card", "TEXT"),
                 ("new_item", "TEXT"),
+                ("artifacts", "TEXT NOT NULL DEFAULT '[]'"),
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
@@ -252,7 +253,7 @@ class PersonalConversation:
     @staticmethod
     def _message_query(where: str = "") -> str:
         return (
-            "SELECT id,request_id,parent_id,supplement_to_message_id,role,text,status,phase,active_tool,tasks,work_card,"
+            "SELECT id,request_id,parent_id,supplement_to_message_id,role,text,status,phase,active_tool,tasks,work_card,artifacts,"
             "(SELECT state FROM user_events WHERE user_events.message_id=messages.id) AS delivery_state,"
             "received_at,revision,created_at,updated_at,run_id,error,reaction,reference FROM messages " + where
         )
@@ -262,7 +263,19 @@ class PersonalConversation:
         message = project_message(row)
         message["reference"] = json.loads(message["reference"]) if message["reference"] else None
         message["tasks"] = json.loads(message["tasks"]) if message["tasks"] else []
+        message["artifacts"]=json.loads(message.get("artifacts") or "[]")
         return project_work(message)
+
+    def attach_artifact(self, message_id, artifact):
+        with self.db() as db:
+            row=db.execute('SELECT artifacts FROM messages WHERE id=?',(message_id,)).fetchone()
+            if not row:raise ValueError('成果来源消息不存在')
+            items=json.loads(row[0] or '[]')
+            if any(item.get('id')==artifact['id'] for item in items):return
+            items.append(artifact)
+            revision=self._bump(db)
+            db.execute('UPDATE messages SET artifacts=?,revision=?,updated_at=? WHERE id=?',(json.dumps(items,ensure_ascii=False),revision,time.time(),message_id))
+        self._notify()
 
     def sync_task_cards(self, tasks: list[dict]) -> None:
         """Project the ledger onto its real source messages and the same durable SSE."""
@@ -337,15 +350,65 @@ class PersonalConversation:
             "messages": messages, "runs": runs, "changed_tasks": tasks,
         }
 
+    def history(self, before: str = "", around: str = "", limit: int = 60) -> dict:
+        """Read-only keyset pages; never restore the native agent."""
+        limit = max(1, min(limit, 100))
+        with self.db() as db:
+            if around:
+                anchor = db.execute("SELECT created_at,id FROM messages WHERE id=?", (around,)).fetchone()
+                if not anchor:
+                    raise ValueError("原消息不存在")
+                earlier = db.execute(self._message_query("WHERE (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?"), (*anchor, limit // 2)).fetchall()
+                later = db.execute(self._message_query("WHERE (created_at,id)>=(?,?) ORDER BY created_at,id LIMIT ?"), (*anchor, limit - len(earlier))).fetchall()
+                rows = list(reversed(earlier)) + list(later)
+            else:
+                if before:
+                    anchor = db.execute("SELECT created_at,id FROM messages WHERE id=?", (before,)).fetchone()
+                    if not anchor:
+                        raise ValueError("分页位置不存在")
+                    rows = db.execute(self._message_query("WHERE (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?"), (*anchor, limit)).fetchall()
+                else:
+                    rows = db.execute(self._message_query("ORDER BY created_at DESC,id DESC LIMIT ?"), (limit,)).fetchall()
+                rows = list(reversed(rows))
+            more = bool(rows and db.execute("SELECT 1 FROM messages WHERE (created_at,id)<(?,?) LIMIT 1", (rows[0]["created_at"], rows[0]["id"])).fetchone())
+        return {"messages": [self._project_message(r) for r in rows], "has_more": more,
+                "next_before": rows[0]["id"] if more else ""}
+
+    def search(self, query: str = "", date: str = "", limit: int = 40) -> dict:
+        clauses, params = [], []
+        if query.strip():
+            # instr is literal: percent and underscore are never wildcards.
+            clauses.append("instr(lower(text), lower(?))>0")
+            params.append(query.strip()[:200])
+        if date:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            try:
+                start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+            except ValueError:
+                raise ValueError("日期格式应为 YYYY-MM-DD") from None
+            clauses.append("created_at>=? AND created_at<?")
+            params.extend([start, start + 86400])
+        if not clauses:
+            return {"items": []}
+        with self.db() as db:
+            rows = db.execute("SELECT id,role,text,created_at FROM messages WHERE " + " AND ".join(clauses) + " ORDER BY created_at DESC,id DESC LIMIT ?", (*params, max(1, min(limit, 100)))).fetchall()
+        return {"items": [{**dict(r), "text": r["text"][:400], "source": "Pi 主对话"} for r in rows]}
+
     async def stream(self, after_revision: int | None = None) -> AsyncIterator[dict]:
-        """Broadcast durable Com state; reconnects always begin with a full snapshot."""
+        """Resume from durable revisions, fall back when the cursor is invalid."""
         if after_revision is not None and (
             isinstance(after_revision, bool) or not isinstance(after_revision, int) or after_revision < 0
         ):
             raise ValueError("无效的会话版本")
-        state = self.snapshot()
-        seen = state["revision"]
-        yield {"event": "snapshot", "id": seen, "data": state}
+        state = self.changes_since(after_revision) if after_revision is not None else self.snapshot()
+        if after_revision is not None and after_revision <= state["revision"]:
+            seen = state["revision"]
+            yield {"event": "update", "id": seen, "data": state}
+        else:
+            state = self.snapshot()
+            seen = state["revision"]
+            yield {"event": "snapshot", "id": seen, "data": state}
         while True:
             change = self.changes_since(seen)
             if change["revision"] > seen:

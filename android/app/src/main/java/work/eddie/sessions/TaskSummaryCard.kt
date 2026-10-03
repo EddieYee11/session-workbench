@@ -208,13 +208,7 @@ private fun buildSummaryText(s:TaskSummary):String{
      // 产物文件
      if(summary.files.isNotEmpty()){
       HorizontalDivider(Modifier.padding(vertical=8.dp),thickness=1.dp,color=Line)
-      Text("产物",fontSize=Type.Caption,fontWeight=FontWeight.SemiBold,color=Ink)
-      summary.files.forEach{file->
-       Row(Modifier.fillMaxWidth().padding(top=5.dp),verticalAlignment=Alignment.CenterVertically){
-        Icon(Icons.Outlined.InsertDriveFile,"文件",Modifier.size(15.dp),tint=Faint)
-        Text(file,Modifier.padding(start=7.dp).weight(1f),fontSize=Type.Caption,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
-       }
-      }
+      ArtifactCards(summary.files.map{JSONObject().put("path",it)})
      }
      // 操作
      HorizontalDivider(Modifier.padding(vertical=8.dp),thickness=1.dp,color=Line)

@@ -12,6 +12,7 @@
  <application android:label="@string/app_name" android:icon="@drawable/ic_launcher" android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true">
   <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize">
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+   <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="text/plain"/></intent-filter>
   </activity>
   <activity android:name=".QuickVoiceActivity" android:label="Com! · 快速语音" android:exported="true" android:launchMode="singleTask" android:taskAffinity="work.eddie.sessions.quickvoice" android:excludeFromRecents="true" android:theme="@style/QuickVoiceTheme" android:windowSoftInputMode="adjustResize">
    <intent-filter><action android:name="android.intent.action.ASSIST"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
@@ -20,5 +21,8 @@
   <service android:name=".PersonalNotificationListener" android:label="Com! Personal Agent 通知读取" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">
    <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
   </service>
+  <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.artifacts" android:exported="false" android:grantUriPermissions="true">
+   <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/artifact_paths"/>
+  </provider>
  </application>
 </manifest>

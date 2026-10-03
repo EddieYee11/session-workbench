@@ -4,7 +4,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
 from fastapi import FastAPI,Request,HTTPException,WebSocket,WebSocketDisconnect
-from fastapi.responses import JSONResponse,StreamingResponse
+from fastapi.responses import JSONResponse,StreamingResponse,FileResponse
+from artifacts import ArtifactAccess
 from history import History,text_content
 from runtime import Runtime
 from voice import voice_router
@@ -51,6 +52,7 @@ signals=PersonalSignals(STATE)
 inspector=SignalInspector(signals,PiSignalReviewer(STATE) if MAIN_AGENT=='pi' else HermesSignalReviewer(STATE))
 work_proposals=WorkProposalStore(STATE,HOME/'AI_Work_System')
 task_store=TaskStore(STATE)
+artifact_access=ArtifactAccess(task_store,HOME/"AI_Work_System",STATE)
 task_controller=TaskController(task_store,runtime,conversation)
 heartbeat=Heartbeat(STATE,HOME/"AI_Work_System",task_store,work_proposals)
 runtime.task_store=task_store
@@ -61,6 +63,7 @@ goal_events=GoalEvents(STATE)
 background=BackgroundEvents(goal_events,conversation,task_store)
 conversation.process_background=background.process
 agent_tools=AgentTools(STATE,conversation,work_proposals,task_store,task_controller,capability_registry,goal_events)
+agent_tools.artifact_access=artifact_access
 conversation.task_context=lambda: task_store.context()
 conversation.task_environment=lambda: {'workspace_root':str(work_proposals.workspace),
                                       'automatic_executor':'pi','maximum_running_tasks':2,'claude_maximum_running':1,'host':capability_registry.host,
@@ -140,8 +143,20 @@ async def auth(request,call_next):
 @app.exception_handler(ValueError)
 @app.exception_handler(RuntimeError)
 async def failure(request,exc):return JSONResponse({'detail':str(exc)},409)
+try:
+    import subprocess
+    BUILD_COMMIT=subprocess.check_output(['git','rev-parse','--short','HEAD'],cwd=Path(__file__).parent,text=True,stderr=subprocess.DEVNULL,timeout=2).strip()
+except Exception:
+    BUILD_COMMIT=json.loads((STATE/'service-build.json').read_text()).get('commit','unknown') if (STATE/'service-build.json').exists() else 'unknown'
+
+def deployed_build_commit():
+    try:
+        return json.loads((STATE/'service-build.json').read_text()).get('commit',BUILD_COMMIT)
+    except (OSError,ValueError):
+        return BUILD_COMMIT
+
 @app.get('/health')
-async def health():return {'service':'mini-sessions','version':'1.8.1','main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),'worker_operation_mode':OPERATION_MODE,'operation_policy_revision':POLICY_REVISION,'readonly_restrictions_revoked':True,'features':{'heartbeat_shadow_v1':True,'reminder_cards_v1':True,'muse_task_kinds_v1':True,'supplement_new_item_v1':True,'capability_search_readonly_v1':True,'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'work_cards_v1':True,'task_events_sse_v1':True,'task_plan_v1':True,'task_context_revision_v1':True,'semantic_verification_v1':True,'main_steer_v1':MAIN_AGENT=='pi','voice_bookkeeping_intent_v1':True,'direct_business_queries_v1':True,'work_chat_v1':True,'goals_scheduler':goal_events.enabled()}}
+async def health():return {'service':'mini-sessions','version':'1.9.0','api_contract':2,'build_commit':deployed_build_commit(),'main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),'worker_operation_mode':OPERATION_MODE,'operation_policy_revision':POLICY_REVISION,'readonly_restrictions_revoked':True,'features':{'artifact_access_v1':True,'conversation_history_v1':True,'conversation_resume_v1':True,'heartbeat_shadow_v1':True,'reminder_cards_v1':True,'muse_task_kinds_v1':True,'supplement_new_item_v1':True,'capability_search_readonly_v1':True,'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'work_cards_v1':True,'task_events_sse_v1':True,'task_plan_v1':True,'task_context_revision_v1':True,'semantic_verification_v1':True,'main_steer_v1':MAIN_AGENT=='pi','voice_bookkeeping_intent_v1':True,'direct_business_queries_v1':True,'work_chat_v1':True,'goals_scheduler':goal_events.enabled()}}
 @app.post('/pair')
 async def pair(request:Request):
     ip=request.client.host;now=time.time();attempts=[x for x in rate.get(ip,[]) if now-x<300]
@@ -158,6 +173,42 @@ async def personal_overview():return await personal.overview()
 @app.get('/personal/conversation')
 async def personal_conversation():
     return conversation.snapshot()
+@app.get('/personal/conversation/history')
+async def conversation_history(before:str='',around:str='',limit:int=60):
+    return conversation.history(before,around,limit)
+@app.get('/personal/conversation/search')
+async def conversation_search(q:str='',date:str=''):
+    return conversation.search(q,date)
+@app.get('/personal/search')
+async def personal_search(q:str='',date:str=''):
+    messages=[{**item,'kind':'message'} for item in conversation.search(q,date)['items']]
+    start,end=0,float('inf')
+    if date:
+        start=datetime.strptime(date,'%Y-%m-%d').replace(tzinfo=ZoneInfo('Asia/Shanghai')).timestamp();end=start+86400
+    def match(title,at):
+        return (bool(q.strip()) or bool(date)) and q.strip().lower() in title.lower() and start<=at<end
+    tasks=[{'id':t['id'],'kind':'task','source':'任务','text':t.get('title',''),'created_at':t.get('created_at',0)} for t in task_store.list() if match(t.get('title',''),t.get('created_at',0))]
+    artifacts=[{**a,'kind':'artifact','source':'成果','text':a['name']} for a in artifact_access.index() if match(a['name'],a['created_at'])]
+    return {'items':sorted(messages+tasks[:20]+artifacts[:20],key=lambda i:i['created_at'],reverse=True)[:80]}
+@app.get('/personal/artifacts')
+async def artifact_list():
+    return {'items':artifact_access.index()}
+@app.get('/personal/artifacts/{artifact_id}')
+async def artifact_file(artifact_id:str):
+    try:
+        record,file,size=artifact_access.open(artifact_id)
+    except FileNotFoundError:
+        raise HTTPException(404,'成果文件已移动或不存在')
+    except PermissionError:
+        raise HTTPException(403,'该文件不在允许的成果范围内')
+    except KeyError:
+        raise HTTPException(404,'未登记的成果')
+    from urllib.parse import quote
+    def chunks():
+        with file:
+            while data:=file.read(65536):
+                yield data
+    return StreamingResponse(chunks(),media_type=record['mime'],headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Length':str(size),'Content-Disposition':"attachment; filename*=UTF-8''"+quote(record['name'])})
 @app.get('/personal/conversation/stream')
 async def personal_conversation_stream(request:Request):
     raw=request.headers.get('last-event-id','')

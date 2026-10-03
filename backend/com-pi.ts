@@ -18,6 +18,7 @@ async function call(name: string, args: any, ctx?: any): Promise<any> {
  return result;
 }
 const schemas:Record<string,any> = {
+ artifact_register:Type.Object({path:Type.String({description:"已生成的工作区成果文件路径"})}),
  archive_path:Type.Object({relative_path:Type.String(),request_id:Type.String()}),
  capability_search:Type.Object({query:Type.Optional(Type.String()),runtime:Type.Optional(Type.String())}),
  bookkeeping_search:Type.Object({date:Type.Optional(Type.String({description:"北京时间单日 YYYY-MM-DD；缺年份时按上下文 current_date 的当前年份"})),start_date:Type.Optional(Type.String()),end_date:Type.Optional(Type.String()),amount:Type.Optional(Type.Number({description:"金额，单位元，精确匹配"})),keyword:Type.Optional(Type.String()),transaction_type:Type.Optional(Type.Union([Type.Literal("expense"),Type.Literal("income"),Type.Literal("all")])),limit:Type.Optional(Type.Integer({minimum:1,maximum:50}))}),
@@ -35,6 +36,7 @@ const schemas:Record<string,any> = {
  propose_work:Type.Object({request_id:Type.String(),title:Type.String(),prompt:Type.String(),relative_cwd:Type.String(),agent:Type.String(),sandbox:Type.String(),actual_action:Type.Object({tool:Type.String(),args:Type.Record(Type.String(),Type.Unknown())})}),
 };
 const descriptions:Record<string,string> = {
+ artifact_register:"生成 PDF、图片或文档后，必须登记真实存在的成果文件到当前交办消息，使用户在手机上直接预览、下载和分享。仅支持工作区内允许的文件。重复登记不会复制。",
  archive_path:"可恢复地归档用户明确指定的工作区对象，保存原路径和恢复凭据，不覆盖、不永久删除。",
  capability_search:"查询当前主机能力及发现/加载/真实验证状态。未验证不能说已可用。",
  bookkeeping_search:"直接只读查询真实历史账本，按北京时间日期、金额或备注筛选。用户给日期和金额时，首轮同时传date和amount。date与start_date/end_date二选一，默认支出；用户问哪笔消费时直接查，不派任务。返回真实ID、日期、金额、分类、备注和账户；找不到或结果截断如实说明。recent只有最近30笔，历史查询用本工具。",

@@ -181,7 +181,7 @@ class MainActivityKeyboardTest {
             model.live = JSONObject()
         }
         ui.waitForIdle()
-        exercise("work-composer", "work-fixed-header", "work-message-viewport", agent)
+        exercise("work-composer", "work-session-header", "work-message-viewport", agent)
     }
 
     @Test fun piWindowKeepsItsHeaderFixedAndDraftVisible() = work("pi")
