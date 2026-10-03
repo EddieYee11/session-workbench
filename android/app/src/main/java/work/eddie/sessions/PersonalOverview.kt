@@ -191,6 +191,7 @@ private fun todayDateLabel():String=runCatching{
    TodayStatusLine(vm)
    TodayDecisionCard(vm,openTask){openTasks("decision")}
    Spacer(Modifier.height(14.dp))
+   TodayReminderCards(vm)
    TodayTimelineCard{openDetail("calendar")}
    Spacer(Modifier.height(14.dp))
    TodayWorkLine(vm,{openTasks("active")},{openTasks("all")})

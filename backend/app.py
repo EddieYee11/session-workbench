@@ -26,6 +26,7 @@ from quick_voice import QuickVoice
 from message_references import MessagePresentations, canonical_reference
 from work_cards import accepted
 from heartbeat import Heartbeat
+from reminder_cards import ReminderCards
 from operation_policy import persist_policy, upgrade_managed_permissions, OPERATION_MODE, POLICY_REVISION
 
 HOME=Path(os.environ.get('WORKBENCH_HOME',str(Path.home())))
@@ -38,6 +39,7 @@ history=History(HOME,STATE);runtime=Runtime(history,TOKEN)
 presentations=MessagePresentations(STATE)
 quick_voice=QuickVoice(STATE,runtime,HOME/'AI_Work_System')
 personal=PersonalBridge(STATE)
+reminder_cards=ReminderCards(HOME/".pi-gateway/state/reminders.json")
 config_file=STATE/'agent-config.json'
 agent_config=json.loads(config_file.read_text()) if config_file.exists() else {}
 MAIN_AGENT=os.environ.get('COM_MAIN_AGENT',agent_config.get('main_agent','hermes'))
@@ -139,7 +141,7 @@ async def auth(request,call_next):
 @app.exception_handler(RuntimeError)
 async def failure(request,exc):return JSONResponse({'detail':str(exc)},409)
 @app.get('/health')
-async def health():return {'service':'mini-sessions','version':'1.8.0','main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),'worker_operation_mode':OPERATION_MODE,'operation_policy_revision':POLICY_REVISION,'readonly_restrictions_revoked':True,'features':{'muse_task_kinds_v1':True,'supplement_new_item_v1':True,'capability_search_readonly_v1':True,'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'work_cards_v1':True,'task_events_sse_v1':True,'task_plan_v1':True,'task_context_revision_v1':True,'semantic_verification_v1':True,'main_steer_v1':MAIN_AGENT=='pi','voice_bookkeeping_intent_v1':True,'direct_business_queries_v1':True,'work_chat_v1':True,'goals_scheduler':goal_events.enabled()}}
+async def health():return {'service':'mini-sessions','version':'1.8.1','main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),'worker_operation_mode':OPERATION_MODE,'operation_policy_revision':POLICY_REVISION,'readonly_restrictions_revoked':True,'features':{'heartbeat_shadow_v1':True,'reminder_cards_v1':True,'muse_task_kinds_v1':True,'supplement_new_item_v1':True,'capability_search_readonly_v1':True,'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'work_cards_v1':True,'task_events_sse_v1':True,'task_plan_v1':True,'task_context_revision_v1':True,'semantic_verification_v1':True,'main_steer_v1':MAIN_AGENT=='pi','voice_bookkeeping_intent_v1':True,'direct_business_queries_v1':True,'work_chat_v1':True,'goals_scheduler':goal_events.enabled()}}
 @app.post('/pair')
 async def pair(request:Request):
     ip=request.client.host;now=time.time();attempts=[x for x in rate.get(ip,[]) if now-x<300]
@@ -654,6 +656,16 @@ async def internal_agent_tool(name:str,request:Request):
 @app.get('/personal/capabilities')
 async def capabilities_search(query:str='',runtime_name:str=''):
     return {'items':capability_registry.search(query,runtime_name or None)}
+
+@app.get('/personal/reminders')
+async def personal_reminders():
+    return {'items':reminder_cards.list(),'source':'existing_gateway_remind'}
+
+@app.post('/personal/reminders/{reminder_id}/action')
+async def reminder_action(reminder_id:str,request:Request):
+    data=await request.json()
+    async with runtime.action_lock:
+        return reminder_cards.act(reminder_id,data.get('action'),data.get('request_id'),data.get('expected'))
 
 @app.get('/personal/heartbeat')
 async def heartbeat_diagnostics():

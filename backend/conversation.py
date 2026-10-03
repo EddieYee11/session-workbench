@@ -756,6 +756,10 @@ class PersonalConversation:
                             finished = time.time()
                             task.update(status='done' if event == 'tool.completed' else 'failed', finished_at=finished,
                                         duration_ms=max(0, round((finished - task['started_at']) * 1000)))
+                        result=payload.get('result') or {}
+                        reminder=(result.get('details') or {}).get('id') if isinstance(result,dict) else None
+                        if len(candidates)==1 and candidates[0].get('tool')=='remind' and event=='tool.completed' and isinstance(reminder,str) and re.fullmatch(r'rm[A-Za-z0-9]+',reminder):
+                            candidates[0]['reminder_id']=reminder
                         self._record_tasks(mid, work_tasks)
                     elif event == "assistant.delta":
                         delta = payload.get("delta")

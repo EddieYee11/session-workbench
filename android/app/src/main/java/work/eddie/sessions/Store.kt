@@ -190,6 +190,10 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var connected by mutableStateOf(false)
  var messageReferencesAvailable by mutableStateOf(false)
  var busy by mutableStateOf(false)
+ var reminderState by mutableStateOf(JSONObject())
+ var reminderFresh by mutableStateOf(false)
+ var reminderNote by mutableStateOf("")
+ var reminderBusy by mutableStateOf("")
  var heartbeatState by mutableStateOf(JSONObject())
  var heartbeatNote by mutableStateOf("")
  var personal by mutableStateOf(store.cachedSecure("personal-overview.enc"))
@@ -289,6 +293,31 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    tick++
  };delay(800)}}}
  fun enc(s:String)=URLEncoder.encode(s,"UTF-8")
+ suspend fun refreshReminders(){
+  try{reminderState=store.request("/personal/reminders");reminderFresh=true}
+  catch(e:CancellationException){throw e}
+  catch(e:Exception){reminderFresh=false;reminderNote="提醒来源暂不可用；动作未执行"}
+ }
+ fun reminderAction(item:JSONObject,action:String){
+  if(!reminderFresh||reminderBusy.isNotBlank())return
+  val id=item.optString("id");val key="reminder-action-$id.enc";val old=store.cachedSecure(key)
+  val body=if(old.optString("request_id").isNotBlank())old else JSONObject().put("request_id",UUID.randomUUID().toString()).put("action",action).put("expected",JSONObject().put("due",item.optString("due")).put("status",item.optString("status")))
+  if(body.optString("action")!=action){reminderNote="上个动作待核实，请先刷新";return}
+  try{store.secureCache(key,body)}catch(e:Exception){reminderNote="动作未保存，尚未发送";return}
+  reminderBusy=id
+  viewModelScope.launch{
+   try{
+    val r=store.request("/personal/reminders/${enc(id)}/action",body)
+    if(!r.optBoolean("confirmed"))error("没有回读证据")
+    store.secureCache(key,JSONObject());reminderNote="真实提醒已更新并回读确认";refreshReminders()
+   }catch(e:CancellationException){throw e}
+    catch(e:Exception){
+     if(listOf("提醒已变化","提醒已不存在","这条提醒已结束").any{e.message.orEmpty().startsWith(it)})store.secureCache(key,JSONObject())
+     reminderNote="提醒动作未确认：${e.message.orEmpty()}；不会自动重放";refreshReminders()
+    }
+    finally{reminderBusy=""}
+  }
+ }
  fun refreshHeartbeatNow(){viewModelScope.launch{refreshHeartbeat()}}
  suspend fun refreshHeartbeat(){
   try{heartbeatState=store.request("/personal/heartbeat");heartbeatNote=""}
@@ -745,6 +774,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  }
  suspend fun refreshPersonal(){
    refreshHeartbeat()
+   refreshReminders()
    if(personalLoading)return
    personalLoading=true
    try{
