@@ -792,6 +792,9 @@ class PersonalConversation:
                         if not terminal:
                             self._finish(mid, "unknown", error="主助理执行中断；结果待核实，未自动重试")
                             terminal = True
+                    elif event == "input.handled":
+                        self._finish(mid,"unknown",error="输入已由 Pi 扩展处理，没有原生执行回合；请核对扩展结果，不会自动重发")
+                        terminal=True
                     elif event == "done":
                         break
                 flush()

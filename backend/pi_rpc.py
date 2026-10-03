@@ -263,8 +263,14 @@ class PiRPC:
             try:
                 yield 'run.started', {'run_id': self.run_id}
                 async with self.command_lock:
-                    await self.request({'type': 'prompt', 'message': f'[Com input:{self.run_id}]\n{text}'})
-                yield 'input.accepted', {'request_id':self.run_id}
+                    response=await self.request({'type': 'prompt', 'message': f'[Com input:{self.run_id}]\n{text}'})
+                disposition=(response.get('data') or {}).get('disposition')
+                yield 'input.accepted', {'request_id':self.run_id,'disposition':disposition}
+                if disposition=='handled':
+                    # Extension consumed this input: no native run or settled event is promised.
+                    yield 'input.handled', {'request_id':self.run_id,'native_started':self.native_started}
+                    yield 'done', {}
+                    return
                 final = ''
                 error = False
                 deadline = time.monotonic() + 1200
