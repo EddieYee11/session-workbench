@@ -58,6 +58,7 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
  advanced:()->Unit,pick:(JSONObject)->Unit,new:()->Unit,more:()->Unit={},
 ){
  val context=LocalContext.current
+ val composerFocus=remember{androidx.compose.ui.focus.FocusRequester()}
  val stage=remember{CompanionStage()}
  val motion=LocalMessageSendMotion.current?:rememberMessageSendMotionState(vm.active)
  val creating=vm.creatingMessage
@@ -95,7 +96,7 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
        SideEffect{if(vm.selected==scene)snapshot=current}
        val pending=creating?.takeIf{it.scope==scene}
        val displayed=if(pending==null)current else ConversationSnapshot(scene,JSONObject().put("session",JSONObject().put("agent",vm.creatingAgent).put("display_title",pending.text.take(60)).put("status","ready").put("capabilities",JSONObject().put("input",true))).put("messages",JSONArray(mergeOutgoingMessages(emptyList(),listOf(pending)))),JSONObject(),true)
-       ChatPage(vm,menu,new,displayed,terminal,{terminal=it},scene==route,motion)
+       ChatPage(vm,menu,new,displayed,terminal,{terminal=it},scene==route,motion,composerFocus)
       }
       if(scene!=route)Box(Modifier.matchParentSize().pointerInput(Unit){awaitPointerEventScope{while(true){awaitPointerEvent().changes.forEach{it.consume()}}}})
       }
@@ -149,7 +150,7 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
      {val text=if(home)prompt.trim() else vm.draft().trim();val rid=UUID.randomUUID().toString();motion.begin(rid,text)
       val sent=if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",text,modelSelection.model,modelSelection.effort,rid)else vm.send(rid)
       if(sent==null)motion.cancel()else{motion.retarget(rid,sent);if(home)prompt=""}},
-     {vm.stop()},voice,modelSelection.model.isNotBlank()||modelSelection.effort.isNotBlank(),motion,creating!=null,
+     {vm.stop()},voice,modelSelection.model.isNotBlank()||modelSelection.effort.isNotBlank(),motion,creating!=null,composerFocus,
     )
    }
   }

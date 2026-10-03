@@ -81,7 +81,7 @@ class HermesExperienceTest {
         ui.onNodeWithTag("hermes-message-list").performScrollToIndex(1)
             .performTouchInput { swipeUp() }
         ui.waitForIdle()
-        ui.onNodeWithTag("hermes-fading-header").assertDoesNotExist()
+        ui.onNodeWithTag("hermes-header-avatar",true).assertIsNotDisplayed()
         val viewport = ui.onNodeWithTag("hermes-message-list").fetchSemanticsNode().boundsInRoot
         val header = viewport.copy(bottom=viewport.top+140f)
         val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()

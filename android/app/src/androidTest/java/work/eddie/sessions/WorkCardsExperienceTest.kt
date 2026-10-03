@@ -37,11 +37,27 @@ class WorkCardsExperienceTest {
    AvatarStatusPill("正在执行")
    AgentWorkCard(message,true){opened=it}
   }}}
+  ui.onNodeWithText("工具已执行").assertDoesNotExist()
+  ui.onNodeWithText("源码已读取，正在核对消息关联").assertDoesNotExist()
+  ui.onNodeWithTag("agent-work-toggle-message-running").performClick()
   ui.onNodeWithText("工具已执行").assertIsDisplayed()
   ui.onNodeWithText("源码已读取，正在核对消息关联").assertIsDisplayed()
   ui.onNodeWithTag("agent-task-task-upgrade").performClick()
   ui.runOnIdle{assertEquals("task-upgrade",opened)}
   capture("running")
+ }
+ @Test fun searchingDoesNotAutomaticallyExposeToolDetails(){
+  val tool=JSONObject().put("id","search-tool").put("role","tool").put("title","Bash 执行记录").put("text","只有点开才能查看的日志")
+  ui.setContent{MaterialTheme(colorScheme=Palette){Column(Modifier.width(360.dp).height(450.dp).testTag("work-card-preview")){
+   ProcessGroup(listOf(tool),"日志",16f,false)
+  }}}
+  ui.onNodeWithText("只有点开才能查看的日志").assertDoesNotExist()
+  ui.onNodeWithText("含匹配").assertIsDisplayed()
+  ui.onNodeWithContentDescription("展开处理过程").performClick()
+  ui.onNodeWithText("Bash 执行记录").assertIsDisplayed()
+  ui.onNodeWithText("只有点开才能查看的日志").assertDoesNotExist()
+  ui.onNodeWithContentDescription("展开执行记录").performClick()
+  ui.onNodeWithText("只有点开才能查看的日志").assertIsDisplayed()
  }
  @Test fun finishedAndVerifiedSummariesRenderDifferentEvidenceStates(){
   var verified by mutableStateOf(false)
@@ -55,6 +71,12 @@ class WorkCardsExperienceTest {
   }}}
   ui.onNodeWithText("执行结束 · 待验收 · 耗时 12秒 · 10-03 15:20").assertIsDisplayed()
   ui.onNodeWithText("已完成").assertDoesNotExist()
+  ui.onNodeWithText("整合并构建").assertDoesNotExist()
+  ui.onNodeWithTag("task-summary-toggle-message-finished").performClick()
+  ui.onNodeWithText("整合并构建").assertIsDisplayed()
+  ui.onNodeWithText("构建已完成，真实使用路径待验收").assertDoesNotExist()
+  ui.onNodeWithText("整合并构建").performClick()
+  ui.onNodeWithText("构建已完成，真实使用路径待验收").assertIsDisplayed()
   capture("awaiting-verification")
   ui.runOnIdle{verified=true}
   ui.onNodeWithText("验收通过 · 耗时 12秒 · 10-03 15:20").assertIsDisplayed()

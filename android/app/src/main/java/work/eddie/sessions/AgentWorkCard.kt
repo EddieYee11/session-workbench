@@ -176,7 +176,7 @@ fun agentWorkEventFor(phase:String,tool:String):AgentWorkEvent?=when{
  // Reconnect snapshots can contain older acceptance transitions; they never trigger haptics.
  // History comes from durable server events. A single live observation is a fallback.
  val events=agentWorkEvents(message).ifEmpty{if(fresh&&!message.optBoolean("local"))listOfNotNull(agentWorkEventFor(phase,tool)) else emptyList()}
- var expanded by rememberSaveable(messageId){mutableStateOf(true)}
+ var expanded by rememberSaveable(messageId){mutableStateOf(false)}
  val running=message.optString("status") in setOf("queued","sending","running")||tasks.any{it.status in setOf("queued","sending","running","dispatching")}
  val header=when{
   !fresh->"离线记录"
@@ -188,7 +188,7 @@ fun agentWorkEventFor(phase:String,tool:String):AgentWorkEvent?=when{
  }
  Surface(Modifier.padding(start=8.dp,top=9.dp).widthIn(max=590.dp).fillMaxWidth(.94f).testTag("agent-work-card-$messageId"),shape=RoundedCornerShape(18.dp),color=ToolSurface,border=BorderStroke(1.dp,Line)){
   Column(Modifier.padding(horizontal=13.dp,vertical=11.dp)){
-   Row(Modifier.fillMaxWidth().clickable{expanded=!expanded},verticalAlignment=Alignment.CenterVertically){
+   Row(Modifier.fillMaxWidth().testTag("agent-work-toggle-$messageId").clickable{expanded=!expanded},verticalAlignment=Alignment.CenterVertically){
     if(running&&fresh)ThinkingDots(Ember) else AgentWorkEventIcon(if(doneCount==tasks.size&&tasks.isNotEmpty())"done" else "work")
     Text(header,Modifier.weight(1f).padding(start=10.dp),fontSize=Type.Caption,fontWeight=FontWeight.SemiBold,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis)
     Icon(if(expanded)Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,if(expanded)"收起" else "展开",Modifier.size(20.dp),tint=Faint)

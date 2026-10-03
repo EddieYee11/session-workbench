@@ -36,6 +36,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -159,7 +164,7 @@ private fun hermesToolLabel(name:String):String=when{
  val status=current?.optString("status").orEmpty()
  val runtimeText=when{
   current!=null&&current.optBoolean("local")->hermesMessageStatus(status).ifBlank{"消息待送达"}
-  current!=null->avatarWorkStatus(if(status in setOf("queued","waiting","approval_required"))status else phase.ifBlank{status},if(current.isNull("active_tool"))"" else current.optString("active_tool"))
+  current!=null->avatarWorkStatus(if(status in setOf("queued","waiting","approval_required"))status else phase.ifBlank{status},if(current.isNull("active_tool"))"" else current.optString("active_tool"),current.array("tasks").any{it.optString("kind")=="tool"&&it.optString("status") in setOf("done","failed")})
   worker!=null->"${worker.optString("agent").uppercase().ifBlank{"执行器"}} · ${agentTaskStatusText(worker.optString("status"))}"
   avatarActivity.kind=="unknown"->"状态待核实"
   else->"空闲"
@@ -172,8 +177,11 @@ private fun hermesToolLabel(name:String):String=when{
   else->"离线记录"
  }
  val activeTasks=backgroundTasks.count{it.status=="active"}
+ val headerHeight=if(avatarPillText=="空闲")56.dp else (54f+22f*LocalDensity.current.fontScale).dp
  val list=rememberLazyListState()
- MessageViewportAnchor(list,"hermes",vm.hermesVisible,motion)
+ val gestures=rememberConversationGestures(list,with(LocalDensity.current){headerHeight.toPx()},vm.hermesVoicePhase=="idle")
+ val scope=rememberCoroutineScope()
+ MessageViewportAnchor(list,"hermes",vm.hermesVisible,motion,gestures)
  var positionedAtLatest by remember{mutableStateOf(false)}
  val readingHistory by remember{derivedStateOf{list.canScrollForward&&positionedAtLatest}}
  var searchOpen by remember{mutableStateOf(false)}
@@ -212,11 +220,10 @@ private fun hermesToolLabel(name:String):String=when{
  }
  Box(Modifier.fillMaxSize()){
  Column(Modifier.fillMaxSize().background(Paper),horizontalAlignment=Alignment.CenterHorizontally){
-  BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()){
+  BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds()){
    val inset=if(maxWidth>=700.dp)32.dp else 15.dp
    val wideHero=maxWidth>=700.dp
-   val headerHeight=if(avatarPillText=="空闲")56.dp else (54f+22f*LocalDensity.current.fontScale).dp
-   LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("hermes-message-list"),contentPadding=PaddingValues(start=inset,end=inset,top=headerHeight+4.dp,bottom=8.dp),horizontalAlignment=Alignment.CenterHorizontally){
+   LazyColumn(state=list,modifier=Modifier.fillMaxSize().nestedScroll(gestures.connection).testTag("hermes-message-list"),contentPadding=PaddingValues(start=inset,end=inset,top=headerHeight+4.dp,bottom=8.dp),horizontalAlignment=Alignment.CenterHorizontally){
     item(key="intro"){
      Column(Modifier.widthIn(max=640.dp).fillMaxWidth()){
       if(messages.isNotEmpty()&&!vm.historyExhausted)TextButton(onClick={vm.loadOlderHermes()},enabled=!vm.historyLoading){Text(if(vm.historyLoading)"正在读取历史…" else "读取更早的对话")}
@@ -252,7 +259,7 @@ private fun hermesToolLabel(name:String):String=when{
     }
    }
    // Only the controls have a light backing; empty header space exposes the scrolling text.
-   androidx.compose.animation.AnimatedVisibility(visible=!readingHistory,modifier=Modifier.align(Alignment.TopCenter),enter=fadeIn(tween(150)),exit=fadeOut(tween(100))){Box(Modifier.fillMaxWidth().height(headerHeight)
+   Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(headerHeight).graphicsLayer{translationY=gestures.headerOffset}
     .testTag("hermes-fading-header")){
     Row(Modifier.fillMaxWidth().height(headerHeight).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
      IconButton(onClick={searchOpen=true},modifier=Modifier.size(44.dp).background(Card.copy(alpha=.72f),CircleShape)){Icon(Icons.Outlined.Search,"搜索主对话",tint=Muted)}
@@ -276,14 +283,16 @@ private fun hermesToolLabel(name:String):String=when{
       ComIcon(R.drawable.com_icon_menu_v1,"更多",Modifier.padding(11.dp))
      }
     }
-   }}
+   }
+
   }
-  if(readingHistory){val scope=rememberCoroutineScope();Row(Modifier.fillMaxWidth().padding(horizontal=16.dp),horizontalArrangement=Arrangement.End){
-   TextButton(onClick={searchOpen=true}){Text("搜索对话")}
-   TextButton(onClick={scope.launch{list.animateScrollToItem(messages.size+1)}}){Text("回到最新 ↓")}
-  }}
   vm.hermesReference?.let{MessageReferencePreview(it){vm.hermesReference=null}}
-  HermesComposer(vm,canSend,motion)
+  Row(Modifier.widthIn(max=858.dp).fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+   Column(Modifier.weight(1f),horizontalAlignment=Alignment.CenterHorizontally){HermesComposer(vm,canSend,motion,gestures.focusRequester)}
+   if(readingHistory)Surface(onClick={scope.launch{list.animateScrollToItem(messages.size+1);gestures.headerOffset=0f}},modifier=Modifier.padding(end=8.dp).size(40.dp).testTag("hermes-jump-latest"),shape=CircleShape,color=Card,border=BorderStroke(1.dp,Line)){
+    Box(contentAlignment=Alignment.Center){Icon(Icons.Outlined.ArrowDownward,"回到最新",Modifier.size(20.dp),tint=Muted)}
+   }
+  }
  }
  if(sharedMotion==null)MessageSendMotionOverlay(motion,Modifier.fillMaxSize())
  }
@@ -370,7 +379,7 @@ private fun hermesToolLabel(name:String):String=when{
  }
 }
 
-@Composable private fun HermesComposer(vm:WorkbenchModel,enabled:Boolean,motion:MessageSendMotionState){
+@Composable private fun HermesComposer(vm:WorkbenchModel,enabled:Boolean,motion:MessageSendMotionState,focus:FocusRequester){
  val style=TextStyle(fontSize=Type.Body,lineHeight=22.sp,color=Ink)
  val send:()->Unit={if(enabled&&vm.hermesDraft.isNotBlank()){val rid=UUID.randomUUID().toString();motion.begin(rid,vm.hermesDraft.trim());if(vm.sendHermes(rid)==null)motion.cancel()}}
  LaunchedEffect(vm.hermesVoiceAutoSend){
@@ -415,7 +424,7 @@ private fun hermesToolLabel(name:String):String=when{
  }
  Surface(Modifier.widthIn(max=810.dp).fillMaxWidth().padding(horizontal=16.dp,vertical=4.dp),shape=RoundedCornerShape(32.dp),color=UserBubble){
   Row(Modifier.padding(horizontal=8.dp,vertical=3.dp),verticalAlignment=Alignment.Bottom){
-   BasicTextField(editing,{editing=it;vm.updateHermesDraft(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=120.dp).padding(horizontal=9.dp,vertical=8.dp).testTag("hermes-composer").messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).messageSendComposerBounds(motion),readOnly=voice!="idle",textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(voice=="idle")send()}),onTextLayout={motion.updateComposerLayout(it,style)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(value.isBlank())Text(if(voice=="recording")"录音中 ${vm.hermesVoiceSeconds} 秒…"else"消息",style=style.copy(color=Faint));inner()}})
+   BasicTextField(editing,{editing=it;vm.updateHermesDraft(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=120.dp).padding(horizontal=9.dp,vertical=8.dp).testTag("hermes-composer").focusRequester(focus).messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).messageSendComposerBounds(motion),readOnly=voice!="idle",textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(voice=="idle")send()}),onTextLayout={motion.updateComposerLayout(it,style)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(value.isBlank())Text(if(voice=="recording")"录音中 ${vm.hermesVoiceSeconds} 秒…"else"消息",style=style.copy(color=Faint));inner()}})
    if(value.isNotBlank()&&voice=="idle")IconButton(onClick=newline,modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.KeyboardReturn,"插入换行",Modifier.size(19.dp),tint=Muted)}
    if(value.isBlank()||voice!="idle"){
     val voiceEnabled=voice=="recording"||voice=="idle"&&vm.hermesVoiceSaved.isBlank()&&vm.store.token.isNotBlank()

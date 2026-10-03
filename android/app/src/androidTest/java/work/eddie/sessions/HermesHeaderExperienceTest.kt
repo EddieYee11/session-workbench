@@ -40,7 +40,7 @@ class HermesHeaderExperienceTest {
   ui.onNodeWithTag("hermes-header-avatar",useUnmergedTree=true).assertIsDisplayed()
   ui.onNodeWithTag("avatar-status-pill",useUnmergedTree=true).assertIsDisplayed()
   ui.onAllNodesWithText("Pi",substring=false).assertCountEquals(0)
-  ui.onNodeWithText("拉取代码").assertIsDisplayed()
+  ui.onNodeWithText("正在使用 git_pull").assertIsDisplayed()
   val avatar=ui.onNodeWithTag("hermes-header-avatar",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
   val card=ui.onNodeWithTag("avatar-status-pill",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
   val header=ui.onNodeWithTag("hermes-fading-header",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
@@ -48,6 +48,8 @@ class HermesHeaderExperienceTest {
   assertTrue(card.width>avatar.width)
   assertTrue("Status must remain a single row at the configured font size",card.height<avatar.height*.75f*ui.activity.resources.configuration.fontScale.coerceAtLeast(1f))
   assertTrue("Header must contain enlarged card text",card.bottom<=header.bottom)
+  ui.onNodeWithTag("agent-task-think",useUnmergedTree=true).assertDoesNotExist()
+  ui.onNodeWithTag("agent-work-toggle-header-message").performClick()
   ui.onNodeWithTag("agent-task-think",useUnmergedTree=true).assertHasNoClickAction()
   ui.onNodeWithTag("agent-task-reply",useUnmergedTree=true).assertHasNoClickAction()
   ui.onNodeWithText("已处理").assertIsDisplayed()

@@ -26,6 +26,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
@@ -192,7 +194,7 @@ internal fun keyboardNavigationHeight(naturalHeight:Int,imeBottom:Int,navigation
 private data class MessageViewportPosition(val width:Int,val height:Int,val first:Int,val offset:Int,val following:Boolean,val count:Int,val lastHeight:Int,val beforePadding:Int,val afterPadding:Int,val scrolling:Boolean)
 
 /** Keep bottom readers at the bottom on IME/size changes; preserve a history reader's exact anchor. */
-@Composable fun MessageViewportAnchor(listState:LazyListState,key:Any,active:Boolean=true,motion:MessageSendMotionState?=null){
+@Composable internal fun MessageViewportAnchor(listState:LazyListState,key:Any,active:Boolean=true,motion:MessageSendMotionState?=null,gestures:ConversationGestures?=null){
  LaunchedEffect(listState,key,active){
   if(!active)return@LaunchedEffect
   var previous:MessageViewportPosition?=null
@@ -205,11 +207,12 @@ private data class MessageViewportPosition(val width:Int,val height:Int,val firs
   }.distinctUntilChanged().collect{position->
    val old=previous
    previous=position
-   if(position.scrolling||motion?.messageId!=null)resizeAnchor=null
-   if(old!=null&&(old.width!=position.width||old.height!=position.height)&&position.count>0&&!position.scrolling&&motion?.messageId==null){
+   val pulledToType=gestures?.keepLatestOnResize==true
+   if(position.scrolling&&!pulledToType||motion?.messageId!=null||gestures?.skipViewportAnchor==true)resizeAnchor=null
+   if(old!=null&&(old.width!=position.width||old.height!=position.height)&&position.count>0&&(!position.scrolling||pulledToType)&&motion?.messageId==null&&gestures?.skipViewportAnchor!=true){
     // A native IME can deliver another size frame before the requested anchor
     // remeasure has run. Keep the original reading intent across those frames.
-    val anchor=resizeAnchor?:old
+    val anchor=resizeAnchor?:if(pulledToType)old.copy(following=true)else old
     resizeAnchor=anchor
     if(anchor.following){
      val available=(position.height-position.beforePadding-position.afterPadding).coerceAtLeast(1)
@@ -472,7 +475,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
  Row(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(Radii.M)).background(if(selected)AccentSoft else Color.Transparent).clickable(onClick=click).padding(horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){Icon(icon,null,Modifier.size(20.dp),tint=tint);Text(text,Modifier.padding(start=12.dp),fontSize=14.5.sp,fontWeight=if(selected)FontWeight.Medium else FontWeight.Normal,color=tint)}
 }
 
-@Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null,modelConfigured:Boolean=false,motion:MessageSendMotionState?=null,readOnly:Boolean=false){
+@Composable fun Composer(text:String,change:(String)->Unit,placeholder:String,enabled:Boolean,running:Boolean,more:()->Unit,send:()->Unit,stop:()->Unit,voice:(()->Unit)?=null,modelConfigured:Boolean=false,motion:MessageSendMotionState?=null,readOnly:Boolean=false,focus:androidx.compose.ui.focus.FocusRequester?=null){
  var focused by remember{mutableStateOf(false)}
  val line by animateColorAsState(if(focused)Muted.copy(alpha=.2f) else Color.Transparent,Motion.Tint,label="输入框描边")
  val haptics=rememberComHaptics()
@@ -484,7 +487,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
  Surface(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp).testTag("work-composer-surface"),shape=RoundedCornerShape(32.dp),color=UserBubble,border=BorderStroke(1.dp,line),shadowElevation=0.dp){
   Row(Modifier.padding(horizontal=6.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){
    IconButton(onClick={haptics(HapticCue.Selection);more()},enabled=!readOnly,modifier=Modifier.size(42.dp)){Icon(Icons.Outlined.Add,if(modelConfigured)"模型与推理 · 已自定义" else "选择模型与推理",Modifier.size(24.dp),tint=if(modelConfigured)EmberDeep else Ink)}
-   BasicTextField(editing,{editing=it;change(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).padding(vertical=10.dp,horizontal=5.dp).onFocusChanged{focused=it.isFocused}.testTag("work-composer").messageSendComposerBounds(motion),readOnly=readOnly,textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(canSend)send()}),onTextLayout={motion?.updateComposerLayout(it,style,backgroundColor=UserBubble)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,style=style.copy(color=Faint),maxLines=1);inner()}})
+   BasicTextField(editing,{editing=it;change(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).padding(vertical=10.dp,horizontal=5.dp).then(if(focus!=null)Modifier.focusRequester(focus)else Modifier).onFocusChanged{focused=it.isFocused}.testTag("work-composer").messageSendComposerBounds(motion),readOnly=readOnly,textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(canSend)send()}),onTextLayout={motion?.updateComposerLayout(it,style,backgroundColor=UserBubble)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,style=style.copy(color=Faint),maxLines=1);inner()}})
    if(text.isNotBlank()&&!readOnly)IconButton(onClick=newline,modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.KeyboardReturn,"插入换行",Modifier.size(19.dp),tint=Muted)}
    val (press,pressMod)=rememberPress(.97f)
    if(canSend)IconButton(onClick={haptics(HapticCue.Commit);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}
@@ -494,7 +497,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
  }
 }
 
-@Composable fun ChatPage(vm:WorkbenchModel,menu:()->Unit,new:()->Unit,snapshot:ConversationSnapshot,terminal:Boolean,setTerminal:(Boolean)->Unit,active:Boolean=true,motion:MessageSendMotionState?=null){
+@Composable fun ChatPage(vm:WorkbenchModel,menu:()->Unit,new:()->Unit,snapshot:ConversationSnapshot,terminal:Boolean,setTerminal:(Boolean)->Unit,active:Boolean=true,motion:MessageSendMotionState?=null,composerFocus:androidx.compose.ui.focus.FocusRequester?=null){
  val sid=snapshot.sid;val s=snapshot.detail.optJSONObject("session")?:JSONObject();val caps=s.optJSONObject("capabilities")?:JSONObject()
  var showMenu by remember{mutableStateOf(false)};var options by remember{mutableStateOf(false)};var search by rememberSaveable(sid){mutableStateOf(vm.queryInSession.isNotBlank())};var matchIndex by rememberSaveable(sid){mutableIntStateOf(0)}
  val nativeMessages=remember(snapshot.detail,snapshot.live){val merged=linkedMapOf<String,JSONObject>();snapshot.detail.array("messages").forEach{merged[it.optString("id")]=it};snapshot.live.array("items").forEach{merged[it.optString("id")]=it};val seed=merged["accepted-first-message"];if(seed!=null&&merged.values.any{it.optString("id")!="accepted-first-message"&&it.optString("role")=="user"&&it.optString("text")==seed.optString("text")})merged.remove("accepted-first-message");merged.values.toList()}
@@ -504,9 +507,10 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
  val rowById=remember(displayRows,messages){val m=HashMap<String,Int>();displayRows.forEachIndexed{i,row->row.indices.forEach{j->m.putIfAbsent(messages[j].optString("id"),i)}};m}
  fun rowFor(id:String)=rowById[id]?:0
  val list=rememberLazyListState();val scope=rememberCoroutineScope();val following by remember{derivedStateOf{!list.canScrollForward}}
+ val gestures=rememberConversationGestures(list,canType=active&&caps.optBoolean("input")&&!terminal,focus=composerFocus)
  val sendRow=motion?.messageId?.let{id->displayRows.indexOfFirst{row->row.indices.any{messageMotionId(messages[it])==id}}.takeIf{it>=0}}
  MessageSendListScroll(motion,list,sendRow,active)
- MessageViewportAnchor(list,sid,active,motion)
+ MessageViewportAnchor(list,sid,active,motion,gestures)
  val status=snapshot.live.optString("status",s.optString("status"))
  val sessionFresh=vm.connected&&snapshot.fresh
  val companion=rememberCompanionState(sid,status,sessionFresh&&caps.optBoolean("input"),snapshot.live.array("approvals").isNotEmpty())
@@ -536,7 +540,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
   if(search)Row(Modifier.padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){OutlinedTextField(vm.queryInSession,{vm.queryInSession=it;matchIndex=0},Modifier.weight(1f),placeholder={Text("查找内容",fontSize=Type.BodySm)},singleLine=true,shape=RoundedCornerShape(Radii.Xxl));Text("${if(matches.isEmpty())0 else matchIndex+1}/${matches.size}",Modifier.padding(5.dp),fontSize=Type.Micro,color=Muted);listOf(-1 to Icons.Outlined.KeyboardArrowUp,1 to Icons.Outlined.KeyboardArrowDown).forEach{(delta,icon)->IconButton(enabled=matches.isNotEmpty(),onClick={matchIndex=(matchIndex+delta+matches.size)%matches.size;scope.launch{list.animateScrollToItem(rowFor(matches[matchIndex].optString("id")))}}){Icon(icon,if(delta<0)"上一个命中"else"下一个命中")}}}
   if(terminal&&caps.optBoolean("terminal"))Box(Modifier.weight(1f).fillMaxWidth()){Terminal(vm,sid)}
   else Box(Modifier.weight(1f).fillMaxWidth().testTag("work-message-viewport")){
-   LazyColumn(state=list,modifier=Modifier.testTag("work-message-list"),contentPadding=PaddingValues(horizontal=20.dp,vertical=22.dp)){
+   LazyColumn(state=list,modifier=Modifier.nestedScroll(gestures.connection).testTag("work-message-list"),contentPadding=PaddingValues(horizontal=20.dp,vertical=22.dp)){
     items(displayRows,key={it.key}){row->
      MessageSendRow(motion,row.key,trailingSpacing=26.dp){
       if(row.process)ProcessGroup(row.indices.map{messages[it]},vm.queryInSession,vm.font,status=="running"&&row==displayRows.last())
@@ -582,10 +586,11 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
    Text(if(running)"正在处理" else "处理过程",Modifier.padding(start=10.dp),fontSize=13.5.sp,fontWeight=FontWeight.Medium,color=Ink)
    Surface(Modifier.padding(start=8.dp),shape=RoundedCornerShape(50),color=ChipBg){Text("${messages.size}",Modifier.padding(horizontal=8.dp,vertical=2.dp),fontSize=Type.Caption,color=Muted)}
    Spacer(Modifier.weight(1f))
-   val chevron by animateFloatAsState(if(expanded||hasHit)0f else -90f,Motion.Gentle,label="过程箭头")
+   if(hasHit)Text("含匹配",Modifier.padding(end=6.dp),fontSize=Type.Micro,color=Muted)
+   val chevron by animateFloatAsState(if(expanded)0f else -90f,Motion.Gentle,label="过程箭头")
    Icon(Icons.Outlined.ExpandMore,if(expanded)"收起处理过程" else "展开处理过程",Modifier.size(20.dp).rotate(chevron),tint=Faint)
   }
-  AnimatedVisibility(expanded||hasHit,enter=expandVertically(animationSpec=spring(dampingRatio=.88f,stiffness=Spring.StiffnessMediumLow))+fadeIn(tween(160)),exit=shrinkVertically(animationSpec=spring(dampingRatio=1f,stiffness=Spring.StiffnessMedium))+fadeOut(tween(100))){Column(Modifier.padding(start=36.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+  AnimatedVisibility(expanded,enter=expandVertically(animationSpec=spring(dampingRatio=.88f,stiffness=Spring.StiffnessMediumLow))+fadeIn(tween(160)),exit=shrinkVertically(animationSpec=spring(dampingRatio=1f,stiffness=Spring.StiffnessMedium))+fadeOut(tween(100))){Column(Modifier.padding(start=36.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
    messages.forEach{m->Message(m,q,font)}
   }}
  }
@@ -606,7 +611,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
     val chevron by animateFloatAsState(if(expanded)0f else -90f,Motion.Gentle,label="记录箭头")
     Icon(Icons.Outlined.ExpandMore,if(expanded)"收起" else "展开执行记录",Modifier.size(16.dp).rotate(chevron),tint=Faint)
    }
-   AnimatedVisibility(expanded||q.isNotBlank(),enter=expandVertically(animationSpec=spring(dampingRatio=.9f,stiffness=Spring.StiffnessMedium))+fadeIn(tween(150)),exit=shrinkVertically(animationSpec=spring(dampingRatio=1f,stiffness=Spring.StiffnessMedium))+fadeOut(tween(100))){Surface(color=ToolSurface,shape=RoundedCornerShape(Radii.M),border=BorderStroke(1.dp,Line)){SelectionContainer{Text(highlight(body,q),Modifier.padding(13.dp),fontFamily=FontFamily.Monospace,fontSize=(font-3).sp,lineHeight=(font+5).sp,color=Ink)}}}
+   AnimatedVisibility(expanded,enter=expandVertically(animationSpec=spring(dampingRatio=.9f,stiffness=Spring.StiffnessMedium))+fadeIn(tween(150)),exit=shrinkVertically(animationSpec=spring(dampingRatio=1f,stiffness=Spring.StiffnessMedium))+fadeOut(tween(100))){Surface(color=ToolSurface,shape=RoundedCornerShape(Radii.M),border=BorderStroke(1.dp,Line)){SelectionContainer{Text(highlight(body,q),Modifier.padding(13.dp),fontFamily=FontFamily.Monospace,fontSize=(font-3).sp,lineHeight=(font+5).sp,color=Ink)}}}
   }
  }else{
   Column(Modifier.fillMaxWidth(),horizontalAlignment=if(role=="user")Alignment.End else Alignment.Start){

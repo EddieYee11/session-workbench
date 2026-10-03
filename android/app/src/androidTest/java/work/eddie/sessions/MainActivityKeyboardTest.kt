@@ -165,6 +165,51 @@ class MainActivityKeyboardTest {
         exercise("hermes-composer", "hermes-fading-header", "hermes-message-list", "hermes")
     }
 
+    @Test fun directMessageDragsMoveHeaderHideImeAndOnlyPullAtLatestOpensIme() {
+        fixture()
+        val decor=ui.activity.window.decorView
+        val list=ui.onNodeWithTag("hermes-message-list")
+        val density=ui.activity.resources.displayMetrics.density
+        list.performScrollToIndex(4)
+        val original=node("hermes-fading-header").boundsInWindow
+        ui.onNodeWithTag("hermes-composer").performClick().performTextInput("手势测试保留草稿")
+        ui.waitUntil(5000){ViewCompat.getRootWindowInsets(decor)?.isVisible(WindowInsetsCompat.Type.ime())==true}
+        SystemClock.sleep(450)
+        list.performTouchInput{down(center);moveBy(androidx.compose.ui.geometry.Offset(0f,-28f*density),100)}
+        ui.waitForIdle()
+        val partial=node("hermes-fading-header").boundsInWindow
+        assertTrue("Header travels a partial distance with the finger: $partial vs $original",partial.bottom<original.bottom-5f&&partial.bottom>original.top+5f)
+        capture("gesture-partial-header")
+        list.performTouchInput{moveBy(androidx.compose.ui.geometry.Offset(0f,-160f*density),200);up()}
+        ui.waitUntil(5000){ViewCompat.getRootWindowInsets(decor)?.isVisible(WindowInsetsCompat.Type.ime())==false}
+        SystemClock.sleep(450)
+        capture("gesture-fully-hidden")
+        ui.onNodeWithTag("hermes-header-avatar",true).assertIsNotDisplayed()
+        ui.onNodeWithText("搜索对话").assertDoesNotExist()
+        ui.onNodeWithTag("hermes-jump-latest").assertIsDisplayed()
+        val jump=node("hermes-jump-latest").boundsInWindow
+        assertTrue("Jump button must remain a small corner icon",jump.width<=48f*density&&jump.height<=48f*density)
+        assertTrue("Jump icon must not cover any message text",jump.top>=node("hermes-message-list").boundsInWindow.bottom)
+        // A small downward drag within history reveals the header without raising the IME.
+        list.performTouchInput{swipe(center,center+androidx.compose.ui.geometry.Offset(0f,38f*density),300)}
+        ui.waitForIdle()
+        val revealed=node("hermes-fading-header").boundsInWindow
+        assertTrue("Header slides back by a partial distance",revealed.height>5f&&revealed.height<original.height-5f)
+        assertFalse(ViewCompat.getRootWindowInsets(decor)?.isVisible(WindowInsetsCompat.Type.ime())==true)
+        capture("gesture-revealing-header")
+        ui.onNodeWithContentDescription("回到最新").performClick()
+        ui.waitForIdle()
+        ui.onNodeWithContentDescription("搜索主对话").assertIsDisplayed()
+        ui.onAllNodesWithContentDescription("搜索主对话").assertCountEquals(1)
+        list.performTouchInput{swipe(center,center+androidx.compose.ui.geometry.Offset(0f,100f*density),400)}
+        ui.waitUntil(5000){ViewCompat.getRootWindowInsets(decor)?.isVisible(WindowInsetsCompat.Type.ime())==true}
+        SystemClock.sleep(450)
+        ui.onNodeWithTag("hermes-composer").assertIsFocused().assertTextContains("手势测试保留草稿")
+        ui.onNodeWithTag("hermes-jump-latest").assertDoesNotExist()
+        ui.onNodeWithTag("conversation-message-keyboard-message-23").assertIsDisplayed()
+        capture("gesture-bottom-pull-ime")
+    }
+
     private fun work(agent: String) {
         val model = fixture()
         ui.onNodeWithContentDescription("工作").performClick()

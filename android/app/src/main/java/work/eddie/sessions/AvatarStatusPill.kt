@@ -27,7 +27,7 @@ fun avatarActiveMessageIndex(states:List<Pair<String,String>>):Int? = states.ind
  }.thenByDescending{it})
 
 /**
- * 形象下方的单行状态提示，例如"拉取代码 / 开始修改 / 努力工作中"。
+ * 形象下方的单行状态提示，例如"分析用户请求 / 使用 Bash / 撰写回复"。
  * 文案由调用方按 phase / active_tool 推导，本组件只负责呈现，不猜业务状态。
  */
 @Composable fun AvatarStatusPill(statusText:String,modifier:Modifier=Modifier,compact:Boolean=false){
@@ -41,23 +41,30 @@ fun avatarActiveMessageIndex(states:List<Pair<String,String>>):Int? = states.ind
 
 /**
  * 按当前 phase / active_tool 推导形象状态文案。
- * 优先给出具体动作（拉取代码/开始修改/搜索资料），退化为通用状态（努力工作中/正在回复）。
+ * 执行阶段保留真实工具名，分析阶段区分请求与工具结果；回复阶段不沿用过期工具名。
  */
-fun avatarWorkStatus(phase:String,tool:String):String{
- val t=tool.lowercase()
+fun avatarWorkStatus(phase:String,tool:String,hasToolResults:Boolean=false):String{
+ val name=tool.trim().takeIf{it!="null"}.orEmpty()
+ val t=name.lowercase()
  return when{
   phase=="offline"->"离线记录"
   phase=="unknown"->"状态待核实"
-  phase in setOf("queued","pending","sending","received")->"等待开始"
+  phase in setOf("queued","pending","received")->"等待开始"
+  phase=="sending"->"正在交给 Pi"
   phase in setOf("waiting","approval_required")->"等待你回应"
-  "git" in t||"pull" in t||"fetch" in t||"clone" in t->"拉取代码"
-  "edit" in t||"write" in t||"apply" in t||"patch" in t||"modify" in t->"开始修改"
-  "search" in t||"web" in t||"browse" in t->"搜索资料"
-  "calendar" in t->"查看日历"
-  "propose" in t->"准备工作建议"
-  phase=="thinking"->"努力思考中"
-  phase in setOf("executing","tool")->"努力工作中"
-  phase in setOf("responding","replying","streaming")->"正在回复"
+  phase in setOf("responding","replying","streaming")->"正在撰写回复"
+  phase in setOf("executing","tool")&&name.isNotBlank()->when(t){
+   "bash"->"正在使用 Bash · 执行命令"
+   "read"->"正在使用 Read · 读取文件"
+   "write"->"正在使用 Write · 写入文件"
+   "edit"->"正在使用 Edit · 修改文件"
+   "grep"->"正在使用 Grep · 检索内容"
+   "glob"->"正在使用 Glob · 查找文件"
+   else->"正在使用 $name"
+  }
+  phase=="thinking"&&hasToolResults->"正在分析工具结果"
+  phase=="thinking"->"正在分析用户请求"
+  phase in setOf("executing","tool")->"正在执行工具 · 等待名称"
   else->"状态待同步"
  }
 }

@@ -131,15 +131,15 @@ private fun buildSummaryText(s:TaskSummary):String{
 
 /**
  * 任务终态的详细总结预览卡。
- * 默认展开时间线总览；失败步骤自动展开详情，其余步骤点按展开。
+ * 默认收起总览和所有步骤详情；点按后查看。
  */
 @Composable fun TaskSummaryCard(message:JSONObject,onTaskClick:((String)->Unit)?=null){
  val summary=taskSummary(message)?:return
  val context=LocalContext.current
  val haptics=rememberComHaptics()
  val messageId=messageMotionId(message).ifBlank{message.optString("id")}
- var expanded by rememberSaveable(messageId){mutableStateOf(true)}
- var openSteps by rememberSaveable(messageId){mutableStateOf(summary.steps.filter{it.status=="failed"}.map{it.id})}
+ var expanded by rememberSaveable(messageId){mutableStateOf(false)}
+ var openSteps by rememberSaveable(messageId){mutableStateOf(emptyList<String>())}
  val statusColor=summaryStatusColor(summary.status,summary.verification)
  val meta=buildString{
   append(summaryStatusText(summary.status,summary.verification))
@@ -149,7 +149,7 @@ private fun buildSummaryText(s:TaskSummary):String{
  }
  Surface(Modifier.padding(start=8.dp,top=9.dp).widthIn(max=590.dp).fillMaxWidth(.94f).testTag("task-summary-card-$messageId"),shape=RoundedCornerShape(18.dp),color=ToolSurface,border=BorderStroke(1.dp,Line)){
   Column(Modifier.padding(horizontal=13.dp,vertical=11.dp)){
-   Row(Modifier.fillMaxWidth().clickable{expanded=!expanded},verticalAlignment=Alignment.CenterVertically){
+   Row(Modifier.fillMaxWidth().testTag("task-summary-toggle-$messageId").clickable{expanded=!expanded},verticalAlignment=Alignment.CenterVertically){
     when{
      verificationPassed(summary.verification)->Icon(Icons.Outlined.CheckCircle,"验收通过",Modifier.size(22.dp),tint=Success)
      summary.status=="failed"->Icon(Icons.Outlined.Cancel,"失败",Modifier.size(22.dp),tint=Danger)

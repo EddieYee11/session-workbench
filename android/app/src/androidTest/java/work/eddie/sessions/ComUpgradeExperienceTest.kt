@@ -70,23 +70,24 @@ class ComUpgradeExperienceTest{
   }
   ui.setContent{MaterialTheme(colorScheme=Palette){HermesChat(m,{},{},{})}}
   ui.onNodeWithTag("hermes-message-list").performScrollToIndex(8)
-  ui.onNodeWithTag("hermes-header-avatar",true).assertDoesNotExist()
-  ui.onNodeWithText("回到最新 ↓").assertIsDisplayed()
+  ui.onNodeWithTag("hermes-message-list").performTouchInput{swipeUp(startY=centerY,endY=centerY-200f)}
+  ui.onNodeWithTag("hermes-header-avatar",true).assertIsNotDisplayed()
+  ui.onNodeWithContentDescription("回到最新").assertIsDisplayed()
   ui.onNodeWithText("回复结束",substring=true).assertDoesNotExist()
   screenshot("reading")
-  val anchor=ui.onNodeWithTag("conversation-message-reading-7").fetchSemanticsNode().boundsInRoot
+  val anchor=ui.onNodeWithTag("conversation-message-reading-8").fetchSemanticsNode().boundsInRoot
   ui.runOnUiThread{m.hermes=JSONObject(m.hermes.toString()).apply{getJSONArray("messages").getJSONObject(23).put("text","最新 token 已到达")}}
-  ui.onNodeWithTag("hermes-header-avatar",true).assertDoesNotExist()
-  val after=ui.onNodeWithTag("conversation-message-reading-7").fetchSemanticsNode().boundsInRoot
+  ui.onNodeWithTag("hermes-header-avatar",true).assertIsNotDisplayed()
+  val after=ui.onNodeWithTag("conversation-message-reading-8").fetchSemanticsNode().boundsInRoot
   assertEquals(anchor.top,after.top,1f)
   ui.runOnUiThread{
    val older=JSONArray().put(JSONObject().put("id","older-row").put("role","assistant").put("text","分页得到的旧消息").put("status","completed"))
    m.hermes.array("messages").forEach{older.put(it)}
    m.hermes=JSONObject(m.hermes.toString()).put("messages",older)
   }
-  val prepended=ui.onNodeWithTag("conversation-message-reading-7").fetchSemanticsNode().boundsInRoot
+  val prepended=ui.onNodeWithTag("conversation-message-reading-8").fetchSemanticsNode().boundsInRoot
   assertEquals("Keyset prepend must preserve the reading anchor",after.top,prepended.top,1f)
-  ui.onNodeWithText("回到最新 ↓").performClick()
+  ui.onNodeWithContentDescription("回到最新").performClick()
   ui.onNodeWithTag("hermes-header-avatar",true).assertIsDisplayed()
  }
  @Test fun workHasOneHeadingAndAllNavigationLabelsAreVisible(){
