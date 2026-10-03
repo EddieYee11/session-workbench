@@ -369,7 +369,7 @@ class TaskStore:
                 self._save(db,task)
             text=row['text']
         # Separate durable outbox, same identity on any retry; unknown inputs are never replayed to worker.
-        receipt=conversation.submit(new_request_id,text)
+        receipt=conversation.submit(new_request_id,text,new_item={'task_id':tid,'input_request_id':request_id})
         return {**receipt,'revoked':revoked,'note':'未送达补充已撤销，已另开新事项' if revoked else '原任务可能已收到这条补充，无法撤回；已另开新事项'}
 
     def pending_start_inputs(self, tid):

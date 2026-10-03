@@ -19,3 +19,12 @@ def test_move_respects_delivery_and_retries(tmp_path,state,revoked):
  assert current['inputs'][0]['state']==('revoked' if revoked else state)
  if revoked:assert '保持原样' not in store.execution_prompt(current)
  with pytest.raises(ValueError):store.move_input(task['id'],'supplement-request-001','new-matter-request-002',chat)
+
+
+def test_new_item_preserves_body_and_explicit_intent(tmp_path):
+ store,chat,task=fixture(tmp_path,'queued')
+ receipt=store.move_input(task['id'],'supplement-request-001','new-matter-request-001',chat)
+ with chat.db() as db:row=dict(db.execute('SELECT * FROM messages WHERE id=?',(receipt['message_id'],)).fetchone())
+ text,context=chat._pi_input(row,'real-session','real-token')
+ assert row['text']=='保持原样' and context['new_item']['task_id']==task['id']
+ assert '本条独立处理' in text

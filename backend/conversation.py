@@ -146,6 +146,7 @@ class PersonalConversation:
                 ("tasks", "TEXT"),
                 ("supplement_to_message_id", "TEXT"),
                 ("work_card", "TEXT"),
+                ("new_item", "TEXT"),
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
@@ -198,18 +199,18 @@ class PersonalConversation:
     def task_receipt_for_message(self, task_id: str, text: str, parent_id: str):
         return self.task_receipt(task_id, text, parent_id)
 
-    def submit(self, request_id: str, text: str, reference: dict | None = None) -> dict:
+    def submit(self, request_id: str, text: str, reference: dict | None = None, *, new_item: dict | None = None) -> dict:
         text = text.strip()
         if not 10 <= len(request_id) <= 100 or not 1 <= len(text) <= 8000:
             raise ValueError("消息或请求标识无效")
         identity = reference_identity(reference, "personal-main")
         with self.db() as db:
             old = db.execute(
-                "SELECT id,text,status,reference FROM messages WHERE request_id=?", (request_id,)
+                "SELECT id,text,status,reference,new_item FROM messages WHERE request_id=?", (request_id,)
             ).fetchone()
             if old:
                 saved_reference = json.loads(old["reference"]) if old["reference"] else None
-                if (old["text"] != text
+                if ((json.loads(old["new_item"]) if old["new_item"] else None) != new_item or old["text"] != text
                         or reference_identity(saved_reference, "personal-main") != identity):
                     raise ValueError("请求标识冲突")
                 return {"status": old["status"], "request_id": request_id, "message_id": old["id"]}
@@ -223,10 +224,11 @@ class PersonalConversation:
             now = time.time()
             revision = self._bump(db)
             db.execute(
-                "INSERT INTO messages(id,request_id,role,text,status,phase,revision,created_at,updated_at,reference)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(id,request_id,role,text,status,phase,revision,created_at,updated_at,reference,new_item)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (mid, request_id, "user", text, "queued", "queued", revision, now, now,
-                 json.dumps(saved_reference, ensure_ascii=False) if saved_reference else None),
+                 json.dumps(saved_reference, ensure_ascii=False) if saved_reference else None,
+                 json.dumps(new_item) if new_item else None),
             )
             db.execute("INSERT OR IGNORE INTO user_events VALUES (?,?,'queued')",(request_id,mid))
         self.wake.set()
@@ -545,6 +547,8 @@ class PersonalConversation:
                    'tasks': getattr(self, 'task_context', lambda: [])(),
                    'environment': getattr(self, 'task_environment', lambda: {})(),
                    'reaction': {'message_id': row['id'], 'token': reaction_token}}
+        if row.get('new_item') if isinstance(row,dict) else row['new_item']:
+            context['new_item']=json.loads(row['new_item'])
         if supplement_to:
             context['supplement_to_message_id'] = supplement_to
         with self.db() as db:
@@ -560,6 +564,7 @@ class PersonalConversation:
                 + "\n" + capabilities.render() + "\n只读历史摘要（不可重放操作）："
                 + json.dumps(list(reversed(history)), ensure_ascii=False)
                 + ("\n本条是当前执行中原事项的用户补充，保持同一事项并应用本条限制。" if supplement_to else "")
+                + ("\n用户已点击改为新事项。本条独立处理，不再补充到原任务；正文与真实来源保持原样。" if context.get("new_item") else "")
                 + "\n用户消息：\n" + referenced_input(row['text'], reference))
         return text, context
 

@@ -2,7 +2,7 @@ package work.eddie.sessions
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -60,8 +60,10 @@ fun ledgerArtifacts(record:JSONObject):List<JSONObject>{
 }
 @Composable fun ArtifactCards(artifacts:List<JSONObject>){
  if(artifacts.isEmpty())return
+ var actionError by remember{mutableStateOf("")}
  val clip=LocalClipboardManager.current;val context=LocalContext.current
  Column(Modifier.fillMaxWidth().padding(top=10.dp)){
+  if(actionError.isNotBlank())Text(actionError,fontSize=Type.Caption,color=AmberText)
   Text("产物",fontSize=Type.Caption,color=Muted)
   artifacts.forEach{a->
    val target=a.optString("url").ifBlank{a.optString("path").ifBlank{a.optString("reference")}}
@@ -70,8 +72,8 @@ fun ledgerArtifacts(record:JSONObject):List<JSONObject>{
    Row{
     if(target.isNotBlank())TextButton(onClick={clip.setText(AnnotatedString(target))}){Text("复制")}
     if(target.startsWith("https://")||target.startsWith("http://")){
-     TextButton(onClick={runCatching{context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(target)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))}}){Text("打开")}
-     TextButton(onClick={context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,target),"分享链接").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))}){Text("分享")}
+     TextButton(onClick={runCatching{context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(target)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))}.onFailure{actionError="无法打开链接，请复制后查看"}}){Text("打开")}
+     TextButton(onClick={runCatching{context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,target),"分享链接").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))}.onFailure{actionError="分享未打开，可复制链接"}}){Text("分享")}
     }else if(target.isNotBlank())Text("远端文件路径",fontSize=Type.Micro,color=Muted)
    }
   }
