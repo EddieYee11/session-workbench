@@ -23,10 +23,12 @@ import org.json.JSONObject
 }
 @Composable fun TodayReminderCards(vm:WorkbenchModel){
  val rows=vm.reminderState.array("items").filter{it.optString("status")=="pending"}.sortedBy{it.optString("due")}.take(5)
- if(rows.isEmpty())return
+ if(rows.isEmpty()){if(vm.reminderNote.isNotBlank())Text(vm.reminderNote,fontSize=Type.Caption,color=AmberText);return}
  Column{Text("提醒",fontSize=Type.BodySm,color=Ink);rows.forEach{ReminderCard(vm,it)}}
 }
 @Composable fun MessageReminderCards(vm:WorkbenchModel,message:JSONObject){
  val ids=message.array("tasks").map{it.optString("reminder_id")}.filter{it.isNotBlank()}.toSet()
- vm.reminderState.array("items").filter{it.optString("id") in ids}.forEach{ReminderCard(vm,it)}
+ val rows=vm.reminderState.array("items").filter{it.optString("id") in ids}
+ rows.forEach{ReminderCard(vm,it)}
+ if(ids.isNotEmpty()&&rows.isEmpty()&&!vm.reminderFresh)Text(vm.reminderNote.ifBlank{"提醒来源暂不可用；动作未执行"},fontSize=Type.Caption,color=AmberText)
 }

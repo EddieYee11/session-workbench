@@ -24,6 +24,9 @@ class TaskLedgerTest {
   assertEquals("待确认",ledgerVisibleGroup(task("completed")))
   assertEquals("已结束",ledgerVisibleGroup(task("rejected")))
   assertEquals("需要你核实",ledgerStatus("unknown").second)
+  assertEquals("closed",ledgerFilterGroup(task("execution_finished","passed")))
+  assertEquals("closed",ledgerFilterGroup(task("cancelled")))
+  assertEquals("decision",ledgerFilterGroup(task("unknown")))
  }
  @Test fun unknownAndEndedNeverClaimCompletion(){
   for(status in listOf("", "future_state", "unknown", "ended"))assertEquals("attention",ledgerStatus(status).first)

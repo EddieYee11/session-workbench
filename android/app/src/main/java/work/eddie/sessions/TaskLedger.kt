@@ -173,13 +173,15 @@ internal fun ledgerTaskRecords(vm:WorkbenchModel,messages:List<JSONObject>):List
  return records
 }
 
-private val taskFilters=listOf("all" to "全部","decision" to "等我","active" to "在办","verify" to "待确认","done" to "已完成","ended" to "已结束")
+internal fun ledgerFilterKey(group:String)=if(group in setOf("done","ended"))"closed"else group
+internal fun ledgerFilterGroup(task:LedgerTask)=ledgerFilterKey(ledgerGroup(task))
+private val taskFilters=listOf("all" to "全部","decision" to "等我","active" to "在办","verify" to "待确认","closed" to "已结束")
 
 @Composable private fun TaskFilterChips(vm:WorkbenchModel,tasks:List<LedgerTask>){
  Row(Modifier.fillMaxWidth().padding(top=4.dp).horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)){
   taskFilters.forEach{(key,label)->
-   val count=if(key=="all")tasks.size else tasks.count{ledgerGroup(it)==key}
-   val selected=vm.taskFilter==key
+   val count=if(key=="all")tasks.size else tasks.count{ledgerFilterGroup(it)==key}
+   val selected=ledgerFilterKey(vm.taskFilter)==key
    Surface(onClick={vm.taskFilter=key},modifier=Modifier.testTag("task-filter-$key"),shape=Radii.Pill,color=if(selected)Ink else ChipBg){
     Text("$label $count",Modifier.padding(horizontal=14.dp,vertical=7.dp),fontSize=Type.Caption,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,color=if(selected)Color.White else Muted)
    }
@@ -190,7 +192,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
 /** 活动弹层里的任务分组：进行中置顶，点开展开事件时间线 */
 @Composable fun TaskLedgerSection(vm:WorkbenchModel,runs:List<JSONObject>,messages:List<JSONObject>,taskId:String="",filtered:Boolean=false){
  val allTasks=buildLedgerTasks(ledgerTaskRecords(vm,messages),messages)
- val tasks=allTasks.filter{if(taskId.isNotBlank())it.id==taskId else !filtered||vm.taskFilter=="all"||ledgerGroup(it)==vm.taskFilter}
+ val tasks=allTasks.filter{if(taskId.isNotBlank())it.id==taskId else !filtered||vm.taskFilter=="all"||ledgerFilterGroup(it)==ledgerFilterKey(vm.taskFilter)}
  var expanded by rememberSaveable(taskId){mutableStateOf<String?>(taskId.takeIf{it.isNotBlank()})}
  HorizontalDivider(Modifier.padding(top=4.dp,bottom=14.dp),color=Line)
  if(!filtered||taskId.isNotBlank())Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){

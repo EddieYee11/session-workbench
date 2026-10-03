@@ -70,3 +70,16 @@ def test_large_recent_history_still_has_bounded_digest(tmp_path):
  hb,_=engine(tmp_path)
  for i in range(6):hb.log({'decision':{'action':'note','reason':'中'*300}})
  assert len(hb.digest([]).encode())<=2600
+
+
+def test_running_limit_stops_before_model(tmp_path):
+ hb,_=engine(tmp_path)
+ hb.tasks.list=lambda:[{'status':'running','title':'运行任务'} for _ in range(4)]
+ assert asyncio.run(hb.tick(force=True))['skipped']=='running_limit'
+ assert hb.recent()==[]
+
+def test_enabled_speak_only_becomes_awareness_event(tmp_path):
+ hb,now=engine(tmp_path,'speak')
+ asyncio.run(hb.tick(force=True));asyncio.run(hb.tick(force=True));now[0]+=86400
+ hb.configure({'shadow':False});row=asyncio.run(hb.tick(force=True))
+ assert row['effect']=='awareness' and hb.tasks.list()==[] and hb.proposals.list()==[]

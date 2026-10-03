@@ -76,6 +76,7 @@ class TodayTaskExperienceTest {
  }
  @Test fun ongoingSummaryOpensActiveFilterAndReviewDoesNotClaimDone(){
   val model=fixture()
+  ui.runOnUiThread{model.taskLedger.getJSONArray("items").put(JSONObject().put("id","cancelled-E").put("title","停止的任务").put("status","cancelled").put("agent","pi"));model.taskLedger=JSONObject(model.taskLedger.toString())}
   ui.onNodeWithTag("today-ongoing").performScrollTo().performClick()
   ui.runOnIdle{assertEquals("active",model.taskFilter)}
   ui.onNodeWithTag("task-ledger-active-B").assertIsDisplayed()
@@ -84,8 +85,10 @@ class TodayTaskExperienceTest {
   ui.onNodeWithTag("task-filter-verify").performScrollTo().performClick()
   ui.onNodeWithTag("task-ledger-verify-C").assertIsDisplayed()
   ui.onNodeWithTag("task-ledger-done-D").assertDoesNotExist()
-  ui.onNodeWithTag("task-filter-done").performScrollTo().performClick()
+  ui.onNodeWithTag("task-filter-closed").performScrollTo().performClick()
   ui.onNodeWithTag("task-ledger-done-D").assertIsDisplayed()
+  ui.onNodeWithTag("task-ledger-cancelled-E").assertIsDisplayed()
+  ui.onNodeWithText("已结束 2").assertIsDisplayed()
   ui.onNodeWithTag("task-ledger-verify-C").assertDoesNotExist()
   for(tab in listOf("hermes","sources","work"))ui.onNodeWithTag("nav-$tab").assertIsDisplayed()
  }

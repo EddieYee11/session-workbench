@@ -296,7 +296,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  suspend fun refreshReminders(){
   try{reminderState=store.request("/personal/reminders");reminderFresh=true}
   catch(e:CancellationException){throw e}
-  catch(e:Exception){reminderFresh=false;reminderNote="提醒来源暂不可用；动作未执行"}
+  catch(e:Exception){reminderFresh=false;if(!reminderNote.startsWith("提醒动作未确认"))reminderNote="提醒来源暂不可用；动作未执行"}
  }
  fun reminderAction(item:JSONObject,action:String){
   if(!reminderFresh||reminderBusy.isNotBlank())return
