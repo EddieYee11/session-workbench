@@ -130,6 +130,7 @@ class AgentTools:
             return {'task_id':task['id'],'status':task['status'],'work_started':False,'owner_conversation_id':'personal-main'}
         if name=='task_verify':
             task=self.task_target(args['task_id'],row,strict=True)
+            if (task.get('authorization') or {}).get('entry')=='work_page_human_chat':raise ValueError('工作页自然聊天不走 Judge 或任务验收')
             if not task.get('authorization'):raise ValueError('原任务没有持久授权快照')
             if re.search(r'(?:不要|别|禁止).{0,8}验收',row['raw_text']):raise ValueError('用户要求暂不验收')
             if task.get('verification_status')=='passed':return task

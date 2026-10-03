@@ -328,6 +328,7 @@ class TaskStore:
                             task['source_links'].append(link)
                             task['source_message_ids'].append(link['message_id'])
                     task['latest_user_message_id']=source_context['id']
+                    task.setdefault('input_sources',{})[request_id]=source_context['id']
             task['updated_at'] = time.time()
             self._save(db, task)
             db.execute('INSERT INTO inputs VALUES (?,?,?,?,?,?,?,?)',
@@ -340,6 +341,36 @@ class TaskStore:
                 self._event(db,tid,self.command_key(request_id,state),'input_'+state,
                             '只读约束已被用户撤销；保留原文作审计，不投递执行。')
             return dict(db.execute('SELECT * FROM inputs WHERE request_id=?', (request_id,)).fetchone())
+
+    def move_input(self, tid, request_id, new_request_id, conversation):
+        """Revoke only unclaimed input. A durable move identity makes retry idempotent."""
+        if not isinstance(new_request_id,str) or not 10<=len(new_request_id)<=120:
+            raise ValueError('Invalid new request_id')
+        with self.db() as db:
+            row=db.execute('SELECT * FROM inputs WHERE task_id=? AND request_id=?',(tid,request_id)).fetchone()
+            if not row:raise ValueError('Input not found')
+            task=json.loads(db.execute('SELECT data FROM tasks WHERE id=?',(tid,)).fetchone()[0])
+            moves=task.setdefault('input_moves',{})
+            previous=moves.get(request_id)
+            if previous and previous['request_id']!=new_request_id:
+                raise ValueError('此补充已另开事项，请核对原回执')
+            revoked=previous['revoked'] if previous else row['state'] in ('accepted','pending_start','queued')
+            if not previous:
+                if revoked:
+                    db.execute("UPDATE inputs SET state='revoked',updated_at=? WHERE request_id=?",(time.time(),request_id))
+                    # Remove its effective instruction; keep original source and events for audit.
+                    others=db.execute("SELECT text FROM inputs WHERE task_id=? AND request_id!=? AND state!='revoked'",(tid,request_id)).fetchall()
+                    if not any(x['text']==row['text'] for x in others):
+                        task['constraints']=[x for x in task.get('constraints',[]) if x!=row['text']]
+                    if task.get('work_brief',{}).get('latest_instruction')==row['text']:
+                        task['work_brief']['latest_instruction']=''
+                    self._event(db,tid,self.command_key(request_id,'revoked'),'input_revoked','用户改为新事项；未投递补充已撤销')
+                moves[request_id]={'request_id':new_request_id,'revoked':revoked}
+                self._save(db,task)
+            text=row['text']
+        # Separate durable outbox, same identity on any retry; unknown inputs are never replayed to worker.
+        receipt=conversation.submit(new_request_id,text)
+        return {**receipt,'revoked':revoked,'note':'未送达补充已撤销，已另开新事项' if revoked else '原任务可能已收到这条补充，无法撤回；已另开新事项'}
 
     def pending_start_inputs(self, tid):
         with self.db() as db:

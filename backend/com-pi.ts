@@ -38,7 +38,7 @@ const descriptions:Record<string,string> = {
  archive_path:"可恢复地归档用户明确指定的工作区对象，保存原路径和恢复凭据，不覆盖、不永久删除。",
  capability_search:"查询当前主机能力及发现/加载/真实验证状态。未验证不能说已可用。",
  bookkeeping_search:"直接只读查询真实历史账本，按北京时间日期、金额或备注筛选。用户给日期和金额时，首轮同时传date和amount。date与start_date/end_date二选一，默认支出；用户问哪笔消费时直接查，不派任务。返回真实ID、日期、金额、分类、备注和账户；找不到或结果截断如实说明。recent只有最近30笔，历史查询用本工具。",
- task_submit:"仅在独立并行、耗时或专门能力有益时委派；Pi 主线可直接工作，不强制派活。Pi、Claude、Codex均最高权限danger-full-access，旧只读约束仅审计。source_quote 引用真实用户消息，选项续答沿已关联原交办。最高权限不扩大真实业务交办，不重放未知副作用。已受理不代表已执行。",
+ task_submit:"预计超过30秒、修改/构建/测试项目、独立并行或明确交给Agent时委派；中文title不超过12字，完整说明放prompt；派发后立即回应不等待；Pi 主线可直接工作，不强制派活。Pi、Claude、Codex均最高权限danger-full-access，旧只读约束仅审计。source_quote 引用真实用户消息，选项续答沿已关联原交办。最高权限不扩大真实业务交办，不重放未知副作用。已受理不代表已执行。",
  task_verify:"通过真实文件/测试检查验收结束的原任务。checks type=file_exists/file_contains/tests，tests 使用项目测试命令，不根据文本完成通过。",
  task_resume:"在用户明确要求继续时恢复原任务，沿已保存的任务和执行者会话继续，不另建重复任务。",
  task_merge:"仅用于确实存在历史workspace_copy的已验收任务，按项目串行合入。当前最高权限任务直接在原目录工作，验收后直接交付，无需本工具。基线/Syncthing 未通过时保留补丁暂停。",

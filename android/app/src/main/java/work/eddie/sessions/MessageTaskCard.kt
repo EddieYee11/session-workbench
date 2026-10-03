@@ -119,3 +119,26 @@ internal fun planInlineTasks(tasks: List<LedgerTask>): InlineTaskPlan {
         }
     }
 }
+
+internal fun supplementAction(state:String):String=when(state){
+ "accepted","pending_start","queued"->"改为新事项"
+ "revoked"->"已撤销"
+ else->"另开新事项"
+}
+@Composable fun SupplementCards(vm:WorkbenchModel,message:JSONObject){
+ val mid=message.optString("id")
+ if(mid.isBlank())return
+ vm.taskLedger.array("items").forEach{task->
+  val sources=task.optJSONObject("input_sources")?:JSONObject()
+  task.array("inputs").filter{sources.optString(it.optString("request_id"))==mid}.forEach{input->
+   val state=input.optString("state")
+   Column(Modifier.fillMaxWidth().padding(top=6.dp)){
+    Text("已补充到「${task.optString("title") }」 · ${ledgerDeliveryLabel(state)}",fontSize=Type.Caption,color=Muted)
+    if(state !in setOf("accepted","pending_start","queued","revoked"))Text("原任务可能已收到这条补充，无法撤回",fontSize=Type.Micro,color=AmberText)
+    if(state!="revoked")TextButton(onClick={vm.moveSupplement(task.optString("id"),input.optString("request_id"))},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){
+     Text(supplementAction(state),fontSize=Type.Caption)
+    }
+   }
+  }
+ }
+}

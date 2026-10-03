@@ -417,6 +417,23 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    workApprovalIds=updated
    return requestId
  }
+ fun moveSupplement(taskId:String,inputId:String){
+   if(taskControlBusy.isNotBlank()||!taskLedgerFresh)return
+   val cacheKey="move-input-$inputId.enc"
+   val old=store.cachedSecure(cacheKey)
+   val body=JSONObject().put("request_id",old.optString("request_id").ifBlank{UUID.randomUUID().toString()})
+   try{store.secureCache(cacheKey,body)}catch(e:Exception){hermesSendNote="请求未保存，尚未发送";return}
+   taskControlBusy=taskId
+   viewModelScope.launch{
+    try{
+     val result=store.request("/personal/tasks/${enc(taskId)}/inputs/${enc(inputId)}/new-item",body)
+     hermesSendNote=result.optString("note")
+     refreshHermes();refreshWorkProposals()
+    }catch(e:CancellationException){throw e}
+     catch(e:Exception){hermesSendNote="另开事项结果待核实；再次操作复用同一请求号"}
+     finally{taskControlBusy=""}
+   }
+ }
  fun taskCommand(id:String,text:String,cancel:Boolean=false){
    if(taskControlBusy.isNotBlank()||!taskLedgerFresh||store.token.isBlank())return
    taskControlBusy=id;taskControlTarget=id;taskControlNote=""

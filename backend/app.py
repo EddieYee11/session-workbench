@@ -277,6 +277,14 @@ async def personal_task_input(task_id:str,request:Request):
     if not isinstance(data,dict):raise ValueError('Invalid command')
     async with runtime.action_lock:
         return await task_controller.command(task_id,data.get('text'),data.get('request_id'))
+@app.post('/personal/tasks/{task_id}/inputs/{input_id}/new-item')
+async def task_input_new_item(task_id:str,input_id:str,request:Request):
+    data=await request.json()
+    async with runtime.action_lock:
+        result=task_store.move_input(task_id,input_id,data.get('request_id'),conversation)
+        conversation.sync_task_cards(task_store.list())
+        return result
+
 @app.post('/personal/tasks/{task_id}/cancel')
 async def personal_task_cancel(task_id:str,request:Request):
     data=await request.json()
