@@ -182,7 +182,11 @@ private fun hermesToolLabel(name:String):String=when{
     items(messages,key={messageMotionId(it).ifBlank{it.toString()}}){message->
      MessageSendRow(motion,messageMotionId(message),Modifier.widthIn(max=790.dp).fillMaxWidth(),trailingSpacing=22.dp){Column{
       MessageSwipeActions(message,enabled=!message.optBoolean("local"),onReply={vm.hermesReference=messageReference(it,"reply","Pi","personal-main")},onForward={vm.hermesReference=messageReference(it,"forward","Pi","personal-main")}){HermesMessage(message,motion,vm.font)}
-      if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){HermesProgressCard(message,vm.hermesFresh)}
+      if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){
+       // 进行中的消息走工作过程卡（任务清单+实时动态），失败/待核实等终态继续走原来的进度卡。
+       if(message.optString("status") in setOf("queued","sending","running"))AgentWorkCard(message,vm.hermesFresh)
+       else HermesProgressCard(message,vm.hermesFresh)
+      }
      }}
     }
     item(key="tail"){
@@ -213,7 +217,14 @@ private fun hermesToolLabel(name:String):String=when{
        status in setOf("queued","sending","running")->when(phase){"responding","replying","streaming"->"responding";"executing","tool"->"working";else->"thinking"}
        else->"idle"
       }
-      HermesCompanion(visual,Modifier.size(58.dp),compact=true,animationActive=vm.active&&vm.hermesVisible)
+      Box(contentAlignment=Alignment.Center){
+       HermesCompanion(visual,Modifier.size(58.dp),compact=true,animationActive=vm.active&&vm.hermesVisible)
+       // 形象状态提示：Pi 干活时在形象下方叠一只小胶囊，显示具体在干什么（拉取代码/开始修改/努力工作中）。
+       if(visual in setOf("thinking","working","responding")){
+        val pillTool=if(current?.isNull("active_tool")!=false)"" else current.optString("active_tool")
+        AvatarStatusPill("Pi",avatarWorkStatus(phase,pillTool),Modifier.align(Alignment.BottomCenter).offset(y=10.dp))
+       }
+      }
       Column(Modifier.padding(start=3.dp),verticalArrangement=Arrangement.spacedBy(2.dp)){
        Text("Pi",fontSize=Type.Body,fontWeight=FontWeight.SemiBold,color=Ink)
        val label=when{
