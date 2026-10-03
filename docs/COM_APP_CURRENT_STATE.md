@@ -1,3 +1,16 @@
+# 当前增量：Com! 1.8.1 / versionCode 19
+
+2026-10-03，旧 Kotlin/Compose 工作台。M3–M7、B1–B3实现及部署；B0评估、B4–B6方案见 COM_B_DELIVERY_REPORT.md。后面的1.8.0/1.7.0说明保留为历史。
+
+- 台账四类：等我／在办／待确认／已结束，验收完成和停止仍在卡内明确区分；人工工作聊天不进入台账或Judge。
+- 改为新事项保留原正文与真实来源，单独持久 new_item 元数据防止再次归入原补充；未知原送达不重放。原库仅新增可空元数据列，不重写旧记录。
+- 设置→主动观察：影子记录、暂停、手动受限开关（先两次成功影子验证）；今天→仅供知情只展示受限speak，没有系统推送。目标调度保持关闭。
+- POST /personal/heartbeat/settings；GET /personal/heartbeat 含最近观察与 shadow_verified。清单在项目根 HEARTBEAT.md。
+- GET /personal/reminders；POST /personal/reminders/{id}/action：真实记录四动作与回读。创建提醒仍沿既有remind扩展，对话卡按真实 tool result ID关联，今天列待提醒。
+- 新版同证书覆盖安装保留数据／配对；不升级Pi、不引入第三方包、不自动晋升技能、不更改记忆注入或凭据保管。
+
+---
+
 # 当前增量：Com! 1.8.0 / versionCode 18
 
 2026-10-03。本文后面的 1.7.0 内容是历史基线，当前差异以本节及 M0–M6 报告为准。

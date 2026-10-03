@@ -7,7 +7,7 @@
 | ~/.pi/agent/auth.json | 0600；Pi/ModelRuntime 原生读取提供商认证；Com 心跳调用同一已有 runtime，摘要不含凭据 |
 | ~/.codex/auth.json | 0600；Codex 原生认证，Com 通过 app-server 协议访问 |
 | ~/.claude/.credentials.json | 0600；原生认证存在；Com 第三方 Claude 另从 agent-config/env 解析供应商配置，不能认作相同认证路径 |
-| ~/.session-workbench/agent-config.json 与进程环境 | backend/claude_worker.py third_party_config 合并 ANTHROPIC_*；传子进程 env，不加入提示词；详细权限见现场报告 |
+| ~/.session-workbench/agent-config.json 与进程环境 | backend/claude_worker.py third_party_config 合并 ANTHROPIC_*；传子进程 env，不加入提示词；agent-config.json 现场为0600 |
 | ~/.session-workbench/token | 0600；API 配对授权，Android Store 加密保管；不加入模型用户正文 |
 | ~/.pi-gateway/.env | 0600；既有网关持有业务凭据，与 Com 原生会话独立 |
 

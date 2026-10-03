@@ -6,7 +6,7 @@
 
 | 来源 | 时机、大小 | 来源与更新时间 |
 |---|---|---|
-| backend/pi_main.py MAIN_PROMPT | 主 RPC 启动时 --system-prompt；固定行为提示，字符数见交付报告 | Git 文件可追溯；不是逐条记忆元数据 |
+| backend/pi_main.py MAIN_PROMPT | 主 RPC 启动时 --system-prompt；固定行为提示，2909字符／7023 UTF-8 bytes | Git 文件可追溯；不是逐条记忆元数据 |
 | backend/conversation.py _pi_input | 每条用户输入附当前任务、环境、能力摘要；首次无原生历史时附最多16条已完成消息，每条末1000字符；有原生历史或补充不重复摘要 | 原消息与 task ID 持久；摘要未逐条携带日期 |
 | 原生 Pi session JSONL | 启动恢复已保存 session；沿用同一原生上下文 | 原始时间及消息来源可追溯，不能当作再次操作授权 |
 | ~/.pi/agent/settings.json 的 skills | 原生技能发现/提示阶段；当前指定 ~/.pi-gateway/skills；能力清单只投影名称/说明，SKILL 内容按需读取 | 文件 mtime 与路径可查；非统一记忆来源字段 |
