@@ -15,6 +15,11 @@ LABELS = {
 }
 
 
+def task_kind(task):
+    """Read-time classification: no database rewrite or second source of truth."""
+    return 'chat' if (task.get('authorization') or {}).get('entry') == 'work_page_human_chat' else 'job'
+
+
 def accepted(task):
     if task.get('status') != 'execution_finished' or task.get('verification_status') != 'passed':
         return False
@@ -36,7 +41,7 @@ def card_task(task):
         label = '验收需补齐' if review['verdict'] == 'revise' else '评审待核实'
     inputs = task.get('inputs', [])[-10:]
     return {
-        'id': task['id'], 'kind': 'task', 'title': task['title'], 'status': status,
+        'id': task['id'], 'kind': task_kind(task), 'title': task['title'], 'status': status,
         'verification_status': task.get('verification_status', 'pending'),
         'acceptance_passed': accepted(task),
         'stage': label, 'session_id': task.get('session_id', ''),
@@ -70,6 +75,7 @@ def event_rows(task):
 
 
 def linked_card(tasks):
+    tasks = [t for t in tasks if task_kind(t) != 'chat']
     return {'linked_tasks': [card_task(t) for t in tasks],
             'work_events': [e for t in tasks for e in event_rows(t)][-80:],
             'results': [{k: t.get(k) for k in ('id', 'title', 'status', 'verification_status',

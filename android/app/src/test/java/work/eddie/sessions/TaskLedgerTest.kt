@@ -18,9 +18,16 @@ class TaskLedgerTest {
   assertEquals("ended",ledgerGroup(task("rejected")))
   assertEquals("ended",ledgerGroup(task("cancelled")))
  }
+ @Test fun visibleGroupsAreFourAndUnknownNeedsHuman(){
+  assertEquals("在办",ledgerVisibleGroup(task("running")))
+  assertEquals("等我",ledgerVisibleGroup(task("unknown")))
+  assertEquals("待确认",ledgerVisibleGroup(task("completed")))
+  assertEquals("已结束",ledgerVisibleGroup(task("rejected")))
+  assertEquals("需要你核实",ledgerStatus("unknown").second)
+ }
  @Test fun unknownAndEndedNeverClaimCompletion(){
   for(status in listOf("", "future_state", "unknown", "ended"))assertEquals("attention",ledgerStatus(status).first)
-  assertEquals("取消待确认",ledgerStatus("cancel_requested").second)
+  assertEquals("正在停止",ledgerStatus("cancel_requested").second)
   assertEquals("已停止 · 未完成验收",ledgerStatus("interrupted").second)
   assertEquals("执行结束 · 待验收",ledgerStatus("completed").second)
   assertEquals("验收通过",ledgerStatus("execution_finished","passed").second)

@@ -437,6 +437,8 @@ class TaskStore:
         task=next((t for t in self.list() if t['id']==tid),None)
         if not task or task['status']!='execution_finished':
             raise ValueError('只能验收已结束任务')
+        if (task.get('authorization') or {}).get('entry') == 'work_page_human_chat':
+            raise ValueError('工作页自然聊天不走任务验收')
         criteria=task.get('acceptance_criteria',[])
         covered={e.get('criterion_id') for e in evidence if e.get('passed') is True}
         missing=[c['id'] for c in criteria if c['id'] not in covered]

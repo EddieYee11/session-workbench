@@ -50,6 +50,7 @@ data class LedgerTask(
  val rawStatus:String="",val completionCondition:String="",val stage:String="",val latestStep:String="",
  val blockReason:String="",
  val sourceSessionId:String="",val sourceMessageId:String="",
+ val kind:String="job",val progress:List<String> = emptyList(),
 )
 
 
@@ -84,11 +85,11 @@ fun ledgerStatus(status:String,verification:String=""):Pair<String,String> = if(
  "running"->"active" to "执行中"
  "sending","dispatching"->"active" to "派发中"
  "queued"->"active" to "已受理 · 排队中"
- "waiting"->"active" to "等待你的授权或回应"
- "cancel_requested"->"active" to "取消待确认"
+ "waiting"->"attention" to "等待你的授权或回应"
+ "cancel_requested"->"active" to "正在停止"
  "approval_required","proposed"->"attention" to "待授权"
  "failed"->"attention" to "执行失败"
- "unknown"->"attention" to "执行状态待核实"
+ "unknown"->"attention" to "需要你核实"
  "paused"->"attention" to "已暂停 · 等待继续"
  "done"->"closed" to "执行结束 · 待验收"
  "execution_finished","completed"->"closed" to "执行结束 · 待验收"
@@ -102,10 +103,24 @@ fun ledgerStatus(status:String,verification:String=""):Pair<String,String> = if(
 fun ledgerParent(task:JSONObject):String = listOf("message_id","parent_message_id","origin_message_id")
  .map{task.optString(it).takeUnless{value->value=="null"}.orEmpty()}.firstOrNull{it.isNotBlank()}.orEmpty()
 
-fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<LedgerTask> = records.mapIndexed{index,t->
+/** 分类只在读取时派生；来源缺失的历史记录保留为 job。 */
+fun ledgerKind(record:JSONObject):String = if(record.optJSONObject("authorization")?.optString("entry")=="work_page_human_chat" || record.optString("kind")=="chat")"chat" else "job"
+fun ledgerVisibleGroup(task:LedgerTask):String=when(ledgerGroup(task)){"active"->"在办";"decision"->"等我";"verify"->"待确认";else->"已结束"}
+fun ledgerProgress(record:JSONObject):List<String>{
+ val kinds=record.array("events").map{it.optString("kind")}.toSet()
+ return buildList {
+  if("created" in kinds)add("已受理")
+  if("queued" in kinds)add("执行器已排队")
+  if("started" in kinds || "tool.started" in kinds)add("原生真正开始")
+  if("execution_finished" in kinds)add("执行轮结束")
+  if(taskAcceptancePassed(record))add("验收通过")
+ }
+}
+
+fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<LedgerTask> = records.filter{ledgerKind(it)!="chat"}.mapIndexed{index,t->
  val parent=ledgerParent(t)
  val source=messages.firstOrNull{it.optString("id")==parent}
- val state=ledgerStatus(t.optString("status"),if(taskAcceptancePassed(t))"passed" else "").let{pair->if(t.optString("stage").isNotBlank())pair.first to t.optString("stage") else pair}
+ val state=ledgerStatus(t.optString("status"),if(taskAcceptancePassed(t))"passed" else "")
  val at=t.optDouble("updated_at",0.0).takeIf{it>0}?:t.optDouble("created_at",0.0)
  val instructions=t.optString("prompt")
  val goal=t.optString("goal").ifBlank{
@@ -127,7 +142,7 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
   stage=t.optString("stage"),latestStep=t.optString("latest_step"),
   blockReason=t.optString("block_reason").takeUnless{it=="null"}.orEmpty().trim(),
   sourceSessionId=t.optString("source_session_id").takeUnless{it=="null"}.orEmpty().ifBlank{if(source!=null)"personal-main"else""},
-  sourceMessageId=t.optString("source_message_id").takeUnless{it=="null"}.orEmpty().ifBlank{if(source!=null)parent else""})
+  sourceMessageId=t.optString("source_message_id").takeUnless{it=="null"}.orEmpty().ifBlank{if(source!=null)parent else""},kind=ledgerKind(t),progress=ledgerProgress(t))
 }.sortedWith(compareBy({it.status!="active"},{-it.updatedAt}))
 
 /** Only accepted results are completed. Finished executions have their own review group. */
@@ -158,7 +173,7 @@ internal fun ledgerTaskRecords(vm:WorkbenchModel,messages:List<JSONObject>):List
  return records
 }
 
-private val taskFilters=listOf("all" to "全部","decision" to "待你决定","active" to "执行中","verify" to "待验收","done" to "已完成","ended" to "已结束")
+private val taskFilters=listOf("all" to "全部","decision" to "等我","active" to "在办","verify" to "待确认","done" to "已完成","ended" to "已结束")
 
 @Composable private fun TaskFilterChips(vm:WorkbenchModel,tasks:List<LedgerTask>){
  Row(Modifier.fillMaxWidth().padding(top=4.dp).horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)){
@@ -202,6 +217,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
      var executionDetails by rememberSaveable(task.id){mutableStateOf(false)}
      var timeline by rememberSaveable(task.id){mutableStateOf(false)}
      if(!vm.taskLedgerFresh)Text("离线缓存，同步后才能操作",fontSize=Type.Caption,color=AmberText)
+     if(task.progress.isNotEmpty())Text(task.progress.joinToString(" → "),Modifier.padding(top=8.dp),fontSize=Type.Micro,color=Muted)
      // 现在到哪一步：进度在上，来源与细节折叠到下面
      Text("${task.scope} · ${task.directory.substringAfterLast('/').ifBlank{"目录待核对"}}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
      if(task.goal.isNotBlank())Text(task.goal,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink,maxLines=3,overflow=TextOverflow.Ellipsis)
@@ -226,7 +242,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
      }
      var instruction by remember(task.id){mutableStateOf("")}
      if(task.rawStatus=="paused")TextButton(onClick={vm.resumeTask(task.id)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("继续这项任务")}
-     if(task.status=="active"||task.rawStatus in setOf("proposed","approval_required"))TextButton(onClick={vm.taskCommand(task.id,"",true)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("请求停止")}
+     if(task.status=="active"||task.rawStatus in setOf("waiting","proposed","approval_required"))TextButton(onClick={vm.taskCommand(task.id,"",true)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("请求停止")}
      // 2. 结果与产物
      if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink)}
      // 3. 步骤：默认只展示最近几步，其余折叠
@@ -247,7 +263,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
       }
      }
      // 4. 补充要求：沿当前任务的持久输入队列
-     if(task.status=="active"||task.rawStatus in setOf("proposed","approval_required")){
+     if(task.status=="active"||task.rawStatus in setOf("waiting","proposed","approval_required")){
       OutlinedTextField(value=instruction,onValueChange={instruction=it},label={Text("补充要求")},modifier=Modifier.fillMaxWidth().padding(top=6.dp))
       TextButton(onClick={vm.taskCommand(task.id,instruction)},enabled=instruction.isNotBlank()&&vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("发送补充要求")}
      }
