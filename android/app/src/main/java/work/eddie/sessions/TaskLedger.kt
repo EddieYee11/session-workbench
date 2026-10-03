@@ -27,7 +27,7 @@ import org.json.JSONObject
 
 /** Durable task IDs define identity; source messages only provide parent linkage. */
 
-data class LedgerEvent(val label:String,val at:Double)
+data class LedgerEvent(val label:String,val at:Double,val detail:String="")
 data class LedgerTask(
  val id:String,
  val title:String,
@@ -50,7 +50,7 @@ data class LedgerTask(
  val rawStatus:String="",val completionCondition:String="",val stage:String="",val latestStep:String="",
  val blockReason:String="",
  val sourceSessionId:String="",val sourceMessageId:String="",
- val kind:String="job",val progress:List<String> = emptyList(),
+ val kind:String="job",val progress:List<String> = emptyList(),val artifacts:List<JSONObject> = emptyList(),
 )
 
 
@@ -133,7 +133,7 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
   agent=t.optString("agent").uppercase().ifBlank{"工作器未知"},
   status=state.first,statusText=state.second,updatedAt=at,messageId=parent.ifBlank{null},
   sessionId=t.optString("session_id").ifBlank{t.optString("work_session_id")},
-  events=t.array("events").map{e->LedgerEvent(listOf(ledgerEventLabel(e.optString("kind")),ledgerEventText(e)).filter{it.isNotBlank()}.joinToString(" · "),e.optDouble("at"))},
+  events=humanSteps(t.array("events")),
   result=t.optString("result"),goal=goal,directory=t.optString("cwd"),
   constraints=(t.optJSONArray("constraints")?:org.json.JSONArray()).let{a->(0 until a.length()).map{a.optString(it)}},
   inputs=t.array("inputs"),source=source?.optString("text").orEmpty().ifBlank{t.optJSONObject("authorization")?.optString("source_quote").orEmpty()},
@@ -142,7 +142,7 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
   stage=t.optString("stage"),latestStep=t.optString("latest_step"),
   blockReason=t.optString("block_reason").takeUnless{it=="null"}.orEmpty().trim(),
   sourceSessionId=t.optString("source_session_id").takeUnless{it=="null"}.orEmpty().ifBlank{if(source!=null)"personal-main"else""},
-  sourceMessageId=t.optString("source_message_id").takeUnless{it=="null"}.orEmpty().ifBlank{if(source!=null)parent else""},kind=ledgerKind(t),progress=ledgerProgress(t))
+  sourceMessageId=t.optString("source_message_id").takeUnless{it=="null"}.orEmpty().ifBlank{if(source!=null)parent else""},kind=ledgerKind(t),progress=ledgerProgress(t),artifacts=ledgerArtifacts(t))
 }.sortedWith(compareBy({it.status!="active"},{-it.updatedAt}))
 
 /** Only accepted results are completed. Finished executions have their own review group. */
@@ -245,6 +245,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
      if(task.status=="active"||task.rawStatus in setOf("waiting","proposed","approval_required"))TextButton(onClick={vm.taskCommand(task.id,"",true)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("请求停止")}
      // 2. 结果与产物
      if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink)}
+     ArtifactCards(task.artifacts)
      // 3. 步骤：默认只展示最近几步，其余折叠
      if(task.events.isNotEmpty()){
       val recent=task.events.takeLast(3)
@@ -257,6 +258,9 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
         Box(Modifier.size(5.dp).background(Line,CircleShape))
         Column(Modifier.padding(start=8.dp)){
          Text(ev.label,fontSize=Type.Caption,color=Ink)
+         var raw by remember(ev){mutableStateOf(false)}
+         if(ev.detail.isNotBlank())TextButton(onClick={raw=!raw}){Text(if(raw)"收起原始记录"else"查看原始记录",fontSize=Type.Micro)}
+         if(raw)SelectionContainer{Text(ev.detail,fontSize=Type.Micro,color=Muted)}
          if(ev.at>0)Text(relTime(ev.at),fontSize=Type.Micro,color=Faint)
         }
        }
