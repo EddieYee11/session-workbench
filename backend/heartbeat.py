@@ -57,14 +57,18 @@ class Heartbeat:
         finally:
             if proc.returncode is None:proc.kill();await proc.wait()
     def digest(self,tasks):
-        recent=self.recent(6)
+        recent=self.recent(4)
         try:checklist=self.checklist.read_text()[:500]
         except OSError:checklist='清单未找到，保持安静'
-        value={'tasks':[{'title':t['title'][:40],'status':t['status'],'reason':t.get('block_reason','')[:100]} for t in tasks[-8:]],
-               'recent':[{'action':r['decision']['action'],'reason':r['decision']['reason']} for r in recent], 'checklist':checklist}
+        priority={'running':0,'waiting':0,'queued':0,'dispatching':0,'unknown':1,'approval_required':1}
+        selected=sorted(tasks,key=lambda t:priority.get(t['status'],2))[:8]
+        value={'tasks':[{'title':t['title'][:40],'status':t['status'],'reason':t.get('block_reason','')[:80]} for t in selected],
+               'proposals':[{'title':r['title'][:40],'reason':r.get('reason','')[:60]} for r in self.proposals.list() if r['status']=='proposed'][:4],
+               'recent':[{'action':r['decision']['action'],'reason':r['decision']['reason'][:60]} for r in recent], 'checklist':checklist}
         text=json.dumps(value,ensure_ascii=False)
         # UTF-8 bytes conservatively bound input tokens; reserve schema/system and output512.
-        while len(text.encode())>2600 and value['tasks']:value['tasks'].pop(0);text=json.dumps(value,ensure_ascii=False)
+        for key in ('tasks','proposals','recent'):
+            while len(text.encode())>2600 and value[key]:value[key].pop();text=json.dumps(value,ensure_ascii=False)
         if len(text.encode())>2600:raise ValueError('input budget exceeded')
         return text
     async def tick(self,reason='timer',force=False):

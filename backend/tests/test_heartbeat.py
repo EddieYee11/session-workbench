@@ -64,3 +64,9 @@ def test_pause_during_model_discards_decision(tmp_path):
 def test_restart_respects_persisted_interval(tmp_path):
  hb,now=engine(tmp_path);asyncio.run(hb.tick())
  restored,_=engine(tmp_path);assert asyncio.run(restored.tick())['skipped']=='interval'
+
+
+def test_large_recent_history_still_has_bounded_digest(tmp_path):
+ hb,_=engine(tmp_path)
+ for i in range(6):hb.log({'decision':{'action':'note','reason':'中'*300}})
+ assert len(hb.digest([]).encode())<=2600
