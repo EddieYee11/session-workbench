@@ -200,14 +200,14 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
     if(filtered&&taskId.isBlank())Text("查看任务 ›",Modifier.padding(top=6.dp,start=14.dp),fontSize=Type.Caption,color=Muted)
     if(expanded==task.id){
      var executionDetails by rememberSaveable(task.id){mutableStateOf(false)}
+     var timeline by rememberSaveable(task.id){mutableStateOf(false)}
      if(!vm.taskLedgerFresh)Text("离线缓存，同步后才能操作",fontSize=Type.Caption,color=AmberText)
+     // 现在到哪一步：进度在上，来源与细节折叠到下面
      Text("${task.scope} · ${task.directory.substringAfterLast('/').ifBlank{"目录待核对"}}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
      if(task.goal.isNotBlank())Text(task.goal,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink,maxLines=3,overflow=TextOverflow.Ellipsis)
-     if(task.completionCondition.isNotBlank())Text("完成条件：${task.completionCondition}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
-     if(task.stage.isNotBlank())Text("当前阶段：${task.stage}",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=Muted)
-     if(task.latestStep.isNotBlank())Text("最近一步：${task.latestStep}",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=Muted)
-     if(task.source.isNotBlank())Text("交办原文：${task.source}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted,maxLines=3,overflow=TextOverflow.Ellipsis)
-     task.constraints.forEach{Text("约束 · $it",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=Ink)}
+     if(task.stage.isNotBlank())Text(task.stage,Modifier.padding(top=8.dp),fontSize=Type.BodySm,fontWeight=FontWeight.Medium,color=Ink)
+     if(task.latestStep.isNotBlank())Text("最近一步：${task.latestStep}",Modifier.padding(top=5.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)
+     if(task.completionCondition.isNotBlank())Text("完成条件：${task.completionCondition}",Modifier.padding(top=5.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)
      if(vm.taskControlTarget==task.id&&vm.taskControlNote.isNotBlank())Text(vm.taskControlNote,Modifier.padding(top=10.dp),fontSize=Type.Caption,color=Muted)
      if(task.rawStatus in setOf("proposed","approval_required")){
       val proposal=vm.workProposals.array("items").firstOrNull{it.optString("id")==task.id}
@@ -234,6 +234,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
        TextButton(onClick={vm.taskCommand(task.id,"",true)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("请求停止")}
       }
      }
+     if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink)}
      if(task.sessionId.isNotBlank()){
       TextButton(onClick={vm.openId(task.sessionId);vm.externalWorkRoute++},contentPadding=PaddingValues(top=8.dp)){Text("进入执行会话",fontSize=Type.Caption)}
      }
@@ -241,28 +242,34 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
       if(task.sourceSessionId=="personal-main")vm.returnToHermes(task.sourceMessageId)
       else {vm.openId(task.sourceSessionId);vm.queryInSession="";vm.targetMessage=task.sourceMessageId;vm.externalWorkRoute++}
      },modifier=Modifier.testTag("task-source-${task.id}"),contentPadding=PaddingValues(top=8.dp)){Text("回到交办消息",fontSize=Type.Caption)}
-     if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=Type.Caption,color=Ink)}
-     task.inputs.forEach{input->
-      Text(ledgerDeliveryLabel(input.optString("state"))+" · "+input.optString("text"),Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
-      if(input.optString("error").isNotBlank())Text(input.optString("error"),fontSize=Type.Caption,color=AmberText)
-     }
-     task.events.forEach{ev->
-      Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically){
-       Box(Modifier.size(5.dp).background(Line,CircleShape))
-       Column(Modifier.padding(start=8.dp)){
-        Text(ev.label,fontSize=Type.Caption,color=Ink)
-        if(ev.at>0)Text(relTime(ev.at),fontSize=Type.Micro,color=Faint)
-       }
-      }
-     }
-     if(task.executionInstructions.isNotBlank()||task.directory.isNotBlank()){
+     if(task.source.isNotBlank()||task.constraints.isNotEmpty()||task.executionInstructions.isNotBlank()){
       TextButton(onClick={executionDetails=!executionDetails},contentPadding=PaddingValues(top=8.dp)){
-       Text(if(executionDetails)"收起执行详情"else"执行详情",fontSize=Type.Caption,color=Muted)
+       Text(if(executionDetails)"收起来源与约束"else"来源与约束",fontSize=Type.Caption,color=Muted)
       }
       if(executionDetails){
-       if(task.directory.isNotBlank())Text("${task.scope} · ${task.directory}",Modifier.padding(top=4.dp),fontSize=Type.Caption,color=Muted)
-       if(task.source.isNotBlank())SelectionContainer{Text("交办原文：${task.source}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)}
+       if(task.source.isNotBlank())SelectionContainer{Text("交办原文：${task.source}",Modifier.padding(top=4.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)}
+       task.constraints.forEach{Text("约束 · $it",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=Ink)}
        if(task.executionInstructions.isNotBlank())SelectionContainer{Text(task.executionInstructions,Modifier.padding(top=8.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)}
+      }
+     }
+     if(task.events.isNotEmpty()||task.inputs.isNotEmpty()){
+      TextButton(onClick={timeline=!timeline},contentPadding=PaddingValues(top=8.dp)){
+       Text(if(timeline)"收起时间线"else "时间线 · ${task.events.size} 步",fontSize=Type.Caption,color=Muted)
+      }
+      if(timeline){
+       task.inputs.forEach{input->
+        Text(ledgerDeliveryLabel(input.optString("state"))+" · "+input.optString("text"),Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
+        if(input.optString("error").isNotBlank())Text(input.optString("error"),fontSize=Type.Caption,color=AmberText)
+       }
+       task.events.forEach{ev->
+        Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically){
+         Box(Modifier.size(5.dp).background(Line,CircleShape))
+         Column(Modifier.padding(start=8.dp)){
+          Text(ev.label,fontSize=Type.Caption,color=Ink)
+          if(ev.at>0)Text(relTime(ev.at),fontSize=Type.Micro,color=Faint)
+         }
+        }
+       }
       }
      }
     }
