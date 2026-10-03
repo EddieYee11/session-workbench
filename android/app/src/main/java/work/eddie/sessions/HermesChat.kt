@@ -183,8 +183,9 @@ private fun hermesToolLabel(name:String):String=when{
      MessageSendRow(motion,messageMotionId(message),Modifier.widthIn(max=790.dp).fillMaxWidth(),trailingSpacing=22.dp){Column{
       MessageSwipeActions(message,enabled=!message.optBoolean("local"),onReply={vm.hermesReference=messageReference(it,"reply","Pi","personal-main")},onForward={vm.hermesReference=messageReference(it,"forward","Pi","personal-main")}){HermesMessage(message,motion,vm.font)}
       if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){
-       // 进行中的消息走工作过程卡（任务清单+实时动态），失败/待核实等终态继续走原来的进度卡。
-       if(message.optString("status") in setOf("queued","sending","running"))AgentWorkCard(message,vm.hermesFresh)
+       // 任务终态且后端下发了总结 → 详细总结预览卡；进行中走工作过程卡；其余终态走原来的进度卡。
+       if(taskSummary(message)!=null)TaskSummaryCard(message)
+       else if(message.optString("status") in setOf("queued","sending","running"))AgentWorkCard(message,vm.hermesFresh)
        else HermesProgressCard(message,vm.hermesFresh)
       }
      }}
