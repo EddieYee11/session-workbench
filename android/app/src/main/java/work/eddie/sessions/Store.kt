@@ -238,6 +238,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var taskDetailId by mutableStateOf("")
  var taskReturnMessageId by mutableStateOf("")
  var taskReturnPage by mutableStateOf("hermes")
+ /** 二级页（日历／账本／通知巡检／任务台账）的真实入口，由一级页离开时记录。 */
+ var secondaryReturnPage by mutableStateOf("hermes")
  var taskFilter by mutableStateOf("all")
  var hermesTargetMessageId by mutableStateOf("")
  private val hermesVoiceDir=File(app.filesDir,"hermes-voice").apply{mkdirs()}

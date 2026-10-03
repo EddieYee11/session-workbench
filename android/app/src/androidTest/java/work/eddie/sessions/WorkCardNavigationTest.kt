@@ -38,7 +38,7 @@ class WorkCardNavigationTest {
    LaunchedEffect(vm.externalHermesRoute){if(vm.externalHermesRoute>0)page="hermes"}
    MaterialTheme(colorScheme=Palette){Box(Modifier.width(360.dp).height(700.dp).testTag("navigation-fixture")){
     if(page=="task")TaskActivityPage(vm){vm.returnToHermes()}
-    else HermesChat(vm,{},false,{page="task"})
+    else HermesChat(vm,{},{page="task"},{})
    }}
   }
   ui.onNodeWithTag("hermes-message-list").performScrollToNode(hasTestTag("agent-task-task-exact"))

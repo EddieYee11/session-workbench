@@ -83,7 +83,10 @@ fun relTime(ts:Double):String{
  var history by rememberSaveable{mutableStateOf(false)}
  var more by rememberSaveable{mutableStateOf(false)}
  var permissions by rememberSaveable{mutableStateOf(false)}
- val navigate:(String)->Unit={target->sendMotion.cancel();page=target;more=false;history=false}
+ val rootPages=listOf("hermes","sources","work")
+ val navigate:(String)->Unit={target->sendMotion.cancel();if(page in rootPages)vm.secondaryReturnPage=page;page=target;more=false;history=false}
+ /** 二级页返回到进入它的那一级页，而不是固定回对话。 */
+ val goBack:()->Unit={navigate(if(vm.secondaryReturnPage in rootPages)vm.secondaryReturnPage else "hermes")}
  LaunchedEffect(quick){if(quick.isNotBlank()){selectedAgent=if(quick=="pi")"claude"else quick;page=if(quick=="pi")"hermes"else"work";clearQuick()}}
  LaunchedEffect(workLaunch){if(workLaunch>0)page="work"}
  LaunchedEffect(vm.externalWorkRoute){if(vm.externalWorkRoute>0)page="work"}
@@ -110,13 +113,13 @@ fun relTime(ts:Double):String{
    val previous=vm.taskReturnPage
    vm.taskDetailId="";vm.taskReturnMessageId=""
    navigate(previous)
-  }else navigate("hermes")
+   }else goBack()
  }
  val newChat:()->Unit={sendMotion.cancel();vm.close();vm.q="";vm.queryInSession="";history=false}
  val pick:(JSONObject)->Unit={sendMotion.cancel();vm.open(it);history=false}
  BackHandler(page!="hermes"||page=="work"&&vm.selected.isNotBlank()){
   sendMotion.cancel()
-  if(page=="work"&&vm.selected.isNotBlank())vm.close()else if(page=="activity")taskBack()else if(page in listOf("calendar","finance"))navigate("sources")else navigate("hermes")
+  if(page=="work"&&vm.selected.isNotBlank())vm.close()else if(page=="activity")taskBack()else if(page in rootPages)navigate("hermes")else goBack()
  }
  CompositionLocalProvider(LocalMessageSendMotion provides sendMotion){
  Surface(Modifier.fillMaxSize(),color=Paper){Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().testTag("workbench-inset-root")){
@@ -128,20 +131,21 @@ fun relTime(ts:Double):String{
        ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(23.dp))
        Text("工作 · Claude / Codex",Modifier.weight(1f).padding(start=10.dp),fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Ink)
        IconButton(onClick={sendMotion.cancel();history=true}){Icon(Icons.Outlined.History,"工作会话历史",tint=Muted)}
+       IconButton(onClick={sendMotion.cancel();more=true}){ComIcon(R.drawable.com_icon_menu_v1,"更多",Modifier.size(24.dp))}
       }
       Box(Modifier.weight(1f)){
        ConversationScene(vm,selectedAgent,{selectedAgent=it;vm.store.prefs.edit().putString("lastAgent",it).apply()},{sendMotion.cancel();history=true},{sendMotion.cancel();advanced=true},pick,newChat)
       }
      }
-     "calendar"->PhoneCalendarPage{navigate("sources")}
-     "finance"->PersonalDetailPage(vm,page){navigate("sources")}
-     "sources"->PersonalSourcesPage(vm,{id,message->vm.openTaskDetail(id,message)},{filter->vm.openTaskList(filter)},{target->navigate(target)},{navigate("signals")})
+     "calendar"->PhoneCalendarPage{goBack()}
+     "finance"->PersonalDetailPage(vm,page){goBack()}
+     "sources"->PersonalSourcesPage(vm,{id,message->vm.openTaskDetail(id,message)},{filter->vm.openTaskList(filter)},{target->navigate(target)},{navigate("signals")},{sendMotion.cancel();more=true})
      "activity"->TaskActivityPage(vm,taskBack)
-     "signals"->SignalActivityPage(vm){navigate("sources")}
-     else->HermesChat(vm,{sendMotion.cancel();more=true},true,openActivity)
+     "signals"->SignalActivityPage(vm){goBack()}
+     else->HermesChat(vm,{sendMotion.cancel();more=true},openActivity,{navigate("calendar")})
     }
    }
-   ImeAwareBottomNavigation{enabled->ComBottomNavigation(page,navigate,openActivity,{sendMotion.cancel();more=true},enabled)}
+   ImeAwareBottomNavigation{enabled->ComBottomNavigation(page,navigate,enabled)}
   }
   if(vm.busy)LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).align(Alignment.TopCenter),color=Ink,trackColor=Color.Transparent)
   MessageSendMotionOverlay(sendMotion,Modifier.matchParentSize())
@@ -222,19 +226,19 @@ private data class MessageViewportPosition(val width:Int,val height:Int,val firs
  }
 }
 
-@Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,activity:()->Unit,more:()->Unit,enabled:Boolean=true){
+@Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,enabled:Boolean=true){
  BoxWithConstraints(Modifier.fillMaxWidth().padding(top=10.dp,bottom=10.dp),contentAlignment=Alignment.Center){
  val roomy=maxWidth>=360.dp&&LocalDensity.current.fontScale<=1.3f
  val itemHeight=maxOf(48f,24f+22f*LocalDensity.current.fontScale).dp
- val labelWidth=(maxWidth-278.dp).coerceAtLeast(26.dp)
+ val labelWidth=(maxWidth-130.dp).coerceAtLeast(26.dp)
  Surface(shape=RoundedCornerShape(50),color=Card,border=BorderStroke(1.dp,Color(0xFFE5E8EC)),shadowElevation=8.dp){
   Row(Modifier.padding(horizontal=8.dp,vertical=6.dp),horizontalArrangement=Arrangement.spacedBy(2.dp),verticalAlignment=Alignment.CenterVertically){
-   listOf("hermes" to "对话","sources" to "今天","activity" to "任务","work" to "工作","settings" to "更多").forEach{(target,label)->
-    val selected=page==target||target=="sources"&&page in listOf("calendar","finance")||target=="settings"&&page=="signals"
+   listOf("hermes" to "对话","sources" to "今天","work" to "工作").forEach{(target,label)->
+    val selected=page==target||target=="sources"&&page in listOf("calendar","finance","signals")
     val background by animateColorAsState(if(selected)Color(0xFF252A31) else Color.Transparent,tween(180),label="导航选中")
     val foreground=if(selected)Color.White else Color(0xFF68727D)
     Row(Modifier.widthIn(min=48.dp).height(itemHeight).clip(RoundedCornerShape(50)).background(background)
-     .testTag("nav-$target").selectable(selected=selected,enabled=enabled,role=androidx.compose.ui.semantics.Role.Tab,onClick={when(target){"activity"->activity();"settings"->more();else->navigate(target)}})
+     .testTag("nav-$target").selectable(selected=selected,enabled=enabled,role=androidx.compose.ui.semantics.Role.Tab,onClick={navigate(target)})
      .padding(horizontal=if(roomy)15.dp else 12.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){
      ComPrimaryIcon(target,label,20.dp,foreground)
      if(roomy)AnimatedVisibility(selected,enter=expandHorizontally(tween(180))+fadeIn(tween(120)),exit=shrinkHorizontally(tween(140))+fadeOut(tween(100))){

@@ -47,7 +47,7 @@ class HermesExperienceTest {
                     .put("text", "这一刻值得记住。慢慢来，我一直在。\n\n左右气泡使用不同的颜色，顶部也给阅读留出更多空间。")
                     .put("status", "completed")))
         }
-        ui.setContent { MaterialTheme(colorScheme = Palette) { HermesChat(vm, {}, false, {}) } }
+        ui.setContent { MaterialTheme(colorScheme = Palette) { HermesChat(vm, {}, {}, {}) } }
         ui.onNodeWithContentDescription("Pi 对这条消息的表情：🎉").assertIsDisplayed()
         ui.onNodeWithTag("hermes-user-bubble").assertIsDisplayed()
         ui.onNodeWithTag("hermes-assistant-bubble").assertIsDisplayed()

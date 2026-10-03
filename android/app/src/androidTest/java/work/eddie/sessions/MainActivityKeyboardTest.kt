@@ -140,7 +140,7 @@ class MainActivityKeyboardTest {
         assertEquals(beforeTop, node(headerTag).boundsInWindow.top, 2f)
         assertTrue("Composer stays above the real keyboard", node(composerTag).boundsInWindow.bottom <= decor.height - keyboard + 2)
         assertTrue("Message viewport shrinks with the keyboard", node(viewportTag).boundsInWindow.height < beforeHeight)
-        ui.onAllNodesWithContentDescription("更多").assertCountEquals(0)
+        ui.onAllNodesWithContentDescription("工作").assertCountEquals(0)
         val samples = synchronized(checkNotNull(recorder).frames) { checkNotNull(recorder).frames.toList() }
         assertTrue("Record actual native inset/layout frames", samples.isNotEmpty())
         samples.forEach { frame ->
@@ -156,7 +156,7 @@ class MainActivityKeyboardTest {
         ui.onNodeWithTag(composerTag).assertTextContains("保留草稿 $label").assertIsFocused()
         assertEquals(beforeBottom, node(composerTag).boundsInWindow.bottom, 2f)
         assertEquals(beforeHeight, node(viewportTag).boundsInWindow.height, 2f)
-        ui.onNodeWithContentDescription("更多").assertIsDisplayed()
+        ui.onNodeWithContentDescription("工作").assertIsDisplayed()
         capture("$label-restored")
     }
 

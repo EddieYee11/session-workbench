@@ -45,11 +45,9 @@ internal fun todayDecisionItems(vm:WorkbenchModel):List<TodayItem>{
  val messages=vm.hermes.array("messages")
  val ledgerTasks=buildLedgerTasks(ledgerTaskRecords(vm,messages),messages)
  val linkedParents=ledgerTasks.mapNotNull{it.messageId}.toSet()
- val signals=vm.signals.array("items")
  val needsReview=runs.filter{it.optString("status") in setOf("waiting","approval_required","unknown","failed")&&it.optString("message_id").isNotBlank()&&it.optString("message_id") !in linkedParents}
  val runParents=needsReview.map{it.optString("message_id")}.toSet()
  val failedMessages=messages.filter{it.optString("role")=="user"&&it.optString("status")=="failed"&&it.optString("id") !in linkedParents&&it.optString("id") !in runParents}
- val important=signals.filter{it.optString("status")=="reviewed"&&it.optString("priority")=="important"}
  val items=mutableListOf<TodayItem>()
  ledgerTasks.filter{ledgerGroup(it) in setOf("decision","verify")}.forEach{task->
   val kind=when{task.rawStatus in setOf("proposed","approval_required")->"approval";ledgerGroup(task)=="verify"->"verify";task.rawStatus=="failed"->"failed";else->"attention"}
@@ -57,15 +55,38 @@ internal fun todayDecisionItems(vm:WorkbenchModel):List<TodayItem>{
  }
  needsReview.forEach{items+=TodayItem("attention","Pi · ${hermesMessageStatus(it.optString("status"))}",todayRunTitle(it,messages),messageId=it.optString("message_id"))}
  failedMessages.forEach{items+=TodayItem("failed","Pi · 处理失败",it.optString("text").take(100),messageId=it.optString("id"))}
- important.forEach{items+=TodayItem("info","巡检结果 · 仅供查看",it.optString("summary").ifBlank{"通知分析结果已准备好"},signals=true)}
  return items.sortedBy{listOf("approval","attention","failed","verify","info").indexOf(it.kind)}
+}
+
+/** 仅供知情：不占决策卡展示位，也不计入「待你决定」数量。 */
+internal fun todayAwarenessItems(vm:WorkbenchModel):List<TodayItem>{
+ return vm.signals.array("items").filter{it.optString("status")=="reviewed"&&it.optString("priority")=="important"}
+  .map{TodayItem("info","巡检结果",it.optString("summary").ifBlank{"通知分析结果已准备好"},signals=true)}
+}
+
+/** 知情区：只在真有内容时出现。 */
+@Composable fun TodayAwarenessCard(vm:WorkbenchModel,openSignals:()->Unit){
+ val items=todayAwarenessItems(vm)
+ if(items.isEmpty())return
+ Surface(Modifier.fillMaxWidth(),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
+  Column(Modifier.padding(horizontal=18.dp,vertical=14.dp)){
+   Row(verticalAlignment=Alignment.CenterVertically){
+    Text("仅供知情",Modifier.weight(1f),fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Muted)
+    TextButton(onClick=openSignals){Text("通知巡检",fontSize=Type.Caption)}
+   }
+   items.take(3).forEachIndexed{index,item->
+    if(index>0)HorizontalDivider(Modifier.padding(vertical=2.dp),color=Line)
+    TodayActionRow(item,openSignals)
+   }
+  }
+ }
 }
 
 internal fun todayOngoingTasks(vm:WorkbenchModel):List<LedgerTask> =
  buildLedgerTasks(ledgerTaskRecords(vm,vm.hermes.array("messages")),vm.hermes.array("messages")).filter{ledgerGroup(it)=="active"}
 
-/** 主页主卡：默认展开、字号最大；每一条都能落到它自己的位置。 */
-@Composable fun TodayDecisionCard(vm:WorkbenchModel,openTask:(String,String)->Unit,openAll:()->Unit,openSignals:()->Unit){
+/** 主页主卡：只收需要用户决定的事项；知情项在单独的知情区。 */
+@Composable fun TodayDecisionCard(vm:WorkbenchModel,openTask:(String,String)->Unit,openAll:()->Unit){
  val items=todayDecisionItems(vm)
  val fresh=vm.workProposalsFresh&&vm.hermesFresh&&vm.signalsFresh&&vm.taskLedgerFresh
  Surface(Modifier.fillMaxWidth(),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
@@ -73,7 +94,7 @@ internal fun todayOngoingTasks(vm:WorkbenchModel):List<LedgerTask> =
    Row(verticalAlignment=Alignment.CenterVertically){
     Text("待我处理",fontSize=20.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     if(items.isNotEmpty())Box(Modifier.padding(start=8.dp).background(ChipBg,Radii.Pill).padding(horizontal=9.dp,vertical=2.dp)){
-     Text("${items.count{!it.signals}}",fontSize=Type.Caption,fontWeight=FontWeight.SemiBold,color=Ink)
+     Text("${items.size}",fontSize=Type.Caption,fontWeight=FontWeight.SemiBold,color=Ink)
     }
     Spacer(Modifier.weight(1f))
     TextButton(onClick=openAll){Text("全部任务",fontSize=Type.Caption)}
@@ -83,7 +104,6 @@ internal fun todayOngoingTasks(vm:WorkbenchModel):List<LedgerTask> =
    items.take(3).forEachIndexed{index,item->
     if(index>0)HorizontalDivider(Modifier.padding(vertical=2.dp),color=Line)
     TodayActionRow(item){when{
-     item.signals->openSignals()
      item.taskId.isNotBlank()->openTask(item.taskId,item.messageId)
      item.messageId.isNotBlank()->vm.returnToHermes(item.messageId)
      else->openAll()
@@ -106,19 +126,21 @@ internal fun todayOngoingTasks(vm:WorkbenchModel):List<LedgerTask> =
  }
 }
 
-/** 在途工作降为一行摘要；完整台账只在「任务」页。 */
-@Composable fun TodayWorkLine(vm:WorkbenchModel,openTasks:()->Unit){
+/** 在途工作降为一行摘要；完整台账只在任务页（二级页）。 */
+@Composable fun TodayWorkLine(vm:WorkbenchModel,openActive:()->Unit,openAll:()->Unit){
  val tasks=todayOngoingTasks(vm)
- Surface(onClick=openTasks,modifier=Modifier.fillMaxWidth().testTag("today-ongoing"),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
+ val total=buildLedgerTasks(ledgerTaskRecords(vm,vm.hermes.array("messages")),vm.hermes.array("messages")).size
+ Surface(onClick=openActive,modifier=Modifier.fillMaxWidth().testTag("today-ongoing"),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
   Row(Modifier.padding(horizontal=18.dp,vertical=16.dp),verticalAlignment=Alignment.CenterVertically){
    ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(22.dp))
    Column(Modifier.weight(1f).padding(start=10.dp)){
-    Text("在途工作 · ${tasks.size}",fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Ink)
+    Text("进行中 ${tasks.size} 项",fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Ink)
     Text(
      if(tasks.isEmpty())if(vm.taskLedgerFresh)"当前没有在途工作" else "正在同步任务"
      else tasks.joinToString(" / "){it.title}.take(64),
      Modifier.padding(top=2.dp),fontSize=Type.Caption,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
    }
+   Text("全部 $total",Modifier.testTag("today-all-work").clip(RoundedCornerShape(Radii.M)).clickable(onClick=openAll).padding(horizontal=6.dp,vertical=4.dp),fontSize=Type.Caption,color=Muted)
    ComIcon(R.drawable.com_icon_chevron_v1,"查看任务进度",Modifier.size(20.dp))
   }
  }

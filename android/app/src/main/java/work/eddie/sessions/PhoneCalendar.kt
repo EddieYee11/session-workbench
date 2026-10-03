@@ -342,7 +342,7 @@ private val CalendarEmber=Color(0xFFB4552D)
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally){
   Column(Modifier.widthIn(max=820.dp).fillMaxWidth()){
    Row(Modifier.padding(bottom=16.dp),verticalAlignment=Alignment.CenterVertically){
-    IconButton(onClick=back){Icon(Icons.Outlined.ArrowBack,"返回今天",tint=CalendarInk)}
+    IconButton(onClick=back){Icon(Icons.Outlined.ArrowBack,"返回",tint=CalendarInk)}
     Text("手机日历",fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=CalendarInk)
    }
    PhoneCalendarCard()

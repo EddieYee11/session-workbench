@@ -49,7 +49,8 @@ class TodayTaskExperienceTest {
    vm=model
   }
   ui.setContent{MaterialTheme(colorScheme=Palette){Workbench(model,"",0,{})}}
-  ui.onNodeWithText("完成").performClick()
+  // A clean emulator opens the pairing sheet; dismiss it without changing credentials.
+  if(ui.onAllNodesWithText("完成").fetchSemanticsNodes().isNotEmpty())ui.onNodeWithText("完成").performClick()
   return model
  }
  @After fun restoreFixtureConfiguration(){vm?.let{model->ui.runOnUiThread{model.store.prefs.edit().putString("base",savedBase).apply();model.store.token=savedToken;model.active=false}}}
@@ -86,7 +87,7 @@ class TodayTaskExperienceTest {
   ui.onNodeWithTag("task-filter-done").performScrollTo().performClick()
   ui.onNodeWithTag("task-ledger-done-D").assertIsDisplayed()
   ui.onNodeWithTag("task-ledger-verify-C").assertDoesNotExist()
-  for(tab in listOf("hermes","sources","activity","work","settings"))ui.onNodeWithTag("nav-$tab").assertIsDisplayed()
+  for(tab in listOf("hermes","sources","work"))ui.onNodeWithTag("nav-$tab").assertIsDisplayed()
  }
  @Test fun pendingProposalAppearsOnceAndNotificationReviewHasSeparateRoute(){
   val model=fixture()
@@ -99,9 +100,9 @@ class TodayTaskExperienceTest {
   }
   ui.onNodeWithTag("today-item-signals").performScrollTo().performClick()
   ui.onNodeWithText("通知巡检",substring=false).assertIsDisplayed()
-  ui.onNodeWithContentDescription("返回今天").performClick()
+  ui.onNodeWithContentDescription("返回").performClick()
   ui.onNodeWithText("待我处理").assertIsDisplayed()
-  ui.onNodeWithTag("nav-activity").performClick()
+  ui.onNodeWithText("全部任务").performScrollTo().performClick()
   ui.onAllNodesWithTag("task-ledger-decision-A").assertCountEquals(1)
   ui.onNodeWithText("手机通知巡检").assertDoesNotExist()
  }

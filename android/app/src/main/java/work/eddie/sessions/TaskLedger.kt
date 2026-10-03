@@ -299,7 +299,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally){
   Column(Modifier.widthIn(max=820.dp).fillMaxWidth()){
    Row(verticalAlignment=Alignment.CenterVertically){
-    IconButton(onClick=back){Icon(Icons.Outlined.ArrowBack,"返回今天")}
+    IconButton(onClick=back){Icon(Icons.Outlined.ArrowBack,"返回")}
     Text("通知巡检",fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
    }
    SignalActivitySection(vm)

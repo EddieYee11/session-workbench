@@ -116,7 +116,7 @@ class WorkAuthorizationTest {
                 .put(JSONObject().put("id", "sample").put("role", "assistant")
                     .put("text", "这项操作需要你的授权，请核对下方卡片。").put("status", "completed")))
         }
-        ui.setContent { MaterialTheme(colorScheme = Palette) { HermesChat(vm, {}, false, {}) } }
+        ui.setContent { MaterialTheme(colorScheme = Palette) { HermesChat(vm, {}, {}, {}) } }
         ui.onNodeWithText("允许并启动").assertIsDisplayed().assertIsEnabled()
         ui.onNodeWithText("拒绝").assertIsDisplayed().assertIsEnabled()
         ui.runOnUiThread {

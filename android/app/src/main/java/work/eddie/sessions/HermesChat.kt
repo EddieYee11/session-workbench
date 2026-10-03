@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -136,7 +137,7 @@ private fun hermesToolLabel(name:String):String=when{
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun HermesChat(vm:WorkbenchModel,menu:()->Unit,showMenu:Boolean,openTasks:()->Unit){
+@Composable fun HermesChat(vm:WorkbenchModel,menu:()->Unit,openTasks:()->Unit,openCalendar:()->Unit){
  DisposableEffect(Unit){onDispose{vm.finishHermesVoice(false)}}
  val haptics=rememberComHaptics()
  var lastReactionSequence by remember{mutableIntStateOf(vm.hermesReactionSequence)}
@@ -243,10 +244,8 @@ private fun hermesToolLabel(name:String):String=when{
     .background(Brush.verticalGradient(0f to Paper,.86f to Paper,1f to Color.Transparent))
     .testTag("hermes-fading-header")){
     Row(Modifier.fillMaxWidth().height(headerHeight).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
-     if(showMenu)Surface(onClick=menu,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.8f)){
-      ComIcon(R.drawable.com_icon_menu_v1,"打开导航",Modifier.padding(11.dp))
-     }else Text("Com!",fontSize=17.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-     Column(Modifier.weight(1f).fillMaxHeight().clickable{openTasks()},horizontalAlignment=Alignment.CenterHorizontally){
+     Spacer(Modifier.size(44.dp))
+     Column(Modifier.weight(1f).fillMaxHeight(),horizontalAlignment=Alignment.CenterHorizontally){
       val visual=when{
        vm.hermesVoicePhase=="recording"->"listening"
        !vm.hermesFresh&&!vm.hermesLoading->"offline"
@@ -256,23 +255,28 @@ private fun hermesToolLabel(name:String):String=when{
        avatarActivity.kind=="unknown"->"error"
        else->"idle"
       }
-      HermesCompanion(visual,Modifier.size(64.dp).testTag("hermes-header-avatar"),compact=true,animationActive=vm.active&&vm.hermesVisible)
+      Box{
+       HermesCompanion(visual,Modifier.size(64.dp).testTag("hermes-header-avatar"),compact=true,animationActive=vm.active&&vm.hermesVisible)
+       if(needsAttention)Box(Modifier.align(Alignment.TopEnd).size(9.dp).background(Ember,CircleShape).border(2.dp,Paper,CircleShape))
+      }
       if(avatarPillText!="空闲")AvatarStatusPill(avatarPillText,Modifier.widthIn(min=96.dp,max=220.dp))
      }
-     Box{
-      Surface(onClick=openTasks,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.8f)){
-       ComIcon(R.drawable.com_icon_activity_v1,"查看 Pi 活动",Modifier.padding(11.dp))
-      }
-      if(needsAttention)Box(Modifier.align(Alignment.TopEnd).size(9.dp).background(Ember,CircleShape).border(2.dp,Paper,CircleShape))
+     Surface(onClick=menu,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.8f)){
+      ComIcon(R.drawable.com_icon_menu_v1,"更多",Modifier.padding(11.dp))
      }
     }
    }
   }
   vm.hermesReference?.let{MessageReferencePreview(it){vm.hermesReference=null}}
-  HermesComposer(vm,canSend,motion)
+  HermesComposer(vm,canSend,motion,openCalendar)
  }
  if(sharedMotion==null)MessageSendMotionOverlay(motion,Modifier.fillMaxSize())
  }
+}
+
+/** 高频动作直接放在输入区上方，不藏在「更多」里。 */
+@Composable private fun ComQuickEntry(label:String,onClick:()->Unit){
+ Surface(onClick=onClick,shape=Radii.Pill,color=ChipBg){Text(label,Modifier.padding(horizontal=12.dp,vertical=6.dp),fontSize=Type.Caption,color=Ink)}
 }
 
 @Composable private fun HermesMessage(message:JSONObject,motion:MessageSendMotionState,font:Float){
@@ -356,7 +360,7 @@ private fun hermesToolLabel(name:String):String=when{
  }
 }
 
-@Composable private fun HermesComposer(vm:WorkbenchModel,enabled:Boolean,motion:MessageSendMotionState){
+@Composable private fun HermesComposer(vm:WorkbenchModel,enabled:Boolean,motion:MessageSendMotionState,openCalendar:()->Unit){
  val style=TextStyle(fontSize=Type.Body,lineHeight=22.sp,color=Ink)
  val send:()->Unit={if(enabled&&vm.hermesDraft.isNotBlank()){val rid=UUID.randomUUID().toString();motion.begin(rid,vm.hermesDraft.trim());if(vm.sendHermes(rid)==null)motion.cancel()}}
  LaunchedEffect(vm.hermesVoiceAutoSend){
@@ -398,6 +402,10 @@ private fun hermesToolLabel(name:String):String=when{
   Text("保留了一段录音",Modifier.weight(1f),fontSize=Type.Caption,color=AmberText)
   TextButton(onClick={vm.transcribeHermesVoice()}){Text("重试转写",fontSize=Type.Caption)}
   TextButton(onClick={vm.discardHermesVoice()}){Text("删除",fontSize=Type.Caption)}
+ }
+ Row(Modifier.fillMaxWidth().padding(horizontal=20.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
+  ComQuickEntry("记一笔"){context.startActivity(Intent(context,ExpenseVoiceActivity::class.java))}
+  ComQuickEntry("今日日程",openCalendar)
  }
  Surface(Modifier.widthIn(max=810.dp).fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=RoundedCornerShape(32.dp),color=UserBubble){
   Row(Modifier.padding(horizontal=8.dp,vertical=5.dp),verticalAlignment=Alignment.Bottom){

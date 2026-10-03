@@ -107,7 +107,7 @@ private fun scopeText(calendar:JSONObject):String{
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally){
   Column(Modifier.widthIn(max=820.dp).fillMaxWidth()){
    Row(verticalAlignment=Alignment.CenterVertically){
-    IconButton(onClick=back){ComIcon(R.drawable.com_icon_back_v1,"返回 Pi",Modifier.size(24.dp))}
+    IconButton(onClick=back){ComIcon(R.drawable.com_icon_back_v1,"返回",Modifier.size(24.dp))}
     ComIcon(if(page=="calendar")R.drawable.com_icon_today_v1 else R.drawable.com_icon_finance_v1,null,Modifier.size(24.dp))
     Text(if(page=="calendar")"日历"else"账本",Modifier.weight(1f).padding(start=3.dp),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     IconButton(onClick={vm.refreshPersonalNow()},enabled=!vm.personalLoading&&vm.store.token.isNotEmpty()){ComIcon(R.drawable.com_icon_refresh_v1,"刷新来源",Modifier.size(24.dp),alpha=if(vm.personalLoading).5f else 1f)}
@@ -175,6 +175,7 @@ private fun todayDateLabel():String=runCatching{
  openTasks:(String)->Unit,
  openDetail:(String)->Unit,
  openSignals:()->Unit,
+ openMore:()->Unit,
 ){
  val overview=vm.personal
  val finance=overview.optJSONObject("finance")?:JSONObject()
@@ -184,16 +185,18 @@ private fun todayDateLabel():String=runCatching{
    Row(verticalAlignment=Alignment.CenterVertically){
     Text("今天${todayDateLabel().let{if(it.isBlank())"" else " · $it"}}",Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     IconButton(onClick={vm.refreshPersonalNow()},enabled=!vm.personalLoading&&vm.store.token.isNotEmpty()){ComIcon(R.drawable.com_icon_refresh_v1,"刷新来源",Modifier.size(24.dp),alpha=if(vm.personalLoading).5f else 1f)}
+    IconButton(onClick=openMore){ComIcon(R.drawable.com_icon_menu_v1,"更多",Modifier.size(24.dp))}
    }
    if(vm.personalError.isNotBlank()&&!vm.personalFresh)Text(vm.personalError,Modifier.padding(top=6.dp),fontSize=Type.Caption,color=AmberText)
    TodayStatusLine(vm)
-   TodayDecisionCard(vm,openTask,{openTasks("all")},openSignals)
+   TodayDecisionCard(vm,openTask){openTasks("decision")}
    Spacer(Modifier.height(14.dp))
    TodayTimelineCard{openDetail("calendar")}
    Spacer(Modifier.height(14.dp))
-   TodayWorkLine(vm){openTasks("active")}
+   TodayWorkLine(vm,{openTasks("active")},{openTasks("all")})
    Spacer(Modifier.height(14.dp))
    FinanceSummaryLine(finance,vm.personalFresh,hasSnapshot){openDetail("finance")}
+   TodayAwarenessCard(vm,openSignals)
   }
  }
 }

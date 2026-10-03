@@ -22,12 +22,16 @@ class ComNavigationTest {
   ui.runOnUiThread{
    vm=WorkbenchModel(app)
    vm.active=false
+   // Tests share app data; a leftover persisted draft would change what the composer contains.
+   vm.updateHermesDraft("")
+   vm.hermesOutbox=emptyList();vm.outgoingMessages.clear();vm.hermesSendNote="";vm.hermesError=""
    vm.hermes=JSONObject().put("conversation_id","ui-acceptance").put("messages",JSONArray()
     .put(JSONObject().put("id","sample-user").put("role","user").put("text","今天想把 Com! 整理得更轻盈一点。").put("status","completed"))
     .put(JSONObject().put("id","sample-agent").put("role","assistant").put("text","好，我们一起慢慢整理。\n\n今天、工作和活动都在下方，随时可以切换。").put("status","completed")))
   }
   ui.setContent{MaterialTheme(colorScheme=Palette){Workbench(vm,"",0){}}}
-  ui.onNodeWithText("完成").performClick()
+  // A clean emulator opens the pairing sheet; dismiss it without changing credentials.
+  if(ui.onAllNodesWithText("完成").fetchSemanticsNodes().isNotEmpty())ui.onNodeWithText("完成").performClick()
   ui.waitForIdle()
   return vm
  }
@@ -47,7 +51,7 @@ class ComNavigationTest {
  @Test fun destinationsStayBelowConversation(){
   open()
   val message=ui.onNodeWithText("今天想把 Com! 整理得更轻盈一点。").fetchSemanticsNode().boundsInRoot
-  val tabs=listOf("对话","今天","任务","工作","更多").map{
+  val tabs=listOf("对话","今天","工作").map{
    ui.onNodeWithContentDescription(it).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
   }
   check(tabs.all{it.top>message.bottom}){"Navigation must sit below conversation at every width"}
@@ -78,20 +82,24 @@ class ComNavigationTest {
  @Test fun keyboardKeepsComposerVisibleAndReturnsNavigationAfterDismissal(){
   open()
   ui.onNode(hasSetTextAction()).performClick().performTextInput("测试草稿")
-  ui.waitUntil(5_000){ui.onAllNodesWithContentDescription("更多").fetchSemanticsNodes().isEmpty()}
+  ui.waitUntil(5_000){ui.onAllNodesWithContentDescription("工作").fetchSemanticsNodes().isEmpty()}
   ui.onNodeWithText("测试草稿").assertIsDisplayed()
   capture("keyboard")
   ui.onNode(hasSetTextAction()).performTextClearance()
   InstrumentationRegistry.getInstrumentation().uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
-  ui.waitUntil(5_000){ui.onAllNodesWithContentDescription("更多").fetchSemanticsNodes().isNotEmpty()}
+  ui.waitUntil(5_000){ui.onAllNodesWithContentDescription("工作").fetchSemanticsNodes().isNotEmpty()}
  }
 
  @Test fun todayReadsPhoneCalendarWithoutPairing(){
   open()
   ui.onNodeWithContentDescription("今天").performClick()
-  ui.waitUntil(5000){ui.onAllNodesWithText("读取手机日历").fetchSemanticsNodes().isNotEmpty()}
-  ui.onNodeWithText("手机日历 · 本地读取").assertIsDisplayed()
+  ui.waitUntil(5000){ui.onAllNodesWithText("打开日历").fetchSemanticsNodes().isNotEmpty()}
+  ui.onNodeWithText("打开日历").assertIsDisplayed()
   capture("today")
+  ui.onNodeWithText("打开日历").performClick()
+  ui.onNodeWithText("手机日历 · 本地读取").assertIsDisplayed()
+  ui.onNodeWithContentDescription("返回").performClick()
+  ui.onNodeWithText("待我处理").assertIsDisplayed()
  }
 
  @Test fun backgroundTasksKeepIdentityAndCacheState(){
@@ -102,12 +110,14 @@ class ComNavigationTest {
     .put(JSONObject().put("id","task-B").put("title","排查下载问题").put("status","queued").put("agent","codex").put("message_id","same-parent")))
    vm.taskLedgerFresh=false
   }
-  ui.onNodeWithContentDescription("任务").performClick()
-  ui.onNodeWithText("检查会话列表").assertIsDisplayed().performClick()
+  ui.onNodeWithContentDescription("今天").performClick()
+  ui.onNodeWithTag("today-ongoing").performScrollTo().performClick()
+  ui.onNodeWithText("检查会话列表").assertIsDisplayed()
   ui.onNodeWithText("排查下载问题").assertIsDisplayed()
+  ui.onNodeWithText("检查会话列表").performClick()
+  ui.onNodeWithText("离线缓存，同步后才能操作").assertIsDisplayed()
   ui.onNodeWithText("补充要求").assertIsNotEnabled()
   ui.onNodeWithText("请求停止").assertIsNotEnabled()
-  ui.onNodeWithText("离线缓存，同步后才能操作").assertIsDisplayed()
   capture("tasks")
  }
 }
