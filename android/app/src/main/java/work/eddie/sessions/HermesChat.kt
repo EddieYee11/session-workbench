@@ -222,13 +222,15 @@ private fun hermesToolLabel(name:String):String=when{
     items(messages,key={messageMotionId(it).ifBlank{it.toString()}}){message->
      MessageSendRow(motion,messageMotionId(message),Modifier.widthIn(max=790.dp).fillMaxWidth(),trailingSpacing=22.dp){Column{
       MessageSwipeActions(message,enabled=!message.optBoolean("local"),onReply={vm.hermesReference=messageReference(it,"reply","Pi","personal-main")},onForward={vm.hermesReference=messageReference(it,"forward","Pi","personal-main")}){HermesMessage(message,motion,vm.font)}
-      if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){
+      if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){Column(Modifier.fillMaxWidth()){
        val openTask:(String)->Unit={id->vm.openTaskDetail(id,message.optString("id"))}
+       // 真正派发的后台任务在消息下直接露面；同轮工具步骤继续走工作过程卡。
+       MessageTaskCards(message,vm.taskLedgerFresh,openTask){filter->vm.openTaskList(filter)}
        // Task identity and execution evidence come from the server, including reconnect history.
        if(taskSummary(message)!=null)TaskSummaryCard(message,openTask)
        else if(agentWorkTasks(message).isNotEmpty()||agentWorkEvents(message).isNotEmpty()||message.optString("status") in setOf("queued","sending","running"))AgentWorkCard(message,vm.hermesFresh,openTask)
        else HermesProgressCard(message,vm.hermesFresh)
-      }
+      }}
      }}
     }
     item(key="tail"){

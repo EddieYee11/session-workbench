@@ -116,7 +116,7 @@ class ComNavigationTest {
   ui.onNodeWithText("排查下载问题").assertIsDisplayed()
   ui.onNodeWithText("检查会话列表").performClick()
   ui.onNodeWithText("离线缓存，同步后才能操作").assertIsDisplayed()
-  ui.onNodeWithText("补充要求").assertIsNotEnabled()
+  ui.onNodeWithText("发送补充要求").assertIsNotEnabled()
   ui.onNodeWithText("请求停止").assertIsNotEnabled()
   capture("tasks")
  }

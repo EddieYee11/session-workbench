@@ -224,17 +224,49 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
        TextButton(onClick={vm.refreshWorkProposalsNow()}){Text("刷新授权建议")}
       }
      }
-     if(task.sessionId.isNotBlank()&&task.status=="active")NativeTaskApprovals(vm,task.sessionId)
-     if(task.rawStatus=="paused")TextButton(onClick={vm.resumeTask(task.id)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("继续这项任务")}
      var instruction by remember(task.id){mutableStateOf("")}
-     if(task.status=="active"||task.rawStatus in setOf("proposed","approval_required")){
-      OutlinedTextField(value=instruction,onValueChange={instruction=it},label={Text("补充约束")},modifier=Modifier.fillMaxWidth())
-      Row{
-       TextButton(onClick={vm.taskCommand(task.id,instruction)},enabled=instruction.isNotBlank()&&vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("补充要求")}
-       TextButton(onClick={vm.taskCommand(task.id,"",true)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("请求停止")}
+     if(task.rawStatus=="paused")TextButton(onClick={vm.resumeTask(task.id)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("继续这项任务")}
+     if(task.status=="active"||task.rawStatus in setOf("proposed","approval_required"))TextButton(onClick={vm.taskCommand(task.id,"",true)},enabled=vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("请求停止")}
+     // 2. 结果与产物
+     if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink)}
+     // 3. 步骤：默认只展示最近几步，其余折叠
+     if(task.events.isNotEmpty()){
+      val recent=task.events.takeLast(3)
+      val rest=task.events.dropLast(3)
+      TextButton(onClick={timeline=!timeline},contentPadding=PaddingValues(top=8.dp)){
+       Text(if(timeline)"收起步骤"else if(rest.isEmpty())"步骤 · ${task.events.size} 步" else "步骤 · 最近 ${recent.size} 步（共 ${task.events.size}）",fontSize=Type.Caption,color=Muted)
+      }
+      (if(timeline)task.events else recent).forEach{ev->
+       Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically){
+        Box(Modifier.size(5.dp).background(Line,CircleShape))
+        Column(Modifier.padding(start=8.dp)){
+         Text(ev.label,fontSize=Type.Caption,color=Ink)
+         if(ev.at>0)Text(relTime(ev.at),fontSize=Type.Micro,color=Faint)
+        }
+       }
       }
      }
-     if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink)}
+     // 4. 补充要求：沿当前任务的持久输入队列
+     if(task.status=="active"||task.rawStatus in setOf("proposed","approval_required")){
+      OutlinedTextField(value=instruction,onValueChange={instruction=it},label={Text("补充要求")},modifier=Modifier.fillMaxWidth().padding(top=6.dp))
+      TextButton(onClick={vm.taskCommand(task.id,instruction)},enabled=instruction.isNotBlank()&&vm.taskLedgerFresh&&vm.taskControlBusy.isBlank()){Text("发送补充要求")}
+     }
+     // 5. 来源与历史：默认折叠
+     if(task.source.isNotBlank()||task.constraints.isNotEmpty()||task.executionInstructions.isNotBlank()||task.inputs.isNotEmpty()){
+      TextButton(onClick={executionDetails=!executionDetails},contentPadding=PaddingValues(top=8.dp)){
+       Text(if(executionDetails)"收起来源与历史"else"来源与历史",fontSize=Type.Caption,color=Muted)
+      }
+      if(executionDetails){
+       if(task.source.isNotBlank())SelectionContainer{Text("交办原文：${task.source}",Modifier.padding(top=4.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)}
+       task.constraints.forEach{Text("约束 · $it",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=Ink)}
+       task.inputs.forEach{input->
+        Text(ledgerDeliveryLabel(input.optString("state"))+" · "+input.optString("text"),Modifier.padding(top=6.dp),fontSize=Type.Caption,color=Muted)
+        if(input.optString("error").isNotBlank())Text(input.optString("error"),fontSize=Type.Caption,color=AmberText)
+       }
+       if(task.executionInstructions.isNotBlank())SelectionContainer{Text(task.executionInstructions,Modifier.padding(top=8.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)}
+      }
+     }
+     // 6. 去哪
      if(task.sessionId.isNotBlank()){
       TextButton(onClick={vm.openId(task.sessionId);vm.externalWorkRoute++},contentPadding=PaddingValues(top=8.dp)){Text("进入执行会话",fontSize=Type.Caption)}
      }
@@ -242,36 +274,6 @@ private val taskFilters=listOf("all" to "全部","decision" to "待你决定","a
       if(task.sourceSessionId=="personal-main")vm.returnToHermes(task.sourceMessageId)
       else {vm.openId(task.sourceSessionId);vm.queryInSession="";vm.targetMessage=task.sourceMessageId;vm.externalWorkRoute++}
      },modifier=Modifier.testTag("task-source-${task.id}"),contentPadding=PaddingValues(top=8.dp)){Text("回到交办消息",fontSize=Type.Caption)}
-     if(task.source.isNotBlank()||task.constraints.isNotEmpty()||task.executionInstructions.isNotBlank()){
-      TextButton(onClick={executionDetails=!executionDetails},contentPadding=PaddingValues(top=8.dp)){
-       Text(if(executionDetails)"收起来源与约束"else"来源与约束",fontSize=Type.Caption,color=Muted)
-      }
-      if(executionDetails){
-       if(task.source.isNotBlank())SelectionContainer{Text("交办原文：${task.source}",Modifier.padding(top=4.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)}
-       task.constraints.forEach{Text("约束 · $it",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=Ink)}
-       if(task.executionInstructions.isNotBlank())SelectionContainer{Text(task.executionInstructions,Modifier.padding(top=8.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)}
-      }
-     }
-     if(task.events.isNotEmpty()||task.inputs.isNotEmpty()){
-      TextButton(onClick={timeline=!timeline},contentPadding=PaddingValues(top=8.dp)){
-       Text(if(timeline)"收起时间线"else "时间线 · ${task.events.size} 步",fontSize=Type.Caption,color=Muted)
-      }
-      if(timeline){
-       task.inputs.forEach{input->
-        Text(ledgerDeliveryLabel(input.optString("state"))+" · "+input.optString("text"),Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
-        if(input.optString("error").isNotBlank())Text(input.optString("error"),fontSize=Type.Caption,color=AmberText)
-       }
-       task.events.forEach{ev->
-        Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically){
-         Box(Modifier.size(5.dp).background(Line,CircleShape))
-         Column(Modifier.padding(start=8.dp)){
-          Text(ev.label,fontSize=Type.Caption,color=Ink)
-          if(ev.at>0)Text(relTime(ev.at),fontSize=Type.Micro,color=Faint)
-         }
-        }
-       }
-      }
-     }
     }
    }
   }
