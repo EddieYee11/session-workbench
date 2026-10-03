@@ -70,3 +70,16 @@ def test_render_lists_pi_capabilities_and_hides_infrastructure(tmp_path, monkeyp
 def test_missing_settings_renders_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(capabilities, "PI_SETTINGS", tmp_path / "absent.json")
     assert capabilities.manifest() == [] and capabilities.render() == ""
+
+
+def test_search_is_read_only_and_missing_metadata_is_honest(tmp_path,monkeypatch):
+    import sqlite3
+    monkeypatch.setattr(capabilities,'PI_SETTINGS',tmp_path/'absent.json')
+    registry=capabilities.CapabilityRegistry(tmp_path,host='fixture')
+    before=registry.path.read_bytes()
+    found=registry.search('runtime:pi')
+    assert registry.path.read_bytes()==before
+    assert found[0]['state']=='discovered'
+    assert found[0]['last_verified_at'] is None
+    assert found[0]['description'] is None
+    assert found[0]['provider']=='pi'

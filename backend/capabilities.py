@@ -209,11 +209,11 @@ class CapabilityRegistry:
             items = [json.loads(row[0]) for row in db.execute('SELECT data FROM capabilities')]
         for executor in ('pi','claude','codex'):
             if not any(i['id']=='runtime:'+executor and i['runtime']==executor and i['host']==self.host for i in items):
-                items.append(self.observe('runtime:'+executor,runtime=executor,state='discovered'))
+                items.append(dict(id='runtime:'+executor,runtime=executor,host=self.host,project=project,state='discovered',config_version=self.version(executor)))
         discovered=manifest()
         for found in discovered:
             if not any(i['id']==found['id'] and i['runtime']=='pi' and i['project']==project for i in items):
-                items.append(self.observe(found['id'],project=project,state='discovered'))
+                items.append(dict(id=found['id'],runtime='pi',host=self.host,project=project,state='discovered',config_version=self.version('pi')))
         descriptions = {i['id']:i for i in discovered}
         versions={name:self.version(name) for name in {i['runtime'] for i in items}}
         result = []
@@ -225,6 +225,8 @@ class CapabilityRegistry:
                 item.update(state='discovered', invalidation='configuration_or_dependency_changed')
             elif item['state']=='verified' and item.get('verified_at',0)+86400 <= self.clock():
                 item.update(state='loaded', invalidation='verification_expired')
+            item.update(name=item.get('label') or item['id'],provider=item['runtime'],
+                        description=item.get('text') or None,last_verified_at=item.get('verified_at'))
             if not query or query.lower() in json.dumps(item,ensure_ascii=False).lower():
                 result.append(item)
         return result
