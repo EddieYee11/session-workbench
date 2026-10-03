@@ -46,7 +46,17 @@ data class LedgerTask(
  val executionInstructions:String="",
 )
 
+
+fun ledgerEventText(event:JSONObject):String{
+ val raw=event.optString("text")
+ return runCatching{val data=JSONObject(raw);data.optString("tool").ifBlank{if(data.has("usage"))"已记录 Token，金额未知"else raw}}.getOrDefault(raw)
+}
+
 fun ledgerEventLabel(kind:String):String=when(kind){
+ "tool.started"->"工具开始";"tool.completed"->"工具结束";"tool.failed"->"工具失败"
+ "input.delivered"->"输入进入上下文";"verification.passed"->"验收通过"
+ "workspace.isolated"->"工作副本已准备";"workspace.merged"->"已合入项目";"artifact.created"->"产物已保存"
+ "execution_unknown"->"执行结果待核实";"usage"->"执行用量"
  "created"->"任务已创建";"authorized"->"已授权";"started"->"开始执行"
  "queued"->"进入队列";"constraint"->"约束已更新";"input_accepted"->"补充已受理"
  "input_delivered"->"补充已送达";"cancel_requested"->"已请求停止"
@@ -100,7 +110,7 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
   agent=t.optString("agent").uppercase().ifBlank{"工作器未知"},
   status=state.first,statusText=state.second,updatedAt=at,messageId=parent.ifBlank{null},
   sessionId=t.optString("session_id").ifBlank{t.optString("work_session_id")},
-  events=t.array("events").map{e->LedgerEvent(listOf(ledgerEventLabel(e.optString("kind")),e.optString("text")).filter{it.isNotBlank()}.joinToString(" · "),e.optDouble("at"))},
+  events=t.array("events").map{e->LedgerEvent(listOf(ledgerEventLabel(e.optString("kind")),ledgerEventText(e)).filter{it.isNotBlank()}.joinToString(" · "),e.optDouble("at"))},
   result=t.optString("result"),goal=goal,directory=t.optString("cwd"),
   constraints=(t.optJSONArray("constraints")?:org.json.JSONArray()).let{a->(0 until a.length()).map{a.optString(it)}},
   inputs=t.array("inputs"),source=source?.optString("text").orEmpty(),
@@ -115,11 +125,11 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
  HorizontalDivider(Modifier.padding(top=4.dp,bottom=14.dp),color=Line)
  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){
   Text("任务",fontSize=18.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-  Text("${tasks.count{it.status=="active"}} 进行中 · ${tasks.size} 全部",fontSize=11.sp,color=Muted)
+  Text("${tasks.count{it.status=="active"}} 进行中 · ${tasks.size} 全部",fontSize=Type.Caption,color=Muted)
  }
  if(tasks.isEmpty()){
-  Text(if(vm.taskLedgerFresh)"还没有后台任务" else "任务正在同步",Modifier.padding(top=10.dp),fontSize=13.sp,color=Muted)
-  Text("在主对话里交办事情，任务会在这里显示。点开任务可看进度、补充要求或停止执行。",Modifier.padding(top=6.dp),fontSize=12.sp,lineHeight=19.sp,color=Muted)
+  Text(if(vm.taskLedgerFresh)"还没有后台任务" else "任务正在同步",Modifier.padding(top=10.dp),fontSize=Type.BodySm,color=Muted)
+  Text("在主对话里交办事情，任务会在这里显示。点开任务可看进度、补充要求或停止执行。",Modifier.padding(top=6.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)
   return
  }
  tasks.forEach{task->
@@ -127,22 +137,25 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
    Column(Modifier.padding(14.dp)){
     Row(verticalAlignment=Alignment.CenterVertically){
      if(task.status=="active"&&vm.taskLedgerFresh)StatusDot(PiGreen) else Box(Modifier.size(6.dp).background(if(task.status=="attention"&&vm.taskLedgerFresh)AmberText else Faint,CircleShape))
-     Text(task.title,Modifier.weight(1f).padding(start=8.dp),fontSize=14.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
+     Text(task.title,Modifier.weight(1f).padding(start=8.dp),fontSize=Type.BodySm,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
     }
-    Text("${if(vm.taskLedgerFresh)"" else "上次同步："}${task.agent} · ${task.statusText} · ${if(task.updatedAt>0)relTime(task.updatedAt) else "时间未知"}",Modifier.padding(top=4.dp,start=14.dp),fontSize=11.sp,color=Muted)
+    Text("${if(vm.taskLedgerFresh)"" else "上次同步："}${task.agent} · ${task.statusText} · ${if(task.updatedAt>0)relTime(task.updatedAt) else "时间未知"}",Modifier.padding(top=4.dp,start=14.dp),fontSize=Type.Caption,color=Muted)
     if(expanded==task.id){
      var executionDetails by rememberSaveable(task.id){mutableStateOf(false)}
-     if(!vm.taskLedgerFresh)Text("离线缓存，同步后才能操作",fontSize=12.sp,color=AmberText)
-     Text("${task.scope} · ${task.directory.substringAfterLast('/').ifBlank{"目录待核对"}}",Modifier.padding(top=8.dp),fontSize=11.sp,color=Muted)
-     if(task.goal.isNotBlank())Text(task.goal,Modifier.padding(top=10.dp),fontSize=13.sp,lineHeight=20.sp,color=Ink,maxLines=3,overflow=TextOverflow.Ellipsis)
-     if(task.source.isNotBlank())Text("交办原文：${task.source}",Modifier.padding(top=8.dp),fontSize=12.sp,color=Muted,maxLines=3,overflow=TextOverflow.Ellipsis)
-     task.constraints.forEach{Text("约束 · $it",Modifier.padding(top=6.dp),fontSize=12.sp,color=Ink)}
-     if(vm.taskControlTarget==task.id&&vm.taskControlNote.isNotBlank())Text(vm.taskControlNote,Modifier.padding(top=10.dp),fontSize=12.sp,color=Muted)
+     if(!vm.taskLedgerFresh)Text("离线缓存，同步后才能操作",fontSize=Type.Caption,color=AmberText)
+     Text("${task.scope} · ${task.directory.substringAfterLast('/').ifBlank{"目录待核对"}}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
+     if(task.goal.isNotBlank())Text(task.goal,Modifier.padding(top=10.dp),fontSize=Type.BodySm,lineHeight=20.sp,color=Ink,maxLines=3,overflow=TextOverflow.Ellipsis)
+     if(task.source.isNotBlank())Text("交办原文：${task.source}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted,maxLines=3,overflow=TextOverflow.Ellipsis)
+     task.constraints.forEach{Text("约束 · $it",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=Ink)}
+     if(vm.taskControlTarget==task.id&&vm.taskControlNote.isNotBlank())Text(vm.taskControlNote,Modifier.padding(top=10.dp),fontSize=Type.Caption,color=Muted)
      if(task.statusText=="待授权"){
       val proposal=vm.workProposals.array("items").firstOrNull{it.optString("id")==task.id}
-      if(proposal!=null)WorkProposalActions(vm,proposal)
+      if(proposal!=null){
+       proposal.optJSONObject("actual_action")?.takeIf{it.length()>0}?.let{Text("批准的具体动作：${it.toString()}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=AmberText)}
+       WorkProposalActions(vm,proposal)
+      }
       else{
-       Text("授权建议正在同步；允许与拒绝仅针对这项任务。",Modifier.padding(top=8.dp),fontSize=12.sp,color=AmberText)
+       Text("授权建议正在同步；允许与拒绝仅针对这项任务。",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=AmberText)
        TextButton(onClick={vm.refreshWorkProposalsNow()}){Text("刷新授权建议")}
       }
      }
@@ -156,30 +169,30 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
       }
      }
      if(task.sessionId.isNotBlank()){
-      TextButton(onClick={vm.openId(task.sessionId);vm.externalWorkRoute++},contentPadding=PaddingValues(top=8.dp)){Text("进入执行会话",fontSize=12.sp)}
+      TextButton(onClick={vm.openId(task.sessionId);vm.externalWorkRoute++},contentPadding=PaddingValues(top=8.dp)){Text("进入执行会话",fontSize=Type.Caption)}
      }
-     if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=12.sp,color=Ink)}
+     if(task.result.isNotBlank())SelectionContainer{Text(task.result,Modifier.padding(top=10.dp),fontSize=Type.Caption,color=Ink)}
      task.inputs.forEach{input->
-      Text(ledgerDeliveryLabel(input.optString("state"))+" · "+input.optString("text"),Modifier.padding(top=8.dp),fontSize=12.sp,color=Muted)
-      if(input.optString("error").isNotBlank())Text(input.optString("error"),fontSize=11.sp,color=AmberText)
+      Text(ledgerDeliveryLabel(input.optString("state"))+" · "+input.optString("text"),Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
+      if(input.optString("error").isNotBlank())Text(input.optString("error"),fontSize=Type.Caption,color=AmberText)
      }
      task.events.forEach{ev->
       Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically){
        Box(Modifier.size(5.dp).background(Line,CircleShape))
        Column(Modifier.padding(start=8.dp)){
-        Text(ev.label,fontSize=12.sp,color=Ink)
-        if(ev.at>0)Text(relTime(ev.at),fontSize=10.sp,color=Faint)
+        Text(ev.label,fontSize=Type.Caption,color=Ink)
+        if(ev.at>0)Text(relTime(ev.at),fontSize=Type.Micro,color=Faint)
        }
       }
      }
      if(task.executionInstructions.isNotBlank()||task.directory.isNotBlank()){
       TextButton(onClick={executionDetails=!executionDetails},contentPadding=PaddingValues(top=8.dp)){
-       Text(if(executionDetails)"收起执行详情"else"执行详情",fontSize=12.sp,color=Muted)
+       Text(if(executionDetails)"收起执行详情"else"执行详情",fontSize=Type.Caption,color=Muted)
       }
       if(executionDetails){
-       if(task.directory.isNotBlank())Text("${task.scope} · ${task.directory}",Modifier.padding(top=4.dp),fontSize=11.sp,color=Muted)
-       if(task.source.isNotBlank())SelectionContainer{Text("交办原文：${task.source}",Modifier.padding(top=8.dp),fontSize=12.sp,color=Muted)}
-       if(task.executionInstructions.isNotBlank())SelectionContainer{Text(task.executionInstructions,Modifier.padding(top=8.dp),fontSize=12.sp,lineHeight=19.sp,color=Muted)}
+       if(task.directory.isNotBlank())Text("${task.scope} · ${task.directory}",Modifier.padding(top=4.dp),fontSize=Type.Caption,color=Muted)
+       if(task.source.isNotBlank())SelectionContainer{Text("交办原文：${task.source}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)}
+       if(task.executionInstructions.isNotBlank())SelectionContainer{Text(task.executionInstructions,Modifier.padding(top=8.dp),fontSize=Type.Caption,lineHeight=19.sp,color=Muted)}
       }
      }
     }
@@ -196,7 +209,7 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
     Text("任务与活动",Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     IconButton(onClick={vm.refreshWorkProposalsNow()},enabled=!vm.workProposalsLoading){Icon(Icons.Outlined.Refresh,"刷新任务")}
    }
-   Text(if(vm.taskLedgerFresh)"任务在 Mac mini 上执行，关闭手机后仍继续。" else "${vm.taskLedgerError.ifBlank{"连接中，正在读取任务状态"}}",Modifier.padding(top=6.dp,bottom=14.dp),fontSize=12.sp,color=Muted)
+   Text(if(vm.taskLedgerFresh)"任务在 Mac mini 上执行，关闭手机后仍继续。" else "${vm.taskLedgerError.ifBlank{"连接中，正在读取任务状态"}}",Modifier.padding(top=6.dp,bottom=14.dp),fontSize=Type.Caption,color=Muted)
    WorkProposalSection(vm,pendingOnly=true)
    TaskLedgerSection(vm,vm.hermes.array("runs"),vm.hermes.array("messages"))
    WorkProposalSection(vm,historyOnly=true)
@@ -223,8 +236,8 @@ fun buildLedgerTasks(records:List<JSONObject>,messages:List<JSONObject>):List<Le
   }
  }
  if(vm.taskLedgerFresh)approvals.forEach{approval->
-  Text("执行器请求本次授权",Modifier.padding(top=10.dp),fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=AmberText)
+  Text("执行器请求本次授权",Modifier.padding(top=10.dp),fontSize=Type.Caption,fontWeight=FontWeight.SemiBold,color=AmberText)
   Approval(vm,approval)
  }
- if(error.isNotBlank())Text(error,Modifier.padding(top=8.dp),fontSize=11.sp,color=AmberText)
+ if(error.isNotBlank())Text(error,Modifier.padding(top=8.dp),fontSize=Type.Caption,color=AmberText)
 }

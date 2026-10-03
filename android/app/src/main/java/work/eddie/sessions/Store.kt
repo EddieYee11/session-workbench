@@ -32,14 +32,26 @@ class Store(val context:Context) {
  var base:String
    get()=prefs.getString("base","")?:""
    set(v){require(v.startsWith("https://"));prefs.edit().putString("base",v.trimEnd('/')).apply()}
- private fun key():javax.crypto.SecretKey {
+ private val secretKey:javax.crypto.SecretKey by lazy {
    val ks=KeyStore.getInstance("AndroidKeyStore").apply{load(null)}
-   (ks.getKey("session-token",null) as? javax.crypto.SecretKey)?.let{return it}
-   return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,"AndroidKeyStore").apply{init(KeyGenParameterSpec.Builder("session-token",KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())}.generateKey()
+   (ks.getKey("session-token",null) as? javax.crypto.SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,"AndroidKeyStore").apply{init(KeyGenParameterSpec.Builder("session-token",KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())}.generateKey()
  }
+ private fun key():javax.crypto.SecretKey=secretKey
+ @Volatile private var tokenRaw:String?=null
+ @Volatile private var tokenPlain:String=""
  var token:String
-   get()=runCatching { val raw=Base64.decode(prefs.getString("token","")?:"",Base64.NO_WRAP);val c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.DECRYPT_MODE,key(),GCMParameterSpec(128,raw.copyOfRange(0,12)));String(c.doFinal(raw.copyOfRange(12,raw.size))) }.getOrDefault("")
-   set(v){val c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.ENCRYPT_MODE,key());prefs.edit().putString("token",Base64.encodeToString(c.iv+c.doFinal(v.toByteArray()),Base64.NO_WRAP)).apply()}
+   get(){
+     val raw=prefs.getString("token","")?:""
+     if(raw.isEmpty())return ""
+     if(raw==tokenRaw)return tokenPlain
+     return runCatching {
+       val decoded=Base64.decode(raw,Base64.NO_WRAP)
+       val c=Cipher.getInstance("AES/GCM/NoPadding")
+       c.init(Cipher.DECRYPT_MODE,key(),GCMParameterSpec(128,decoded.copyOfRange(0,12)))
+       String(c.doFinal(decoded.copyOfRange(12,decoded.size))).also{tokenPlain=it;tokenRaw=raw}
+     }.getOrDefault("")
+   }
+   set(v){val c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.ENCRYPT_MODE,key());val enc=Base64.encodeToString(c.iv+c.doFinal(v.toByteArray()),Base64.NO_WRAP);prefs.edit().putString("token",enc).apply();tokenPlain=v;tokenRaw=enc}
  private fun encrypt(value:String):String{
    val cipher=Cipher.getInstance("AES/GCM/NoPadding")
    cipher.init(Cipher.ENCRYPT_MODE,key())
@@ -56,6 +68,18 @@ class Store(val context:Context) {
    val edit=prefs.edit().apply{if(value.isBlank())remove(name) else putString(name,encrypt(value))}
    if(durable)check(edit.commit()){ "加密状态保存失败" } else edit.apply()
  }
+ private val persistScope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+ private val persistPending=java.util.concurrent.ConcurrentHashMap<String,()->Unit>()
+ private val persistJobs=java.util.concurrent.ConcurrentHashMap<String,Job>()
+ private fun persistSoon(key:String,write:()->Unit){
+   persistPending[key]=write
+   persistJobs.remove(key)?.cancel()
+   persistJobs[key]=persistScope.launch{delay(350);runPending(key)}
+ }
+ private fun runPending(key:String){persistPending.remove(key)?.invoke()}
+ fun flushPending(){persistJobs.values.forEach{it.cancel()};persistJobs.clear();persistPending.keys.toList().forEach{::runPending}}
+ fun saveSecureTextSoon(name:String,value:String)=persistSoon(name){saveSecureText(name,value)}
+ fun savePrefSoon(name:String,value:String)=persistSoon(name){prefs.edit().putString(name,value).apply()}
  fun secureCache(name:String,value:JSONObject){
    val target=File(dir,name);val tmp=File(dir,"$name.tmp")
    tmp.writeText(encrypt(value.toString()))
@@ -95,7 +119,7 @@ class Store(val context:Context) {
      try{awaitCancellation()}finally{con.disconnect()}
    }
    try{
-     check(con.responseCode in 200..299){"Hermes 实时连接失败：${con.responseCode}"}
+     check(con.responseCode in 200..299){"Pi 实时连接失败：${con.responseCode}"}
      con.inputStream.bufferedReader().use{reader->
        var kind="message"
        val data=StringBuilder()
@@ -113,7 +137,7 @@ class Store(val context:Context) {
            line.startsWith("data:")->{
              if(data.isNotEmpty())data.append('\n')
              data.append(line.substringAfter(':').trimStart())
-             check(data.length<=8_000_000){"Hermes 实时事件过大"}
+             check(data.length<=8_000_000){"Pi 实时事件过大"}
            }
          }
        }
@@ -149,7 +173,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var allRowsFresh by mutableStateOf(false)
  var rows by mutableStateOf(allRows)
  var creatingMessage by mutableStateOf<OutgoingMessage?>(null)
- var creatingAgent by mutableStateOf("pi")
+ var creatingAgent by mutableStateOf("claude")
  var selected by mutableStateOf(store.prefs.getString("selected","")?:"")
  var detail by mutableStateOf(if(selected.isNotEmpty())store.cached(store.detailCache(selected)) else JSONObject())
  var live by mutableStateOf(JSONObject())
@@ -225,7 +249,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  val catalogErrors=mutableStateMapOf<String,String>()
  var active by mutableStateOf(true)
  var font by mutableFloatStateOf(store.prefs.getFloat("font",16f))
- init {viewModelScope.launch{snapshotFlow{q to queryInSession}.collect{(global,local)->store.prefs.edit().putString("search",global).putString("session-search",local).apply()}};viewModelScope.launch{while(true){if(active&&store.token.isNotEmpty())refreshPersonal();delay(60_000)}};viewModelScope.launch{snapshotFlow{active&&hermesVisible}.collectLatest{visible->
+ init {viewModelScope.launch{snapshotFlow{q to queryInSession}.collectLatest{(global,local)->delay(400);store.prefs.edit().putString("search",global).putString("session-search",local).apply()}};viewModelScope.launch{while(true){if(active&&store.token.isNotEmpty())refreshPersonal();delay(60_000)}};viewModelScope.launch{snapshotFlow{active&&hermesVisible}.collectLatest{visible->
   hermesStreaming=false
   if(visible)while(currentCoroutineContext().isActive){
    if(store.token.isBlank()){delay(1000);continue}
@@ -281,13 +305,13 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      file?.delete();hermesVoiceNote="录音太短，请再说一次。";return
    }
    hermesVoiceSaved=file.name;store.prefs.edit().putString("hermes-voice-file",file.name).apply()
-   if(transcribe)transcribeHermesVoice() else hermesVoiceNote="录音已保留，回到 Hermes 可重试转写。"
+   if(transcribe)transcribeHermesVoice() else hermesVoiceNote="录音已保留，回到 Pi 可重试转写。"
  }
  fun transcribeHermesVoice(){
    if(hermesVoicePhase!="idle")return
    val file=File(hermesVoiceDir,hermesVoiceSaved)
    if(!hermesVoiceSaved.matches(Regex("[a-f0-9-]{36}\\.m4a"))||!file.exists()){hermesVoiceSaved="";store.prefs.edit().remove("hermes-voice-file").apply();return}
-   hermesVoicePhase="transcribing";hermesVoiceNote="正在转写给 Hermes…"
+   hermesVoicePhase="transcribing";hermesVoiceNote="正在转写给 Pi…"
    viewModelScope.launch{
      try{
        val transcript=uploadVoice(store,file,file.nameWithoutExtension).optString("text").trim()
@@ -301,7 +325,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
         // Let the visible composer lay out the transcription before it clears.
         if(active&&hermesVisible)hermesVoiceAutoSend=transcript else sendHermes()
        }
-       else hermesVoiceNote="已转写到草稿；连接 Hermes 后点发送。"
+       else hermesVoiceNote="已转写到草稿；连接 Pi 后点发送。"
      }catch(e:CancellationException){throw e}
       catch(e:Exception){hermesVoicePhase="idle";hermesVoiceNote="${e.message?:"转写失败"}；录音已保留，可重试或删除。"}
    }
@@ -452,9 +476,11 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    }catch(e:Exception){signalsHealthFresh=false;signalsError=listOf(signalsError,e.message?:"巡检状态暂不可用").filter{it.isNotBlank()}.joinToString("；")}
    signalsLoading=false
  }
- fun updateHermesDraft(value:String){hermesDraft=value;store.saveSecureText("hermes-draft",value)}
+ fun updateHermesDraft(value:String){hermesDraft=value;if(value.isBlank())store.saveSecureText("hermes-draft","") else store.saveSecureTextSoon("hermes-draft",value)}
  private fun mergeHermesRows(existing:JSONArray?,changes:List<JSONObject>,key:String):JSONArray{
-   val rows=(existing?.objects()?:emptyList()).map{JSONObject(it.toString())}.toMutableList()
+   // Existing rows are immutable snapshots; replace changed rows instead of
+   // serializing every historical message for every streamed chunk.
+   val rows=(existing?.objects()?:emptyList()).toMutableList()
    changes.forEach{change->
      val id=change.optString(key)
      if(id.isBlank())return@forEach
@@ -487,7 +513,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      return
    }
    if(kind!="update")return
-   val current=JSONObject(hermes.toString())
+   val current=JSONObject().apply{hermes.keys().forEach{key->put(key,hermes.opt(key))}}
    if(payload.has("revision")&&payload.optLong("revision")<=current.optLong("revision"))return
    val message=payload.optJSONObject("message")?:payload.optJSONObject("changed_message")
     ?:payload.takeIf{it.has("id")&&it.has("role")}
@@ -509,19 +535,19 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      hermes=current;hermesFresh=true;hermesError="";hermesStreaming=true
    }
    hermesReconcile?.cancel()
-   hermesReconcile=viewModelScope.launch{delay(700);refreshHermes()}
+   if(payload.optJSONArray("messages")==null&&changedMessages.isEmpty())hermesReconcile=viewModelScope.launch{delay(700);refreshHermes()}
  }
  suspend fun refreshHermes(){
    if(hermesLoading)return
    hermesLoading=true
    try{
      val data=store.request("/personal/conversation")
-     if(data.optString("conversation_id").isBlank()||data.optJSONArray("messages")==null||data.optJSONArray("runs")==null)error("Hermes 对话数据格式不完整")
+     if(data.optString("conversation_id").isBlank()||data.optJSONArray("messages")==null||data.optJSONArray("runs")==null)error("Pi 对话数据格式不完整")
      if(data.has("revision")&&data.optLong("revision")<hermes.optLong("revision"))return
      reactionFeedbackTracker.baseline(reactionEvents(data.array("messages")))
      hermes=data;hermesFresh=true;hermesError=""
      runCatching{store.secureCache("hermes-conversation.enc",data)}
-   }catch(e:Exception){hermesFresh=false;hermesError=e.message?:"Hermes 暂时无法连接"}
+   }catch(e:Exception){hermesFresh=false;hermesError=e.message?:"Pi 暂时无法连接"}
    finally{hermesLoading=false}
  }
  fun sendHermes(requestId:String=UUID.randomUUID().toString()):String?{
@@ -541,11 +567,11 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    viewModelScope.launch{
      try{
        val receipt=store.request("/personal/conversation/messages",JSONObject(hermesPending.toString()))
-       if(receipt.optString("status") !in setOf("accepted","queued","sending","running","waiting","approval_required","completed","failed","unknown")||receipt.optString("message_id").isBlank())error("Hermes 尚未确认接收这条消息")
+       if(receipt.optString("status") !in setOf("accepted","queued","sending","running","waiting","approval_required","completed","failed","unknown")||receipt.optString("message_id").isBlank())error("Pi 尚未确认接收这条消息")
        if(receipt.optString("request_id")!=rid)error("发送回执请求号不匹配")
        updateOutgoing(rid,if(receipt.optString("status") in setOf("failed","unknown"))receipt.optString("status") else "sent",receipt.optString("message_id"))
        store.saveSecureText("hermes-pending","");hermesPending=JSONObject()
-       hermesSendNote=if(receipt.optString("status") in listOf("failed","unknown"))"请查看对话中的失败或待核实状态" else "Hermes 已接收，正在更新对话"
+       hermesSendNote=if(receipt.optString("status") in listOf("failed","unknown"))"请查看对话中的失败或待核实状态" else "Pi 已接收，正在更新对话"
        refreshHermes()
      }catch(e:Exception){
        updateOutgoing(rid,"unknown")
@@ -603,7 +629,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  fun openId(id:String){open(JSONObject().put("id",id))}
  fun close(){selected="";archived=false;store.prefs.edit().remove("selected").apply();detail=JSONObject();live=JSONObject();liveFresh=false;liveSessionId=""}
  fun draft()=drafts.getOrPut(selected){store.prefs.getString("draft:$selected","")?:""}
- fun setDraft(value:String){drafts[selected]=value;store.prefs.edit().putString("draft:$selected",value).apply()}
+ fun setDraft(value:String){drafts[selected]=value;store.savePrefSoon("draft:$selected",value)}
  private fun selectionKey(agentName:String,sid:String)=if(sid.isBlank())"new:$agentName" else "session:$sid"
  fun selection(agentName:String,sid:String=""):ModelSelection {
    val key=selectionKey(agentName,sid)
@@ -618,7 +644,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    store.prefs.edit().putString("model:$key",model).putString("effort:$key",effort).apply()
  }
  fun loadModels(agentName:String,force:Boolean=false){
-   if(agentName !in listOf("pi","codex") || catalogLoading[agentName]==true || !force&&catalogs.containsKey(agentName))return
+   if(agentName !in listOf("pi","claude","codex") || catalogLoading[agentName]==true || !force&&catalogs.containsKey(agentName))return
    catalogLoading[agentName]=true
    viewModelScope.launch{
      try{
@@ -637,6 +663,16 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  }
  suspend fun refresh(){
    try{
+    // A proven pre-submission refusal can release the old create request without replay.
+    store.prefs.getString("pending:/sessions",null)?.let{rid->
+     runCatching{store.request("/receipts/${enc(rid)}")}.getOrNull()?.let{receipt->
+      if(receipt.optString("request_id")==rid&&receipt.optString("status")=="rejected"&&receipt.optString("submission_state")=="not_submitted"){
+       if(store.prefs.edit().remove("pending:/sessions").remove("pending:/sessions:body").commit()){
+        error=receipt.optString("error","上一条工作没有提交，草稿已保留，可以重新发送。")
+       }
+      }
+     }
+    }
     val health=store.request("/health")
     messageReferencesAvailable=health.optJSONObject("features")?.optBoolean("message_references_v1")==true
     val includeArchived=archived

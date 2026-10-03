@@ -23,10 +23,10 @@ def source(tmp_path, text='帮我检查项目文件数量，另外帮我检查�
     return chat,proposals,message
 
 
-def assignment(chat, proposals, mid, quote, key, **options):
+def assignment(chat, proposals, mid, quote, key, agent='codex', sandbox='read-only', **options):
     return authorized_assignment(chat, proposals, dict(
-        agent='codex',relative_cwd='project',title=quote,prompt='Inspect the project only.',
-        sandbox='read-only',completion_condition='Report observed counts.',source_quote=quote,
+        agent=agent,relative_cwd='project',title=quote,prompt='Inspect the project only.',
+        sandbox=sandbox,completion_condition='Report observed counts.',source_quote=quote,
         origin_session_id='com-personal-main',origin_message_id=mid,
         origin_request_id='human-request-001',request_id=key, **options))
 
@@ -78,6 +78,41 @@ def test_two_direct_tasks_update_old_task_no_third_and_no_main_chat_wait(tmp_pat
 def test_smalltalk_wishes_and_consequential_actions_do_not_auto_authorize(tmp_path,text,quote):
     chat,proposals,mid=source(tmp_path,text)
     with pytest.raises(ValueError):assignment(chat,proposals,mid,quote,'assignment-denied-001')
+
+
+def test_pi_capability_assignment_is_auto_authorized(tmp_path):
+    # Eddie 2026-10-02：清单里的 Pi 能力（记账等）属免审批直达，不再要求先提审批卡。
+    chat,proposals,mid=source(tmp_path,'帮我记账，记一笔 30 元午饭')
+    task,authorization,request_id=assignment(
+        chat,proposals,mid,'帮我记账，记一笔 30 元午饭','assignment-pi-001',
+        agent='pi',sandbox='danger-full-access')
+    assert task['agent']=='pi' and task['sandbox']=='danger-full-access'
+    assert authorization['source_quote']=='帮我记账，记一笔 30 元午饭' and request_id=='assignment-pi-001'
+
+
+def test_pi_must_declare_full_access_sandbox(tmp_path):
+    chat,proposals,mid=source(tmp_path,'帮我记账')
+    with pytest.raises(ValueError,match='danger-full-access'):
+        assignment(chat,proposals,mid,'帮我记账','assignment-pi-002',agent='pi',sandbox='read-only')
+
+
+def test_unknown_agent_is_rejected(tmp_path):
+    chat,proposals,mid=source(tmp_path,'帮我记账')
+    with pytest.raises(ValueError,match='pi or codex'):
+        assignment(chat,proposals,mid,'帮我记账','assignment-pi-003',agent='pi-hermes',sandbox='danger-full-access')
+
+
+def test_publishing_is_now_auto_authorized(tmp_path):
+    # 政策变更（Eddie 2026-10-02）：发布/外发不再前置拦截，唯一闸门是不可逆删除。
+    chat,proposals,mid=source(tmp_path,'帮我发布这条视频')
+    task,_,_=assignment(chat,proposals,mid,'帮我发布这条视频','assignment-publish-001')
+    assert task['agent']=='codex'
+
+
+def test_deletion_still_requires_a_concrete_proposal(tmp_path):
+    chat,proposals,mid=source(tmp_path,'请删除项目里的旧文件')
+    with pytest.raises(ValueError,match='approval proposal'):
+        assignment(chat,proposals,mid,'请删除项目里的旧文件','assignment-delete-001')
 
 
 def test_task_source_must_be_exact_human_message(tmp_path):
@@ -136,10 +171,14 @@ def test_task_worker_selects_server_default_and_retains_native_failure_reason(tm
     async def models(agent):
         return [{'id':'old-alias','is_default':False,'default_effort':'low'},
                 {'id':'account-default','is_default':True,'default_effort':'medium'}]
-    async def create(agent,cwd,**options):calls.append((agent,cwd,options));return 'worker'
+    async def create(agent,cwd,**options):
+        calls.append((agent,cwd,options))
+        runtime.h.save_managed('worker',{'agent':agent,'cwd':cwd})
+        return 'worker'
     runtime.models=models;runtime.create=create
-    assert asyncio.run(runtime.create_task_worker({'agent':'codex','cwd':str(tmp_path),'sandbox':'read-only'}))=='worker'
+    assert asyncio.run(runtime.create_task_worker({'id':'readonly-codex-task','agent':'codex','cwd':str(tmp_path),'sandbox':'read-only'}))=='worker'
     assert calls[0][2]=={'model':'account-default','effort':'medium','sandbox':'read-only'}
+    assert runtime.h.managed()['worker']['task_id']=='readonly-codex-task'
     from tasks import worker_error
     assert worker_error([{'turn_id':'other','error':{'message':'unrelated'}},
                          {'turn_id':'A','error':{'message':'{"error":{"message":"model unavailable"}}'}}],'A')=='工作器执行失败：model unavailable'

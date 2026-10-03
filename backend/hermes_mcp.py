@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import stat
 import re
+import sqlite3
+import time
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from pydantic import Field
@@ -29,6 +31,19 @@ MAX_RESPONSE_BYTES = 1_000_000
 mcp = FastMCP("com-personal-readonly")
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 PROPOSAL_ONLY = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+
+
+def _active_source(message_id=''):
+    path=Path.home()/'.session-workbench/personal-conversation.sqlite'
+    db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+    try:
+        rows=db.execute('SELECT message_id,session_id,request_id FROM reaction_turns WHERE expires_at>? '+
+            ('AND message_id=? ' if message_id else '')+'LIMIT 2',
+            (time.time(),message_id) if message_id else (time.time(),)).fetchall()
+    finally:db.close()
+    if len(rows)!=1:raise ValueError('没有唯一真实用户来源；不能投递任务变更')
+    mid,sid,rid=rows[0]
+    return {'origin_message_id':mid,'origin_session_id':sid,'origin_request_id':rid}
 
 
 @mcp.tool(
@@ -106,17 +121,20 @@ def _post(route: str, body: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool(description=(
-    'Create and queue an independent Codex task only for an explicit user assignment. '
+    'Create and queue a task for an explicit user assignment. '
     'Copy source_quote exactly from the current user message, and copy all origin IDs from Com context. '
-    'Default read-only; workspace-write only for explicit code changes within the chosen existing project. '
-    'No deletion, publishing, external messaging, deployment, credentials or full-access Pi; use propose_work for those approvals. '
+    'agent="pi" with sandbox="danger-full-access" for the pre-installed Pi capabilities shown in the Com context '
+    '(bookkeeping, reminders, calendar, collecting links, video transcripts, images, NAS files) — when the user '
+    'asks for one of those, queue it directly instead of asking whether to do it. '
+    'agent="codex" for work on project files: read-only by default, workspace-write only for explicit code changes. '
+    'Only irreversible deletion, clearing or wiping needs propose_work; everything else the user explicitly asked for goes straight through. '
     'Provide goal, constraints and completion_condition. Return immediately; queued is accepted, not started or complete. '
     'For separate assignments create separate tasks with stable distinct request IDs; reuse an existing task for follow-ups. '
     'Do not create tasks from small talk, feelings, vague wishes, or ambiguous references.'), annotations=PROPOSAL_ONLY)
 def create_task(agent: str, relative_cwd: str, title: str, prompt: str, sandbox: str,
                 completion_condition: str, source_quote: str, origin_session_id: str,
                 origin_message_id: str, origin_request_id: str, request_id: str) -> dict[str, Any]:
-    return _post('/personal/tasks/create', locals())
+    return task_submit(**locals())
 
 
 @mcp.tool(
@@ -168,7 +186,8 @@ def recent_work_sessions(limit: int = 5, agent: str = "") -> dict[str, Any]:
 
 @mcp.tool(
     description=(
-        "Propose a Pi or Codex coding task for the user's approval in Com!. "
+        "Propose for the user's explicit approval an action that must not run unattended — "
+        "irreversible deletion or clearing of files or data. "
         "This saves a proposal card only; it cannot start work or approve itself. "
         "Pi currently has full workspace access, so its sandbox must be "
         "danger-full-access and the approval card will show that fact."
@@ -186,20 +205,13 @@ def propose_work(
     origin_message_id: str = "",
     origin_request_id: str = "",
     idempotency_key: str = "",
+    actual_action: dict[str,Any] | None = None,
 ) -> dict[str, Any]:
-    card = WorkProposalStore(Path.home() / ".session-workbench").propose(
-        agent=agent,
-        relative_cwd=relative_cwd,
-        title=title,
-        prompt=prompt,
-        sandbox=sandbox,
-        reason=reason,
-        origin_session_id=origin_session_id,
-        origin_message_id=origin_message_id,
-        origin_request_id=origin_request_id,
-        idempotency_key=idempotency_key,
-    )
-    TaskStore(Path.home() / ".session-workbench").ensure(card)
+    context=_active_source(origin_message_id)
+    if origin_request_id and origin_request_id!=context['origin_request_id']:raise ValueError('用户来源不匹配')
+    if not actual_action:raise ValueError('请提供具体 actual_action：工具、对象与参数')
+    card=_shared('propose_work',{'agent':agent,'relative_cwd':relative_cwd,'title':title,'prompt':prompt,
+           'sandbox':sandbox,'request_id':idempotency_key,'actual_action':actual_action},context)
     return {
         "proposal_id": card["id"],
         "status": card["status"],
@@ -253,10 +265,7 @@ def work_proposal_status(proposal_id: str) -> dict[str, Any]:
 
 @mcp.tool(description="List durable task IDs, source messages, constraints and results. Do not infer a task from ambiguous references; ask the user.", annotations=READ_ONLY)
 def personal_tasks() -> dict[str, Any]:
-    store = TaskStore(Path.home() / '.session-workbench')
-    for card in WorkProposalStore(Path.home() / '.session-workbench').list(100):
-        store.ensure(card)
-    return {'items': store.list()}
+    return task_status()
 
 
 @mcp.tool(description=(
@@ -274,22 +283,68 @@ def update_task_constraints(
     request_id: str,
     constraint_type: Annotated[Literal['read_only','preserve_style','forbid_path','note'], Field(description="Required restriction kind. User says keep read-only/no file changes: read_only. Keep visual style: preserve_style. Protect a path: forbid_path. Other text: note, which cannot authorize execution.")],
 ) -> dict[str, Any]:
-    return record_constraint(TaskStore(Path.home() / '.session-workbench'),
-                             task_id,text,request_id,constraint_type)
+    return _shared('task_send',{'task_id':task_id,'text':text,'request_id':request_id,
+                              'constraint_type':constraint_type},_active_source())
 
 
 @mcp.tool(description="Read the authoritative durable status, input delivery states, worker ID, events and result for an exact existing task ID. Execution finished is pending acceptance; delivered does not prove compliance. Read-only.", annotations=READ_ONLY)
 def get_task_status(task_id: str) -> dict[str, Any]:
-    task = next((t for t in TaskStore(Path.home()/'.session-workbench').list() if t['id']==task_id), None)
+    items=task_status(task_id).get('items',[])
+    task=items[0] if items else None
     return {'found':bool(task),'task':task}
 
 
 @mcp.tool(description="Request cancellation of an exact existing task only when the user asks to stop it; ask if ambiguous. Copy the origin IDs and an exact source_quote from that user message. Cancellation stays pending until the worker actually reports interrupted; retries use the same request ID.", annotations=PROPOSAL_ONLY)
 def cancel_task(task_id: str, request_id: str, origin_message_id: str,
                 origin_request_id: str, source_quote: str) -> dict[str, Any]:
-    return _post('/personal/tasks/'+task_id+'/cancel', {'request_id':request_id,
-                 'origin_message_id':origin_message_id, 'origin_request_id':origin_request_id,
-                 'source_quote':source_quote})
+    context=_active_source(origin_message_id)
+    if context['origin_request_id']!=origin_request_id:raise ValueError('用户来源不匹配')
+    return _shared('task_cancel',{'task_id':task_id,'request_id':request_id},context)
+
+
+def _shared(name:str,args:dict[str,Any],context:dict[str,Any]|None=None)->dict[str,Any]:
+    if name not in {'capability_search','task_submit','task_status','task_send','task_cancel','propose_work'}:
+        raise ValueError('Route is not allowed')
+    with httpx.Client(timeout=10,trust_env=False,follow_redirects=False) as client:
+        response=client.post(COM_BASE_URL+'/internal/agent/'+name,
+            json={'args':args,'context':context or {}},headers={'Authorization':'Bearer '+_token()})
+    if len(response.content)>MAX_RESPONSE_BYTES:raise RuntimeError('Com response is too large')
+    result=response.json()
+    if response.status_code>=400:raise ValueError(result.get('detail','Task command rejected'))
+    return result
+
+
+@mcp.tool(description='Search host-scoped discovered, loaded and verified capabilities. Read-only.',annotations=READ_ONLY)
+def capability_search(query:str='',runtime:str='')->dict[str,Any]:
+    return _shared('capability_search',{'query':query,'runtime':runtime or None})
+
+
+@mcp.tool(description='Queue an explicit, source-bound assignment through the common Com service. ACK is not execution.',annotations=PROPOSAL_ONLY)
+def task_submit(agent:str,relative_cwd:str,title:str,prompt:str,sandbox:str,completion_condition:str,
+                source_quote:str,origin_session_id:str,origin_message_id:str,origin_request_id:str,request_id:str)->dict[str,Any]:
+    data=locals()
+    context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
+    return _shared('task_submit',data,context)
+
+
+@mcp.tool(description='Read authoritative task state, real timeline, structured result and acceptance status.',annotations=READ_ONLY)
+def task_status(task_id:str='')->dict[str,Any]:
+    return _shared('task_status',{'task_id':task_id})
+
+
+@mcp.tool(description='Send a source-bound task restriction or existing authorized continuation. ACK is not delivery.',annotations=PROPOSAL_ONLY)
+def task_send(task_id:str,text:str,request_id:str,origin_session_id:str,origin_message_id:str,
+              origin_request_id:str,constraint_type:Literal['read_only','preserve_style','forbid_path','note']='note')->dict[str,Any]:
+    data=locals()
+    context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
+    return _shared('task_send',data,context)
+
+
+@mcp.tool(description='Request cancellation for a real user stop instruction; terminal event confirms cancellation.',annotations=PROPOSAL_ONLY)
+def task_cancel(task_id:str,request_id:str,origin_session_id:str,origin_message_id:str,origin_request_id:str)->dict[str,Any]:
+    data=locals()
+    context={key:data[key] for key in ('origin_session_id','origin_message_id','origin_request_id')}
+    return _shared('task_cancel',data,context)
 
 
 if __name__ == "__main__":

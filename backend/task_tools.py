@@ -6,29 +6,34 @@ import re
 def authorized_assignment(conversation, proposals, data):
     """Validate a direct human assignment, not a model-supplied permission flag.
 
-    This is a narrow first release: isolated Codex readers or scoped code edits.
-    Full-access Pi and consequential actions continue through explicit proposal approval.
+    Verifies the quote really came from a real user message in this session; that part is
+    anti-hallucination, not permission. Permission-wise the only standing gate is
+    irreversible deletion, which must go through a concrete approval proposal. Everything
+    else the user explicitly asked for is authorized as stated (Eddie's decision, 2026-10-02).
     """
-    origin = data.get('origin_message_id')
-    with conversation.db() as db:
-        row = db.execute("SELECT * FROM messages WHERE id=? AND role='user'", (origin,)).fetchone()
-    if not row or row['request_id'] != data.get('origin_request_id'):
-        raise ValueError('Task must reference a real user message and its request ID')
-    if data.get('origin_session_id') != conversation._session_id():
-        raise ValueError('Task must originate in the current main conversation')
+    from policy import source, assignment, deletion_risk
+    row = source(conversation, data)
+    origin = row['id']
     quote = proposals._text(data.get('source_quote'), 'source_quote', 2000)
-    if len(quote) < 4 or quote not in row['text']:
+    if quote not in row['text']:
         raise ValueError('Task authorization quote must be copied exactly from the user message')
-    directive = re.sub(r'^(?:(?:对了|另外|顺便)[，,\s]*|先|再)+', '', quote)
-    if not re.match(r'^(?:请|帮我|给我|替我|把|检查|排查|诊断|修复|修好|修改|优化|实现|添加|增加|编写|整理)', directive):
-        raise ValueError('This message is not an explicit assignment; keep it in the main conversation')
-    if re.search(r'删除|清空|外发|发消息|发给|发布|购买|付款|支付|转账|部署|凭据|密钥|认证配置', quote):
+    if not assignment(row['text'], quote) and not (row.get('authorization_parent_message_id') and quote in row['raw_text'] and assignment(row['text'],row['text'])):
+        raise ValueError('This message is not an explicit assignment; keep it as a candidate')
+    effective_quote=row['text'] if row.get('authorization_parent_message_id') else quote
+    action_quote=re.sub(r'(?:不要|禁止|别|不许).{0,5}(?:永久删除|清空|销毁|抹掉|删除|删掉)', '', effective_quote)
+    if deletion_risk(data.get('action', 'task'), data.get('action_args', {})) or re.search(r'永久删除|清空|销毁|抹掉|删除|删掉', action_quote):
         raise ValueError('This action requires a concrete approval proposal')
     agent, sandbox = data.get('agent'), data.get('sandbox')
-    if agent != 'codex' or sandbox not in ('read-only','workspace-write'):
-        raise ValueError('Automatic tasks support scoped Codex only; propose full-access Pi for approval')
-    if sandbox == 'workspace-write' and not re.search(r'修复|修好|修改|优化|实现|添加|增加|编写|改|做好', quote):
-        raise ValueError('The user message did not authorize code changes; use read-only')
+    if agent == 'pi':
+        if sandbox != 'danger-full-access':
+            raise ValueError('Pi runs full-access; pass sandbox="danger-full-access"')
+    elif agent in ('codex', 'claude'):
+        if sandbox not in ('read-only','workspace-write'):
+            raise ValueError('Codex tasks must be read-only or workspace-write')
+        if sandbox == 'workspace-write' and not re.search(r'修复|修好|修改|优化|实现|添加|增加|编写|改|做好', effective_quote):
+            raise ValueError('The user message did not authorize code changes; use read-only')
+    else:
+        raise ValueError('Automatic tasks support pi or codex, and claude')
     request_id = proposals._text(data.get('request_id'), 'request_id', 120)
     if len(request_id) < 10:
         raise ValueError('Invalid task request ID')
@@ -37,12 +42,16 @@ def authorized_assignment(conversation, proposals, data):
         'agent':agent, 'cwd':cwd, 'title':proposals._text(data.get('title'),'title',120),
         'prompt':proposals._text(data.get('prompt'),'prompt',6000), 'sandbox':sandbox,
         'origin_session_id':data['origin_session_id'], 'origin_message_id':origin,
-        'origin_request_id':row['request_id'],
+        'origin_request_id':row['request_id'], 'owner_conversation_id':'personal-main',
         'completion_condition':proposals._text(data.get('completion_condition'),'completion_condition',1000),
     }
     authorization = {'request_id':request_id, 'cwd':cwd, 'sandbox':sandbox,
                      'source_message_id':origin, 'source_request_id':row['request_id'], 'source_quote':quote,
-                     'scope':'原始明确交办范围；不扩展权限，不删除、发布、外发或修改认证配置'}
+                     'scope':'原始明确交办范围；不扩展权限，不做严重不可逆删除；执行前按真实动作及可恢复性检查'}
+    if row.get('authorization_parent_message_id'):
+        authorization['parent_message_id']=row['authorization_parent_message_id']
+        authorization['resolved_instruction']=row['text']
+        quote=row['text']
     # Worker receives the original clause and completion boundary, not only the model's paraphrase.
     task['prompt'] = ('用户明确交办原文：\n'+quote+'\n\n任务说明：\n'+task['prompt']+
                       '\n\n完成条件：\n'+task['completion_condition']+'\n\n授权范围：\n'+authorization['scope'])

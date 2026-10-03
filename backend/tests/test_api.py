@@ -49,3 +49,49 @@ def test_live_updates_have_same_identity(service):
  assert app.live_items(events)==[{'id':'a','role':'assistant','title':'实时输出','text':'开始检查','time':3,'kind':'item'}]
  events=[{'type':'message_update','time':1,'data':{'message':{'role':'assistant','timestamp':123,'content':[{'type':'text','text':'流式内容'}]}}}]
  assert app.live_items(events)[0]['id']=='pi:123'
+
+
+def test_manual_create_candidate_refusal_is_definite_not_unknown(service,monkeypatch):
+ app,c=service
+ monkeypatch.setattr(app,'MAIN_AGENT','pi')
+ async def forbidden(*a,**k):raise AssertionError('Rejected request cannot start a worker')
+ monkeypatch.setattr(app.runtime,'create_task_worker',forbidden)
+ h={'Authorization':'Bearer '+app.TOKEN}
+ data={'request_id':'manual-candidate-001','agent':'claude','cwd':str(app.HOME/'AI_Work_System'),'prompt':'最近不想折腾手机'}
+ first=c.post('/sessions',headers=h,json=data).json()
+ assert first['status']=='rejected' and first['submission_state']=='not_submitted'
+ assert c.post('/sessions',headers=h,json=data).json()==first
+ assert c.get('/receipts/manual-candidate-001',headers=h).json()==first
+ assert app.task_store.list()==[]
+
+
+def test_legacy_source_refusal_can_be_resolved_without_replaying(service):
+ app,c=service
+ rid='legacy-source-refusal-001'
+ human=app.conversation.submit('work:'+rid,'旧交办')['message_id']
+ app.conversation._finish(human,'failed',error='工作器未启动')
+ result={'status':'unknown','request_id':rid,'error':'This message is not an explicit assignment; keep it as a candidate'}
+ with app.history.db() as d:d.execute('INSERT INTO receipts VALUES(?,?,?)',(rid,'fixture',json.dumps(result)))
+ r=c.get('/receipts/'+rid,headers={'Authorization':'Bearer '+app.TOKEN}).json()
+ assert r['status']=='rejected' and r['submission_state']=='not_submitted'
+ assert app.task_store.list()==[]
+ assert c.get('/receipts/'+rid,headers={'Authorization':'Bearer '+app.TOKEN}).json()==r
+
+
+def test_manual_preflight_failure_is_not_submitted(service,monkeypatch):
+ app,c=service
+ monkeypatch.setattr(app,'MAIN_AGENT','pi')
+ async def session():return 'com-pi-main'
+ monkeypatch.setattr(app.conversation,'_ensure_session',session)
+ with app.conversation.db() as d:
+  d.execute("INSERT OR REPLACE INTO meta VALUES ('pi_session_id','com-pi-main')")
+  d.execute("INSERT OR REPLACE INTO meta VALUES ('hermes_session_id','com-pi-main')")
+ project=app.HOME/'AI_Work_System'/'demo';project.mkdir(parents=True)
+ async def unavailable(task):raise RuntimeError('executor unavailable')
+ async def forbidden(task):raise AssertionError('preflight failure cannot create worker')
+ monkeypatch.setattr(app.runtime,'preflight_task',unavailable)
+ monkeypatch.setattr(app.runtime,'create_task_worker',forbidden)
+ rid='manual-unavailable-001'
+ r=c.post('/sessions',headers={'Authorization':'Bearer '+app.TOKEN},json={'request_id':rid,'agent':'claude','cwd':str(project),'prompt':'帮我修好项目配置','sandbox':'workspace-write'}).json()
+ assert r['status']=='rejected' and r['submission_state']=='not_submitted'
+ assert app.task_store.list()[0]['status']=='failed'

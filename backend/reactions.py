@@ -66,7 +66,8 @@ class ReactionStore:
                 "SELECT role,status,request_id FROM messages WHERE id=?", (message_id,)
             ).fetchone()
             session = db.execute(
-                "SELECT value FROM meta WHERE key='hermes_session_id'"
+                "SELECT value FROM meta WHERE key IN ('hermes_session_id','pi_session_id') AND value=?",
+                (session_id,),
             ).fetchone()
             if (not message or message["role"] != "user"
                     or message["status"] not in ("sending", "running")
@@ -99,7 +100,8 @@ class ReactionStore:
                 (message_id,),
             ).fetchone()
             session = db.execute(
-                "SELECT value FROM meta WHERE key='hermes_session_id'"
+                "SELECT value FROM meta WHERE key IN ('hermes_session_id','pi_session_id') AND value=?",
+                (target["session_id"] if target else "",),
             ).fetchone()
             if (not target or target["role"] != "user"
                     or target["status"] not in ("sending", "running")

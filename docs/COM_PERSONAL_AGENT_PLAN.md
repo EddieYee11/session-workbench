@@ -1,5 +1,7 @@
 # Com! × Hermes Personal Agent 产品与实施规划
 
+> 历史资料：2026-10-03 起主线和权限决定由 [当前路线图](COM_MUSE_ROADMAP.md) 与 [任务层契约](TASK_LAYER_CONTRACT.md) 替代；新 Pi RPC、Claude worker 和验收证据见 [实施记录](COM_PI_MAIN_IMPLEMENTATION.md)。下文保留原阶段事实，不作为新实现约束。
+
 > 规划基线：2026-10-01。用户已确定「Hermes 为持续对话主 Agent，Pi/Codex 为按任务派发的执行 Harness」。此文区分已实施与待实施；当前代码、装机与服务状态以现场复核为准。
 
 ## 1. 产品目标

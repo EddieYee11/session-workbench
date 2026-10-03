@@ -119,16 +119,16 @@ private fun openListenerSettings(context:Context){
   Row(verticalAlignment=Alignment.CenterVertically){
    Icon(icon,null,Modifier.size(22.dp),tint=if(granted)Ink else Faint)
    Column(Modifier.weight(1f).padding(horizontal=12.dp)){
-    Text(title,fontSize=14.sp,fontWeight=FontWeight.Medium,color=Ink)
-    Text(desc,fontSize=11.sp,color=Muted,lineHeight=16.sp)
+    Text(title,fontSize=Type.BodySm,fontWeight=FontWeight.Medium,color=Ink)
+    Text(desc,fontSize=Type.Caption,color=Muted,lineHeight=16.sp)
    }
-   if(granted)Text("已开启",fontSize=12.sp,color=PiGreen)
-   else TextButton(onClick=onEnable){Text("开启",fontSize=13.sp)}
+   if(granted)Text("已开启",fontSize=Type.Caption,color=PiGreen)
+   else TextButton(onClick=onEnable){Text("开启",fontSize=Type.BodySm)}
   }
   var show by remember{mutableStateOf(false)}
   if(!granted){
-   if(!show)TextButton(onClick={show=true},contentPadding=PaddingValues(0.dp)){Text("为什么需要这个权限？",fontSize=11.sp,color=Faint)}
-   else Text(rationale,Modifier.padding(top=4.dp),fontSize=12.sp,lineHeight=18.sp,color=Muted)
+   if(!show)TextButton(onClick={show=true},contentPadding=PaddingValues(0.dp)){Text("为什么需要这个权限？",fontSize=Type.Caption,color=Faint)}
+   else Text(rationale,Modifier.padding(top=4.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
   }
   extra()
  }
@@ -138,12 +138,17 @@ private fun openListenerSettings(context:Context){
 /** “更多”里的权限与上下文页：状态 + 按需申请 + 上下文直接可见 */
 @Composable fun PermissionsSheetContent(){
  val context=androidx.compose.ui.platform.LocalContext.current
- val locLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){ok->if(ok)PhoneContext.refreshLocation(context)}
- val conLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){}
- val calLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){}
  var tick by remember{mutableIntStateOf(0)}
- // 轮询刷新：从系统设置页返回后状态能自动更新（与通知设置页保持一致）
- LaunchedEffect(Unit){while(true){kotlinx.coroutines.delay(2000);tick++}}
+ val locLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){ok->if(ok)PhoneContext.refreshLocation(context);tick++}
+ val conLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){tick++}
+ val calLauncher=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){tick++}
+ // 权限只在用户操作后才变：申请返回或从系统设置页回到本页（ON_RESUME）时刷新一次，不做轮询
+ val lifecycle=androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+ DisposableEffect(lifecycle){
+  val observer=androidx.lifecycle.LifecycleEventObserver{_,event->if(event==androidx.lifecycle.Lifecycle.Event.ON_RESUME)tick++}
+  lifecycle.addObserver(observer)
+  onDispose{lifecycle.removeObserver(observer)}
+ }
  val locGranted=remember(tick){PhoneContext.locationGranted(context)}
  val conGranted=remember(tick){PhoneContext.contactsGranted(context)}
  val calGranted=remember(tick){PhoneContext.calendarGranted(context)}
@@ -154,38 +159,38 @@ private fun openListenerSettings(context:Context){
  }
  Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=22.dp).padding(bottom=28.dp)){
   Text("权限与上下文",fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-  Text("上下文直接来自手机：通知、日历、位置、通讯录。权限只在你要用它时才申请，随时可关。",Modifier.padding(top=4.dp,bottom=8.dp),fontSize=12.sp,lineHeight=18.sp,color=Muted)
+  Text("上下文直接来自手机：通知、日历、位置、通讯录。权限只在你要用它时才申请，随时可关。",Modifier.padding(top=4.dp,bottom=8.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
 
-  PermissionRow(Icons.Outlined.Notifications,"手机通知","新通知经 Hermes 分析成摘要与草稿",remember(tick){PhoneContext.listenerGranted(context)},
+  PermissionRow(Icons.Outlined.Notifications,"手机通知","新通知经 Pi 分析成摘要与草稿",remember(tick){PhoneContext.listenerGranted(context)},
    "开启后，所选应用的新通知会在手机加密排队、发到 Mac mini 分析。验证码等敏感通知整条跳过，不会自动回复。",{openListenerSettings(context)})
 
   var share by remember{mutableStateOf(PhoneContext.shareLocation(context))}
   val locText=remember(tick){PhoneContext.lastLocationText(context)}
-  PermissionRow(Icons.Outlined.Place,"位置信息","Hermes 知道你在哪：迟到提醒、附近推荐",locGranted,
-   "开启后，Hermes 可以结合你的实时位置和日程地点，在你要迟到时提醒你出门。位置只在你要用时获取。",{locLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)}){
+  PermissionRow(Icons.Outlined.Place,"位置信息","Pi 知道你在哪：迟到提醒、附近推荐",locGranted,
+   "开启后，Pi 可以结合你的实时位置和日程地点，在你要迟到时提醒你出门。位置只在你要用时获取。",{locLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)}){
    if(locGranted){
     Row(Modifier.fillMaxWidth().padding(top=6.dp),verticalAlignment=Alignment.CenterVertically){
-     Text("让 Hermes 使用我的位置",Modifier.weight(1f),fontSize=13.sp,color=Ink)
+     Text("让 Pi 使用我的位置",Modifier.weight(1f),fontSize=Type.BodySm,color=Ink)
      Switch(share,{share=it;PhoneContext.setShareLocation(context,it)})
     }
     Row(verticalAlignment=Alignment.CenterVertically){
-     Text(if(locText.isBlank())"尚未获取到位置" else "当前位置 $locText",Modifier.weight(1f),fontSize=11.sp,color=Muted)
-     TextButton(onClick={PhoneContext.refreshLocation(context);tick++}){Text("刷新",fontSize=11.sp)}
+     Text(if(locText.isBlank())"尚未获取到位置" else "当前位置 $locText",Modifier.weight(1f),fontSize=Type.Caption,color=Muted)
+     TextButton(onClick={PhoneContext.refreshLocation(context);tick++}){Text("刷新",fontSize=Type.Caption)}
     }
    }
   }
 
   PermissionRow(Icons.Outlined.Contacts,"通讯录","来电和短信显示名字而不是号码",conGranted,
    "开启后，通知里的陌生号码会自动匹配成联系人名字。通讯录只在手机本地解析。",{conLauncher.launch(Manifest.permission.READ_CONTACTS)}){
-   if(conGranted)Text("已加载 $conCount 个联系人",Modifier.padding(top=4.dp),fontSize=11.sp,color=Muted)
+   if(conGranted)Text("已加载 $conCount 个联系人",Modifier.padding(top=4.dp),fontSize=Type.Caption,color=Muted)
   }
 
   PermissionRow(Icons.Outlined.EventNote,"手机日历","本地日程也出现在今天页",calGranted,
    "开启后，今天页直接读取手机可见日历中的日程。日历只在手机本地读取。",{calLauncher.launch(Manifest.permission.READ_CALENDAR)}){
-   if(calGranted)Text(calCount?.let{"手机日历今天 $it 条"}?:"正在读取手机日历…",Modifier.padding(top=4.dp),fontSize=11.sp,color=Muted)
+   if(calGranted)Text(calCount?.let{"手机日历今天 $it 条"}?:"正在读取手机日历…",Modifier.padding(top=4.dp),fontSize=Type.Caption,color=Muted)
   }
 
-  PermissionRow(Icons.Outlined.Mic,"麦克风","快捷语音和 Hermes 语音输入",remember(tick){PhoneContext.micGranted(context)},
-   "按住电源键和 Pi 说一句，或在 Hermes 对话里直接语音输入。",{})
+  PermissionRow(Icons.Outlined.Mic,"麦克风","快捷语音和 Pi 语音输入",remember(tick){PhoneContext.micGranted(context)},
+   "按住电源键和 Pi 说一句，或在 Pi 对话里直接语音输入。",{})
  }
 }

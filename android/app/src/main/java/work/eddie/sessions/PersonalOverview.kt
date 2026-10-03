@@ -107,13 +107,13 @@ private fun scopeText(calendar:JSONObject):String{
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally){
   Column(Modifier.widthIn(max=820.dp).fillMaxWidth()){
    Row(verticalAlignment=Alignment.CenterVertically){
-    IconButton(onClick=back){ComIcon(R.drawable.com_icon_back_v1,"返回 Hermes",Modifier.size(24.dp))}
+    IconButton(onClick=back){ComIcon(R.drawable.com_icon_back_v1,"返回 Pi",Modifier.size(24.dp))}
     ComIcon(if(page=="calendar")R.drawable.com_icon_today_v1 else R.drawable.com_icon_finance_v1,null,Modifier.size(24.dp))
     Text(if(page=="calendar")"日历"else"账本",Modifier.weight(1f).padding(start=3.dp),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     IconButton(onClick={vm.refreshPersonalNow()},enabled=!vm.personalLoading&&vm.store.token.isNotEmpty()){ComIcon(R.drawable.com_icon_refresh_v1,"刷新来源",Modifier.size(24.dp),alpha=if(vm.personalLoading).5f else 1f)}
    }
-   Text(if(vm.personalFresh)"概览生成于 ${updateTime(overview.optDouble("generated_at"))}" else if(hasSnapshot)"离线缓存 · 保存于 ${updateTime(overview.optDouble("generated_at"))}" else "正在连接数据来源",Modifier.padding(start=54.dp,bottom=14.dp),fontSize=12.sp,color=if(vm.personalFresh)Muted else AmberText)
-   if(vm.personalError.isNotBlank()&&!vm.personalFresh)Text(vm.personalError,Modifier.padding(bottom=10.dp),fontSize=12.sp,color=AmberText)
+   Text(if(vm.personalFresh)"概览生成于 ${updateTime(overview.optDouble("generated_at"))}" else if(hasSnapshot)"离线缓存 · 保存于 ${updateTime(overview.optDouble("generated_at"))}" else "正在连接数据来源",Modifier.padding(start=54.dp,bottom=14.dp),fontSize=Type.Caption,color=if(vm.personalFresh)Muted else AmberText)
+   if(vm.personalError.isNotBlank()&&!vm.personalFresh)Text(vm.personalError,Modifier.padding(bottom=10.dp),fontSize=Type.Caption,color=AmberText)
    if(page=="calendar")CalendarOverviewCard(calendar,vm.personalFresh,hasSnapshot,false){}
    else FinanceOverviewCard(finance,vm.personalFresh,hasSnapshot,false){}
   }
@@ -128,11 +128,11 @@ private fun scopeText(calendar:JSONObject):String{
  Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=12.dp),horizontalAlignment=Alignment.CenterHorizontally){
   Column(Modifier.widthIn(max=820.dp).fillMaxWidth()){
    Row(verticalAlignment=Alignment.CenterVertically){
-    IconButton(onClick=back){ComIcon(R.drawable.com_icon_back_v1,"返回 Hermes",Modifier.size(24.dp))}
+    IconButton(onClick=back){ComIcon(R.drawable.com_icon_back_v1,"返回 Pi",Modifier.size(24.dp))}
     Text("今天",Modifier.weight(1f).padding(start=7.dp),fontSize=23.sp,fontWeight=FontWeight.SemiBold,color=Ink)
     IconButton(onClick={vm.refreshPersonalNow()},enabled=!vm.personalLoading&&vm.store.token.isNotEmpty()){ComIcon(R.drawable.com_icon_refresh_v1,"刷新来源",Modifier.size(24.dp),alpha=if(vm.personalLoading).5f else 1f)}
    }
-   Text("手机日历直接读取 · 账本与任务由 Mac mini 同步",Modifier.padding(start=54.dp,bottom=14.dp),fontSize=12.sp,color=Muted)
+   Text("手机日历直接读取 · 账本与任务由 Mac mini 同步",Modifier.padding(start=54.dp,bottom=14.dp),fontSize=Type.Caption,color=Muted)
    PhoneCalendarCard()
    Spacer(Modifier.height(14.dp))
    FinanceOverviewCard(finance,vm.personalFresh,hasSnapshot,false){}
@@ -149,7 +149,7 @@ private fun scopeText(calendar:JSONObject):String{
   source.optBoolean("stale")->"来源数据已过期 · 更新于 ${updateTime(source.optDouble("updated_at"))}"
   else->"更新于 ${updateTime(source.optDouble("updated_at"))}"
  }
- Text("$label · $note",fontSize=11.sp,lineHeight=17.sp,color=if(available&&fresh&&!source.optBoolean("stale"))Muted else AmberText)
+ Text("$label · $note",fontSize=Type.Caption,lineHeight=17.sp,color=if(available&&fresh&&!source.optBoolean("stale"))Muted else AmberText)
 }
 
 @Composable private fun CalendarOverviewCard(calendar:JSONObject,fresh:Boolean,hasSnapshot:Boolean,compact:Boolean,open:()->Unit){
@@ -160,20 +160,20 @@ private fun scopeText(calendar:JSONObject):String{
   Column(Modifier.padding(20.dp)){
    Row(verticalAlignment=Alignment.CenterVertically){ComIcon(R.drawable.com_icon_today_v1,null,Modifier.size(24.dp));Text(if(compact)"下一项日程"else"日历 · 近期日程",Modifier.weight(1f).padding(start=5.dp),fontSize=17.sp,fontWeight=FontWeight.SemiBold,color=Ink);if(compact)ComIcon(R.drawable.com_icon_chevron_v1,"打开日历",Modifier.size(23.dp))}
    Spacer(Modifier.height(15.dp))
-   if(!hasSnapshot)Text("连接后读取已配置的日历",fontSize=14.sp,color=Muted)
-   else if(!available)Text(sourceProblem(calendar.optString("error_code")),fontSize=14.sp,color=AmberText)
+   if(!hasSnapshot)Text("连接后读取已配置的日历",fontSize=Type.BodySm,color=Muted)
+   else if(!available)Text(sourceProblem(calendar.optString("error_code")),fontSize=Type.BodySm,color=AmberText)
    else if(compact){
-    Text(upcoming?.optString("title")?:"当前范围内没有即将到来的日程",fontSize=16.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
-    if(upcoming!=null)Text(eventTime(upcoming),Modifier.padding(top=5.dp),fontSize=13.sp,color=Muted)
-   }else if(events.isEmpty())Text("当前范围内暂无日程",fontSize=14.sp,color=Muted)
+    Text(upcoming?.optString("title")?:"当前范围内没有即将到来的日程",fontSize=Type.Body,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
+    if(upcoming!=null)Text(eventTime(upcoming),Modifier.padding(top=5.dp),fontSize=Type.BodySm,color=Muted)
+   }else if(events.isEmpty())Text("当前范围内暂无日程",fontSize=Type.BodySm,color=Muted)
    else events.forEachIndexed{index,event->
     if(index>0)HorizontalDivider(Modifier.padding(vertical=11.dp),color=Line)
-    Text(event.optString("title","未命名日程"),fontSize=15.sp,fontWeight=FontWeight.Medium,color=Ink)
-    Text(eventTime(event),Modifier.padding(top=3.dp),fontSize=12.sp,color=Muted)
+    Text(event.optString("title","未命名日程"),fontSize=Type.Body,fontWeight=FontWeight.Medium,color=Ink)
+    Text(eventTime(event),Modifier.padding(top=3.dp),fontSize=Type.Caption,color=Muted)
    }
    Spacer(Modifier.height(14.dp))
    if(hasSnapshot)SourceLine(calendar.optString("source","Google Calendar"),calendar,fresh)
-   Text(if(hasSnapshot&&available)scopeText(calendar) else "日历范围待连接后核对",Modifier.padding(top=3.dp),fontSize=11.sp,color=Faint)
+   Text(if(hasSnapshot&&available)scopeText(calendar) else "日历范围待连接后核对",Modifier.padding(top=3.dp),fontSize=Type.Caption,color=Faint)
   }
  }
 }
@@ -186,19 +186,19 @@ private fun scopeText(calendar:JSONObject):String{
   Column(Modifier.padding(20.dp)){
    Row(verticalAlignment=Alignment.CenterVertically){ComIcon(R.drawable.com_icon_finance_v1,null,Modifier.size(24.dp));Text("本月账本",Modifier.weight(1f).padding(start=5.dp),fontSize=17.sp,fontWeight=FontWeight.SemiBold,color=Ink);if(compact)ComIcon(R.drawable.com_icon_chevron_v1,"打开账本",Modifier.size(23.dp))}
    Spacer(Modifier.height(15.dp))
-   if(!hasSnapshot)Text("连接后读取 ezBookkeeping 月概况",fontSize=14.sp,color=Muted)
-   else if(!available)Text(sourceProblem(finance.optString("error_code")),fontSize=14.sp,color=AmberText)
-   else if(currencies.isEmpty())Text("本月暂无记账数据",fontSize=14.sp,color=Muted)
+   if(!hasSnapshot)Text("连接后读取 ezBookkeeping 月概况",fontSize=Type.BodySm,color=Muted)
+   else if(!available)Text(sourceProblem(finance.optString("error_code")),fontSize=Type.BodySm,color=AmberText)
+   else if(currencies.isEmpty())Text("本月暂无记账数据",fontSize=Type.BodySm,color=Muted)
    else currencies.forEachIndexed{index,currency->
     if(index>0)HorizontalDivider(Modifier.padding(vertical=12.dp),color=Line)
     val row=totals.optJSONObject(currency)?:JSONObject()
-    Text(currency,fontSize=13.sp,fontWeight=FontWeight.SemiBold,color=Muted)
-    Text("支出 ${formatMinorAmount(row.optLong("expense_minor"),currency)}",Modifier.padding(top=5.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-    Text("收入 ${formatMinorAmount(row.optLong("income_minor"),currency)} · 今日支出 ${formatMinorAmount(row.optLong("today_expense_minor"),currency)}",Modifier.padding(top=4.dp),fontSize=12.sp,lineHeight=18.sp,color=Muted)
+    Text(currency,fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Muted)
+    Text("支出 ${formatMinorAmount(row.optLong("expense_minor"),currency)}",Modifier.padding(top=5.dp),fontSize=Type.Body,fontWeight=FontWeight.SemiBold,color=Ink)
+    Text("收入 ${formatMinorAmount(row.optLong("income_minor"),currency)} · 今日支出 ${formatMinorAmount(row.optLong("today_expense_minor"),currency)}",Modifier.padding(top=4.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
    }
    if(available){
-    Text("${finance.optString("month")} · ${finance.optInt("month_transaction_count")} 笔 · 本月至今",Modifier.padding(top=13.dp),fontSize=11.sp,color=Faint)
-    if(finance.optJSONObject("coverage")?.optString("totals")=="all_fetched_transactions_month_to_date")Text("汇总覆盖全部可获取的本月交易",Modifier.padding(top=3.dp),fontSize=11.sp,color=Faint)
+    Text("${finance.optString("month")} · ${finance.optInt("month_transaction_count")} 笔 · 本月至今",Modifier.padding(top=13.dp),fontSize=Type.Caption,color=Faint)
+    if(finance.optJSONObject("coverage")?.optString("totals")=="all_fetched_transactions_month_to_date")Text("汇总覆盖全部可获取的本月交易",Modifier.padding(top=3.dp),fontSize=Type.Caption,color=Faint)
    }
    Spacer(Modifier.height(10.dp))
    if(hasSnapshot)SourceLine(finance.optString("source","ezBookkeeping"),finance,fresh)

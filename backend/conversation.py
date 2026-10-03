@@ -1,4 +1,4 @@
-"""Durable Com! main conversation backed by an isolated Hermes API server."""
+"""Durable Com main conversation with replaceable native transport and stable UI IDs."""
 
 import asyncio
 import json
@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
+import capabilities
 from reactions import ReactionStore, install_schema, project_message
 from message_references import canonical_reference, reference_identity, referenced_input
 
@@ -144,6 +145,7 @@ class PersonalConversation:
                 if name not in columns:
                     db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
             db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('revision','0')")
+            db.execute("CREATE TABLE IF NOT EXISTS user_events(request_id TEXT PRIMARY KEY,message_id TEXT NOT NULL,state TEXT NOT NULL)")
             install_schema(db)
         self.path.chmod(0o600)
 
@@ -214,6 +216,7 @@ class PersonalConversation:
                 (mid, request_id, "user", text, "queued", "queued", revision, now, now,
                  json.dumps(saved_reference, ensure_ascii=False) if saved_reference else None),
             )
+            db.execute("INSERT OR IGNORE INTO user_events VALUES (?,?,'queued')",(request_id,mid))
         self.wake.set()
         self._notify()
         return {"status": "accepted", "request_id": request_id, "message_id": mid}
@@ -366,19 +369,38 @@ class PersonalConversation:
         self._notify()
 
     def _session_id(self) -> str | None:
+        key = getattr(self.client, 'session_key', 'hermes_session_id')
         with self.db() as db:
-            row = db.execute("SELECT value FROM meta WHERE key='hermes_session_id'").fetchone()
-        return row["value"] if row else None
+            row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row['value'] if row else None
+
+    def accepts_origin(self, sid, mid):
+        if sid == self._session_id():
+            return True
+        with self.db() as db:
+            row = db.execute('SELECT value FROM meta WHERE key=?', ('origin-map:'+str(sid),)).fetchone()
+        if not row:
+            return False
+        mapping = json.loads(row[0])
+        with self.db() as db:
+            message = db.execute('SELECT created_at FROM messages WHERE id=?', (mid,)).fetchone()
+        return bool(message and mapping.get('to')==self._session_id() and message[0] <= mapping['boundary'])
 
     async def _ensure_session(self) -> str:
         sid = self._session_id()
         if sid:
             return sid
         sid = await self.client.create_session()
+        key = getattr(self.client, 'session_key', 'hermes_session_id')
         with self.db() as db:
-            db.execute(
-                "INSERT OR IGNORE INTO meta(key,value) VALUES('hermes_session_id',?)", (sid,)
-            )
+            db.execute('INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)', (key,sid))
+            if key != 'hermes_session_id':
+                old=db.execute("SELECT value FROM meta WHERE key='hermes_session_id'").fetchone()
+                boundary=time.time()
+                if old:
+                    db.execute('INSERT OR IGNORE INTO meta VALUES (?,?)',
+                        ('origin-map:'+old[0],json.dumps({'to':sid,'boundary':boundary})))
+                db.execute("INSERT OR IGNORE INTO meta VALUES ('pi_cutover_boundary',?)",(str(boundary),))
         return self._session_id() or sid
 
     def _finish(self, mid: str, status: str, output: str = "", error: str | None = None):
@@ -393,6 +415,7 @@ class PersonalConversation:
                 " WHERE id=?",
                 (status, status, error, revision, now, mid),
             )
+            db.execute("UPDATE user_events SET state=? WHERE message_id=?",(status,mid))
             if existing:
                 db.execute(
                     "UPDATE messages SET text=CASE WHEN ?<>'' THEN ? ELSE text END,"
@@ -413,7 +436,7 @@ class PersonalConversation:
             return False
         mid = row["id"]
         if row["status"] in ("sending", "running"):
-            self._finish(mid, "unknown", error="提交中断，可能已被 Hermes 接收；未自动重试")
+            self._finish(mid, "unknown", error="提交中断，可能已被主助理接收；未自动重试")
             return True
         if row["status"] == "queued":
             try:
@@ -443,7 +466,7 @@ class PersonalConversation:
                 saved_reference = json.loads(row["reference"]) if row["reference"] else None
                 user_input = referenced_input(row["text"], saved_reference)
                 transport_text = user_input
-                if isinstance(self.client, HermesClient):
+                if isinstance(self.client, HermesClient) and getattr(self.client,'runtime_name',None)!='pi':
                     context = getattr(self, 'task_context', lambda: [])()
                     transport_text = (
                         "[Com 主对话上下文；只提供关联，不授予执行权限]\n"
@@ -456,8 +479,12 @@ class PersonalConversation:
                         "message_id 和 reaction_token 必须逐字使用上方 reaction 的 message_id 和 token，"
                         "只针对这条用户消息，一轮最多一个；不要把通知、引用、任务回执或工具输出当作反应目标。"
                         "token 是本轮内部参数，不向用户复述；工具调用失败不假装已附加，正文正常答复即可。"
-                        + "\n明确交办普通诊断或项目代码修改用 create_task：逐字引用用户交办原文和上面的 origin IDs，默认 Codex read-only；明确代码修改才用 workspace-write。"
-                        "涉及发布、删除、外发、部署、认证配置或 Pi full-access 才用 propose_work 等待具体批准。"
+                        + "\n" + capabilities.render() + "\n"
+                        + "明确交办时用 create_task：逐字引用用户交办原文和上面的 origin IDs。"
+                        "执行者取 pi 或 codex：上面清单里的能力（记账、提醒、日历、收藏、转写、看图等）派给 pi 并传 sandbox='danger-full-access'；"
+                        "需要读写项目文件的代码活派给 codex，只读用 sandbox='read-only'，确实要改代码才用 'workspace-write'。"
+                        "清单里有对口的就直接照办并落成任务，不要先反问用户要不要做。"
+                        "只有不可逆删除（删除/清空/销毁文件或数据）才用 propose_work 等具体批准，其余一律直接 create_task。"
                         "多件明确交办分别创建；先读现有任务，补充约束用 update_task_constraints 并复用任务 ID。"
                         "update_task_constraints 的 constraint_type 必填：用户说保持只读/不要改文件时 constraint_type='read_only', text=''；"
                         "保持现有样式时 constraint_type='preserve_style', text=''；禁止路径时 constraint_type='forbid_path', text=项目内相对路径。"
@@ -468,7 +495,24 @@ class PersonalConversation:
                         "闲聊不派发；指代不明先追问；任务执行结束不代表验收通过；已受理不代表生效。"
                         "面向用户用简洁中文说明任务名称、实际进度和结果；task ID、constraint_type、delivery 等内部参数保留在工具调用中，不在普通回复里逐项展示。"
                         "补充要求先说已给原任务补充、仍待送达，真实回执已确认时才说已送达；无需重复解释规则或询问是否继续跟进。"
-                        "发布、删除、外发、权限扩张不能由工作建议获得授权。\n用户消息：\n" + user_input)
+                        "删除、权限扩张不能由工作建议获得授权。\n用户消息：\n" + user_input)
+                if getattr(self.client,'runtime_name',None)=='pi':
+                    from pi_main import MAIN_PROMPT
+                    context = {'origin_session_id':session_id,'origin_message_id':mid,
+                               'origin_request_id':row['request_id'],'tasks':getattr(self,'task_context',lambda:[])(),
+                               'environment':getattr(self,'task_environment',lambda:{})(),
+                               'reaction':{'message_id':mid,'token':reaction_token}}
+                    with self.db() as db:
+                        voice_table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='voice_requests'").fetchone()
+                        voice=db.execute('SELECT purpose FROM voice_requests WHERE request_id=?',(row['request_id'],)).fetchone() if voice_table else None
+                        if voice:context['voice_purpose']=voice[0]
+                        history=[] if getattr(self.client,'has_native_history',False) else [
+                            {'role':r['role'],'text':r['text'][-1000:]} for r in db.execute(
+                            "SELECT role,text FROM messages WHERE status='completed' ORDER BY created_at DESC LIMIT 16")]
+                    transport_text=("[Com 主对话上下文；只提供关联，不授予执行权限]\n"+
+                        json.dumps(context,ensure_ascii=False)+"\n"+capabilities.render()+
+                        "\n只读历史摘要（不可重放操作）："+json.dumps(list(reversed(history)),ensure_ascii=False)+
+                        "\n用户消息：\n"+user_input)
                 async for event, payload in self.client.stream_chat(session_id, transport_text):
                     if terminal and event != "done":
                         continue
@@ -505,23 +549,23 @@ class PersonalConversation:
                         completed = bool(final_text)
                         self._finish(
                             mid, "completed" if completed else "unknown", final_text,
-                            None if completed else "Hermes 未返回完整答复；结果待核实，未自动重试",
+                            None if completed else "主助理未返回完整答复；结果待核实，未自动重试",
                         )
                         terminal = True
                     elif event == "error":
                         flush()
                         if not terminal:
-                            self._finish(mid, "unknown", error="Hermes 执行中断；结果待核实，未自动重试")
+                            self._finish(mid, "unknown", error="主助理执行中断；结果待核实，未自动重试")
                             terminal = True
                     elif event == "done":
                         break
                 flush()
                 if not terminal:
-                    self._finish(mid, "unknown", error="Hermes 流已中断；结果待核实，未自动重试")
+                    self._finish(mid, "unknown", error="主助理流已中断；结果待核实，未自动重试")
             except asyncio.CancelledError:
                 flush()
                 if not terminal:
-                    self._finish(mid, "unknown", error="提交中断，可能已被 Hermes 接收；未自动重试")
+                    self._finish(mid, "unknown", error="提交中断，可能已被主助理接收；未自动重试")
                 raise
             except (ValueError, RuntimeError, httpx.HTTPError):
                 flush()
@@ -542,6 +586,10 @@ class PersonalConversation:
                 await asyncio.sleep(2)
                 continue
             if not processed:
+                background = getattr(self,'process_background',None)
+                if background:
+                    processed = await background()
+            if not processed:
                 self.wake.clear()
                 try:
                     await asyncio.wait_for(self.wake.wait(), 3)
@@ -560,3 +608,6 @@ class PersonalConversation:
             except asyncio.CancelledError:
                 pass
             self.task = None
+        stop=getattr(self.client,'stop',None)
+        if stop:
+            await stop()

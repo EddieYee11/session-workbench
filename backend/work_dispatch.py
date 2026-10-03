@@ -18,7 +18,7 @@ from typing import Any, Iterator
 
 
 PROPOSAL_TTL_SECONDS = 24 * 60 * 60
-VALID_AGENTS = {"pi", "codex"}
+VALID_AGENTS = {"pi", "codex", "claude"}
 VALID_CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
 
 
@@ -73,6 +73,9 @@ class WorkProposalStore:
                 error_code TEXT
                 )"""
             )
+            columns={row['name'] for row in db.execute('PRAGMA table_info(proposals)')}
+            if 'actual_action' not in columns:
+                db.execute("ALTER TABLE proposals ADD COLUMN actual_action TEXT NOT NULL DEFAULT '{}' ")
             db.commit()
             with db:
                 yield db
@@ -101,7 +104,7 @@ class WorkProposalStore:
 
     @staticmethod
     def _row(row: sqlite3.Row) -> dict[str, Any]:
-        return {key: row[key] for key in row.keys() if key != "fingerprint"}
+        return {key: json.loads(row[key]) if key=='actual_action' else row[key] for key in row.keys() if key != "fingerprint"}
 
     def propose(
         self,
@@ -117,14 +120,16 @@ class WorkProposalStore:
         origin_request_id: str = "",
         idempotency_key: str = "",
         now: float | None = None,
+        actual_action: dict | None = None,
     ) -> dict[str, Any]:
         if agent not in VALID_AGENTS:
             raise ValueError("Agent must be pi or codex")
         if agent == "pi" and sandbox != "danger-full-access":
             raise ValueError("Pi currently requires explicit full-access approval")
-        if agent == "codex" and sandbox not in VALID_CODEX_SANDBOXES:
+        if agent in ("codex", "claude") and sandbox not in VALID_CODEX_SANDBOXES:
             raise ValueError("Invalid Codex sandbox")
         payload = {
+            "actual_action":actual_action or {},
             "agent": agent,
             "cwd": self._cwd(relative_cwd),
             "title": self._text(title, "title", 120),
@@ -168,6 +173,7 @@ class WorkProposalStore:
                     "proposed",at,at,at+PROPOSAL_TTL_SECONDS,
                 ),
             )
+            db.execute('UPDATE proposals SET actual_action=? WHERE id=?',(json.dumps(actual_action or {},ensure_ascii=False),proposal_id))
             row = db.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
             return self._row(row)
 

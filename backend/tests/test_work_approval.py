@@ -23,6 +23,8 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
 
     async def create(agent, cwd, **options):
         calls.append(("create", agent, cwd, options))
+        app.history.save_managed('codex:verified-001',{'agent':'codex','native_id':'verified-001','cwd':cwd,
+            'ended':False,'tmux':'','sandbox':options['sandbox']})
         return "codex:verified-001"
 
     async def send(sid, prompt, request_id, *args):
@@ -34,6 +36,8 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
     async def models(agent):
         return [{'id':'native-default','is_default':True,'default_effort':'low'}]
     monkeypatch.setattr(app.runtime, "models", models)
+    async def no_external_rpc():pass
+    monkeypatch.setattr(app.runtime,'ensure_rpc',no_external_rpc)
     route = "/personal/work/proposals/" + proposal["id"] + "/approve"
     body = {"request_id": "user-approved-001", "explicit_authorization": True}
     with TestClient(app.app) as client:
@@ -47,6 +51,7 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
         assert client.post(route, headers=headers, json={"request_id": "another-approval-001"}).status_code == 409
     assert [call[0] for call in calls] == ["create", "input"]
     assert calls[0][3]["sandbox"] == "workspace-write"
+    assert Path(calls[0][2]).is_relative_to(tmp_path/'state/worker-copies')
 
 
 def test_refresh_does_not_authorize_and_tasks_expose_source(tmp_path, monkeypatch):

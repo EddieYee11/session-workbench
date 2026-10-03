@@ -88,7 +88,7 @@ fun HermesCompanion(
                 bounds.bottom > 0f && bounds.right > 0f &&
                 bounds.top < view.rootView.height && bounds.left < view.rootView.width
         }.semantics {
-            contentDescription = "Hermes 螃蟹伙伴，${CrabAvatarState.defaultCopy(displayState)}"
+            contentDescription = "Pi 螃蟹伙伴，${CrabAvatarState.defaultCopy(displayState)}"
         },
         contentAlignment = Alignment.Center,
     ) {

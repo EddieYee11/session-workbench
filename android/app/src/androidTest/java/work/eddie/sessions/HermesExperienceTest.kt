@@ -48,7 +48,7 @@ class HermesExperienceTest {
                     .put("status", "completed")))
         }
         ui.setContent { MaterialTheme(colorScheme = Palette) { HermesChat(vm, {}, false, {}) } }
-        ui.onNodeWithContentDescription("Hermes 对这条消息的表情：🎉").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Pi 对这条消息的表情：🎉").assertIsDisplayed()
         ui.onNodeWithTag("hermes-user-bubble").assertIsDisplayed()
         ui.onNodeWithTag("hermes-assistant-bubble").assertIsDisplayed()
         val header = ui.onNodeWithTag("hermes-fading-header").fetchSemanticsNode().boundsInRoot
@@ -67,9 +67,9 @@ class HermesExperienceTest {
                 }
             }
         }
-        ui.onNodeWithContentDescription("Hermes 螃蟹伙伴，听着呢…").assertIsDisplayed()
-        ui.onNodeWithContentDescription("Hermes 螃蟹伙伴，想想啊…").assertIsDisplayed()
-        ui.onNodeWithContentDescription("Hermes 螃蟹伙伴，离线了，稍后再试").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Pi 螃蟹伙伴，听着呢…").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Pi 螃蟹伙伴，想想啊…").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Pi 螃蟹伙伴，离线了，稍后再试").assertIsDisplayed()
         capture("avatar-states")
     }
 }

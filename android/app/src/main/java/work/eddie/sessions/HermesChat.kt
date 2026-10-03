@@ -62,8 +62,9 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 fun hermesMessageStatus(status:String):String=when(status){
+ "delegated"->"已交给工作执行器"
  "queued"->"已排队"
- "sending"->"正在交给 Hermes"
+ "sending"->"正在交给 Pi"
  "running"->"正在处理"
  "waiting"->"等待你回应"
  "received"->"已接收"
@@ -117,11 +118,11 @@ private fun hermesActivityStatus(runs:List<JSONObject>,messages:List<JSONObject>
 
 private fun hermesToolLabel(name:String):String=when{
  name.endsWith("personal_overview")->"正在读取日历与账本概览"
- name.endsWith("recent_work_sessions")->"正在核对 Pi / Codex 工作会话"
+ name.endsWith("recent_work_sessions")->"正在核对 Claude / Codex 工作会话"
  name.endsWith("propose_work")->"正在准备工作建议"
  name.endsWith("work_proposal_status")->"正在核对工作建议"
  name.isNotBlank()->"正在使用 ${name.take(46)}"
- else->"Hermes 正在处理这条消息"
+ else->"Pi 正在处理这条消息"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -174,32 +175,32 @@ private fun hermesToolLabel(name:String):String=when{
     item(key="intro"){
      Column(Modifier.widthIn(max=790.dp).fillMaxWidth()){
       if(messages.isEmpty())HermesHero(wideHero){vm.updateHermesDraft(it)}
-      if(vm.hermesError.isNotBlank()&&!vm.hermesFresh)Text("连接提示：${vm.hermesError}",Modifier.padding(top=8.dp),fontSize=12.sp,color=AmberText)
-      if(hasConversation&&!vm.hermesFresh)Text("以下是上次保存的对话。联网并同步后才能继续发送。",fontSize=12.sp,color=AmberText)
+      if(vm.hermesError.isNotBlank()&&!vm.hermesFresh)Text("连接提示：${vm.hermesError}",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=AmberText)
+      if(hasConversation&&!vm.hermesFresh)Text("以下是上次保存的对话。联网并同步后才能继续发送。",fontSize=Type.Caption,color=AmberText)
      }
     }
     items(messages,key={messageMotionId(it).ifBlank{it.toString()}}){message->
      MessageSendRow(motion,messageMotionId(message),Modifier.widthIn(max=790.dp).fillMaxWidth(),trailingSpacing=22.dp){Column{
-      MessageSwipeActions(message,enabled=!message.optBoolean("local"),onReply={vm.hermesReference=messageReference(it,"reply","Hermes","personal-main")},onForward={vm.hermesReference=messageReference(it,"forward","Hermes","personal-main")}){HermesMessage(message,motion)}
+      MessageSwipeActions(message,enabled=!message.optBoolean("local"),onReply={vm.hermesReference=messageReference(it,"reply","Pi","personal-main")},onForward={vm.hermesReference=messageReference(it,"forward","Pi","personal-main")}){HermesMessage(message,motion,vm.font)}
       if(message.optString("role")=="user")Box(Modifier.messageSendMetadata(motion,messageMotionId(message))){HermesProgressCard(message,vm.hermesFresh)}
      }}
     }
     item(key="tail"){
      Column(Modifier.widthIn(max=790.dp).fillMaxWidth()){
-      if(messages.isEmpty()&&hasConversation)Text("想从什么事开始？日历和账本会按真实来源回答。",fontSize=14.sp,color=Muted)
+      if(messages.isEmpty()&&hasConversation)Text("想从什么事开始？日历和账本会按真实来源回答。",fontSize=Type.BodySm,color=Muted)
       proposals.forEach{proposal->WorkProposalCard(vm,proposal)}
-      if(vm.workProposalNote.isNotBlank())Text(vm.workProposalNote,Modifier.padding(top=8.dp),fontSize=12.sp,color=Muted)
+      if(vm.workProposalNote.isNotBlank())Text(vm.workProposalNote,Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
      }
     }
    }
-   // Messages scroll under a translucent header, instead of losing 128dp to an opaque block.
+   // Keep text out of the controls; fade only below the 76dp header row.
    Box(Modifier.fillMaxWidth().height(98.dp).align(Alignment.TopCenter)
-    .background(Brush.verticalGradient(0f to Paper.copy(alpha=.98f),.40f to Paper.copy(alpha=.86f),.76f to Paper.copy(alpha=.38f),1f to Color.Transparent))
+    .background(Brush.verticalGradient(0f to Paper,.78f to Paper,1f to Color.Transparent))
     .testTag("hermes-fading-header")){
     Row(Modifier.fillMaxWidth().height(76.dp).padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically){
      if(showMenu)Surface(onClick=menu,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.8f)){
       ComIcon(R.drawable.com_icon_menu_v1,"打开导航",Modifier.padding(11.dp))
-     }else Text("Com!",fontSize=17.sp,fontWeight=FontWeight.Bold,color=Ink)
+     }else Text("Com!",fontSize=17.sp,fontWeight=FontWeight.SemiBold,color=Ink)
      Row(Modifier.weight(1f).clickable{openTasks()},horizontalArrangement=Arrangement.Center,verticalAlignment=Alignment.CenterVertically){
       val current=messages.lastOrNull{it.optString("role")=="user"}
       val phase=current?.optString("phase").orEmpty()
@@ -214,7 +215,7 @@ private fun hermesToolLabel(name:String):String=when{
       }
       HermesCompanion(visual,Modifier.size(58.dp),compact=true,animationActive=vm.active&&vm.hermesVisible)
       Column(Modifier.padding(start=3.dp),verticalArrangement=Arrangement.spacedBy(2.dp)){
-       Text("Hermes",fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+       Text("Pi",fontSize=Type.Body,fontWeight=FontWeight.SemiBold,color=Ink)
        val label=when{
         vm.hermesVoicePhase=="recording"->"正在倾听"
         vm.hermesFresh&&vm.taskLedgerFresh&&activeTasks>0->"$activeTasks 项后台任务"
@@ -222,14 +223,14 @@ private fun hermesToolLabel(name:String):String=when{
         vm.hermesLoading->"连接中"
         else->"离线记录"
        }
-       AnimatedContent(label,transitionSpec={fadeIn(tween(150)) togetherWith fadeOut(tween(90))},label="Hermes实际阶段"){
-        Text(it,fontSize=10.sp,color=if(vm.hermesFresh)Muted else AmberText,maxLines=1)
+       AnimatedContent(label,transitionSpec={fadeIn(tween(150)) togetherWith fadeOut(tween(90))},label="Pi实际阶段"){
+        Text(it,fontSize=Type.Micro,color=if(vm.hermesFresh)Muted else AmberText,maxLines=1)
        }
       }
      }
      Box{
       Surface(onClick=openTasks,modifier=Modifier.size(44.dp),shape=CircleShape,color=Card.copy(alpha=.8f)){
-       ComIcon(R.drawable.com_icon_activity_v1,"查看 Hermes 活动",Modifier.padding(11.dp))
+       ComIcon(R.drawable.com_icon_activity_v1,"查看 Pi 活动",Modifier.padding(11.dp))
       }
       if(needsAttention)Box(Modifier.align(Alignment.TopEnd).size(9.dp).background(Ember,CircleShape).border(2.dp,Paper,CircleShape))
      }
@@ -245,9 +246,9 @@ private fun hermesToolLabel(name:String):String=when{
   Column(Modifier.fillMaxWidth().heightIn(max=560.dp).verticalScroll(rememberScrollState()).padding(horizontal=22.dp).padding(bottom=28.dp)){
    Row(verticalAlignment=Alignment.CenterVertically){
     ComIcon(R.drawable.com_icon_activity_v1,null,Modifier.size(24.dp))
-    Text("Hermes 活动",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+    Text("Pi 活动",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
    }
-   Text(if(vm.hermesFresh)"当前状态：${hermesActivityStatus(runs,messages)}${if(vm.hermesStreaming)" · 实时同步"else" · 快照同步"}"else"离线记录，状态待同步",Modifier.padding(top=4.dp,bottom=8.dp),fontSize=12.sp,color=Muted)
+   Text(if(vm.hermesFresh)"当前状态：${hermesActivityStatus(runs,messages)}${if(vm.hermesStreaming)" · 实时同步"else" · 快照同步"}"else"离线记录，状态待同步",Modifier.padding(top=4.dp,bottom=8.dp),fontSize=Type.Caption,color=Muted)
    TaskLedgerSection(vm,runs,messages)
    WorkProposalSection(vm)
    SignalActivitySection(vm)
@@ -255,9 +256,9 @@ private fun hermesToolLabel(name:String):String=when{
  }
 }
 
-@Composable private fun HermesMessage(message:JSONObject,motion:MessageSendMotionState){
+@Composable private fun HermesMessage(message:JSONObject,motion:MessageSendMotionState,font:Float){
  val motionId=messageMotionId(message)
- val style=TextStyle(fontSize=16.sp,lineHeight=24.sp,color=Ink)
+ val style=TextStyle(fontSize=font.sp,lineHeight=(font+9).sp,color=Ink)
  val user=message.optString("role")=="user"
  val status=message.optString("status")
  val phase=hermesPhaseStatus(message.optString("phase"))
@@ -266,13 +267,15 @@ private fun hermesToolLabel(name:String):String=when{
  Column(Modifier.fillMaxWidth(),horizontalAlignment=if(user)Alignment.End else Alignment.Start){
   Surface(Modifier.messageSendMotionTarget(motion,motionId).messageSendTargetBounds(motion,motionId).testTag(if(user)"hermes-user-bubble" else "hermes-assistant-bubble").widthIn(max=680.dp).fillMaxWidth(if(user).88f else .96f),shape=RoundedCornerShape(28.dp),color=color){
    Column(Modifier.padding(horizontal=15.dp,vertical=12.dp)){
-    message.optJSONObject("reference")?.let{reference->Text("${if(reference.optString("mode")=="forward")"引用"else"回复"} · ${reference.optString("author")}\n${reference.optString("text")}",Modifier.padding(bottom=8.dp),fontSize=12.sp,lineHeight=17.sp,color=Muted,maxLines=3,overflow=TextOverflow.Ellipsis)}
+    message.optJSONObject("reference")?.let{reference->Text("${if(reference.optString("mode")=="forward")"引用"else"回复"} · ${reference.optString("author")}\n${reference.optString("text")}",Modifier.padding(bottom=8.dp),fontSize=Type.Caption,lineHeight=17.sp,color=Muted,maxLines=3,overflow=TextOverflow.Ellipsis)}
+    if(user||text.isBlank()){
     SelectionContainer{Text(text.ifBlank{phase},Modifier.messageSendTargetBounds(motion,motionId,text=true),style=style,onTextLayout={motion.updateTargetLayout(motionId,it,style,color,if(message.optJSONObject("reference")!=null)MessageSendContentKind.RichText else MessageSendContentKind.Text)})}
+    }else MarkdownMessage(text,font)
    }
   }
   val emoji=if(user)message.optJSONObject("reaction")?.optString("emoji").orEmpty() else ""
   AnimatedVisibility(emoji.isNotBlank(),enter=fadeIn(tween(160))+scaleIn(tween(200, easing=Motion.TravelEasing),initialScale=.92f),exit=fadeOut(tween(90))+scaleOut(tween(90),targetScale=.96f)){
-   Surface(Modifier.padding(end=12.dp,top=4.dp).semantics{contentDescription="Hermes 对这条消息的表情：$emoji"},shape=Radii.Pill,color=Card,border=BorderStroke(1.dp,Line)){
+   Surface(Modifier.padding(end=12.dp,top=4.dp).semantics{contentDescription="Pi 对这条消息的表情：$emoji"},shape=Radii.Pill,color=Card,border=BorderStroke(1.dp,Line)){
     Text(emoji,Modifier.padding(horizontal=10.dp,vertical=3.dp),fontSize=19.sp)
    }
   }
@@ -280,8 +283,8 @@ private fun hermesToolLabel(name:String):String=when{
  val state=phase.ifBlank{hermesMessageStatus(status)}.let{if(phase=="正在执行"&&activeTool.isNotBlank())"$it · $activeTool" else it}
   val time=messageTime(message.opt("created_at"))
   val compactState=if(user&&status in setOf("queued","sending","running","unknown","failed","approval_required"))"" else state
-  if(compactState.isNotBlank()||time.isNotBlank())Text(listOf(time,compactState).filter{it.isNotBlank()}.joinToString(" · "),Modifier.messageSendMetadata(motion,motionId).padding(start=8.dp,end=8.dp,top=4.dp),fontSize=11.sp,color=if(status in listOf("failed","unknown"))Danger else Faint)
-  if(status in listOf("failed","unknown")&&message.optString("error").isNotBlank())Text(message.optString("error"),Modifier.messageSendMetadata(motion,motionId).padding(horizontal=8.dp,vertical=2.dp),fontSize=11.sp,color=Danger)
+  if(compactState.isNotBlank()||time.isNotBlank())Text(listOf(time,compactState).filter{it.isNotBlank()}.joinToString(" · "),Modifier.messageSendMetadata(motion,motionId).padding(start=8.dp,end=8.dp,top=4.dp),fontSize=Type.Caption,color=if(status in listOf("failed","unknown"))Danger else Faint)
+  if(status in listOf("failed","unknown")&&message.optString("error").isNotBlank())Text(message.optString("error"),Modifier.messageSendMetadata(motion,motionId).padding(horizontal=8.dp,vertical=2.dp),fontSize=Type.Caption,color=Danger)
  }
 }
 
@@ -300,15 +303,15 @@ private fun hermesToolLabel(name:String):String=when{
   !fresh->"上次同步时：${if(tool.isNotBlank())hermesToolLabel(tool) else label}"
   tool.isNotBlank()->hermesToolLabel(tool)
   phase=="responding"->"正在把回复写进这段对话"
-  else->"Hermes 正在处理这条消息"
+  else->"Pi 正在处理这条消息"
  }
  Surface(Modifier.padding(start=8.dp,top=9.dp).widthIn(max=590.dp).fillMaxWidth(.94f),shape=RoundedCornerShape(18.dp),color=if(terminal)AmberBg else ToolSurface,border=BorderStroke(1.dp,if(terminal)AmberLine else Line)){
   Row(Modifier.padding(horizontal=13.dp,vertical=11.dp),verticalAlignment=Alignment.CenterVertically){
    if(!terminal&&fresh&&status in setOf("queued","sending","running"))ThinkingDots(Ember)
    else ComIcon(R.drawable.com_icon_activity_v1,null,Modifier.size(24.dp))
    Column(Modifier.padding(start=10.dp)){
-    Text(if(fresh)label else "离线记录",fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=if(terminal)AmberText else Ink)
-    Text(body,Modifier.padding(top=2.dp),fontSize=11.sp,lineHeight=16.sp,color=if(terminal)AmberText else Muted)
+    Text(if(fresh)label else "离线记录",fontSize=Type.Caption,fontWeight=FontWeight.SemiBold,color=if(terminal)AmberText else Ink)
+    Text(body,Modifier.padding(top=2.dp),fontSize=Type.Caption,lineHeight=16.sp,color=if(terminal)AmberText else Muted)
    }
   }
  }
@@ -326,8 +329,8 @@ private fun hermesToolLabel(name:String):String=when{
   Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically){
    ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(24.dp))
    Column(Modifier.weight(1f).padding(horizontal=8.dp)){
-    Text("$statusText · ${proposal.optString("agent").uppercase(Locale.ROOT)} 工作动态",fontSize=11.sp,fontWeight=FontWeight.SemiBold,color=Muted)
-    Text(proposal.optString("title").ifBlank{"工作动态"},Modifier.padding(top=3.dp),fontSize=14.sp,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
+    Text("$statusText · ${proposal.optString("agent").uppercase(Locale.ROOT)} 工作动态",fontSize=Type.Caption,fontWeight=FontWeight.SemiBold,color=Muted)
+    Text(proposal.optString("title").ifBlank{"工作动态"},Modifier.padding(top=3.dp),fontSize=Type.BodySm,fontWeight=FontWeight.Medium,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
    }
    ComIcon(R.drawable.com_icon_chevron_v1,"查看详情",Modifier.size(24.dp))
   }
@@ -335,7 +338,7 @@ private fun hermesToolLabel(name:String):String=when{
 }
 
 @Composable private fun HermesComposer(vm:WorkbenchModel,enabled:Boolean,motion:MessageSendMotionState){
- val style=TextStyle(fontSize=15.sp,lineHeight=22.sp,color=Ink)
+ val style=TextStyle(fontSize=Type.Body,lineHeight=22.sp,color=Ink)
  val send:()->Unit={if(enabled&&vm.hermesDraft.isNotBlank()){val rid=vm.hermesPending.optString("request_id").ifBlank{UUID.randomUUID().toString()};motion.begin(rid,vm.hermesDraft.trim());if(vm.sendHermes(rid)==null)motion.cancel()}}
  LaunchedEffect(vm.hermesVoiceAutoSend){
   val text=vm.hermesVoiceAutoSend?:return@LaunchedEffect
@@ -356,15 +359,15 @@ private fun hermesToolLabel(name:String):String=when{
   if(granted)vm.beginHermesVoice()else vm.hermesVoicePermissionDenied()
  }
  if(pending.isNotBlank()&&!vm.hermesSending)Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=3.dp),verticalAlignment=Alignment.CenterVertically){
-  Text("上一条发送结果待核实：${pending.take(48)}",Modifier.weight(1f),fontSize=11.sp,color=AmberText,maxLines=2,overflow=TextOverflow.Ellipsis)
-  TextButton(onClick={vm.stopHermesRetry()}){Text("停止重试",fontSize=11.sp)}
+  Text("上一条发送结果待核实：${pending.take(48)}",Modifier.weight(1f),fontSize=Type.Caption,color=AmberText,maxLines=2,overflow=TextOverflow.Ellipsis)
+  TextButton(onClick={vm.stopHermesRetry()}){Text("停止重试",fontSize=Type.Caption)}
  }
- if(vm.hermesSendNote.isNotBlank())Text(vm.hermesSendNote,Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=2.dp),fontSize=11.sp,color=AmberText)
- if(vm.hermesVoiceNote.isNotBlank())Text(vm.hermesVoiceNote,Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=2.dp),fontSize=11.sp,color=AmberText)
+ if(vm.hermesSendNote.isNotBlank())Text(vm.hermesSendNote,Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=2.dp),fontSize=Type.Caption,color=AmberText)
+ if(vm.hermesVoiceNote.isNotBlank())Text(vm.hermesVoiceNote,Modifier.fillMaxWidth().padding(horizontal=24.dp,vertical=2.dp),fontSize=Type.Caption,color=AmberText)
  if(vm.hermesVoiceSaved.isNotBlank()&&voice=="idle")Row(Modifier.fillMaxWidth().padding(horizontal=20.dp),verticalAlignment=Alignment.CenterVertically){
-  Text("保留了一段录音",Modifier.weight(1f),fontSize=11.sp,color=AmberText)
-  TextButton(onClick={vm.transcribeHermesVoice()}){Text("重试转写",fontSize=11.sp)}
-  TextButton(onClick={vm.discardHermesVoice()}){Text("删除",fontSize=11.sp)}
+  Text("保留了一段录音",Modifier.weight(1f),fontSize=Type.Caption,color=AmberText)
+  TextButton(onClick={vm.transcribeHermesVoice()}){Text("重试转写",fontSize=Type.Caption)}
+  TextButton(onClick={vm.discardHermesVoice()}){Text("删除",fontSize=Type.Caption)}
  }
  Surface(Modifier.widthIn(max=810.dp).fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=RoundedCornerShape(32.dp),color=UserBubble){
   Row(Modifier.padding(horizontal=8.dp,vertical=5.dp),verticalAlignment=Alignment.Bottom){
@@ -379,14 +382,14 @@ private fun hermesToolLabel(name:String):String=when{
      else permission.launch(Manifest.permission.RECORD_AUDIO)
     },enabled=voiceEnabled,modifier=Modifier.size(43.dp).background(if(voice=="recording")Danger else Color.Transparent,CircleShape)){
      if(voice=="transcribing")CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp,color=Muted)
-     else if(voice=="recording")Icon(Icons.Outlined.Stop,"结束录音并发送给 Hermes",Modifier.size(22.dp),tint=Color.White)
-     else ComIcon(R.drawable.com_icon_mic_v1,"录音发送给 Hermes",Modifier.size(24.dp),tint=Muted)
+     else if(voice=="recording")Icon(Icons.Outlined.Stop,"结束录音并发送给 Pi",Modifier.size(22.dp),tint=Color.White)
+     else ComIcon(R.drawable.com_icon_mic_v1,"录音发送给 Pi",Modifier.size(24.dp),tint=Muted)
     }
    }else IconButton(onClick={haptics(HapticCue.Commit);send()},enabled=enabled,modifier=Modifier.size(43.dp).background(if(enabled)Ink else ChipBg,CircleShape)){
     if(vm.hermesSending)CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp,color=Muted)
-    else ComIcon(R.drawable.com_icon_send_v1,"发送给 Hermes",Modifier.size(22.dp),alpha=if(enabled)1f else .45f,tint=if(enabled)Color.White else Muted)
+    else ComIcon(R.drawable.com_icon_send_v1,"发送给 Pi",Modifier.size(22.dp),alpha=if(enabled)1f else .45f,tint=if(enabled)Color.White else Muted)
    }
   }
  }
- if(!enabled)Text(if(vm.store.token.isBlank())"配对后可与 Hermes 对话"else if(vm.hermesSending)"正在发送"else"Hermes 未连接，草稿会保留",Modifier.fillMaxWidth().padding(start=24.dp,bottom=7.dp),fontSize=11.sp,color=AmberText)
+ if(!enabled)Text(if(vm.store.token.isBlank())"配对后可与 Pi 对话"else if(vm.hermesSending)"正在发送"else"Pi 未连接，草稿会保留",Modifier.fillMaxWidth().padding(start=24.dp,bottom=7.dp),fontSize=Type.Caption,color=AmberText)
 }

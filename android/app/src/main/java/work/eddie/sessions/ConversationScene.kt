@@ -143,8 +143,8 @@ data class ConversationSnapshot(val sid:String,val detail:JSONObject,val live:JS
     vm.workReferences[route]?.let{MessageReferencePreview(it){vm.workReferences.remove(route)}}
     Composer(
      if(home)prompt else vm.draft(),
-     {if(home){prompt=it;vm.store.prefs.edit().putString("new-draft",it).apply()}else vm.setDraft(it)},
-     if(home)"交给 ${if(agent=="pi")"Pi"else"Codex"} 做点什么…" else if(creating!=null)"正在创建 ${vm.creatingAgent} 会话…" else if(status=="running")"写下补充内容…"else"继续和 ${session.optString("agent")} 聊聊…",
+     {if(home){prompt=it;vm.store.savePrefSoon("new-draft",it)}else vm.setDraft(it)},
+     if(home)"交给 ${agentDisplayName(agent)} 做点什么…" else if(creating!=null)"正在创建 ${vm.creatingAgent} 会话…" else if(status=="running")"写下补充内容…"else"继续和 ${session.optString("agent")} 聊聊…",
      vm.connected&&!vm.busy,!home&&status in listOf("running","waiting"),{modelPicker=true;vm.loadModels(pickerAgent)},
      {val text=if(home)prompt.trim() else vm.draft().trim();val rid=UUID.randomUUID().toString();motion.begin(rid,text)
       val sent=if(home)vm.create(agent,vm.store.prefs.getString("lastCwd","/Users/eddiegao/AI_Work_System")?:"",text,modelSelection.model,modelSelection.effort,"danger-full-access",rid)else vm.send(rid)

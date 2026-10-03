@@ -1,5 +1,7 @@
 # Hermes task loop
 
+> 历史资料：2026-10-03 起主线和权限决定由 [当前路线图](COM_MUSE_ROADMAP.md) 与 [任务层契约](TASK_LAYER_CONTRACT.md) 替代；新 Pi RPC、Claude worker 和验收证据见 [实施记录](COM_PI_MAIN_IMPLEMENTATION.md)。下文保留原阶段事实，不作为新实现约束。
+
 ## 2026-10-02: executable main-chat task loop
 
 This update applies to the live `会话工作台` source imported from mini's dot build (`3f3080b`). The older local-review record below remains historical evidence; its statements about unperformed native-worker testing do not describe this follow-up.

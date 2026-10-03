@@ -12,6 +12,8 @@ class Runtime:
         self.sock='session-workbench';self.rpc=None;self.pending={};self.counter=0;self.connect_lock=asyncio.Lock();self.action_lock=asyncio.Lock()
         self.live={};self.approvals={};self.reader_task=None;self.rpc_errors=''
         self.model_cache={}
+        from worker_runtime import WorkerRuntime
+        self.workers=WorkerRuntime(self)
     async def cmd(self,*args,input=None,check=True):
         p=await asyncio.create_subprocess_exec(*map(str,args),stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
         out,err=await p.communicate(input)
@@ -49,6 +51,10 @@ class Runtime:
         try:return await asyncio.wait_for(f,45)
         finally:self.pending.pop(i,None)
     async def models(self,agent):
+        if agent=='claude':
+            from claude_worker import third_party_config
+            _,model=third_party_config(self.state)
+            return [{'id':model,'label':model,'provider':'third-party','efforts':[],'default_effort':'','is_default':True}]
         if agent not in ('pi','codex'):raise ValueError('不支持的 Agent')
         cached=self.model_cache.get(agent)
         if cached and time.monotonic()-cached[0]<300:return cached[1]
@@ -132,6 +138,10 @@ class Runtime:
     async def create(self,agent,cwd,model='',effort='',sandbox='danger-full-access',resume=None):
         cwd=str(Path(cwd).expanduser().resolve())
         if not Path(cwd).is_dir() or not Path(cwd).is_relative_to(self.h.home):raise ValueError('请选择 Mac mini 用户目录中的有效目录')
+        if agent=='claude':
+            if resume:return await self.workers.restore(resume['id'])
+            return await self.workers.create({'id':'manual_'+uuid.uuid4().hex,'agent':agent,'cwd':cwd,
+                'sandbox':sandbox,'automatic':False,'title':'Claude Code 工作会话'})
         if agent not in ('pi','codex'):raise ValueError('不支持的 Agent')
         if sandbox not in ('danger-full-access','workspace-write','read-only'):raise ValueError('无效的权限模式')
         if not resume:effort=await self.validate_model(agent,model,effort)
@@ -163,24 +173,39 @@ class Runtime:
         script.write_text(prefix+'cd '+shlex.quote(cwd)+'\nexec '+shlex.join(args)+'\n');script.chmod(0o700)
         prior=self.h.managed().get(sid,{}) if resume else {}
         m={'sid':sid,'native_id':nid,'agent':agent,'cwd':cwd,'tmux':name,'created':time.time(),'source':'手机发起' if not resume else '从历史继续','pi_file':str(self.state/(name+'.pi.jsonl')),'script':str(script),'sandbox':sandbox,'approval_policy':policy,'model':model or prior.get('model',''),'effort':effort or prior.get('effort',''),'ended':False}
+        for key in ('task_id','workspace_copy','original_cwd','automatic'):
+            if key in prior:m[key]=prior[key]
         # Save before start so notifications cannot be lost.
         self.h.save_managed(sid,m)
         if agent=='pi':await self.ensure_terminal(sid)
         if not self.h.get(sid):
             with self.h.db() as d:d.execute('INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?,?,?,?,?)',(sid,agent,nid,'',cwd,'新会话',time.time(),'','只展示实际捕获的输出'))
         return sid
+    async def preflight_task(self,task):
+        from execution_boundary import require_host
+        require_host(self.state)
+        registry=getattr(self,'capabilities',None)
+        try:
+            import runtime_health
+            if task['agent']=='claude':
+                evidence=await runtime_health.claude(self.state)
+                self.workers.budget.claim(task['id'],automatic=task.get('automatic',True))
+            elif task['agent']=='pi':evidence=await runtime_health.pi(self.state)
+            else:
+                await self.ensure_rpc()
+                if not await self.models('codex'):raise ValueError('Codex 未提供可用模型')
+                evidence={'probe':'native-app-server-model-list','model_turns':0}
+            if registry:registry.observe('runtime:'+task['agent'],runtime=task['agent'],state='verified',evidence=evidence)
+        except (ValueError,RuntimeError) as error:
+            if registry:registry.observe('runtime:'+task['agent'],runtime=task['agent'],state='unavailable',evidence={'reason':str(error)})
+            raise ValueError(str(error)) from None
     async def create_task_worker(self,task):
         """Use the native account's advertised default rather than a stale config alias."""
-        if task['agent']!='codex':
-            return await self.create(task['agent'],task['cwd'],sandbox=task['sandbox'])
-        models=await self.models('codex')
-        default=next((m for m in models if m.get('is_default')),None)
-        if not default:
-            raise ValueError('Codex did not advertise an available default model')
-        return await self.create('codex',task['cwd'],model=default['id'],
-                                 effort=default.get('default_effort',''),sandbox=task['sandbox'])
+        return await self.workers.create(task)
     async def resumable(self,s):
         m=self.h.managed().get(s['id'])
+        if s['agent']=='claude':
+            return bool(m and m.get('transport')=='claude-agent-sdk' and not m.get('ended') and s['id'] not in self.workers.workers)
         if m and not m.get('ended') and (m['agent']=='codex' or await self.alive(m['tmux'])):return False
         if not Path(s['cwd']).is_dir():return False
         if s['agent']=='codex':
@@ -215,6 +240,8 @@ class Runtime:
                     return False
         return True
     async def input(self,sid,text,request_id,model=None,effort=None):
+        if self.h.managed().get(sid,{}).get('transport'):
+            return await self.workers.input(sid,text,request_id)
         m=self.h.managed().get(sid)
         if not m or m.get('ended') or (m['agent']=='pi' and not await self.alive(m['tmux'])):raise ValueError('请先继续会话')
         explicit=model is not None or effort is not None
@@ -264,6 +291,7 @@ class Runtime:
         return request_id
     def stable_input(self,sid):
         m=self.h.managed().get(sid)
+        if m and m.get('transport'):return sid in self.workers.workers
         return bool(m and (m.get('agent')=='codex' or m.get('agent')=='pi' and any(
             e.get('type')=='com_input_capabilities' and e.get('data',{}).get('stable_message_identity_v1') is True
             for e in self.events(sid))))
@@ -272,7 +300,7 @@ class Runtime:
         if not m or m.get('ended'):raise ValueError('请先继续会话')
         if not self.stable_input(sid):
             raise ValueError('这个旧 Pi 会话尚未加载可靠消息身份；请结束后从历史恢复，或重新开启会话')
-        if m['agent']=='pi' and await self.status(sid) not in ('ready','completed','failed','interrupted'):
+        if m['agent']=='pi' and not m.get('transport') and await self.status(sid) not in ('ready','completed','failed','interrupted'):
             raise ValueError('Pi 正在处理上一条消息，请完成后再发送')
     async def legacy_pi_idle(self,sid):
         """Only the managed native lifecycle can authorize a legacy restart."""
@@ -337,7 +365,7 @@ class Runtime:
     def events(self,sid):
         m=self.h.managed().get(sid)
         if not m:return []
-        p=Path(m['pi_file']) if m['agent']=='pi' else self.event_file(sid)
+        p=Path(m['pi_file']) if m['agent']=='pi' and not m.get('transport') else self.event_file(sid)
         if not p.exists():return []
         out=[]
         with p.open() as f:
@@ -347,6 +375,7 @@ class Runtime:
         return out
     async def status(self,sid):
         m=self.h.managed().get(sid)
+        if m and m.get('transport'):return await self.workers.status(sid)
         if not m:return 'history'
         if m.get('ended') or (m['agent']=='pi' and not await self.alive(m['tmux'])):return 'ended'
         if any(a['sid']==sid for a in self.approvals.values()):return 'waiting'
@@ -356,7 +385,23 @@ class Runtime:
             if e.get('type')=='agent_start':status='running'
             if e.get('type')=='agent_end':status='completed'
         return status
+    def can_reconcile_task(self,task):
+        # Recovery needs evidence for this exact run, never a session's stale status.
+        return bool(task.get('run_id') and any(e.get('turn_id')==task['run_id'] and
+            (e.get('kind')=='status' or e.get('type')=='agent_settled')
+            for e in self.events(task.get('session_id',''))))
+
     async def task_status(self,task):
+        if self.h.managed().get(task['session_id'],{}).get('transport'):
+            if task['session_id'] in self.workers.workers:
+                return await self.workers.status(task['session_id'])
+            events=[e for e in self.events(task['session_id']) if e.get('turn_id')==task.get('run_id')]
+            status=next((e.get('status') for e in reversed(events) if e.get('kind')=='status'),None)
+            if status in ('completed','failed','interrupted'):return status
+            if any(e.get('type')=='agent_settled' for e in events):
+                reason=next((e.get('data',{}).get('message',{}).get('stopReason') for e in reversed(events) if e.get('type')=='message_end' and e.get('data',{}).get('message',{}).get('role')=='assistant'),None)
+                return 'interrupted' if reason=='aborted' else 'failed' if reason=='error' else 'completed'
+            return 'unknown'
         status=await self.status(task['session_id'])
         if task['agent']!='pi':
             if status=='waiting' and any(a['sid']==task['session_id'] and
@@ -378,9 +423,20 @@ class Runtime:
             return 'interrupted' if reason=='aborted' else 'failed' if reason=='error' else 'completed'
         return 'unknown' if status=='ended' else 'running' if status=='completed' else status
     def task_capabilities(self,task):
-        # Existing Pi sessions are interactive tmux processes, not RPC subprocesses.
+        m=self.h.managed().get(task.get('session_id'),{})
+        if m.get('transport'):
+            return {'steer':m['agent'] in ('pi','claude'),'transport':m['transport']}
+        # Historical Pi sessions remain read-only TUI records.
         return {'steer':task['agent']=='codex','transport':'codex-app-server' if task['agent']=='codex' else 'pi-tmux'}
+    def task_input_state(self,task,request_id):
+        worker=self.workers.workers.get(task['session_id'])
+        if worker and request_id in getattr(worker,'delivered',set()):return 'delivered'
+        if worker and request_id in getattr(worker,'failed_inputs',set()):return 'failed'
+        return None
     async def deliver_task_input(self,task,command):
+        worker=self.workers.workers.get(task['session_id'])
+        if worker and task['agent'] in ('pi','claude'):
+            return await worker.steer(command['text'],command['request_id'])
         if not self.task_capabilities(task)['steer']:
             return {'state':'unsupported'}
         text=('Task instruction within the original authorization only. Do not expand permissions, '
@@ -398,12 +454,15 @@ class Runtime:
             'expectedTurnId':turn_id,'input':[{'type':'text','text':text}]})
     async def stop(self,sid):
         m=self.h.managed()[sid]
+        if m.get('transport'):return await self.workers.stop(sid)
         if m['agent']=='pi':await self.tm('send-keys','-t',m['tmux'],'Escape')
         else:
             events=self.events(sid);tid=next((e['turn_id'] for e in reversed(events) if e.get('turn_id')),None)
             if tid:await self.call('turn/interrupt',{'threadId':m['native_id'],'turnId':tid})
             else:await self.tm('send-keys','-t',m['tmux'],'Escape')
     async def cancel_task(self,task):
+        if self.h.managed().get(task['session_id'],{}).get('transport'):
+            return await self.workers.stop(task['session_id'])
         m=self.h.managed().get(task['session_id'])
         if not m or not task.get('run_id'):
             raise ValueError('Task worker identity is unavailable')

@@ -110,11 +110,32 @@ def api(tmp_path, monkeypatch):
 def test_health_advertises_loaded_reference_migrations(api):
     app, client, _ = api
     health = client.get("/health").json()
-    assert health["features"] == {"message_references_v1": True, "stable_message_identity_v1": True}
+    assert health["features"]["message_references_v1"] is True
+    assert health["features"]["stable_message_identity_v1"] is True
     with app.conversation.db() as db:
         assert "reference" in [row["name"] for row in db.execute("PRAGMA table_info(messages)")]
     with app.presentations.db() as db:
         assert db.execute("SELECT COUNT(*) FROM dispatches").fetchone()[0] == 0
+
+
+def test_pi_main_cannot_write_through_unbound_legacy_worker(api,monkeypatch):
+    app,client,headers=api
+    monkeypatch.setattr(app,'MAIN_AGENT','pi')
+    sid='codex:legacy-unbound'
+    app.history.save_managed(sid,{'agent':'codex','native_id':'legacy-unbound','cwd':str(app.HOME),'ended':False,'tmux':''})
+    with app.history.db() as db:
+        db.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?)',(sid,'codex','legacy-unbound','',str(app.HOME),'旧任务',1,'','历史'))
+    async def status(_):return 'completed'
+    async def forbidden(*args,**kwargs):raise AssertionError('未绑定任务不能调用原生执行器')
+    monkeypatch.setattr(app.runtime,'status',status)
+    monkeypatch.setattr(app.runtime,'stable_input',lambda _:True)
+    monkeypatch.setattr(app.runtime,'create',forbidden)
+    monkeypatch.setattr(app.runtime,'input',forbidden)
+    caps=client.get('/sessions/'+sid,headers=headers).json()['session']['capabilities']
+    assert not caps['input'] and not caps['resume']
+    result=client.post('/sessions/'+sid+'/input',headers=headers,json={'request_id':'legacy-unbound-001','text':'请修改文件'}).json()
+    assert result['status']=='rejected' and result['submission_state']=='not_submitted'
+    assert client.post('/sessions/'+sid+'/resume',headers=headers,json={'request_id':'legacy-resume-001'}).status_code==409
 
 
 @pytest.mark.parametrize("busy", [False, True])

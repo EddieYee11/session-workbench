@@ -1,18 +1,23 @@
 # Com!
 
-Com! 是原「会话工作台」Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务。保留原包名以便原位升级和保留本机配对、缓存。可从手机发起和继续 Pi / Codex 会话，查看实时过程和终端，并检索 Mac mini 上保存的历史会话。
+Com! 是 Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务，保留原包名、配对和历史。当前版本 **1.6.1**：主页由 Pi 持续负责，使用现有 Flash；工作页提供 Claude / Codex，旧 Pi 从工作历史只读访问。
 
-当前 Android 工程版本为 **1.5.2**。使用 Coms! 图标、Com2 浮动胶囊底栏与日历卡片；「今天」直接读取手机日历。Hermes 主对话可派出独立 Codex 后台任务，任务、约束、回执和结果存放在 Mac mini，手机进入后台后继续执行。本轮统一发送文字 Morph、真实消息行让位、输入法发送键与键盘同步避让，并上线持久引用和请求号匹配的原生回显。螃蟹状态动画、透明渐变标题、分色对话、Hermes 表情反馈，以及直接交给 Pi 的快捷语音继续保留；主对话和任务页均可直接允许或拒绝待授权卡。版本说明和实测见 [1.5.2 记录](docs/com-1.5.2.md)，此前体验升级见 [1.5.1 记录](docs/com-1.5.1.md)，任务闭环见 [1.5.0 记录](docs/com-1.5.0.md)。给协作者介绍原工作台可阅读 [项目背景、功能与架构](docs/app-overview.md)；Personal Agent 的规划见 [产品与实施规划](docs/COM_PERSONAL_AGENT_PLAN.md)。旧模型与推理选择的验证边界见 [1.3.4 记录](docs/com-1.3.4.md)。
+主 Pi 可直接使用 Shell、读写文件和业务工具，自主决定直接执行或委派独立 Pi / Claude / Codex，不强制派活。“A + 地址”等选项续答沿真实上文继续。主页支持 Markdown，工作页简称 Claude，统一字体与布局；减少重复历史注入、JSON 复制和流式轮询开销。共同能力目录区分发现、加载与真实验证；任务显示真实工具步骤、送达状态、结果和验收。主聊天与快捷语音使用同一请求登记。明确授权范围内执行，严重不可逆动作显示具体审批卡。
 
-- `backend/`：只读历史索引、Pi/Codex 会话运行时、Hermes 主对话与流式服务、个人概览、通知收件箱和待审批工作建议。
-- `android/`：Kotlin / Compose 原生会话、Hermes 主线与「今天」页、通知采集、离线缓存与 xterm.js 终端。
-- `backend/tests/`、`android/app/src/{test,androidTest}/`：项目检查代码。
+后台项目写任务在 mini 的同步目录外副本执行，包含当前未提交修改；验收后检查基线与 Syncthing，串行合入。主线普通文件编辑保留恢复副本，高风险删除/覆盖需要具体审批。目标与事件已落入 SQLite，09:30 目标调度在真机验收前保持关闭。仅 Com 的 Claude worker 使用 Flash，继承原第三方 endpoint/凭据，未改全局配置。
+
+实现与真实验证见 [Pi 主线实施记录](docs/COM_PI_MAIN_IMPLEMENTATION.md)，当前决策见 [路线图](docs/COM_MUSE_ROADMAP.md) 与 [任务层契约](docs/TASK_LAYER_CONTRACT.md)。以前的版本说明和 Hermes 规划保留为历史资料。安装包见 [Com! 1.6.1 Release](https://github.com/EddieYee11/session-workbench/releases/tag/v1.6.1)。
+
+- `backend/`：历史索引、持续主线、共同工具、能力目录、RPC/SDK 执行器、任务/目标/事件服务。
+- `android/`：Kotlin / Compose 原生应用、底部导航、语音、通知、离线缓存与历史。
+- `backend/probes/`：隔离真实运行时验收与显式切换/回滚脚本；不接生产账本。
+- `backend/tests/`、`android/app/src/{test,androidTest}/`：协议、授权、恢复和界面检查。
 
 本机虚拟环境、Android 构建产物、连接令牌和 `verification/` 中的设备截图不会提交到仓库。
 
-Android 工程位于 `android/`，可用 Android Studio 打开，或在配置好 JDK 17+ 与 Android SDK 后运行 `./gradlew assembleDebug`。Mac mini 端需要 Python 3.12+、Pi、Codex、tmux 和 Caddy；`backend/install-mini.py` 是针对当前 Mac mini 的部署脚本，运行前应先核对其中的 Caddy 路径和路由。服务状态与会话数据保存在 Mac mini 的 `~/.session-workbench/`，不属于此仓库。
+Android 工程位于 `android/`，可用 Android Studio 打开，或在配置好 JDK 17+ 与 Android SDK 后运行 `./gradlew assembleDebug`。Mac mini 端需要 Python 3.12+、Pi、Claude Code、Codex、tmux 和 Caddy；`backend/install-mini.py` 是针对当前 Mac mini 的部署脚本，运行前应先核对其中的 Caddy 路径和路由。服务状态与会话数据保存在 Mac mini 的 `~/.session-workbench/`，不属于此仓库。
 
-「工作」中手动新建和显式继续的会话沿用既有权限：Codex 为 `danger-full-access` 与无审批；Pi 使用 `--approve` 和工作台专属工具扩展。Hermes 主线的自动任务使用独立 Codex 沙箱，只支持明确交办的只读检查或项目内代码修改；完整权限 Pi 与超出已有任务授权的操作走可审阅的工作建议。现有 Pi tmux 会话不支持任务约束在线送达，界面明确显示该限制。运行时与验收边界见 [任务闭环实施记录](docs/HERMES_TASK_LOOP_IMPLEMENTATION.md)。
+Mac mini 使用 `~/.session-workbench/agent-config.json` 选择主线、Com Claude 模型及执行主机。实际生产已设置 Pi；没有此文件的新环境仍保留 Hermes 兼容入口，不能据此宣称已切换。Pi RPC 是新增适配器，不复用旧 tmux 输入与微信会话。Claude 使用本地 Agent SDK，Codex 沿用 app-server。来源、具体动作、文件隔离与预算在执行处校验。切换前后不重放已投递或 uncertain 操作，回滚方法见实施记录。
 
 Android 1.1.0 使用已选定的「灵动伙伴」界面：暖白底色、圆角会话卡片和本地流体圆脸 Bot。首页卡片读取真实会话，点开历史仍是只读；对话、终端、搜索和新建入口保持原有结构。网页 `docs/ai-style-directions.html` 仍是使用模拟数据的风格对照页。
 

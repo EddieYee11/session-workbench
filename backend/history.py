@@ -69,6 +69,23 @@ class History:
                     st=p.stat();s={'id':agent+':'+nid,'agent':agent,'native_id':nid,'path':str(p),'cwd':m.get('cwd',''),'title':'','updated':st.st_mtime,'signature':f'v2:{st.st_mtime_ns}:{st.st_size}','coverage':'仅展示原会话实际保存的内容；未保存的实时输出无法补齐。'}
                     if s['id'] not in result or result[s['id']]['updated']<s['updated']:result[s['id']]=s
                 except Exception:self.progress['unreadable']+=1
+        for p in (self.home/'.claude/projects').rglob('*.jsonl'):
+            if '.sync-conflict-' in p.name or 'subagents' in p.parts:continue
+            try:
+                meta=None
+                with p.open() as f:
+                    for _ in range(12):
+                        line=f.readline()
+                        if not line:break
+                        row=json.loads(line)
+                        if row.get('sessionId') and row.get('cwd'):
+                            meta=row;break
+                if not meta:continue
+                nid=meta['sessionId'];stat=p.stat()
+                result['claude:'+nid]={'id':'claude:'+nid,'agent':'claude','native_id':nid,'path':str(p),
+                    'cwd':meta['cwd'],'title':'','updated':stat.st_mtime,
+                    'signature':f'claude:{stat.st_mtime_ns}:{stat.st_size}','coverage':'Claude 原生历史只读'}
+            except (OSError,ValueError):self.progress['unreadable']+=1
         for p in (self.home/'.codex').glob('state_*.sqlite'):
             try:
                 d=sqlite3.connect(f'file:{p}?mode=ro',uri=True);d.row_factory=sqlite3.Row
@@ -105,6 +122,13 @@ class History:
                             for i,c in enumerate(v.get('content',[]) if isinstance(v.get('content'),list) else []):
                                 if c.get('type')=='toolCall':calls.append({'id':f'{mid}:call:{i}','role':'tool','title':c.get('name','工具'),'text':json.dumps(c.get('arguments',{}),ensure_ascii=False),'time':ts})
                         if role in ('toolResult','bashExecution'):role='tool'
+                    elif agent=='claude':
+                        if typ not in ('user','assistant'):continue
+                        v=r.get('message',{});role=typ
+                        mid=r.get('uuid',str(seq));body=text_content(v.get('content',''))
+                        if role=='assistant':
+                            for i,c in enumerate(v.get('content',[]) if isinstance(v.get('content'),list) else []):
+                                if c.get('type')=='tool_use':calls.append({'id':f'{mid}:call:{i}','role':'tool','title':c.get('name','工具'),'text':json.dumps(c.get('input',{}),ensure_ascii=False),'time':ts})
                     else:
                         if typ!='response_item':continue
                         role=v.get('role');pt=v.get('type','')

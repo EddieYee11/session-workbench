@@ -69,6 +69,10 @@ class TaskStore:
             db.close()
 
     def _save(self, db, task):
+        task.setdefault('owner_conversation_id','personal-main')
+        result=task.setdefault('structured_result',{'summary':'','artifacts':[],'evidence':[]})
+        result.update(execution_status=task['status'],verification_status=task.get('verification_status','pending'),
+                      uncertain=task['status'] in ('unknown','uncertain'))
         db.execute('INSERT OR REPLACE INTO tasks VALUES (?,?)', (task['id'], json.dumps(task)))
 
     def _event(self, db, tid, key, kind, text=''):
@@ -86,7 +90,7 @@ class TaskStore:
                     self._event(db, task['id'], proposal['status']+':'+task['id'], proposal['status'])
                 return task
             task = {**proposal, 'message_id': proposal['origin_message_id'],
-                    'parent_message_id': proposal['origin_message_id'], 'status': 'unknown' if proposal.get('status') in ('accepted','dispatching','unknown') else proposal.get('status') if proposal.get('status') in ('rejected','expired') else 'approval_required',
+                    'parent_message_id': proposal['origin_message_id'], 'owner_conversation_id':'personal-main', 'verification_status':'pending', 'status': 'unknown' if proposal.get('status') in ('accepted','dispatching','unknown') else proposal.get('status') if proposal.get('status') in ('rejected','expired') else 'approval_required',
                     'constraints': [], 'completion_condition': 'Worker result requires review',
                     'authorization': None, 'run_id': None, 'session_id': '', 'result': ''}
             self._save(db, task)
@@ -107,6 +111,7 @@ class TaskStore:
                 return task
             task = {**payload, 'id':tid, 'fingerprint':fingerprint,
                     'message_id':proposal['origin_message_id'], 'parent_message_id':proposal['origin_message_id'],
+                    'owner_conversation_id':'personal-main','verification_status':'pending',
                     'status':'queued', 'created_at':time.time(), 'updated_at':time.time(),
                     'constraints':[], 'run_id':None, 'session_id':'', 'result':''}
             self._save(db, task)
@@ -199,7 +204,7 @@ class TaskStore:
 
     def execution_prompt(self, task):
         instructions = self.pending_start_inputs(task['id'])
-        return task['prompt'] + (('\n\n用户后续约束（同一任务，不扩展授权）：\n' + '\n'.join(c['text'] for c in instructions)) if instructions else '')
+        return task['prompt'] + (('\n\n用户后续约束（同一任务，不扩展授权）：\n' + '\n'.join('[Com input:'+c['request_id']+'] '+c['text'] for c in instructions)) if instructions else '')
 
     def transition_input(self, request_id, expected, state, error=''):
         with self.db() as db:
@@ -221,12 +226,19 @@ class TaskStore:
             task = json.loads(db.execute('SELECT data FROM tasks WHERE id=?', (tid,)).fetchone()[0])
             if task['status'] in ('execution_finished', 'failed', 'cancelled'):
                 return
-            task.update(status=status, result=result, updated_at=time.time())
-            self._save(db, task)
-            self._event(db, tid, 'terminal:' + tid, status, result)
+            structured={'execution_status':status,'verification_status':'pending',
+                        'summary':result,'artifacts':task.get('artifacts',[]),
+                        'evidence':[{'event_seq':r[0]} for r in db.execute('SELECT seq FROM events WHERE task_id=?',(tid,))],
+                        'uncertain':status in ('unknown','uncertain')}
+            task.update(status=status, result=result, structured_result=structured,
+                        verification_status='pending',updated_at=time.time())
+            previous=task.get('result_round',0)
+            task['result_round']=previous+1
+            self._save(db,task)
+            self._event(db, tid, 'terminal:' + tid + (':'+str(task.get('run_id')) if previous else ''), status, result)
             label = {'execution_finished':'执行结束，待验收','failed':'执行失败','cancelled':'已取消'}.get(status,'执行状态待核实')
             text = f"任务「{task['title']}」：{label}。\n{result}"
-            db.execute('INSERT OR IGNORE INTO outbox(task_id,text) VALUES (?,?)', (tid, text))
+            db.execute('INSERT OR REPLACE INTO outbox(task_id,text) VALUES (?,?)', (tid, text))
             for row in db.execute("SELECT request_id FROM inputs WHERE task_id=? AND state IN ('pending_start','queued')",(tid,)).fetchall():
                 db.execute("UPDATE inputs SET state='blocked_state',error=?,updated_at=? WHERE request_id=?",
                            ('任务已结束；指令未投递',time.time(),row['request_id']))
@@ -235,8 +247,46 @@ class TaskStore:
     def deliver(self, conversation):
         with self.db() as db:
             for row in db.execute('SELECT * FROM outbox WHERE delivered=0').fetchall():
-                conversation.task_receipt(row['task_id'], row['text'])
+                task=json.loads(db.execute('SELECT data FROM tasks WHERE id=?',(row['task_id'],)).fetchone()[0])
+                receipt_id=row['task_id']+(':'+str(task.get('run_id')) if task.get('result_round',0)>1 else '')
+                conversation.task_receipt(receipt_id, row['text'])
+                if (task.get('origin_request_id') or '').startswith('work:'):
+                    conversation._finish(task['origin_message_id'],'completed')
+                if hasattr(conversation,'process_background'):
+                    owner=getattr(conversation.process_background,'__self__',None)
+                    if owner:
+                        task=json.loads(db.execute('SELECT data FROM tasks WHERE id=?',(row['task_id'],)).fetchone()[0])
+                        owner.events.enqueue('task-result:'+receipt_id,'task_result',
+                            {'task':task,'authorization':{k:task.get(k) for k in ('origin_session_id','origin_message_id','origin_request_id')}})
+                        conversation.wake.set()
                 db.execute('UPDATE outbox SET delivered=1 WHERE task_id=?', (row['task_id'],))
+
+    def observe_events(self, task, events):
+        for i,event in enumerate(events):
+            if event.get('turn_id') and event.get('turn_id')!=task.get('run_id'):
+                continue
+            typ=event.get('type');kind=event.get('kind');data=event.get('data',{})
+            name=data.get('toolName') or event.get('tool_name') or event.get('title','')
+            if typ=='tool_execution_start':kind='tool.started'
+            elif typ=='tool_execution_end':kind='tool.failed' if data.get('isError') else 'tool.completed'
+            elif kind=='item' and event.get('role')=='tool':kind='tool.started' if event.get('state')=='running' else 'tool.completed'
+            if kind not in ('tool.started','tool.completed','tool.failed','usage','input.delivered'):
+                continue
+            summary=json.dumps({'tool':name,'call_id':data.get('toolCallId') or event.get('id'),
+                                'source_seq':event.get('seq',i),'time':event.get('time'),
+                                **({'usage':event.get('usage'),'amount_status':'unknown'} if kind=='usage' else {})},ensure_ascii=False)
+            self.change(task['id'],'native:'+task['id']+':'+str(event.get('seq',i)),kind,summary)
+
+    def verify(self,tid,evidence,artifacts=None):
+        if not isinstance(evidence,list) or not evidence or any(not isinstance(e,dict) or not e.get('reference') for e in evidence):
+            raise ValueError('验收必须提供可定位的证据引用')
+        task=next((t for t in self.list() if t['id']==tid),None)
+        if not task or task['status']!='execution_finished':
+            raise ValueError('只能验收已结束任务')
+        result={**task.get('structured_result',{}),'verification_status':'passed','evidence':evidence,
+                'artifacts':artifacts or task.get('artifacts',[])}
+        return self.change(tid,'verified:'+tid+':'+str(task.get('run_id')),'verification.passed','验收通过，已记录真实检查证据',
+                           verification_status='passed',structured_result=result,artifacts=result['artifacts'])[0]
 
     def recover(self):
         with self.db() as db:
@@ -246,7 +296,7 @@ class TaskStore:
         for task in self.list():
             if task['status'] in ('running', 'waiting', 'dispatching', 'cancel_requested'):
                 self.change(task['id'], 'restart:' + task['id'][:60] + ':' + str(time.time_ns()),
-                            'execution_unknown', status='unknown')
+                            'execution_unknown', status='unknown',verification_status='uncertain')
 
 
 class TaskController:
@@ -300,21 +350,30 @@ class TaskController:
     async def poll(self):
         # Inspect terminal state before draining, so a finished turn is never restarted by input.
         for task in self.store.list():
-            if task['status'] not in ('running', 'waiting', 'cancel_requested'):
+            if task['status'] not in ('running', 'waiting', 'cancel_requested','unknown'):
+                continue
+            if task['status']=='unknown' and not getattr(self.runtime,'can_reconcile_task',lambda _:False)(task):
                 continue
             inspect = getattr(self.runtime, 'task_status', None)
             try:
                 status = await inspect(task) if inspect else await self.runtime.status(task['session_id'])
             except Exception:
                 status = 'unknown'
-            if status == 'unknown':
-                self.store.change(task['id'],'unavailable:'+task['id'],'execution_unknown',status='unknown')
+            self.store.observe_events(task,self.runtime.events(task['session_id']))
+            if status == 'unknown' and task['status']!='unknown':
+                self.store.change(task['id'],'unavailable:'+task['id'],'execution_unknown',status='unknown',verification_status='uncertain')
             if status in ('running','waiting') and task['status'] != status and task['status'] != 'cancel_requested':
                 self.store.change(task['id'],'observed:'+task['id']+':'+str(time.time_ns()),status,status=status)
             if status in ('completed', 'failed', 'interrupted'):
                 events = self.runtime.events(task['session_id'])
                 output = worker_result(events,task.get('run_id')) or worker_error(events,task.get('run_id'))
                 terminal = 'cancelled' if status == 'interrupted' else 'execution_finished' if status == 'completed' else 'failed'
+                current=next(t for t in self.store.list() if t['id']==task['id'])
+                if current.get('workspace_copy'):
+                    copies=getattr(getattr(self.runtime,'workers',None),'copies',None)
+                    if copies:
+                        _,patch=copies.changes(current)
+                        self.store.change(task['id'],'patch:'+task['id']+':'+str(task.get('run_id')),'artifact.created',patch,artifacts=[{'path':patch,'kind':'patch'}])
                 self.store.finish(task['id'], terminal, output or '工作器未提供结果正文，请查看执行会话。')
         await self.drain_inputs()
         self.store.deliver(self.conversation)
@@ -329,10 +388,19 @@ class TaskController:
         for task in tasks:
             if task['status'] != 'queued':
                 continue
+            if task['agent']=='claude' and any(t['agent']=='claude' for t in active):
+                continue
             # Context isolation is not file isolation. Readers may run together; writers serialize.
-            if any(t['cwd'] == task['cwd'] and
+            if any((Path(t['cwd']).is_relative_to(Path(task['cwd'])) or Path(task['cwd']).is_relative_to(Path(t['cwd']))) and
                    (task['sandbox'] != 'read-only' or t['sandbox'] != 'read-only' or t['status']=='unknown') for t in active):
                 continue
+            preflight=getattr(self.runtime,'preflight_task',None)
+            if preflight:
+                try:
+                    await preflight(task)
+                except ValueError as error:
+                    self.store.change(task['id'],'blocked:'+task['id'],'waiting',str(error),status='paused',block_reason=str(error))
+                    continue
             key = 'dispatch:'+task['id']
             task, fresh = self.store.change(task['id'], key, 'dispatching', status='dispatching')
             if not fresh:
@@ -350,7 +418,10 @@ class TaskController:
                     raise RuntimeError('Worker did not confirm a run ID')
                 self.store.change(task['id'], 'started:'+task['id'], 'started', status='running', session_id=sid, run_id=run_id)
                 for command in inputs:
-                    self.store.transition_input(command['request_id'], ('sending',), 'delivered')
+                    state='delivered'
+                    meta=getattr(getattr(self.runtime,'h',None),'managed',lambda:{})().get(sid,{})
+                    if meta.get('transport') in ('com-pi-rpc','claude-agent-sdk'):state='worker_queued'
+                    self.store.transition_input(command['request_id'], ('sending',), state)
             except Exception:
                 self.store.change(task['id'], 'start-unknown:'+task['id'], 'execution_unknown',
                                   '派发结果待核实；不会自动重发', status='unknown', session_id=sid)

@@ -57,7 +57,7 @@ open class QuickVoiceActivity:ComponentActivity(){
   val lp=window.attributes
   lp.y=(28*resources.displayMetrics.density).toInt()
   window.attributes=lp
-  setContent{MaterialTheme(colorScheme=Palette){
+  setContent{MaterialTheme(colorScheme=Palette,typography=ComTypography){
    if(conversationMode)AssistantVoiceCard(vm,::closeWindow)else ExpenseVoiceCard(vm,::closeWindow)
   }}
  }

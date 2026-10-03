@@ -8,8 +8,15 @@ from runtime import Runtime
 from voice import voice_router
 from personal import PersonalBridge
 from conversation import PersonalConversation
+from pi_main import PiMainClient
+from capabilities import CapabilityRegistry
+from goals import GoalEvents
+from background_events import BackgroundEvents
+from agent_tools import AgentTools
+from unified_voice import UnifiedVoice
+from sync_state import stable as sync_stable
 from signals import PersonalSignals
-from signal_inspector import HermesSignalReviewer,SignalInspector
+from signal_inspector import HermesSignalReviewer,PiSignalReviewer,SignalInspector
 from work_dispatch import WorkProposalStore
 from tasks import TaskStore,TaskController
 from task_tools import authorized_assignment
@@ -26,15 +33,29 @@ history=History(HOME,STATE);runtime=Runtime(history,TOKEN)
 presentations=MessagePresentations(STATE)
 quick_voice=QuickVoice(STATE,runtime,HOME/'AI_Work_System')
 personal=PersonalBridge(STATE)
-conversation=PersonalConversation(STATE)
+config_file=STATE/'agent-config.json'
+agent_config=json.loads(config_file.read_text()) if config_file.exists() else {}
+MAIN_AGENT=os.environ.get('COM_MAIN_AGENT',agent_config.get('main_agent','hermes'))
+if MAIN_AGENT not in ('pi','hermes'):raise ValueError('Invalid main agent config')
+conversation=PersonalConversation(STATE,PiMainClient(STATE,HOME/'AI_Work_System',tools=os.environ.get('COM_PI_SAFE_PROBE')!='1') if MAIN_AGENT=='pi' else None)
+legacy_voice=quick_voice
+if MAIN_AGENT=='pi':quick_voice=UnifiedVoice(conversation,legacy_voice)
 signals=PersonalSignals(STATE)
-inspector=SignalInspector(signals,HermesSignalReviewer(STATE))
+inspector=SignalInspector(signals,PiSignalReviewer(STATE) if MAIN_AGENT=='pi' else HermesSignalReviewer(STATE))
 work_proposals=WorkProposalStore(STATE,HOME/'AI_Work_System')
 task_store=TaskStore(STATE)
 task_controller=TaskController(task_store,runtime,conversation)
+runtime.task_store=task_store
+runtime.workers.copies.sync_check=sync_stable
+capability_registry=CapabilityRegistry(STATE)
+runtime.capabilities=capability_registry
+goal_events=GoalEvents(STATE)
+background=BackgroundEvents(goal_events,conversation,task_store)
+conversation.process_background=background.process
+agent_tools=AgentTools(STATE,conversation,work_proposals,task_store,task_controller,capability_registry,goal_events)
 conversation.task_context=lambda: task_store.context()
 conversation.task_environment=lambda: {'workspace_root':str(work_proposals.workspace),
-                                      'automatic_executor':'codex','maximum_running_tasks':2}
+                                      'automatic_executor':'pi','maximum_running_tasks':2,'claude_maximum_running':1,'host':capability_registry.host}
 rate={}
 
 def reference_message(source_session_id, message_id):
@@ -59,6 +80,12 @@ async def lifespan(app):
     task=asyncio.create_task(scan_loop())
     work_proposals.recover_inflight()
     task_store.recover()
+    goal_events.recover()
+    async def scheduler_loop():
+        while True:
+            if goal_events.tick():conversation.wake.set()
+            await asyncio.sleep(30)
+    scheduler_task=asyncio.create_task(scheduler_loop())
     async def task_loop():
         while True:
             with contextlib.suppress(Exception):
@@ -71,10 +98,12 @@ async def lifespan(app):
     yield
     task.cancel()
     ledger_loop.cancel()
+    scheduler_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):await ledger_loop
     await quick_voice.stop()
     await inspector.stop()
     await conversation.stop()
+    await runtime.workers.close()
     if runtime.rpc:await runtime.rpc.close()
 
 app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
@@ -89,7 +118,7 @@ async def auth(request,call_next):
 @app.exception_handler(RuntimeError)
 async def failure(request,exc):return JSONResponse({'detail':str(exc)},409)
 @app.get('/health')
-async def health():return {'service':'mini-sessions','version':'1.0.0','features':{'message_references_v1':True,'stable_message_identity_v1':True}}
+async def health():return {'service':'mini-sessions','version':'1.0.0','features':{'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'goals_scheduler':goal_events.enabled()}}
 @app.post('/pair')
 async def pair(request:Request):
     ip=request.client.host;now=time.time();attempts=[x for x in rate.get(ip,[]) if now-x<300]
@@ -122,7 +151,7 @@ async def personal_conversation_stream(request:Request):
 async def personal_message(request:Request):
     data=await request.json()
     if not isinstance(data,dict) or not isinstance(data.get('request_id'),str) or not isinstance(data.get('text'),str):raise ValueError('消息格式无效')
-    if quick_voice.receipt(data['request_id']):raise ValueError('这条语音已交办给派，请查看原受理回执；不会再次交给 Hermes。')
+    if legacy_voice.receipt(data['request_id']):raise ValueError('这条语音已有旧受理回执，不会重复交办。')
     return conversation.submit(data['request_id'],data['text'],data.get('reference'))
 @app.post('/personal/quick-voice/messages')
 async def quick_voice_message(request:Request):
@@ -176,11 +205,11 @@ async def approve_personal_work(proposal_id:str,request:Request):
         ledger_task=next(t for t in task_store.list() if t['id']==proposal_id)
         prompt=task_store.execution_prompt(ledger_task)
         initial_inputs=task_store.pending_start_inputs(proposal_id)
-        task_store.change(proposal_id,'dispatch:'+request_id,'authorized',status='dispatching',authorization={'request_id':request_id,'cwd':proposal['cwd'],'sandbox':proposal['sandbox'],'prompt':prompt})
+        authorized_task=task_store.change(proposal_id,'dispatch:'+request_id,'authorized',status='dispatching',authorization={'request_id':request_id,'cwd':proposal['cwd'],'sandbox':proposal['sandbox'],'prompt':prompt,'actual_action':proposal.get('actual_action',{})})[0]
         for command in initial_inputs:task_store.transition_input(command['request_id'],('pending_start',),'sending')
         try:
-            sid=await runtime.create_task_worker(proposal)
-            if proposal['agent']=='pi':
+            sid=await runtime.create_task_worker(authorized_task)
+            if proposal['agent']=='pi' and not runtime.h.managed().get(sid,{}).get('transport'):
                 for _ in range(80):
                     if any(e.get('type')=='session_start' for e in runtime.events(sid)):break
                     await asyncio.sleep(.25)
@@ -262,11 +291,13 @@ async def directories(path:str=''):
 async def detail(sid:str):
     s=history.get(sid)
     if not s:raise HTTPException(404,'会话不存在')
-    m=history.managed().get(sid);s['status']=await runtime.status(sid);alive=bool(m and not m.get('ended') and (m['agent']=='codex' or await runtime.alive(m['tmux'])))
+    m=history.managed().get(sid);s['status']=await runtime.status(sid);alive=bool(m and not m.get('ended') and (sid in runtime.workers.workers if m.get('transport') else m['agent']=='codex' or await runtime.alive(m['tmux'])))
     stable_identity=runtime.stable_input(sid)
-    legacy_restart=alive and not stable_identity and s['agent']=='pi'
+    legacy_restart=alive and not stable_identity and s['agent']=='pi' and not m.get('transport')
     can_resume=await runtime.legacy_pi_idle(sid) if legacy_restart else False if alive else await runtime.resumable(s)
-    s['capabilities']={'history':True,'input':alive and stable_identity,'stable_message_identity_v1':stable_identity,'restart_for_identity':legacy_restart,'terminal':alive and (s['agent']=='pi' or bool(history.messages(sid))),'resume':can_resume,'queue':False,'steer':False}
+    if MAIN_AGENT=='pi' and (s['agent']=='pi' or not (m or {}).get('task_id')):
+        alive=False;can_resume=False;legacy_restart=False
+    s['capabilities']={'history':True,'input':alive and stable_identity,'stable_message_identity_v1':stable_identity,'restart_for_identity':legacy_restart,'terminal':alive and not (m or {}).get('transport') and (s['agent']=='pi' or bool(history.messages(sid))),'resume':can_resume,'queue':False,'steer':False}
     s['managed']=bool(m);s['source']=(m or {}).get('source','Mac mini 历史')
     if m:s['model']=m.get('model','');s['effort']=m.get('effort','')
     s.pop('signature',None);s.pop('path',None)
@@ -294,7 +325,10 @@ def live_items(events):
             key=m.get('toolCallId') or 'pi:'+str(m.get('timestamp',0))
             request_id=m.get('com_request_id') if role=='user' else None
             if isinstance(request_id,str):key='pi:com:'+request_id
-            items[key]={'id':key,'role':'tool' if role=='toolResult' else role,'title':m.get('toolName',''),'text':text_content(m.get('content','')),'time':ts}
+            body=text_content(m.get('content',''))
+            delta=data.get('assistantMessageEvent',{})
+            if typ=='message_update' and delta.get('type')=='text_delta':body=items.get(key,{}).get('text','')+(delta.get('delta') or '')
+            items[key]={'id':key,'role':'tool' if role=='toolResult' else role,'title':m.get('toolName',''),'text':body,'time':ts}
             if request_id:items[key]['native_request_id']=request_id
         elif typ in ('tool_execution_start','tool_execution_update','tool_execution_end'):
             key=data.get('toolCallId','tool');result=data.get('result',data.get('partialResult',{}))
@@ -312,11 +346,31 @@ async def terminal_history(sid:str):
 
 @app.post('/sessions/{sid}/labels')
 async def labels(sid:str,request:Request):history.label(sid,await request.json());return {'ok':True}
+class SubmissionRejected(ValueError):
+    """A proven refusal before a worker/input was submitted, not a transport failure."""
+
+
+def resolve_old_create_refusal(rid,result):
+    # Legacy manual-create source validation ran before any task/worker was created.
+    if result.get('status')!='unknown' or result.get('error')!='This message is not an explicit assignment; keep it as a candidate':
+        return result
+    with conversation.db() as db:
+        human=db.execute("SELECT id,status FROM messages WHERE request_id=?",('work:'+rid,)).fetchone()
+    if not human or human['status']!='failed' or any(t.get('origin_message_id')==human['id'] for t in task_store.list()):
+        return result
+    return {**result,'status':'rejected','submission_state':'not_submitted',
+            'error':'上一条工作要求被旧交办规则拒绝，工作器没有启动；草稿已保留，可重新交办。',
+            'resolution':'validated_source_refusal_before_task_creation'}
+
+
 @app.get('/receipts/{rid}')
 async def receipt(rid:str):
-    with history.db() as d:r=d.execute('SELECT data FROM receipts WHERE id=?',(rid,)).fetchone()
-    if not r:raise HTTPException(404,'尚无发送记录')
-    return json.loads(r[0])
+    with history.db() as d:
+        r=d.execute('SELECT data FROM receipts WHERE id=?',(rid,)).fetchone()
+        if not r:raise HTTPException(404,'尚无发送记录')
+        result=resolve_old_create_refusal(rid,json.loads(r[0]))
+        if result!=json.loads(r[0]):d.execute('UPDATE receipts SET data=? WHERE id=?',(json.dumps(result),rid))
+    return result
 async def once(data,action,preflight=None):
     rid=data.get('request_id','')
     if len(rid)<10 or len(rid)>100:raise ValueError('缺少有效请求标识')
@@ -326,7 +380,9 @@ async def once(data,action,preflight=None):
             old=d.execute('SELECT fingerprint,data FROM receipts WHERE id=?',(rid,)).fetchone()
             if old:
                 if old[0]!=fingerprint:raise ValueError('请求标识冲突')
-                return json.loads(old[1])
+                result=resolve_old_create_refusal(rid,json.loads(old[1]))
+                if result!=json.loads(old[1]):d.execute('UPDATE receipts SET data=? WHERE id=?',(json.dumps(result),rid))
+                return result
         if preflight:
             try:await preflight()
             except ValueError as error:
@@ -336,6 +392,10 @@ async def once(data,action,preflight=None):
         with history.db() as d:
             d.execute('INSERT INTO receipts VALUES(?,?,?)',(rid,fingerprint,json.dumps({'status':'unknown','request_id':rid})))
         try:result=await action()
+        except SubmissionRejected as e:
+            result={'status':'rejected','submission_state':'not_submitted','request_id':rid,'error':str(e)}
+            with history.db() as d:d.execute('UPDATE receipts SET data=? WHERE id=?',(json.dumps(result),rid))
+            return result
         except Exception as e:
             # Unknown is deliberate: a process may have accepted before transport failed.
             with history.db() as d:d.execute('UPDATE receipts SET data=? WHERE id=?',(json.dumps({'status':'unknown','request_id':rid,'error':str(e)}),rid))
@@ -348,8 +408,54 @@ async def create(request:Request):
     data=await request.json()
     reference=canonical_reference(data.get('reference'),reference_message,'personal-main')
     if reference and not data.get('prompt','').strip():raise ValueError('引用消息需要本条消息')
+    async def preflight_create():
+        if MAIN_AGENT!='pi':return
+        if data.get('agent','pi')=='pi':raise ValueError('Pi 工作请从主页交办；工作页提供 Claude / Codex')
+        if not data.get('prompt','').strip():raise ValueError('请先输入工作要求，再创建执行会话')
+        from policy import assignment
+        if not assignment(data['prompt'],data['prompt']):raise ValueError('尚未提交：这条消息只形成候选，请补充要完成的动作；草稿已保留')
+        root=(HOME/'AI_Work_System').resolve()
+        if not Path(data.get('cwd',str(root))).resolve().is_relative_to(root):raise ValueError('工作任务需要明确的 AI_Work_System 项目目录')
+        if len([t for t in task_store.list() if t['status'] in ('queued','dispatching','running','waiting','unknown','cancel_requested')])>=2:raise ValueError('已有两个后台任务，先补充原任务或等其结束')
     async def action():
-        sid=await runtime.create(data.get('agent','pi'),data.get('cwd',str(HOME/'AI_Work_System')),data.get('model',''),data.get('effort',''),data.get('sandbox','danger-full-access'))
+        ledger=None
+        if MAIN_AGENT=='pi':
+            if not data.get('prompt','').strip():raise ValueError('请先输入工作要求，再创建执行会话')
+            cwd=Path(data.get('cwd',str(HOME/'AI_Work_System'))).resolve()
+            project_root=(HOME/'AI_Work_System').resolve()
+            if not cwd.is_relative_to(project_root):raise ValueError('工作任务需要明确的 AI_Work_System 项目目录')
+            if len([t for t in task_store.list() if t['status'] in ('queued','dispatching','running','waiting','unknown','cancel_requested')])>=2:
+                raise ValueError('已有两个后台任务，先补充原任务或等其结束')
+            session=await conversation._ensure_session()
+            human=conversation.submit('work:'+data['request_id'],data['prompt'])
+            conversation._set(human['message_id'],'delegated')
+            context={'origin_session_id':session,'origin_message_id':human['message_id'],'origin_request_id':'work:'+data['request_id']}
+            try:
+                try:
+                    receipt=await agent_tools.call('task_submit',{'agent':data['agent'],'relative_cwd':str(cwd.relative_to(project_root)),
+                        'title':data['prompt'][:120],'prompt':data['prompt'],'source_quote':data['prompt'],
+                        'sandbox':'read-only' if data.get('sandbox')=='read-only' else 'workspace-write',
+                        'completion_condition':'完成用户原要求，并提供真实产物与检查证据','request_id':'manual:'+data['request_id']},context)
+                except ValueError as e:
+                    raise SubmissionRejected(str(e)) from e
+                ledger=next(t for t in task_store.list() if t['id']==receipt['task_id'])
+                ledger=task_store.change(ledger['id'],'manual-dispatch:'+data['request_id'],'dispatching',status='dispatching',automatic=False,
+                     selected_model=data.get('model',''),selected_effort=data.get('effort',''))[0]
+                try:
+                    await runtime.preflight_task(ledger)
+                except Exception as e:
+                    raise SubmissionRejected('工作器尚未启动：'+str(e)) from e
+                sid=await runtime.create_task_worker(ledger)
+            except SubmissionRejected as e:
+                conversation._finish(human['message_id'],'failed',error=str(e))
+                if ledger:task_store.finish(ledger['id'],'failed',str(e))
+                raise
+            except Exception:
+                conversation._finish(human['message_id'],'failed',error='工作器启动结果待核实，请查看会话；不会重复发送')
+                if ledger:task_store.change(ledger['id'],'manual-blocked:'+data['request_id'],'execution_unknown',status='unknown',verification_status='uncertain')
+                raise
+        else:
+            sid=await runtime.create(data.get('agent','pi'),data.get('cwd',str(HOME/'AI_Work_System')),data.get('model',''),data.get('effort',''),data.get('sandbox','danger-full-access'))
         turn_id=None
         if data.get('prompt'):
             # Wait for Pi TUI initialization before literal input. Codex uses structured RPC.
@@ -360,17 +466,27 @@ async def create(request:Request):
                 else:raise RuntimeError('Pi 启动未就绪，请在会话中检查终端；不要重复提交')
                 await asyncio.sleep(1)
             transport=presentations.record(sid,data['request_id'],data['prompt'],reference)
-            turn_id=await runtime.input(sid,transport,data['request_id'],data.get('model','') if data.get('agent','pi')=='codex' else '',data.get('effort','') if data.get('agent','pi')=='codex' else '')
+            try:
+                turn_id=await runtime.input(sid,transport,data['request_id'],data.get('model','') if data.get('agent','pi')=='codex' else '',data.get('effort','') if data.get('agent','pi')=='codex' else '')
+            except Exception:
+                if ledger:
+                    task_store.change(ledger['id'],'manual-input-unknown:'+data['request_id'],'execution_unknown',status='unknown',session_id=sid,verification_status='uncertain')
+                    conversation._finish(human['message_id'],'failed',error='工作输入送达待核实，不会重复发送')
+                raise
+            if ledger:task_store.change(ledger['id'],'manual-started:'+data['request_id'],'started',status='running',session_id=sid,run_id=turn_id)
             presentations.bind_turn(sid,data['request_id'],turn_id)
             presentations.project(sid,live_items(runtime.events(sid)))
         return {'sid':sid,'turn_id':turn_id,'submission_state':'submitted' if data.get('prompt') else 'ready',
                 **presentations.identity(sid,data['request_id']),
                 **({'text':data['prompt'],'reference':reference} if reference else {})}
-    return await once(data,action)
+    return await once(data,action,preflight_create)
 @app.post('/sessions/{sid}/resume')
 async def resume(sid:str,request:Request):
     data=await request.json();s=history.get(sid)
+    if MAIN_AGENT=='pi' and s and s['agent']=='pi':raise ValueError('旧 Pi 工作历史只读；新交办进入主对话')
     if not s:raise HTTPException(404,'会话不存在')
+    managed=history.managed().get(sid,{})
+    if MAIN_AGENT=='pi' and not managed.get('task_id'):raise ValueError('此历史尚未纳入任务管理；请引用原记录创建工作任务')
     async def legacy():
         m=history.managed().get(sid)
         return m if m and m.get('agent')=='pi' and not m.get('ended') and not runtime.stable_input(sid) and await runtime.alive(m['tmux']) else None
@@ -386,28 +502,50 @@ async def resume(sid:str,request:Request):
             # process. History and the phone's draft are never submitted here.
             await runtime.tm('kill-session','-t',m['tmux'])
             m['ended']=True;history.save_managed(sid,m)
-        return {'sid':await runtime.create(s['agent'],s['cwd'],resume=s)}
+        options={'sandbox':managed.get('sandbox','read-only')} if MAIN_AGENT=='pi' else {}
+        return {'sid':await runtime.create(s['agent'],s['cwd'],resume=s,**options)}
     return await once(dict(data,sid=sid,action='resume'),action,preflight)
 @app.post('/sessions/{sid}/input')
 async def send(sid:str,request:Request):
+    if MAIN_AGENT=='pi' and sid.startswith('pi:'):raise ValueError('Pi 工作历史只读；交办与任务补充进入主页')
     data=await request.json()
     if not isinstance(data,dict) or not isinstance(data.get('text'),str) or not data['text'].strip():raise ValueError('输入为空')
     reference=canonical_reference(data.get('reference'),reference_message,sid)
+    async def preflight_send():
+        metadata=history.managed().get(sid,{})
+        task=next((t for t in task_store.list() if t['id']==metadata.get('task_id')),None)
+        if MAIN_AGENT=='pi' and not task:raise ValueError('此历史尚未纳入任务管理；请引用原记录创建工作任务')
+        if task and task['status']=='execution_finished' and task.get('verification_status')!='passed':
+            raise ValueError('原任务正在验收，请等主线检查结果后继续')
+        await runtime.check_input_identity(sid)
     async def action():
         quick_voice.revoke(sid)
         transport=presentations.record(sid,data['request_id'],data['text'],reference)
+        metadata=history.managed().get(sid,{})
+        task=next((t for t in task_store.list() if t['id']==metadata.get('task_id')),None)
+        if MAIN_AGENT=='pi' and not task:raise ValueError('此历史尚未纳入任务管理；请引用原记录创建工作任务')
+        if task and task['status'] in ('running','waiting'):
+            delivery=await task_controller.command(task['id'],transport,data['request_id'])
+            return {'sid':sid,'turn_id':task['run_id'],'submission_state':'submitted','delivery':delivery['delivery'],**presentations.identity(sid,data['request_id'])}
+        if task and task['status']=='execution_finished' and task.get('verification_status')!='passed':
+            raise ValueError('原任务正在验收，请等主线检查结果后继续')
         turn_id=await runtime.input(sid,transport,data['request_id'],data.get('model'),data.get('effort'))
+        if task:task_store.change(task['id'],'resume-input:'+data['request_id'],'started',status='running',run_id=turn_id,verification_status='pending')
         presentations.bind_turn(sid,data['request_id'],turn_id)
         presentations.project(sid,live_items(runtime.events(sid)))
         return {'sid':sid,'turn_id':turn_id,'submission_state':'submitted',**presentations.identity(sid,data['request_id']),
                 **({'text':data['text'],'reference':reference} if reference else {})}
-    return await once(dict(data,sid=sid,action='input'),action,lambda:runtime.check_input_identity(sid))
+    return await once(dict(data,sid=sid,action='input'),action,preflight_send)
 @app.post('/sessions/{sid}/stop')
 async def stop(sid:str):await runtime.stop(sid);return {'ok':True}
 @app.post('/sessions/{sid}/end')
 async def end(sid:str):
     m=history.managed().get(sid)
     if not m:raise ValueError('不是本应用管理的会话')
+    if m.get('transport'):
+        worker=runtime.workers.workers.get(sid)
+        if worker:await worker.stop()
+        m['ended']=True;history.save_managed(sid,m);return {'ok':True}
     if m['agent']=='codex':
         with contextlib.suppress(Exception):await runtime.stop(sid)
         with contextlib.suppress(Exception):await runtime.call('thread/unsubscribe',{'threadId':m['native_id']})
@@ -424,7 +562,7 @@ async def terminal(ws:WebSocket,sid:str):
         async with runtime.action_lock:
             quick_voice.revoke(sid)
             m=history.managed().get(sid)
-        if not m or m.get('ended'):await ws.close(1008);return
+        if not m or m.get('ended') or m.get('transport') or (MAIN_AGENT=='pi' and m['agent']=='pi'):await ws.close(1008);return
         if m['agent']=='codex':await runtime.ensure_terminal(sid)
         if not await runtime.alive(m['tmux']):await ws.close(1008);return
         master,slave=pty.openpty();os.set_blocking(master,False)
@@ -457,3 +595,41 @@ async def terminal(ws:WebSocket,sid:str):
         if proc and proc.returncode is None:proc.terminate();await proc.wait()
         if master is not None:os.close(master)
         # Only the attaching client exits; the tmux Agent session keeps running.
+
+
+@app.post('/internal/agent/{name}')
+async def internal_agent_tool(name:str,request:Request):
+    data=await request.json()
+    if not isinstance(data,dict) or not isinstance(data.get('args'),dict) or not isinstance(data.get('context'),dict):
+        raise ValueError('Invalid agent envelope')
+    return await agent_tools.call(name,data['args'],data['context'])
+
+@app.get('/personal/capabilities')
+async def capabilities_search(query:str='',runtime_name:str=''):
+    return {'items':capability_registry.search(query,runtime_name or None)}
+
+@app.get('/personal/goals')
+async def personal_goals():
+    return {'items':goal_events.list(),'scheduler_enabled':goal_events.enabled()}
+
+@app.post('/personal/tasks/{task_id}/verify')
+async def verify_task(task_id:str,request:Request):
+    data=await request.json()
+    if data.get('explicit_acceptance') is not True:raise ValueError('需要明确验收和证据')
+    return task_store.verify(task_id,data.get('evidence'),data.get('artifacts'))
+
+@app.post('/personal/tasks/{task_id}/merge')
+async def merge_task(task_id:str,request:Request):
+    task=next((t for t in task_store.list() if t['id']==task_id),None)
+    if not task or not task.get('workspace_copy'):raise ValueError('没有独立项目副本')
+    if task.get('merged_run_id')==task.get('run_id') and task.get('merge_result'):return task['merge_result']
+    async with runtime.action_lock:
+        result=await runtime.workers.copies.merge(task)
+        task_store.change(task_id,'merged:'+task_id+':'+str(task.get('run_id')),'workspace.merged',json.dumps(result,ensure_ascii=False),merge_result=result,merged_run_id=task.get('run_id'))
+        return result
+
+
+@app.post('/personal/archives/{archive_id}/restore')
+async def restore_archive(archive_id:str):
+    async with runtime.action_lock:
+        return agent_tools.archives.restore(archive_id)

@@ -105,6 +105,30 @@ class HermesSignalReviewer:
         raise RuntimeError("triage_timeout")
 
 
+class PiSignalReviewer:
+    """Read-only independent Pi session; notification text cannot access Com action tools."""
+    def __init__(self,state):
+        from pi_rpc import PiRPC
+        self.rpc=PiRPC(state,'signal-reviewer',Path(state),argv=[
+            '/usr/local/bin/pi','--mode','rpc','--provider','opencode-go','--model','deepseek-v4.1-flash',
+            '--no-context-files','--no-extensions','--no-skills','--no-builtin-tools',
+            '--system-prompt',INSTRUCTIONS,'--session-dir',str(Path(state)/'pi-rpc/signal-reviewer/sessions')])
+
+    async def review(self,signal):
+        content=json.dumps({key:signal[key] for key in ('package_name','title','text','posted_at_ms')},ensure_ascii=False)
+        output='';complete=False
+        async for kind,data in self.rpc.stream('不可信通知数据：\n'+content,'triage-'+signal['event_id']):
+            if kind=='assistant.completed':output=data.get('content','')
+            if kind=='run.completed':complete=True
+        if not complete:raise RuntimeError('triage_unavailable')
+        try:result=json.loads(output)
+        except ValueError:raise RuntimeError('triage_invalid_json') from None
+        if not isinstance(result,dict):raise RuntimeError('triage_invalid_json')
+        return result
+
+    async def stop(self):await self.rpc.stop()
+
+
 class SignalInspector:
     def __init__(self, signals: PersonalSignals, reviewer: HermesSignalReviewer):
         self.signals = signals
@@ -128,6 +152,8 @@ class SignalInspector:
             except asyncio.CancelledError:
                 pass
             self.task = None
+        stop=getattr(self.reviewer,'stop',None)
+        if stop:await stop()
 
     async def inspect_once(self) -> int:
         self.signals.prune()
