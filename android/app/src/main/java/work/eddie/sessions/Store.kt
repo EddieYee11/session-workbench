@@ -190,6 +190,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var connected by mutableStateOf(false)
  var messageReferencesAvailable by mutableStateOf(false)
  var busy by mutableStateOf(false)
+ var heartbeatState by mutableStateOf(JSONObject())
+ var heartbeatNote by mutableStateOf("")
  var personal by mutableStateOf(store.cachedSecure("personal-overview.enc"))
  var personalFresh by mutableStateOf(false)
  var personalLoading by mutableStateOf(false)
@@ -287,6 +289,19 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    tick++
  };delay(800)}}}
  fun enc(s:String)=URLEncoder.encode(s,"UTF-8")
+ fun refreshHeartbeatNow(){viewModelScope.launch{refreshHeartbeat()}}
+ suspend fun refreshHeartbeat(){
+  try{heartbeatState=store.request("/personal/heartbeat");heartbeatNote=""}
+  catch(e:CancellationException){throw e}
+  catch(e:Exception){heartbeatNote="心跳诊断暂不可用"}
+ }
+ fun setHeartbeat(field:String,value:Boolean){
+  viewModelScope.launch{
+   try{store.request("/personal/heartbeat/settings",JSONObject().put(field,value));refreshHeartbeat()}
+   catch(e:CancellationException){throw e}
+   catch(e:Exception){heartbeatNote="开关未确认更新，请刷新核对"}
+  }
+ }
  fun refreshPersonalNow(){viewModelScope.launch{refreshPersonal()}}
  fun refreshHermesNow(){viewModelScope.launch{refreshHermes()}}
  fun hermesVoicePermissionDenied(){hermesVoiceNote="请在系统设置中允许 Com! 使用麦克风。"}
@@ -729,6 +744,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    super.onCleared()
  }
  suspend fun refreshPersonal(){
+   refreshHeartbeat()
    if(personalLoading)return
    personalLoading=true
    try{

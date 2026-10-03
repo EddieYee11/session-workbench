@@ -25,6 +25,7 @@ from task_tools import authorized_assignment
 from quick_voice import QuickVoice
 from message_references import MessagePresentations, canonical_reference
 from work_cards import accepted
+from heartbeat import Heartbeat
 from operation_policy import persist_policy, upgrade_managed_permissions, OPERATION_MODE, POLICY_REVISION
 
 HOME=Path(os.environ.get('WORKBENCH_HOME',str(Path.home())))
@@ -49,6 +50,7 @@ inspector=SignalInspector(signals,PiSignalReviewer(STATE) if MAIN_AGENT=='pi' el
 work_proposals=WorkProposalStore(STATE,HOME/'AI_Work_System')
 task_store=TaskStore(STATE)
 task_controller=TaskController(task_store,runtime,conversation)
+heartbeat=Heartbeat(STATE,HOME/"AI_Work_System",task_store,work_proposals)
 runtime.task_store=task_store
 runtime.workers.copies.sync_check=sync_stable
 capability_registry=CapabilityRegistry(STATE)
@@ -104,6 +106,11 @@ async def lifespan(app):
                 conversation.sync_task_cards(task_store.list())
             await asyncio.sleep(1)
     ledger_loop=asyncio.create_task(task_loop())
+    async def heartbeat_loop():
+        while True:
+            await asyncio.sleep(60)
+            with contextlib.suppress(Exception):await heartbeat.tick()
+    heartbeat_task=asyncio.create_task(heartbeat_loop())
     quick_voice.start()
     conversation.start()
     inspector.start()
@@ -111,6 +118,8 @@ async def lifespan(app):
     task.cancel()
     ledger_loop.cancel()
     scheduler_task.cancel()
+    heartbeat_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):await heartbeat_task
     with contextlib.suppress(asyncio.CancelledError):await ledger_loop
     await quick_voice.stop()
     await inspector.stop()
@@ -645,6 +654,14 @@ async def internal_agent_tool(name:str,request:Request):
 @app.get('/personal/capabilities')
 async def capabilities_search(query:str='',runtime_name:str=''):
     return {'items':capability_registry.search(query,runtime_name or None)}
+
+@app.get('/personal/heartbeat')
+async def heartbeat_diagnostics():
+    return {'settings':heartbeat.settings(),'items':heartbeat.recent(30),'checklist':str(heartbeat.checklist),'shadow_verified':heartbeat.shadow_verified()}
+
+@app.post('/personal/heartbeat/settings')
+async def heartbeat_settings(request:Request):
+    return {'settings':heartbeat.configure(await request.json())}
 
 @app.get('/personal/goals')
 async def personal_goals():

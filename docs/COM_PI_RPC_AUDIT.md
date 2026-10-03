@@ -1,6 +1,6 @@
 # B1 Pi RPC 协议对照审计
 
-2026-10-03。mini实际Pi0.99.2、Node25.9.0；upstream coding-agent为1.0.1，Node要求>=22.19；最新发布另由GitHub releases接口核对。本任务不升级生产Pi，不改settings。文档本次已拆分rpc-commands/json，新版字段兼容旧ACK未带disposition。
+2026-10-03。mini实际Pi0.99.2、Node25.9.0；upstream coding-agent为1.0.1，Node要求>=22.19；GitHub latest页面当前指向v1.0.0（https://github.com/earendil-works/pi/releases/tag/v1.0.0），与main中的1.0.1不同；API请求403，采用官方发布页面核验。本任务不升级生产Pi，不改settings。文档本次已拆分rpc-commands/json，新版字段兼容旧ACK未带disposition。
 
 ## 关键语义
 

@@ -193,6 +193,7 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
    ComIcon(R.drawable.com_icon_settings_v1,null,Modifier.size(24.dp))
    Text("Com! · 设置",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
   }
+ HeartbeatSettings(vm)
  Text("语音记账",fontWeight=FontWeight.SemiBold)
  Text("电源键快捷小窗直接交给 Pi，可调用既有记账与收藏工具。语音记账入口会先显示金额，确认后交给 Pi；已接收不等于账本已写入，可在工作会话查看实际结果。",Modifier.padding(top=5.dp),fontSize=Type.Caption,color=Muted)
  TextButton(onClick={context.startActivity(Intent(context,ExpenseVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开语音记账",Modifier.padding(start=8.dp))}

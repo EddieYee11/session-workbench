@@ -67,13 +67,14 @@ internal fun todayAwarenessItems(vm:WorkbenchModel):List<TodayItem>{
 /** 知情区：只在真有内容时出现。 */
 @Composable fun TodayAwarenessCard(vm:WorkbenchModel,openSignals:()->Unit){
  val items=todayAwarenessItems(vm)
- if(items.isEmpty())return
+ if(items.isEmpty()&&vm.heartbeatState.array("items").none{it.optString("effect")=="awareness"})return
  Surface(Modifier.fillMaxWidth(),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
   Column(Modifier.padding(horizontal=18.dp,vertical=14.dp)){
    Row(verticalAlignment=Alignment.CenterVertically){
     Text("仅供知情",Modifier.weight(1f),fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Muted)
     TextButton(onClick=openSignals){Text("通知巡检",fontSize=Type.Caption)}
    }
+   HeartbeatAwareness(vm)
    items.take(3).forEachIndexed{index,item->
     if(index>0)HorizontalDivider(Modifier.padding(vertical=2.dp),color=Line)
     TodayActionRow(item,openSignals)
