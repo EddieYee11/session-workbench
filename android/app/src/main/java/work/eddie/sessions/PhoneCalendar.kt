@@ -196,11 +196,11 @@ private class PhoneCalendarUiState{
  return state
 }
 
-private val CalendarInk=Color(0xFF252A31)
-private val CalendarMuted=Color(0xFF68727D)
-private val CalendarFaint=Color(0xFF7A838D)
-private val CalendarLine=Color(0xFFE5E8EC)
-private val CalendarEmber=Color(0xFFB4552D)
+private val CalendarInk=Color(0xFF0A84FF)
+private val CalendarMuted=Color(0xFF97979D)
+private val CalendarFaint=Color(0xFF97979D)
+private val CalendarLine=Color(0x14FFFFFF)
+private val CalendarEmber=Color(0xFF0A84FF)
 
 /** Com2's calendar rows: 48 dp time column, fine vertical marker, title and location. */
 @Composable fun PhoneCalendarCard(compact:Boolean=false){
@@ -233,11 +233,11 @@ private val CalendarEmber=Color(0xFFB4552D)
      val selected=selectedDay==day
      val hasEvents=phoneCalendarEventsOn(allEvents,day,state.zone).isNotEmpty()
      Column(Modifier.width(44.dp).height(70.dp).clip(RoundedCornerShape(14.dp))
-      .background(if(selected)CalendarInk else Color.White)
+      .background(if(selected)CalendarInk else Card)
       .selectable(selected=selected,role=Role.Tab,onClick={selectedDay=day}),
       horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){
       Text(if(offset==0)"今天"else day.format(DateTimeFormatter.ofPattern("E",Locale.CHINA)),fontSize=10.sp,color=if(selected)Color.White.copy(alpha=.75f)else CalendarMuted)
-      Text(day.dayOfMonth.toString(),Modifier.padding(vertical=3.dp),fontSize=17.sp,fontWeight=FontWeight.SemiBold,color=if(selected)Color.White else CalendarInk)
+      Text(day.dayOfMonth.toString(),Modifier.padding(vertical=3.dp),fontSize=17.sp,fontWeight=FontWeight.SemiBold,color=if(selected)Color.White else Ink)
       Box(Modifier.size(3.dp).background(if(hasEvents)if(selected)Color.White else CalendarEmber else Color.Transparent,CircleShape))
      }
     }

@@ -50,7 +50,7 @@ fun CompanionCarousel(agent: String, state: String, interactive: Boolean, compac
             if (side > .001f) {
                 val center = Offset(size.width * .5f, size.height * .565f)
                 val radius = size.width * (if (compact) .293f else .255f)
-                val surface = lerp(Color(0xFFE8E4F1), Color(0xFF819BDF), progress)
+                val surface = lerp(Color(0xFF232236), Color(0xFF3E4E85), progress)
                 scale(.73f - side * .53f, 1f - side * .025f, pivot = center) {
                     drawCircle(
                         brush = Brush.radialGradient(

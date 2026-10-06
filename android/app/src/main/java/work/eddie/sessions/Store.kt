@@ -328,7 +328,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  val catalogLoading=mutableStateMapOf<String,Boolean>()
  val catalogErrors=mutableStateMapOf<String,String>()
  var active by mutableStateOf(true)
- var font by mutableFloatStateOf(store.prefs.getFloat("font",16f))
+ var font by mutableFloatStateOf(store.prefs.getFloat("font",19f))
  init {reactionFeedbackTracker.baseline(reactionEvents(hermes.array("messages")));viewModelScope.launch{snapshotFlow{q to queryInSession}.collectLatest{(global,local)->delay(400);store.prefs.edit().putString("search",global).putString("session-search",local).apply()}};viewModelScope.launch{while(true){if(active&&store.token.isNotEmpty())refreshPersonal();delay(60_000)}};viewModelScope.launch{snapshotFlow{active&&hermesVisible}.collectLatest{visible->
   hermesStreaming=false
   var reconnectDelay=1500L

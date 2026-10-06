@@ -182,7 +182,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
   taskFilters.forEach{(key,label)->
    val count=if(key=="all")tasks.size else tasks.count{ledgerFilterGroup(it)==key}
    val selected=ledgerFilterKey(vm.taskFilter)==key
-   Surface(onClick={vm.taskFilter=key},modifier=Modifier.testTag("task-filter-$key"),shape=Radii.Pill,color=if(selected)Ink else ChipBg){
+   Surface(onClick={vm.taskFilter=key},modifier=Modifier.testTag("task-filter-$key"),shape=Radii.Pill,color=if(selected)Ember else ChipBg){
     Text("$label $count",Modifier.padding(horizontal=14.dp,vertical=7.dp),fontSize=Type.Caption,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,color=if(selected)Color.White else Muted)
    }
   }

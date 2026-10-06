@@ -319,7 +319,7 @@ fun ModelPickerSheet(
                 enabled = (allowDefaultModel && draftModel.isBlank()) || chosen != null || (draftModel.isNotBlank() && draftModel == selectedModel),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp).height(52.dp),
                 shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Color.White),
+                colors = ButtonDefaults.buttonColors(containerColor = Ember, contentColor = Color.White),
             ) {
                 Text("应用选择", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             }
@@ -393,8 +393,8 @@ private fun PickerOption(title: String, subtitle: String, selected: Boolean, onC
             onClick = onClick,
         ),
         shape = RoundedCornerShape(14.dp),
-        color = if (selected) Color.White else Color.Transparent,
-        border = if (selected) BorderStroke(1.dp, Line) else null,
+        color = if (selected) EmberSoft else Color.Transparent,
+        border = if (selected) BorderStroke(1.dp, Ember.copy(alpha = .5f)) else null,
     ) {
         Row(
             Modifier.fillMaxWidth().heightIn(min = 58.dp).padding(horizontal = 14.dp, vertical = 10.dp),

@@ -49,36 +49,36 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
-// 中性表面承载内容，角色本身和少量状态色承担个性。
-// 暖白底（向 Muse 的视觉语言对齐：画布 90% 中性，点缀色只出现在可交互处）
-val Ink=Color(0xFF141414);val Paper=Color(0xFFFAFAF8);val SidebarBg=Color(0xFFF5F5F5)
-val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF686868);val Faint=Color(0xFF909090)
-val Line=Color(0xFFEAEAEA);val Track=Color(0xFFEDEDED);val ChipBg=Color(0xFFF1F1F1)
-val UserBubble=Color(0xFFECECEC);val ToolSurface=Color(0xFFF3F3F3)
-val HermesUserBubble=Color(0xFFE3EEE7);val HermesAssistantBubble=Color(0xFFF0F0ED)
-val Accent=Ink;val AccentSoft=Color(0xFFEDEDED);val AccentInk=Ink
+// 深色 Muse（2026-10-06 方向稿落地）：纯黑画布 + 深灰分层卡片，层级只靠明度；
+// 白色文字，iOS 蓝 #0A84FF 只给行动与用户气泡。变量名沿用旧体系，调用点零改动。
+val Ink=Color(0xFFFFFFFF);val Paper=Color(0xFF000000);val SidebarBg=Color(0xFF1B1B1D)
+val Card=Color(0xFF1B1B1D);val Muted=Color(0xFF97979D);val Faint=Color(0xFF6D6D72)
+val Line=Color(0x14FFFFFF);val Track=Color(0xFF2B2B2E);val ChipBg=Color(0xFF2B2B2E)
+val UserBubble=Color(0xFF1B1B1D);val ToolSurface=Color(0xFF2B2B2E)
+val HermesUserBubble=Color(0xFF0A84FF);val HermesAssistantBubble=Color(0xFF1B1B1D)
+val Accent=Color(0xFF0A84FF);val AccentSoft=Color(0x2E0A84FF);val AccentInk=Color(0xFFFFFFFF)
 val CompanionCoral=Color(0xFFC57665);val CompanionBlue=Color(0xFF5F8794)
-val CompanionGlow=Color(0xFFE2EFF0);val CompanionBlush=Color(0xFFF8EAE3)
-val PiGreen=Color(0xFF396C55);val PiSoft=Color(0xFFE7F2EC)
-val AmberBg=Color(0xFFFFF7E8);val AmberLine=Color(0xFFF0E0B0);val AmberText=Color(0xFF8A6D1D)
+val CompanionGlow=Color(0xFF1E2A2B);val CompanionBlush=Color(0xFF2A1F1C)
+val PiGreen=Color(0xFF32D158);val PiSoft=Color(0x2632D158)
+val AmberBg=Color(0xFF2A2210);val AmberLine=Color(0xFF4A3A18);val AmberText=Color(0xFFFFB840)
 val ApprovalBg=AmberBg
-val Danger=Color(0xFFB24A3D);val Success=PiGreen
+val Danger=Color(0xFFFF453A);val Success=PiGreen
 
-// 保留少量强调色，避免把整页背景染成角色色。
+// 整页无渐变：深黑章节只靠表面明度分层。
 val WashTop=Paper;val WashMid=Paper;val WashBottom=Paper
-// 暖赭仅用于局部主操作与状态。
-val Ember=Color(0xFF333333);val EmberDeep=Color(0xFF333333);val EmberSoft=Color(0xFFEDEDED)
-// 点缀金：状态徽标与高光
-val Gold=Color(0xFFC99A3C);val GoldSoft=Color(0xFFFAF0DA)
+// 蓝：主操作按钮 / 思考点 / 进行中状态
+val Ember=Color(0xFF0A84FF);val EmberDeep=Color(0xFFFFFFFF);val EmberSoft=Color(0x2E0A84FF)
+// 点缀金：状态徽标与高光（深色下压低明度）
+val Gold=Color(0xFFC99A3C);val GoldSoft=Color(0xFF33290F)
 
 val Palette=lightColorScheme(
- primary=Ink,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=Ink,
+ primary=Ember,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=Ink,
  secondary=Muted,secondaryContainer=ChipBg,onSecondaryContainer=Ink,
  tertiary=Ember,onTertiary=Color.White,tertiaryContainer=EmberSoft,onTertiaryContainer=EmberDeep,
  background=Paper,onBackground=Ink,surface=Card,onSurface=Ink,
  surfaceVariant=ToolSurface,onSurfaceVariant=Muted,outline=Line,outlineVariant=Line,
- surfaceTint=Ink,surfaceContainer=Card,surfaceContainerHighest=ToolSurface,
- surfaceContainerHigh=ToolSurface,surfaceContainerLow=Paper,surfaceContainerLowest=Card)
+ surfaceTint=Ember,surfaceContainer=Card,surfaceContainerHighest=ToolSurface,
+ surfaceContainerHigh=ToolSurface,surfaceContainerLow=Color(0xFF161618),surfaceContainerLowest=Card)
 
 val ComShapes=androidx.compose.material3.Shapes(
  extraSmall=RoundedCornerShape(8.dp),small=RoundedCornerShape(12.dp),medium=RoundedCornerShape(18.dp),
@@ -95,25 +95,25 @@ object Radii{
 object Elev{
  val Card=0.dp;val Raised=2.dp;val Sheet=8.dp
 }
-// 字阶：标题 / 正文 / 辅助 / 微型
+// 字阶：Muse 方向稿大字阶（消息 26 视觉换算后取 19 可调；标题整体上调）
 object Type{
- val SheetTitle=22.sp;val AppTitle=22.sp;val Section=17.sp
- val Body=16.sp;val BodySm=14.sp;val Caption=12.sp;val Micro=11.sp;val Tiny=11.sp
+ val SheetTitle=28.sp;val AppTitle=28.sp;val Section=22.sp
+ val Body=17.sp;val BodySm=15.sp;val Caption=13.sp;val Micro=11.sp;val Tiny=11.sp
 }
 val ComTypography=Typography(
- headlineSmall=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.SemiBold,fontSize=22.sp,lineHeight=30.sp,letterSpacing=0.sp),
- titleLarge=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.SemiBold,fontSize=20.sp,lineHeight=28.sp,letterSpacing=0.sp),
- titleMedium=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Medium,fontSize=17.sp,lineHeight=24.sp,letterSpacing=0.sp),
- titleSmall=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Medium,fontSize=14.sp,lineHeight=21.sp,letterSpacing=0.sp),
- bodyLarge=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Normal,fontSize=16.sp,lineHeight=26.sp,letterSpacing=0.sp),
- bodyMedium=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Normal,fontSize=14.sp,lineHeight=22.sp,letterSpacing=0.sp),
- bodySmall=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Normal,fontSize=12.sp,lineHeight=18.sp,letterSpacing=0.sp),
- labelLarge=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Medium,fontSize=14.sp,lineHeight=20.sp,letterSpacing=0.sp),
- labelMedium=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Medium,fontSize=12.sp,lineHeight=18.sp,letterSpacing=0.sp),
+ headlineSmall=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.SemiBold,fontSize=28.sp,lineHeight=36.sp,letterSpacing=0.sp),
+ titleLarge=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.SemiBold,fontSize=24.sp,lineHeight=32.sp,letterSpacing=0.sp),
+ titleMedium=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Medium,fontSize=22.sp,lineHeight=28.sp,letterSpacing=0.sp),
+ titleSmall=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Medium,fontSize=15.sp,lineHeight=22.sp,letterSpacing=0.sp),
+ bodyLarge=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Normal,fontSize=17.sp,lineHeight=26.sp,letterSpacing=0.sp),
+ bodyMedium=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Normal,fontSize=15.sp,lineHeight=23.sp,letterSpacing=0.sp),
+ bodySmall=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Normal,fontSize=13.sp,lineHeight=19.sp,letterSpacing=0.sp),
+ labelLarge=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Medium,fontSize=15.sp,lineHeight=22.sp,letterSpacing=0.sp),
+ labelMedium=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Medium,fontSize=13.sp,lineHeight=19.sp,letterSpacing=0.sp),
  labelSmall=TextStyle(fontFamily=FontFamily.SansSerif,fontWeight=FontWeight.Normal,fontSize=11.sp,lineHeight=16.sp,letterSpacing=0.sp))
 // 行高搭配：与字阶成对使用
 object Leading{
- val Hero=46.sp;val Title=30.sp;val Body=24.sp;val Caption=18.sp
+ val Hero=52.sp;val Title=36.sp;val Body=26.sp;val Caption=19.sp
 }
 
 // 只有悬浮层使用中性投影；普通内容卡片靠表面与边界区分。
@@ -124,9 +124,9 @@ fun Modifier.softShadow(elevation:Dp,shape:Shape=RoundedCornerShape(Radii.Xl),sp
  Box(modifier.background(Paper)){content()}
 }
 
-// 毛玻璃底栏：半透明暖白 + 顶部细线；不用实时高斯模糊以保性能
+// 毛玻璃底栏：半透明深黑 + 顶部细线；不用实时高斯模糊以保性能
 @Composable fun FrostedBar(modifier:Modifier=Modifier,content:@Composable ()->Unit){
- Column(modifier.background(Paper.copy(alpha=.88f))){
+ Column(modifier.background(Paper.copy(alpha=.72f))){
   Box(Modifier.fillMaxWidth().height(.5.dp).background(Line))
   content()
  }
@@ -256,7 +256,7 @@ object Motion{
 @Composable fun rememberShimmerBrush():Brush{
  val t=rememberInfiniteTransition(label="shimmer")
  val x by t.animateFloat(0f,1f,infiniteRepeatable(tween(1400,easing=LinearEasing),RepeatMode.Restart),label="shx")
- return Brush.linearGradient(listOf(Track,Color.White,Track),start=Offset(x*700f-250f,0f),end=Offset(x*700f+250f,0f))
+ return Brush.linearGradient(listOf(Track,Track.copy(alpha=.4f),Track),start=Offset(x*700f-250f,0f),end=Offset(x*700f+250f,0f))
 }
 @Composable fun ShimmerCard(modifier:Modifier=Modifier){
  val b=rememberShimmerBrush()

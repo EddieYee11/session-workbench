@@ -9,6 +9,7 @@ import android.graphics.drawable.Icon as AndroidIcon
 import android.webkit.*
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
@@ -52,7 +53,9 @@ class MainActivity:ComponentActivity(){
  var quick by mutableStateOf("")
  var workLaunch by mutableIntStateOf(0)
  override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
-   enableEdgeToEdge()
+   // APP 恒深色：系统栏图标恒浅色，不跟随系统深浅设置（detectDarkMode 恒 true）
+   val transparentBars=SystemBarStyle.auto(android.graphics.Color.TRANSPARENT,android.graphics.Color.TRANSPARENT){true}
+   enableEdgeToEdge(statusBarStyle=transparentBars,navigationBarStyle=transparentBars)
    handleIntent(intent)
    if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)
    val shortcuts=listOf(
@@ -91,7 +94,7 @@ fun agentDisplayName(agent:String):String=when(agent){"pi"->"Pi";"claude"->"Clau
 @Composable fun Choice(label:String,options:List<String>,select:(String)->Unit){var show by remember{mutableStateOf(false)};Box{TextButton(onClick={show=true},contentPadding=PaddingValues(horizontal=8.dp)){Text(label,fontSize=Type.Caption,maxLines=1);Icon(Icons.Outlined.ExpandMore,null,Modifier.size(15.dp))};DropdownMenu(show,{show=false}){options.forEach{o->DropdownMenuItem(text={Text(o,fontSize=Type.BodySm)},onClick={select(o);show=false})}}}}
 fun dayLabel(ts:Double):String {val date=Date((ts*1000).toLong());val fmt=SimpleDateFormat("yyyy-MM-dd",Locale.CHINA);return when(fmt.format(date)){fmt.format(Date())->"今天";fmt.format(Date(System.currentTimeMillis()-86400000))->"昨天";else->SimpleDateFormat("M月d日",Locale.CHINA).format(date)}}
 private val whitespace=Regex("\\s+")
-fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(text);if(q.isNotBlank())q.trim().split(whitespace).forEach{term->var start=0;while(start<text.length){val i=text.indexOf(term,start,true);if(i<0)break;addStyle(SpanStyle(background=Color(0xFFFFE6A5),color=Ink),i,i+term.length);start=i+term.length}}}
+fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(text);if(q.isNotBlank())q.trim().split(whitespace).forEach{term->var start=0;while(start<text.length){val i=text.indexOf(term,start,true);if(i<0)break;addStyle(SpanStyle(background=Ember.copy(alpha=.38f),color=Ink),i,i+term.length);start=i+term.length}}}
 
 @Composable fun Approval(vm:WorkbenchModel,a:JSONObject){
  val id=a.optString("id")
@@ -239,7 +242,7 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
   }
   SettingsSection(Icons.Outlined.TextFields,"显示与通知"){
    Text("聊天字号 ${vm.font.toInt()}",fontSize=Type.BodySm)
-   Slider(vm.font,{vm.font=it;vm.store.prefs.edit().putFloat("font",it).apply()},valueRange=14f..22f,steps=7)
+   Slider(vm.font,{vm.font=it;vm.store.prefs.edit().putFloat("font",it).apply()},valueRange=15f..26f,steps=10)
    Row(verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text("任务状态通知",fontSize=Type.BodySm);Text("完成、失败与等待回应",fontSize=Type.Caption,color=Muted)};Switch(notify,{notify=it;vm.store.prefs.edit().putBoolean("notifications",it).apply()})}
    Text("历史索引 ${vm.index.optInt("done")}/${vm.index.optInt("total")} · 暂无法读取 ${vm.index.optInt("unreadable")} 份",fontSize=Type.Caption,color=Muted)
   }
