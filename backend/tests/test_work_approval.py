@@ -14,10 +14,18 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
     monkeypatch.setenv("WORKBENCH_STATE", str(tmp_path / "state"))
     import app
     app = importlib.reload(app)
+    human=app.conversation.submit('human-proposal-001','请检查并整理示例项目')
+    with app.conversation.db() as db:
+        db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',
+                   (getattr(app.conversation.client,'session_key','hermes_session_id'),'approval-test-main'))
+    app.conversation._finish(human['message_id'],'completed')
+    app.conversation._delivery(human['message_id'],'delivered')
     proposal = app.work_proposals.propose(
         agent="codex", relative_cwd="example", title="整理示例项目",
         prompt="检查并整理示例项目", sandbox="workspace-write",
         reason="涉及多个文件，需要 Codex", idempotency_key="test-codex-approval-001",
+        origin_session_id=app.conversation._session_id(),origin_message_id=human['message_id'],
+        origin_request_id='human-proposal-001',
     )
     calls = []
 
@@ -52,6 +60,11 @@ def test_approved_proposal_dispatches_once_and_keeps_user_auth(tmp_path, monkeyp
     assert [call[0] for call in calls] == ["create", "input"]
     assert calls[0][3]["sandbox"] == "danger-full-access"
     assert Path(calls[0][2]) == root/'example'
+    task=next(t for t in app.task_store.list() if t['id']==proposal['id'])
+    assert task['source_message_ids']==[human['message_id']]
+    assert task['authorization']['source_request_id']=='human-proposal-001'
+    assert task['source_links'][0]['text']=='请检查并整理示例项目'
+    assert '请检查并整理示例项目' in calls[1][2]
 
 
 def test_refresh_does_not_authorize_and_tasks_expose_source(tmp_path, monkeypatch):

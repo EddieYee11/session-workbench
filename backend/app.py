@@ -12,8 +12,10 @@ from voice import voice_router
 from personal import PersonalBridge
 from conversation import PersonalConversation
 from pi_main import PiMainClient
+from hermes_runtime import HermesRuntime
 from capabilities import CapabilityRegistry
 from goals import GoalEvents
+from goal_proposals import GoalProposals
 from background_events import BackgroundEvents
 from agent_tools import AgentTools
 from unified_voice import UnifiedVoice
@@ -24,6 +26,7 @@ from work_dispatch import WorkProposalStore
 from tasks import TaskStore,TaskController
 from task_tools import authorized_assignment
 from quick_voice import QuickVoice
+from rayneo import RayneoIngress
 from message_references import MessagePresentations, canonical_reference
 from work_cards import accepted
 from heartbeat import Heartbeat
@@ -45,11 +48,12 @@ config_file=STATE/'agent-config.json'
 agent_config=json.loads(config_file.read_text()) if config_file.exists() else {}
 MAIN_AGENT=os.environ.get('COM_MAIN_AGENT',agent_config.get('main_agent','hermes'))
 if MAIN_AGENT not in ('pi','hermes'):raise ValueError('Invalid main agent config')
-conversation=PersonalConversation(STATE,PiMainClient(STATE,HOME/'AI_Work_System',tools=os.environ.get('COM_PI_SAFE_PROBE')!='1') if MAIN_AGENT=='pi' else None)
+conversation=PersonalConversation(STATE,PiMainClient(STATE,HOME/'AI_Work_System',tools=os.environ.get('COM_PI_SAFE_PROBE')!='1') if MAIN_AGENT=='pi' else HermesRuntime(STATE))
 legacy_voice=quick_voice
-if MAIN_AGENT=='pi':quick_voice=UnifiedVoice(conversation,legacy_voice)
+quick_voice=UnifiedVoice(conversation,legacy_voice)
+rayneo=RayneoIngress(STATE,conversation,quick_voice)
 signals=PersonalSignals(STATE)
-inspector=SignalInspector(signals,PiSignalReviewer(STATE) if MAIN_AGENT=='pi' else HermesSignalReviewer(STATE))
+inspector=SignalInspector(signals,PiSignalReviewer(STATE) if MAIN_AGENT=='pi' else HermesSignalReviewer(STATE),external_schedule=MAIN_AGENT=='hermes')
 work_proposals=WorkProposalStore(STATE,HOME/'AI_Work_System')
 task_store=TaskStore(STATE)
 artifact_access=ArtifactAccess(task_store,HOME/"AI_Work_System",STATE)
@@ -60,13 +64,26 @@ runtime.workers.copies.sync_check=sync_stable
 capability_registry=CapabilityRegistry(STATE)
 runtime.capabilities=capability_registry
 goal_events=GoalEvents(STATE)
+goal_proposals=GoalProposals(STATE)
 background=BackgroundEvents(goal_events,conversation,task_store)
 conversation.process_background=background.process
 agent_tools=AgentTools(STATE,conversation,work_proposals,task_store,task_controller,capability_registry,goal_events)
+from personal_hub import PersonalHub
+personal_hub=PersonalHub(STATE,HOME)
+agent_tools.personal_hub=personal_hub
+agent_tools.heartbeat=heartbeat
+agent_tools.inspector=inspector
+from device_nodes import DeviceNodes
+device_nodes=DeviceNodes(STATE)
+agent_tools.device_nodes=device_nodes
+personal_hub.device_nodes=device_nodes
+from autonomy import PersonalAutonomy
+autonomy=PersonalAutonomy(STATE,personal_hub)
+agent_tools.autonomy=autonomy
 agent_tools.artifact_access=artifact_access
 conversation.task_context=lambda: task_store.context()
 conversation.task_environment=lambda: {'workspace_root':str(work_proposals.workspace),
-                                      'automatic_executor':'pi','maximum_running_tasks':2,'claude_maximum_running':1,'host':capability_registry.host,
+                                      'automatic_executor':MAIN_AGENT,'maximum_running_tasks':2,'claude_maximum_running':1,'host':capability_registry.host,
                                       'current_date':datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(),'timezone':'Asia/Shanghai',
                                       'main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),
                                       'worker_operation_mode':OPERATION_MODE,'readonly_restrictions_revoked':True,
@@ -114,7 +131,8 @@ async def lifespan(app):
     async def heartbeat_loop():
         while True:
             await asyncio.sleep(60)
-            with contextlib.suppress(Exception):await heartbeat.tick()
+            if MAIN_AGENT!='hermes':
+                with contextlib.suppress(Exception):await heartbeat.tick()
     heartbeat_task=asyncio.create_task(heartbeat_loop())
     quick_voice.start()
     conversation.start()
@@ -134,11 +152,13 @@ async def lifespan(app):
 
 app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 app.include_router(voice_router(STATE))
+app.include_router(rayneo.router)
 @app.middleware('http')
 async def auth(request,call_next):
-    if request.url.path not in ('/health','/pair'):
+    if request.url.path not in ('/health','/pair','/rayneo/v1/pair'):
         supplied=request.headers.get('authorization','')
-        if not hmac.compare_digest(supplied,'Bearer '+TOKEN):return JSONResponse({'detail':'连接凭据无效，请重新配对'},401)
+        valid=rayneo.authorized(supplied) if request.url.path.startswith('/rayneo/') else hmac.compare_digest(supplied,'Bearer '+TOKEN)
+        if not valid:return JSONResponse({'detail':'连接凭据无效，请重新配对'},401)
     response=await call_next(request);response.headers['Cache-Control']='no-store';return response
 @app.exception_handler(ValueError)
 @app.exception_handler(RuntimeError)
@@ -156,7 +176,7 @@ def deployed_build_commit():
         return BUILD_COMMIT
 
 @app.get('/health')
-async def health():return {'service':'mini-sessions','version':'1.9.0','api_contract':2,'build_commit':deployed_build_commit(),'main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),'worker_operation_mode':OPERATION_MODE,'operation_policy_revision':POLICY_REVISION,'readonly_restrictions_revoked':True,'features':{'artifact_access_v1':True,'conversation_history_v1':True,'conversation_resume_v1':True,'heartbeat_shadow_v1':True,'reminder_cards_v1':True,'muse_task_kinds_v1':True,'supplement_new_item_v1':True,'capability_search_readonly_v1':True,'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'work_cards_v1':True,'task_events_sse_v1':True,'task_plan_v1':True,'task_context_revision_v1':True,'semantic_verification_v1':True,'main_steer_v1':MAIN_AGENT=='pi','voice_bookkeeping_intent_v1':True,'direct_business_queries_v1':True,'work_chat_v1':True,'goals_scheduler':goal_events.enabled()}}
+async def health():return {'service':'mini-sessions','version':'2.0.0','api_contract':2,'build_commit':deployed_build_commit(),'main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),'worker_operation_mode':OPERATION_MODE,'operation_policy_revision':POLICY_REVISION,'readonly_restrictions_revoked':True,'features':{'artifact_access_v1':True,'conversation_history_v1':True,'conversation_resume_v1':True,'heartbeat_shadow_v1':True,'reminder_cards_v1':True,'muse_task_kinds_v1':True,'supplement_new_item_v1':True,'capability_search_readonly_v1':True,'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'work_cards_v1':True,'task_events_sse_v1':True,'task_plan_v1':True,'task_context_revision_v1':True,'semantic_verification_v1':True,'main_steer_v1':True,'hermes_main':MAIN_AGENT=='hermes','hermes_runs_v1':True,'voice_bookkeeping_intent_v1':True,'markdown_hindsight_memory_v1':True,'direct_business_queries_v1':True,'work_chat_v1':True,'goal_proposals_v1':True,'goals_scheduler':goal_events.enabled()}}
 @app.post('/pair')
 async def pair(request:Request):
     ip=request.client.host;now=time.time();attempts=[x for x in rate.get(ip,[]) if now-x<300]
@@ -221,12 +241,22 @@ async def personal_conversation_stream(request:Request):
                 payload=json.dumps(frame['data'],ensure_ascii=False,separators=(',',':'))
                 yield f"id: {frame['id']}\nevent: {frame['event']}\ndata: {payload}\n\n"
     return StreamingResponse(events(),media_type='text/event-stream',headers={'Cache-Control':'no-store','X-Accel-Buffering':'no'})
+def matter_context(matter_id):
+    if not matter_id:return None
+    if not isinstance(matter_id,str):raise ValueError('事项标识无效')
+    card=next((r for r in personal_hub.briefing()['cards'] if r['id']==matter_id),None)
+    row=card or next((r for r in personal_hub.matters() if r['id']==matter_id),None)
+    if not row:raise ValueError('事项不存在')
+    return {'id':matter_id,'title':row['title'],'source':row['source'],'source_updated_at':row['source_updated_at'],
+            'facts':row['facts'],'feedback':row.get('feedback',{}),'related_facts':row.get('action_context',{}).get('related_facts',[]),
+            'grouping':row.get('grouping'),'authority':'external_reference_only'}
+
 @app.post('/personal/conversation/messages')
 async def personal_message(request:Request):
     data=await request.json()
     if not isinstance(data,dict) or not isinstance(data.get('request_id'),str) or not isinstance(data.get('text'),str):raise ValueError('消息格式无效')
-    if legacy_voice.receipt(data['request_id']):raise ValueError('这条语音已有旧受理回执，不会重复交办。')
-    return conversation.submit(data['request_id'],data['text'],data.get('reference'))
+    if legacy_voice.receipt(data['request_id']) or quick_voice.receipt(data['request_id']):raise ValueError('这条语音已有受理回执，不会重复交办。')
+    return conversation.submit(data['request_id'],data['text'],data.get('reference'),associated_matter=matter_context(data.get('matter_id')))
 @app.post('/personal/quick-voice/messages')
 async def quick_voice_message(request:Request):
     data=await request.json()
@@ -272,14 +302,19 @@ async def approve_personal_work(proposal_id:str,request:Request):
         if existing['approval_request_id']:
             if existing['approval_request_id']!=request_id:raise ValueError('工作建议已由另一次审批处理')
             return existing
+        from task_tools import approval_source
+        origin=approval_source(conversation,existing)
         task_store.ensure(existing)
         # Serialize tasks in the same directory until isolated workspaces are available.
         if any(t['cwd']==existing['cwd'] and t['id']!=proposal_id and t['status'] in ('running','waiting','unknown','dispatching','cancel_requested') for t in task_store.list()):raise ValueError('该项目已有未结束任务，请先串行完成')
         proposal=work_proposals.claim_approval(proposal_id,request_id)
+        task_store.change(proposal_id,'source-bound:'+request_id,'source.bound',
+                          source_links=origin['source_links'],source_message_ids=origin['source_message_ids'],
+                          latest_user_message_id=origin['latest_user_message_id'])
         ledger_task=next(t for t in task_store.list() if t['id']==proposal_id)
         prompt=task_store.execution_prompt(ledger_task)
         initial_inputs=task_store.pending_start_inputs(proposal_id)
-        authorized_task=task_store.change(proposal_id,'dispatch:'+request_id,'authorized',status='dispatching',authorization={'request_id':request_id,'cwd':proposal['cwd'],'sandbox':proposal['sandbox'],'prompt':prompt,'actual_action':proposal.get('actual_action',{})})[0]
+        authorized_task=task_store.change(proposal_id,'dispatch:'+request_id,'authorized',status='dispatching',authorization={**origin['authorization'],'request_id':request_id,'cwd':proposal['cwd'],'sandbox':proposal['sandbox'],'prompt':prompt,'actual_action':proposal.get('actual_action',{})})[0]
         for command in initial_inputs:task_store.transition_input(command['request_id'],('pending_start',),'sending')
         try:
             sid=await runtime.create_task_worker(authorized_task)
@@ -305,6 +340,22 @@ async def reject_personal_work(proposal_id:str):
     task_store.ensure(proposal)
     task_store.change(proposal_id,'rejected:'+proposal_id,'rejected',status='rejected')
     return proposal
+@app.get('/personal/goal-proposals')
+async def personal_goal_proposals(limit:int=10):
+    return {'items':goal_proposals.list(limit)}
+@app.post('/personal/goal-proposals/{proposal_id}/decide')
+async def decide_personal_goals(proposal_id:str,request:Request):
+    data=await request.json()
+    if not isinstance(data,dict):raise ValueError('缺少有效请求体')
+    approved=data.get('approved');rejected=data.get('rejected')
+    if not isinstance(approved,list) or not isinstance(rejected,list):raise ValueError('approved 与 rejected 必须是数组')
+    async with runtime.action_lock:
+        decision=goal_proposals.decide(proposal_id,data.get('request_id'),approved,rejected)
+        if decision['applied'] is None:  # 首次执行；已落过库的直接返回回执，不重写文件
+            from goal_apply import apply_decision
+            decision=goal_proposals.record_applied(proposal_id,decision['request_id'],
+                apply_decision(goal_proposals.get(proposal_id),decision))
+        return decision
 @app.get('/personal/tasks')
 async def personal_tasks():
     for proposal in work_proposals.list(100):task_store.ensure(proposal)
@@ -704,9 +755,111 @@ async def internal_agent_tool(name:str,request:Request):
         raise ValueError('Invalid agent envelope')
     return await agent_tools.call(name,data['args'],data['context'])
 
+@app.get('/personal/memory')
+async def memory_status():
+    from memory import status
+    from memory_catalog import MemoryCatalog,CATEGORIES
+    return {**await asyncio.to_thread(status),'categories':CATEGORIES,'items':MemoryCatalog().list()}
+
+@app.get('/personal/memory/{memory_id}')
+async def memory_detail(memory_id:str):
+    from memory_catalog import MemoryCatalog
+    return MemoryCatalog().get(memory_id)
+
+@app.post('/personal/memory/{memory_id}')
+async def memory_edit(memory_id:str,request:Request):
+    from memory_catalog import MemoryCatalog
+    data=await request.json();catalog=MemoryCatalog();old=catalog.get(memory_id)
+    content=data.get('content',old['content'])
+    # Authenticated UI correction remains sourced as an explicit human edit.
+    source={'message_id':'memory-edit:'+str(data.get('request_id','')),'quote':content,'previous_source':old['source']}
+    if not data.get('request_id'):raise ValueError('Missing edit request ID')
+    return catalog.save(content,data.get('category',old['category']),source,memory_id,data.get('kind',old['kind']),data.get('expected_version'),data.get('archived',old['archived']))
+
 @app.get('/personal/capabilities')
 async def capabilities_search(query:str='',runtime_name:str=''):
     return {'items':capability_registry.search(query,runtime_name or None)}
+
+@app.get('/personal/connectors')
+async def connector_status():return personal_hub.status()
+
+@app.post('/personal/connectors/{name}')
+async def connector_settings(name:str,request:Request):
+    return personal_hub.configure(name,await request.json())
+
+@app.post('/personal/sync')
+async def personal_sync(request:Request):
+    data=await request.json()
+    return await personal_hub.sync(data.get('group','all'),force=True)
+
+@app.get('/personal/matters')
+async def personal_matters():return {'items':personal_hub.matters()}
+
+@app.get('/personal/briefing')
+async def personal_briefing():
+    active_ids=[]
+    for task in task_store.list():
+        if task['status'] in ('queued','running','waiting','unknown','cancel_requested'):
+            active_ids.append(task['id'])
+            personal_hub.matter('com_task',task['id'],task['title'],{'status':task['status'],'task_id':task['id'],'requirements_revision':task.get('requirements_revision')},deadline=None)
+    with personal_hub.db() as db:
+        stale=[r[0] for r in db.execute("SELECT id,source_id FROM matters WHERE source='com_task'") if r[1] not in active_ids]
+        for ident in stale:db.execute('DELETE FROM matters WHERE id=?',(ident,))
+    return personal_hub.briefing()
+
+@app.post('/personal/matters/{matter_id}/feedback')
+async def matter_feedback(matter_id:str,request:Request):
+    data=await request.json()
+    return personal_hub.feedback(matter_id,data['action'],data['request_id'],data.get('text',''))
+
+@app.post('/personal/matters/{matter_id}/unlink')
+async def matter_unlink(matter_id:str):return personal_hub.unlink(matter_id)
+
+@app.post('/personal/matters/{matter_id}/action')
+async def matter_action(matter_id:str,request:Request):
+    data=await request.json()
+    return conversation.submit(data['request_id'],data.get('goal','分析这件事并给出下一步'),associated_matter=matter_context(matter_id))
+
+
+@app.get('/personal/automations')
+async def personal_automations():
+    from conversation import HermesClient
+    try:return await HermesClient(STATE).request('GET','/api/jobs')
+    except Exception:return {'jobs':[],'status':'unavailable'}
+
+@app.get('/personal/actions')
+async def personal_actions():return {'items':autonomy.list(),'enabled':autonomy.enabled()}
+
+@app.post('/personal/actions/{operation_id}/undo')
+async def personal_undo(operation_id:str,request:Request):
+    data=await request.json();return await autonomy.undo(operation_id,data['request_id'])
+
+@app.get('/personal/devices')
+async def devices_list():return {'items':device_nodes.list()}
+
+@app.post('/personal/devices/register')
+async def device_register(request:Request):return device_nodes.register(await request.json())
+
+@app.post('/personal/devices/{node}/invoke')
+async def device_invoke(node:str,request:Request):
+    data=await request.json()
+    return await device_nodes.call(node,data['tool'],data.get('args',{}),data['request_id'],data.get('timeout',30))
+
+@app.get('/personal/invocations/{invocation_id}')
+async def device_invocation(invocation_id:str):
+    row=device_nodes.get(invocation_id)
+    if not row:raise HTTPException(404,'调用不存在')
+    return row
+
+@app.post('/personal/devices/{node}/results')
+async def device_result(node:str,request:Request):return await device_nodes.result(node,await request.json())
+
+@app.websocket('/personal/devices/{node}/ws')
+async def device_socket(ws:WebSocket,node:str):
+    if not hmac.compare_digest(ws.headers.get('authorization',''),'Bearer '+TOKEN):await ws.close(code=1008);return
+    try:await device_nodes.socket(ws,node)
+    except (WebSocketDisconnect,TimeoutError,ValueError,RuntimeError):
+        with contextlib.suppress(Exception):await ws.close()
 
 @app.get('/personal/reminders')
 async def personal_reminders():

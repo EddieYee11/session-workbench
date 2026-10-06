@@ -6,7 +6,7 @@ import org.json.JSONObject
 /** A request owns its immutable body. Uncertain sends never block unrelated messages. */
 data class ConversationOutboxEntry(
  val id:String,val text:String,val reference:JSONObject?=null,val state:String="prepared",
- val serverId:String="",val createdAt:Double=System.currentTimeMillis()/1000.0,
+ val serverId:String="",val createdAt:Double=System.currentTimeMillis()/1000.0,val matterId:String="",
 )
 
 fun restoredOutboxState(state:String):String = when(state){
@@ -27,14 +27,14 @@ fun readConversationOutbox(value:String,legacy:String=""):List<ConversationOutbo
  return rows.mapNotNull{row->
   val id=row.optString("request_id");val text=row.optString("text")
   if(id.isBlank()||text.isBlank())null else ConversationOutboxEntry(id,text,row.optJSONObject("reference"),
-   restoredOutboxState(row.optString("state","unknown")),row.optString("message_id"),row.optDouble("created_at",0.0))
+   restoredOutboxState(row.optString("state","unknown")),row.optString("message_id"),row.optDouble("created_at",0.0),row.optString("matter_id"))
  }.distinctBy{it.id}
 }
 fun serializeConversationOutbox(entries:List<ConversationOutboxEntry>):String=JSONObject().put("items",JSONArray(entries.map{entry->
  JSONObject().put("request_id",entry.id).put("text",entry.text).put("reference",entry.reference?:JSONObject.NULL)
-  .put("state",entry.state).put("message_id",entry.serverId).put("created_at",entry.createdAt)
+  .put("state",entry.state).put("message_id",entry.serverId).put("created_at",entry.createdAt).put("matter_id",entry.matterId)
 })).toString()
-fun ConversationOutboxEntry.body()=JSONObject().put("request_id",id).put("text",text).put("reference",reference?:JSONObject.NULL)
+fun ConversationOutboxEntry.body()=JSONObject().put("request_id",id).put("text",text).put("reference",reference?:JSONObject.NULL).apply{if(matterId.isNotBlank())put("matter_id",matterId)}
 fun ConversationOutboxEntry.outgoing()=OutgoingMessage(id,"personal-main",text,reference,
  if(state=="accepted")"sent" else if(state=="queued_local")"queued_local" else if(state in setOf("prepared","sending"))"sending" else "unknown",serverId,createdAt=createdAt)
 

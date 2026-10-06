@@ -208,7 +208,7 @@ def test_assignment_http_auth_idempotency_and_pending_approval_restriction(tmp_p
     assert first.json()['task_id']==second.json()['task_id'] and first.json()['status']=='queued'
     assert not first.json()['work_started'] and len(app.task_store.list())==1
     assert client.post('/personal/tasks/create',headers=headers,json={**payload,'source_quote':'帮我发布代码'}).status_code==409
-    card=app.work_proposals.propose(agent='codex',relative_cwd='project',title='Pending approval',prompt='Inspect only',sandbox='read-only',reason='Review',origin_message_id=source,idempotency_key='pending-proposal-http-001')
+    card=app.work_proposals.propose(agent='codex',relative_cwd='project',title='Pending approval',prompt='Inspect only',sandbox='read-only',reason='Review',origin_session_id='com-personal-main',origin_request_id='http-human-request-001',origin_message_id=source,idempotency_key='pending-proposal-http-001')
     app.task_store.ensure(card)
     assert record_constraint(app.task_store,card['id'],'','pre-approval-style-001','preserve_style')['delivery']=='pending_start'
     worker_calls=[]

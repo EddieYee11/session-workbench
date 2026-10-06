@@ -125,6 +125,40 @@ def source_link(row):
             'revision':row.get('revision',0),'text':row['text'][:6000]}
 
 
+def bookkeeping_clarification(conversation, row):
+    """Bind a short amount reply to an immediate pending expense question.
+
+    The real parent must request work and contain amounts; assistant wording
+    identifies the question but cannot authorize an otherwise unrequested write.
+    """
+    raw = quote_free(row['text'])
+    amounts = money_amounts(raw)
+    if len(set(amounts)) != 1 or len(raw) > 48 or QUOTE.search(row['text']):
+        return None
+    remainder = raw
+    for start, end, _ in reversed(_money_matches(raw)):
+        remainder = remainder[:start] + remainder[end:]
+    if re.sub(r'确认|确定|就是|是|金额|应该|改成|按|记|吧|钱|[\s。，,！!：:]', '', remainder):
+        return None
+    with conversation.db() as db:
+        previous = db.execute('SELECT * FROM messages WHERE created_at<? ORDER BY created_at DESC,id DESC LIMIT 1',
+                              (row['created_at'],)).fetchone()
+        parent = db.execute("SELECT * FROM messages WHERE id=? AND role='user'", (previous['parent_id'],)).fetchone() if previous and previous['role']=='assistant' else None
+    if not parent or not 0 <= row['created_at'] - previous['created_at'] <= 1800:
+        return None
+    question = previous['text']
+    if not (re.search(r'记账|记.{0,8}(?:块|元)|这笔', question) and
+            re.search(r'[?？]|多少|哪个|还是|回一个数|确认金额', question)):
+        return None
+    original = quote_free(parent['text'])
+    if (not assignment(original, original) or
+            not (bookkeeping_intent(original) or money_amounts(original)) or
+            BOOK_BLOCK.search(original) or bookkeeping_query(original)):
+        return None
+    return {'parent':dict(parent), 'amount':float(amounts[0]),
+            'text':'记账：' + original + '\n用户确认本笔金额：' + raw}
+
+
 def _reference(row):
     try:
         reference=row.get('reference')
@@ -196,8 +230,11 @@ def deletion_risk(tool, args):
     blob = json.dumps(args, ensure_ascii=False)
     if action in ('delete', 'remove', 'clear', 'destroy', 'overwrite', 'truncate', 'purge'):
         return True
-    if tool in ('bash', 'powershell', 'execute_command') and DANGER.search(str(args.get('command', ''))):
-        return True
+    if tool in ('bash', 'powershell', 'execute_command'):
+        command = str(args.get('command', ''))
+        # Discarding stdout/stderr is not a destructive file overwrite.
+        command = re.sub(r'(?<!>)\d*>\s*/dev/null(?=\s|[;&|]|$)', '', command)
+        if DANGER.search(command):return True
     if tool in ('write', 'edit'):
         return True  # Existing paths require explicit recoverability evidence from the worker copy.
     return bool(re.search(r'永久删除|不可逆|清空数据|破坏性覆盖', blob))
@@ -256,6 +293,14 @@ def source(conversation, data):
     result = dict(row)
     result['raw_text'] = result['text']
     result['source_links']=[source_link(result)]
+    clarification = bookkeeping_clarification(conversation, result)
+    if clarification:
+        parent = clarification['parent']
+        result['bookkeeping_clarification'] = {'parent_request_id':parent['request_id'],
+                                             'amount':clarification['amount']}
+        result['bookkeeping_source'] = clarification['text']
+        result['authorization_parent_message_id'] = parent['id']
+        result['source_links'] = [source_link(parent), source_link(result)]
     if result.get('supplement_to_message_id'):
         if data.get('supplement_to_message_id') not in (None,result['supplement_to_message_id']):
             raise ValueError('补充来源关联不匹配')

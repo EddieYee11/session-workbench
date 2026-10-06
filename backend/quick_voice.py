@@ -32,7 +32,7 @@ def voice_prompt(text, purpose):
 def observed_progress(events):
     """Read native Pi records; do not infer completion from assistant prose."""
     phase, active_tool = 'submitted', ''
-    messages, calls, operations = {}, {}, []
+    messages, calls, operations, native_actions = {}, {}, [], []
     received = False
     for i, event in enumerate(events):
         typ, data = event.get('type'), event.get('data', {})
@@ -52,6 +52,10 @@ def observed_progress(events):
                     'success': not bool(data.get('isError')), 'text': text_content(result.get('content', []))[:2000],
                     'details': {**{k: details[k] for k in ('id', 'amount', 'category', 'account', 'time') if k in details},
                                 **({'comment': args['comment']} if isinstance(args.get('comment'), str) else {})}})
+            if data.get('toolName') in ('remind','calendar_event'):
+                native_actions.append({'tool':data['toolName'],'action':args.get('action',''),
+                    'success':not bool(data.get('isError')),'args':args,'details':result.get('details',{}) if isinstance(result,dict) else {},
+                    'text':text_content(result.get('content',[]))[:2000]})
         elif typ in ('message_update', 'message_end'):
             message = data.get('message', {})
             if message.get('role') == 'assistant':
@@ -81,8 +85,19 @@ def observed_progress(events):
                          and matches_readback(o)), None)
         receipts.append({**operation, 'readback_verified': bool(readback),
                          'readback': readback['text'] if readback else ''})
+    operation_receipts=[]
+    for i,action in enumerate(native_actions):
+        if action['action'] not in ('add','create'):continue
+        details=action['details'];ident=details.get('id')
+        if action['tool']=='remind':
+            execution=action['success'] and isinstance(ident,str) and ident.startswith('rm') and bool(details.get('due'))
+            readback=execution and any(a['tool']=='remind' and a['action']=='list' and a['success'] and ident in a['details'].get('ids',[]) for a in native_actions[i+1:])
+        else:
+            execution=action['success'] and bool(details.get('job')) and str(details.get('out','')).startswith('Event created:')
+            readback=False
+        operation_receipts.append({**action,'execution_verified':bool(execution),'readback_verified':bool(readback)})
     return {'phase': phase, 'active_tool': active_tool, 'received': received,
-            'result': '\n\n'.join(messages.values())[-12000:], 'action_receipts': receipts}
+            'result': '\n\n'.join(messages.values())[-12000:], 'action_receipts': receipts,'operation_receipts':operation_receipts}
 
 
 class QuickVoice:

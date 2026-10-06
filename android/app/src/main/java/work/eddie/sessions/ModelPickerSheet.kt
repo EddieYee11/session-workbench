@@ -95,7 +95,7 @@ fun ModelPickerSheet(
         }
     }
     val haptics = rememberComHaptics()
-    val agentName = if (agent.equals("codex", ignoreCase = true)) "Codex" else "Pi"
+    val agentName = agentDisplayName(agent)
     val listState = remember(agent) { LazyListState() }
     LaunchedEffect(agent, models.size, query) {
         if (models.isNotEmpty()) listState.scrollToItem(0)
@@ -246,7 +246,7 @@ fun ModelPickerSheet(
                 item(key = "effort-default") {
                     PickerOption(
                         title = if (agent == "pi" && existingSession) "沿用当前推理强度" else "跟随默认",
-                        subtitle = if (draftModel.isBlank()) "由 Mac 当前配置决定" else if (agent == "pi" && existingSession) "切换模型时保留 Pi 当前强度" else "由所选模型决定",
+                        subtitle = if (draftModel.isBlank()) "由 Mac 当前配置决定" else if (existingSession) "切换模型时保留 ${agentDisplayName(agent)} 当前强度" else "由所选模型决定",
                         selected = draftEffort.isBlank(),
                         onClick = {
                             if (draftEffort.isNotBlank()) haptics(HapticCue.Selection)

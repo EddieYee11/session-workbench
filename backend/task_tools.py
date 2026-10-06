@@ -4,6 +4,19 @@ import re
 from operation_policy import full_access_enabled,effective_sandbox,POLICY_REVISION
 
 
+def approval_source(conversation, proposal):
+    """Keep the actual human origin across approval -> worker handoff."""
+    from policy import source
+    context={key:proposal.get(key) for key in
+             ('origin_session_id','origin_message_id','origin_request_id')}
+    row=source(conversation,context)
+    links=row['source_links']
+    return {'source_links':links,'source_message_ids':[link['message_id'] for link in links],
+            'latest_user_message_id':row['id'],
+            'authorization':{'source_message_id':row['id'],'source_request_id':row['request_id'],
+                             'source_quote':row['text'],'source_links':links}}
+
+
 def authorized_assignment(conversation, proposals, data):
     """Validate a direct human assignment, not a model-supplied permission flag.
 
@@ -37,7 +50,7 @@ def authorized_assignment(conversation, proposals, data):
     if deletion_risk(data.get('action', 'task'), data.get('action_args', {})) or re.search(r'永久删除|清空|销毁|抹掉|删除|删掉', action_quote):
         raise ValueError('This action requires a concrete approval proposal')
     agent, requested = data.get('agent'), data.get('sandbox')
-    if agent not in ('pi','codex','claude'):
+    if agent not in ('pi','codex','claude','hermes'):
         raise ValueError('Automatic tasks support pi or codex, and claude')
     sandbox=effective_sandbox(requested)
     request_id = proposals._text(data.get('request_id'), 'request_id', 120)

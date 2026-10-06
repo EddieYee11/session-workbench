@@ -161,16 +161,16 @@ private fun openListenerSettings(context:Context){
   Text("权限与上下文",fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
   Text("上下文直接来自手机：通知、日历、位置、通讯录。权限只在你要用它时才申请，随时可关。",Modifier.padding(top=4.dp,bottom=8.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
 
-  PermissionRow(Icons.Outlined.Notifications,"手机通知","新通知经 Pi 分析成摘要与草稿",remember(tick){PhoneContext.listenerGranted(context)},
+  PermissionRow(Icons.Outlined.Notifications,"手机通知","新通知经 Hermes 分析成摘要与草稿",remember(tick){PhoneContext.listenerGranted(context)},
    "开启后，所选应用的新通知会在手机加密排队、发到 Mac mini 分析。验证码等敏感通知整条跳过，不会自动回复。",{openListenerSettings(context)})
 
   var share by remember{mutableStateOf(PhoneContext.shareLocation(context))}
   val locText=remember(tick){PhoneContext.lastLocationText(context)}
-  PermissionRow(Icons.Outlined.Place,"位置信息","Pi 知道你在哪：迟到提醒、附近推荐",locGranted,
-   "开启后，Pi 可以结合你的实时位置和日程地点，在你要迟到时提醒你出门。位置只在你要用时获取。",{locLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)}){
+  PermissionRow(Icons.Outlined.Place,"位置信息","Hermes 知道你在哪：迟到提醒、附近推荐",locGranted,
+   "开启后，Hermes 可以结合你的实时位置和日程地点，在你要迟到时提醒你出门。位置只在你要用时获取。",{locLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)}){
    if(locGranted){
     Row(Modifier.fillMaxWidth().padding(top=6.dp),verticalAlignment=Alignment.CenterVertically){
-     Text("让 Pi 使用我的位置",Modifier.weight(1f),fontSize=Type.BodySm,color=Ink)
+     Text("让 Hermes 使用我的位置",Modifier.weight(1f),fontSize=Type.BodySm,color=Ink)
      Switch(share,{share=it;PhoneContext.setShareLocation(context,it)})
     }
     Row(verticalAlignment=Alignment.CenterVertically){
@@ -190,7 +190,7 @@ private fun openListenerSettings(context:Context){
    if(calGranted)Text(calCount?.let{"手机日历今天 $it 条"}?:"正在读取手机日历…",Modifier.padding(top=4.dp),fontSize=Type.Caption,color=Muted)
   }
 
-  PermissionRow(Icons.Outlined.Mic,"麦克风","快捷语音和 Pi 语音输入",remember(tick){PhoneContext.micGranted(context)},
-   "按住电源键和 Pi 说一句，或在 Pi 对话里直接语音输入。",{})
+  PermissionRow(Icons.Outlined.Mic,"麦克风","快捷语音和 Hermes 语音输入",remember(tick){PhoneContext.micGranted(context)},
+   "按住电源键和 Hermes 说一句，或在对话里直接语音输入。",{})
  }
 }

@@ -9,6 +9,8 @@ from pathlib import Path
 
 
 async def verify(task,checks,state):
+    if task.get('agent')=='hermes' and task.get('structured_result',{}).get('latest_requirements_confirmed') is False:
+        raise ValueError('最新补充尚未确认消费；旧结果不能验收最新要求')
     if task['status']!='execution_finished' or not isinstance(checks,list) or not checks or len(checks)>8:
         raise ValueError('需要已结束任务和可执行的验收检查')
     root=Path(task.get('workspace_copy') or task['cwd']).resolve()

@@ -76,7 +76,13 @@ val Palette=lightColorScheme(
  secondary=Muted,secondaryContainer=ChipBg,onSecondaryContainer=Ink,
  tertiary=Ember,onTertiary=Color.White,tertiaryContainer=EmberSoft,onTertiaryContainer=EmberDeep,
  background=Paper,onBackground=Ink,surface=Card,onSurface=Ink,
- surfaceVariant=ToolSurface,onSurfaceVariant=Muted,outline=Line)
+ surfaceVariant=ToolSurface,onSurfaceVariant=Muted,outline=Line,outlineVariant=Line,
+ surfaceTint=Ink,surfaceContainer=Card,surfaceContainerHighest=ToolSurface,
+ surfaceContainerHigh=ToolSurface,surfaceContainerLow=Paper,surfaceContainerLowest=Card)
+
+val ComShapes=androidx.compose.material3.Shapes(
+ extraSmall=RoundedCornerShape(8.dp),small=RoundedCornerShape(12.dp),medium=RoundedCornerShape(18.dp),
+ large=RoundedCornerShape(24.dp),extraLarge=RoundedCornerShape(28.dp))
 
 // 设计刻度：间距 / 圆角 / 阴影 / 字阶全 App 统一，不再随手写数字
 object Spacing{

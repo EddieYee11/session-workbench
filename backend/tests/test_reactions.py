@@ -143,7 +143,7 @@ def test_stream_sends_model_selection_and_reconnect_only_restores_it(tmp_path):
             convo.reactions.react(sent["message_id"], fake.token, "💪")
         reconnect = PersonalConversation(tmp_path).stream(update["id"])
         restored = await reconnect.__anext__()
-        assert restored["event"] == "snapshot"  # Client does not pulse/haptic on restore.
+        assert restored["event"] == "update"  # Durable cursor resumes without replaying a selection pulse.
         assert restored["data"]["messages"][0]["reaction"] == reaction
         await reconnect.aclose()
         await events.aclose()

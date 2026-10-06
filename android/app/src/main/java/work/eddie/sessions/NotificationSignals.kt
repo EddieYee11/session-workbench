@@ -305,7 +305,7 @@ class PersonalNotificationListener:NotificationListenerService(){
  private lateinit var queueThread:HandlerThread
  private lateinit var queueHandler:Handler
  override fun onCreate(){super.onCreate();queueThread=HandlerThread("com-signal-queue").apply{start()};queueHandler=Handler(queueThread.looper)}
- override fun onListenerConnected(){
+ override fun onListenerConnected(){NodeNotificationAccess.service=this;
   super.onListenerConnected()
   SignalConfig.markConnected(this)
   if(SignalConfig.enabled(this))SignalSync.schedule(this)
@@ -318,5 +318,6 @@ class PersonalNotificationListener:NotificationListenerService(){
    runCatching{if(SignalQueue(this).add(event.json())){SignalConfig.markCaptured(this);SignalSync.immediate(this)}}
   }
  }
- override fun onDestroy(){queueThread.quitSafely();super.onDestroy()}
+ override fun onListenerDisconnected(){if(NodeNotificationAccess.service===this)NodeNotificationAccess.service=null;super.onListenerDisconnected()}
+ override fun onDestroy(){if(NodeNotificationAccess.service===this)NodeNotificationAccess.service=null;queueThread.quitSafely();super.onDestroy()}
 }

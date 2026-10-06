@@ -6,7 +6,23 @@
  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
  <uses-permission android:name="android.permission.READ_CONTACTS"/>
  <uses-permission android:name="android.permission.READ_CALENDAR"/>
+ <uses-permission android:name="android.permission.WRITE_CALENDAR"/>
+ <uses-permission android:name="android.permission.WRITE_CONTACTS"/>
+ <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"/>
+ <uses-permission android:name="android.permission.VIBRATE"/>
+ <uses-permission android:name="android.permission.CAMERA"/>
+ <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+ <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+ <uses-permission android:name="android.permission.health.READ_STEPS"/>
+ <uses-permission android:name="android.permission.health.READ_HEART_RATE"/>
+ <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND"/>
+ <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_HISTORY"/>
+ <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+ <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+ <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
  <queries>
+  <package android:name="com.google.android.apps.healthdata"/>
+  <intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent>
   <intent><action android:name="android.provider.Telephony.SMS_DELIVER"/></intent>
  </queries>
  <application android:label="@string/app_name" android:icon="@drawable/ic_launcher" android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true">
@@ -18,6 +34,15 @@
    <intent-filter><action android:name="android.intent.action.ASSIST"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
   </activity>
   <activity android:name=".ExpenseVoiceActivity" android:label="Com! · 语音记账" android:exported="false" android:launchMode="singleTask" android:taskAffinity="work.eddie.sessions.expensevoice" android:excludeFromRecents="true" android:theme="@style/QuickVoiceTheme" android:windowSoftInputMode="adjustResize"/>
+  <activity android:name=".HealthPermissionsActivity" android:exported="true">
+   <intent-filter><action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"/></intent-filter>
+  </activity>
+  <activity-alias android:name=".HealthPermissionUsage" android:exported="true" android:targetActivity=".HealthPermissionsActivity" android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
+   <intent-filter><action android:name="android.intent.action.VIEW_PERMISSION_USAGE"/><category android:name="android.intent.category.HEALTH_PERMISSIONS"/></intent-filter>
+  </activity-alias>
+  <service android:name=".PhoneNodeService" android:exported="false" android:foregroundServiceType="specialUse">
+   <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User enabled personal agent device node connection and authorized tool invocations"/>
+  </service>
   <service android:name=".PersonalNotificationListener" android:label="Com! Personal Agent 通知读取" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">
    <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
   </service>

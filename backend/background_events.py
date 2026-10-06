@@ -9,7 +9,7 @@ class BackgroundEvents:
         self.events,self.conversation,self.store=events,conversation,store
 
     async def process(self):
-        if getattr(self.conversation.client,'runtime_name',None)!='pi':
+        if getattr(self.conversation.client,'runtime_name',None) not in ('pi','hermes'):
             return False
         event=self.events.claim()
         if not event:
@@ -48,7 +48,7 @@ class BackgroundEvents:
               '\n先核实结果；只在原授权范围和完成条件内推进。无变化或无下一步时不通知。')
         completed=False;output=''
         try:
-            async for kind,payload in self.conversation.client.stream_chat('com-pi-main',text):
+            async for kind,payload in self.conversation.client.stream_chat(await self.conversation._ensure_session(),text):
                 if kind=='assistant.completed':output=payload.get('content','')
                 if kind=='run.completed':completed=True
         finally:

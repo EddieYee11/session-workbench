@@ -56,18 +56,20 @@ internal class ConversationGestures(val focusRequester:FocusRequester=FocusReque
  private var hidden=false
  private var shown=false
  fun drag(delta:Float,height:Float,atBottom:Boolean,density:Float):Int{
-  headerOffset=(headerOffset+delta).coerceIn(-height.coerceAtLeast(0f),0f)
-  if(delta<0){
-   bottomPull=0f;pullingFromLatest=false;keepLatestOnResize=false;shown=false;upDistance-=delta
+  // LazyColumn's positive drag moves toward older messages; its negative
+  // drag moves toward latest. Do not mistake reading history for a bottom pull.
+  headerOffset=(headerOffset-delta).coerceIn(-height.coerceAtLeast(0f),0f)
+  if(delta>0){
+   bottomPull=0f;pullingFromLatest=false;keepLatestOnResize=false;shown=false;upDistance+=delta
    if(!hidden&&upDistance>=12f*density){hidden=true;return -1}
-  }else if(delta>0){
+  }else if(delta<0){
    upDistance=0f;hidden=false
    if(bottomPull==0f&&!shown)pullingFromLatest=atBottom
-   if(pullingFromLatest){bottomPull+=delta;if(!shown&&bottomPull>=36f*density){shown=true;return 1}}
+   if(pullingFromLatest){bottomPull-=delta;if(!shown&&bottomPull>=36f*density){shown=true;return 1}}
    else{bottomPull=0f;shown=false}
   }
   return 0
  }
- fun consumesBottomPull(delta:Float)=delta>0&&(pullingFromLatest||keepLatestOnResize)
+ fun consumesBottomPull(delta:Float)=delta<0&&(pullingFromLatest||keepLatestOnResize)
  fun endDrag(){upDistance=0f;bottomPull=0f;pullingFromLatest=false;hidden=false;shown=false}
 }

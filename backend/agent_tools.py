@@ -55,13 +55,61 @@ class AgentTools:
         return task
 
     async def call(self, name, args, context):
+        if name not in ('loaded','tool_result','authorize_tool'):
+            self.check_glasses_scope(name,args,context)
         aliases={'create_task':'task_submit','get_task_status':'task_status','cancel_task':'task_cancel',
                  'update_task_constraints':'task_send'}
         name=aliases.get(name,name)
+        if name=='business_call':
+            from business_tools import BusinessTools
+            service=getattr(self,'business',None)
+            if service is None:self.business=service=BusinessTools(self.path.parent,self.authorize_tool)
+            return await service.call(args['tool'],args.get('args',{}),context)
         if name=='loaded':
             for tool in args.get('tools',[]):
                 self.capabilities.observe(tool,state='loaded')
             return {'status':'loaded'}
+        if name=='memory_recall':
+            from memory import recall
+            return await recall(args.get('query', ''), args.get('banks'))
+        if name=='memory_save':
+            row=source(self.conversation,context)
+            quote=args.get('source_quote','')
+            if not quote or quote not in row['raw_text']:raise ValueError('Memory quote must come from the user message')
+            from memory_catalog import MemoryCatalog
+            return MemoryCatalog().save(args['content'],args['category'],{'message_id':row['id'],'request_id':row['request_id'],'quote':quote},args.get('memory_id',''),args.get('kind','fact'),args.get('expected_version'))
+        if name=='briefing_refresh':
+            return await self.personal_hub.sync(args.get('group','all'),force=args.get('force',False))
+        if name=='personal_briefing':
+            return self.personal_hub.briefing()
+        if name=='briefing_annotate':
+            return self.personal_hub.annotate(args['matter_id'],args['source_version'],args['what'],args['why'],args['next_step'])
+        if name=='matter_link':
+            return self.personal_hub.link(args['root_id'],args['related_ids'],args['reason'])
+        if name=='matter_unlink':return self.personal_hub.unlink(args['matter_id'])
+        if name=='personal_observation':
+            observation=await self.heartbeat.tick(reason='hermes_cron')
+            self.inspector.wake()
+            return {'observation':observation,'notifications_review_scheduled':True}
+        if name=='personal_action_undo':
+            return await self.autonomy.undo(args['operation_id'],args['request_id'])
+        if name=='personal_autonomy':
+            return await self.autonomy.call(args['tool'],args['args'],args['reason'],args['request_id'])
+        if name=='device_call':
+            row=source(self.conversation,context)
+            if args['tool'].endswith('.delete'):raise ValueError('具体删除需要现有 exact-action 审批')
+            ident='device_'+hashlib.sha256((row['request_id']+json.dumps(args,sort_keys=True)).encode()).hexdigest()[:32]
+            return await self.device_nodes.call(args['node_id'],args['tool'],args.get('args',{}),ident,args.get('timeout',30))
+        if name=='calendar_read':
+            from calendar_bridge import CalendarBridge
+            return {'items':await CalendarBridge().read(args['start_date'],args['end_date']),'source':'Apple Calendar'}
+        if name=='calendar_adjust':
+            source(self.conversation,context)
+            from calendar_bridge import CalendarBridge
+            from business_tools import BusinessTools
+            service=BusinessTools(self.path.parent)
+            service.execute=lambda tool,params:CalendarBridge().adjust(params['event'],params['start'],params['end'])
+            return await service.call('calendar_event',{'action':'adjust',**args},context)
         if name=='capability_search':
             return {'items':self.capabilities.search(args.get('query',''),args.get('runtime'))}
         if name=='task_status':
@@ -237,6 +285,7 @@ class AgentTools:
 
     def authorize_tool(self,args,context):
         tool=args['tool'];params=args.get('args') or {}
+        glasses=self.check_glasses_scope(tool,params,context)
         task_id=context.get('task_id')
         task=next((t for t in self.store.list() if t['id']==task_id),None) if task_id else None
         if task_id:
@@ -258,7 +307,7 @@ class AgentTools:
                 voice=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='voice_requests'").fetchone()
                 purpose=db.execute('SELECT purpose FROM voice_requests WHERE request_id=?',(row['request_id'],)).fetchone() if voice else None
             expense=bool(purpose and purpose[0]=='expense')
-            bookkeeping_source='\n'.join(link['text'] for link in row.get('source_links',[])) or row['raw_text']
+            bookkeeping_source=row.get('bookkeeping_source') or '\n'.join(link['text'] for link in row.get('source_links',[])) or row['raw_text']
             readonly=action_is_readonly(tool,params)
             from policy import quote_free,QUOTE
             if not readonly and (row.get('continuation_unresolved') or
@@ -269,6 +318,15 @@ class AgentTools:
             if tool=='remind' and params.get('action')=='add' and not re.search(r'提醒我|叫我|定提醒|设.{0,8}提醒|新增|添加|提醒一下|到期.{0,15}提醒',row['text']):
                 raise ValueError('没有明确新增提醒意图')
         if tool=='bookkeeping' and params.get('action')=='add':
+            clarification = row.get('bookkeeping_clarification') if not task_id else None
+            if clarification:
+                if params.get('amount') != clarification['amount']:
+                    raise ValueError('请使用用户本次确认的金额')
+                with sqlite3.connect(self.path) as db:
+                    prior_effects = db.execute('SELECT data FROM effects').fetchall()
+                if any(json.loads(effect[0]).get('origin_request_id') == clarification['parent_request_id']
+                       for effect in prior_effects):
+                    raise ValueError('原事项已有执行记录，先回查，禁止重复写入')
             permitted,error=bookkeeping_details(bookkeeping_source,params.get('amount'),expense_entry=expense)
             if not permitted:raise ValueError(error)
         path=params.get('path') or params.get('file_path')
@@ -290,11 +348,22 @@ class AgentTools:
             cwd=task.get('cwd') if task else str(self.proposals.workspace)
             key=hashlib.sha256(json.dumps([task_id,ident,cwd,tool,params],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
             with sqlite3.connect(self.path) as db:
+                db.execute('BEGIN IMMEDIATE')
                 prior=db.execute('SELECT state FROM effects WHERE key=?',(key,)).fetchone()
                 if prior:
                     raise ValueError('此操作已有执行记录或结果待核实，先回查，禁止重复写入')
-                db.execute('INSERT INTO effects VALUES (?,?,?,?)',(key,args.get('tool_call_id'),'uncertain',json.dumps(context)))
+                db.execute('INSERT INTO effects VALUES (?,?,?,?)',(key,args.get('tool_call_id'),'uncertain',json.dumps({**context,**({'rayneo_expense':True} if glasses and tool=='bookkeeping' and params.get('action')=='add' else {}),**({'rayneo_creation':tool} if glasses and tool in ('remind','calendar_event') and params.get('action') in ('add','create') else {})})))
         return {'authorized':True}
+
+    def check_glasses_scope(self, tool, params, context):
+        # Verify persisted source, never a model-controlled context label.
+        with self.conversation.db() as db:
+            table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rayneo_requests'").fetchone()
+            registered=db.execute('SELECT 1 FROM rayneo_requests WHERE request_id=?',(context.get('origin_request_id'),)).fetchone() if table else None
+        if registered:
+            from rayneo import glasses_tool_policy
+            glasses_tool_policy(tool,params)
+        return bool(registered)
 
     def backup_main_write(self, path, context,root=None):
         """Permit ordinary native edits only with a durable recovery record."""

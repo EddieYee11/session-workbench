@@ -118,7 +118,10 @@ class PiRPC:
                 '--extension', str(Path(__file__).with_name('com-pi.ts'))]
         if self.name == 'main':
             from pi_main import MAIN_PROMPT
-            args += ['--system-prompt',MAIN_PROMPT]
+            # Com main uses the existing Pi subscription; other RPC lanes keep their defaults.
+            args[args.index('--provider') + 1] = 'openai-codex'
+            args[args.index('--model') + 1] = 'gpt-6-luna'
+            args += ['--thinking', 'medium', '--system-prompt',MAIN_PROMPT]
         # Do not use --tools here: native Pi treats it as an allowlist that
         # removes extension tools too. com-pi activates loaded tools through
         # the official API when COM_PI_OPERATIONAL_TOOLS is enabled.
@@ -254,6 +257,8 @@ class PiRPC:
     async def stream(self, text, request_id=None, *, context=None):
         async with self.turn_lock:
             await self.start()
+            if (context or {}).get('input_source') == 'rayneo':
+                await self.compact_glasses_context()
             self.run_id = request_id or uuid.uuid4().hex
             self.native_started = False
             self.stage_input(self.run_id, context or self.context)
@@ -329,6 +334,23 @@ class PiRPC:
             finally:
                 self.queue = None
                 self.busy = False
+
+    async def compact_glasses_context(self):
+        """Use native append-only compaction, never truncate business records."""
+        stats = await self.request({'type':'get_session_stats'})
+        tokens = ((stats.get('data') or {}).get('contextUsage') or {}).get('tokens')
+        if not isinstance(tokens,(int,float)) or tokens <= 180000:
+            return
+        started=time.monotonic()
+        self.record({'kind':'context.compaction.started','tokens_before':tokens})
+        response=await self.request({'type':'compact','customInstructions':
+            '保留Eddie身份、真实最近对话、指代、已执行记账ID/金额、提醒ID/时间、未完成事项和授权边界。'
+            '剔除反复注入的完整历史任务JSON、能力扫描清单和重复运行环境；这些可从Com持久记录按需回查。'
+            'Eddie现已明确授予眼镜对话与Com主对话相同的Full access，旧眼镜工具白名单和无权限回复已过时。'
+            '仅压缩上下文，不执行或重放任何操作。'},timeout=300)
+        data=response.get('data') or {}
+        self.record({'kind':'context.compaction.completed','tokens_before':tokens,
+                     'estimated_tokens_after':data.get('estimatedTokensAfter'),'elapsed_s':round(time.monotonic()-started,3)})
 
     async def steer(self, text, request_id, *, context=None):
         async with self.command_lock:

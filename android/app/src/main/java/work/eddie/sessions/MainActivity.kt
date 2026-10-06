@@ -56,17 +56,17 @@ class MainActivity:ComponentActivity(){
    handleIntent(intent)
    if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)
    val shortcuts=listOf(
-    ShortcutInfo.Builder(this,"hermes-voice").setShortLabel("和 Pi 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build(),
+    ShortcutInfo.Builder(this,"hermes-voice").setShortLabel("和 Hermes 说一句").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,QuickVoiceActivity::class.java).setAction(Intent.ACTION_ASSIST)).build(),
     ShortcutInfo.Builder(this,"voice").setShortLabel("语音记账").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,ExpenseVoiceActivity::class.java).setAction(Intent.ACTION_VIEW)).build()
    )+listOf("claude","codex").map{a->ShortcutInfo.Builder(this,a).setShortLabel("新建 ${a.replaceFirstChar{it.uppercase()}}").setIcon(AndroidIcon.createWithResource(this,R.drawable.ic_launcher)).setIntent(Intent(this,MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("agent",a)).build()}
    Thread { getSystemService(ShortcutManager::class.java).dynamicShortcuts=shortcuts }.start()
    androidx.work.WorkManager.getInstance(this).enqueueUniquePeriodicWork("session-updates",androidx.work.ExistingPeriodicWorkPolicy.KEEP,androidx.work.PeriodicWorkRequestBuilder<StatusWorker>(15,java.util.concurrent.TimeUnit.MINUTES).setConstraints(androidx.work.Constraints.Builder().setRequiredNetworkType(androidx.work.NetworkType.CONNECTED).build()).build())
    if(SignalConfig.enabled(this))SignalSync.schedule(this)
-   setContent{MaterialTheme(colorScheme=Palette,typography=ComTypography){Workbench(vm,quick,workLaunch){quick=""}}}
+   setContent{MaterialTheme(colorScheme=Palette,typography=ComTypography,shapes=ComShapes){Workbench(vm,quick,workLaunch){quick=""}}}
  }
- override fun onStart(){super.onStart();vm.active=true;if(vm.store.token.isNotEmpty()){vm.refreshPersonalNow();vm.refreshHermesNow()};if(SignalConfig.enabled(this)&&SignalConfig.accessGranted(this))SignalSync.schedule(this)}
+ override fun onStart(){super.onStart();PhoneNodeService.appVisible=true;if(PhoneNodeService.enabled(this))PhoneNodeService.enable(this,true);vm.active=true;if(vm.store.token.isNotEmpty()){vm.refreshPersonalNow();vm.refreshHermesNow();vm.refreshWorkProposalsNow();vm.refreshGoalProposalsNow()};if(SignalConfig.enabled(this)&&SignalConfig.accessGranted(this))SignalSync.schedule(this)}
  override fun onPause(){vm.store.flushPending();super.onPause()}
- override fun onStop(){vm.store.flushPending();vm.finishHermesVoice(false);vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;vm.personalFresh=false;vm.hermesFresh=false;vm.signalsFresh=false;vm.signalsHealthFresh=false;vm.taskLedgerFresh=false;vm.workProposalsFresh=false;vm.reminderFresh=false;super.onStop()}
+ override fun onStop(){PhoneNodeService.appVisible=false;vm.store.flushPending();vm.finishHermesVoice(false);vm.active=false;vm.liveFresh=false;vm.allRowsFresh=false;vm.personalFresh=false;vm.hermesFresh=false;vm.signalsFresh=false;vm.signalsHealthFresh=false;vm.taskLedgerFresh=false;vm.workProposalsFresh=false;vm.goalProposalsFresh=false;vm.reminderFresh=false;super.onStop()}
  override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);handleIntent(intent)}
  private fun handleIntent(intent:Intent){
   if(intent.action==Intent.ACTION_SEND&&intent.type?.startsWith("text/")==true){
@@ -85,7 +85,7 @@ class MainActivity:ComponentActivity(){
  }
 }
 
-fun agentDisplayName(agent:String):String=when(agent){"pi"->"Pi";"claude"->"Claude";else->"Codex"}
+fun agentDisplayName(agent:String):String=when(agent){"pi"->"Pi";"claude"->"Claude";"hermes"->"Hermes";else->"Codex"}
 
 @Composable fun AgentBadge(agent:String){Surface(shape=Radii.Pill,color=if(agent=="pi")PiSoft else AccentSoft,shadowElevation=1.dp){Row(Modifier.padding(horizontal=10.dp,vertical=5.dp),verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(6.dp).background(if(agent=="pi")PiGreen else Ember,CircleShape));Text(agentDisplayName(agent),Modifier.padding(start=6.dp),fontSize=Type.Caption,fontWeight=FontWeight.SemiBold,color=if(agent=="pi")PiGreen else EmberDeep,letterSpacing=.4.sp)}}}
 @Composable fun Choice(label:String,options:List<String>,select:(String)->Unit){var show by remember{mutableStateOf(false)};Box{TextButton(onClick={show=true},contentPadding=PaddingValues(horizontal=8.dp)){Text(label,fontSize=Type.Caption,maxLines=1);Icon(Icons.Outlined.ExpandMore,null,Modifier.size(15.dp))};DropdownMenu(show,{show=false}){options.forEach{o->DropdownMenuItem(text={Text(o,fontSize=Type.BodySm)},onClick={select(o);show=false})}}}}
@@ -94,8 +94,13 @@ private val whitespace=Regex("\\s+")
 fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(text);if(q.isNotBlank())q.trim().split(whitespace).forEach{term->var start=0;while(start<text.length){val i=text.indexOf(term,start,true);if(i<0)break;addStyle(SpanStyle(background=Color(0xFFFFE6A5),color=Ink),i,i+term.length);start=i+term.length}}}
 
 @Composable fun Approval(vm:WorkbenchModel,a:JSONObject){
+ val id=a.optString("id")
+ // 已拿到回执：收成一行灰色小结，确认操作生效，也不再遮挡视野。
+ val outcome=vm.approvalOutcomes[id]
+ if(outcome!=null){ResolvedApproval(vm,id,outcome);return}
+ val busy=vm.approvalBusyId==id
  val haptics=rememberComHaptics()
- val p=a.optJSONObject("params")?:JSONObject();val questions=p.array("questions");val answers=remember(a.optString("id")){mutableStateMapOf<String,String>()}
+ val p=a.optJSONObject("params")?:JSONObject();val questions=p.array("questions");val answers=remember(id){mutableStateMapOf<String,String>()}
  SpringIn(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp)){
   Surface(shape=RoundedCornerShape(Radii.Xl),color=Card,border=BorderStroke(1.dp,AmberLine),shadowElevation=Elev.Raised){
    Column(Modifier.padding(Spacing.Xl)){
@@ -109,15 +114,28 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
     Surface(Modifier.padding(top=12.dp).fillMaxWidth(),shape=RoundedCornerShape(Radii.M),color=ToolSurface,border=BorderStroke(1.dp,Line)){Text(p.optString("command",p.optString("reason","请确认以下操作")),Modifier.padding(12.dp),fontSize=Type.BodySm,lineHeight=19.sp,color=Ink,maxLines=6)}
     if(questions.isNotEmpty()){
      questions.forEach{q->Text(q.optString("question"),fontSize=Type.BodySm);q.array("options").forEach{o->FilterChip(answers[q.optString("id")]==o.optString("label"),{answers[q.optString("id")]=o.optString("label")},label={Text(o.optString("label"))})};OutlinedTextField(answers[q.optString("id")]?:"",{answers[q.optString("id")]=it},label={Text("回答")},modifier=Modifier.fillMaxWidth().padding(top=6.dp))}
-     Button(onClick={haptics(HapticCue.Commit);vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("answers",JSONObject(answers.toMap())))}}){Text("提交回答")}
+     Button(onClick={haptics(HapticCue.Commit);vm.respondApproval(id,JSONObject().put("answers",JSONObject(answers.toMap())))},enabled=!busy){Text(if(busy)"提交中…" else "提交回答")}
     }else Row(Modifier.padding(top=12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
      val (okPress,okMotion)=rememberPress()
-     Button(onClick={haptics(HapticCue.Commit);vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision","accept"))}},modifier=Modifier.weight(1f).height(46.dp).then(okMotion),shape=Radii.Pill,interactionSource=okPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text("允许本次",fontWeight=FontWeight.SemiBold)}
+     Button(onClick={haptics(HapticCue.Commit);vm.respondApproval(id,JSONObject().put("decision","accept"))},enabled=!busy,modifier=Modifier.weight(1f).height(46.dp).then(okMotion),shape=Radii.Pill,interactionSource=okPress,colors=ButtonDefaults.buttonColors(containerColor=Ember)){Text(if(busy)"提交中…" else "允许本次",fontWeight=FontWeight.SemiBold)}
      val (noPress,noMotion)=rememberPress()
-     OutlinedButton(onClick={haptics(HapticCue.Reject);vm.run{vm.store.request("/approvals/${vm.enc(a.getString("id"))}",JSONObject().put("decision","decline"))}},modifier=Modifier.weight(1f).height(46.dp).then(noMotion),shape=Radii.Pill,interactionSource=noPress){Text("拒绝",color=Muted)}
+     OutlinedButton(onClick={haptics(HapticCue.Reject);vm.respondApproval(id,JSONObject().put("decision","decline"))},enabled=!busy,modifier=Modifier.weight(1f).height(46.dp).then(noMotion),shape=Radii.Pill,interactionSource=noPress){Text("拒绝",color=Muted)}
     }
    }
   }
+ }
+}
+
+/** 已回执的回应请求：一行灰色小结，替代原来一直占屏的大卡片。 */
+@Composable private fun ResolvedApproval(vm:WorkbenchModel,id:String,outcome:String){
+ val undelivered=outcome=="未送达"
+ val label=when(outcome){"已允许"->"已允许";"已拒绝"->"已拒绝";"已结束"->"这条请求已结束";else->"已回应"}
+ Row(Modifier.fillMaxWidth().padding(horizontal=22.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically){
+  Icon(if(undelivered)Icons.Outlined.ErrorOutline else Icons.Outlined.CheckCircle,null,Modifier.size(15.dp),tint=if(undelivered)AmberText else Faint)
+  Text(if(undelivered)"回应未送达" else label,Modifier.padding(start=8.dp),fontSize=Type.Caption,color=if(undelivered)AmberText else Faint)
+  vm.approvalErrors[id]?.takeIf{undelivered&&it.isNotBlank()}?.let{Text(it,Modifier.padding(start=8.dp).weight(1f,fill=false),fontSize=Type.Caption,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)}
+  // 只有真的没送达才给重试；请求早已结束的情况重试没有意义。
+  if(undelivered)TextButton(onClick={vm.approvalOutcomes.remove(id);vm.approvalErrors.remove(id)},contentPadding=PaddingValues(horizontal=8.dp)){Text("重试",fontSize=Type.Caption)}
  }
 }
 
@@ -151,7 +169,7 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  ModalBottomSheet(onDismissRequest=dismiss,containerColor=Paper,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)){Column(Modifier.padding(horizontal=24.dp).verticalScroll(rememberScrollState()).testTag("advanced-session-sheet")){
  StaggerIn(0){Column{Text("开启新的工作",fontSize=Type.SheetTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.3).sp);Text("运行在 Mac mini · 完整操作权限",Modifier.padding(top=6.dp,bottom=18.dp),fontSize=Type.BodySm,color=Muted)}}
  val (createPress,createMotion)=rememberPress(.97f)
- StaggerIn(1){Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){listOf("claude","codex").forEach{a->FilterChip(agent==a,{agent=a},label={Text(agentDisplayName(a),fontSize=17.sp)},modifier=Modifier.height(48.dp))}}}
+ StaggerIn(1){Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){listOf("pi","claude","codex").forEach{a->FilterChip(agent==a,{agent=a},label={Text(agentDisplayName(a),fontSize=17.sp)},modifier=Modifier.height(48.dp))}}}
  Text("工作目录",Modifier.padding(top=16.dp),fontSize=Type.Caption,color=Muted)
  TextButton(onClick={browse=true}){Icon(Icons.Outlined.FolderOpen,null);Text(cwd,Modifier.padding(start=8.dp),fontSize=Type.BodySm,maxLines=2)}
  AdvancedSessionComposer(prompt,{prompt=it},motion,!vm.busy&&vm.connected,create,composerSource)
@@ -192,32 +210,41 @@ fun highlight(text:String,q:String):AnnotatedString=buildAnnotatedString{append(
  val dirs=data.optJSONArray("directories");if(dirs!=null)items(dirs.length()){i->TextButton(onClick={path=dirs.getString(i)}){Text(dirs.getString(i).shortPath())}}
  }}},confirmButton={TextButton(onClick={choose(path)}){Text("使用此目录")}},dismissButton={TextButton(onClick=dismiss){Text("取消")}})
 }
-@Composable fun SettingsSheet(vm:WorkbenchModel,dismiss:()->Unit){
+@Composable fun SettingsSheet(vm:WorkbenchModel,navigate:(String)->Unit={},dismiss:()->Unit){
  val context=androidx.compose.ui.platform.LocalContext.current
  var base by remember{mutableStateOf(vm.store.base.ifBlank{"https://pi.eddiegao.work:8443/sessions"})};var code by remember{mutableStateOf("")};var notify by remember{mutableStateOf(vm.store.prefs.getBoolean("notifications",true))}
- Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=22.dp).padding(bottom=28.dp)){
-  Row(verticalAlignment=Alignment.CenterVertically){
-   ComIcon(R.drawable.com_icon_settings_v1,null,Modifier.size(24.dp))
-   Text("Com! · 设置",Modifier.padding(start=5.dp),fontSize=22.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+ Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=20.dp).padding(bottom=28.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+  Row(Modifier.fillMaxWidth().padding(bottom=6.dp),verticalAlignment=Alignment.CenterVertically){
+   Column(Modifier.weight(1f)){Text("设置",fontSize=Type.AppTitle,fontWeight=FontWeight.SemiBold);Text("Com! · Hermes 个人助手",fontSize=Type.Caption,color=Muted)}
+   RoundIcon(Icons.Outlined.Close,"关闭设置",dismiss)
   }
- HeartbeatSettings(vm)
- Text("语音记账",fontWeight=FontWeight.SemiBold)
- Text("电源键快捷小窗直接交给 Pi，可调用既有记账与收藏工具。语音记账入口会先显示金额，确认后交给 Pi；已接收不等于账本已写入，可在工作会话查看实际结果。",Modifier.padding(top=5.dp),fontSize=Type.Caption,color=Muted)
- TextButton(onClick={context.startActivity(Intent(context,ExpenseVoiceActivity::class.java))}){Icon(Icons.Outlined.Mic,null);Text("打开语音记账",Modifier.padding(start=8.dp))}
- TextButton(onClick={context.startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS))}){Text("系统默认助手设置")}
- HorizontalDivider(Modifier.padding(vertical=12.dp),color=Line)
- Text("Mac mini",fontWeight=FontWeight.SemiBold);Text(if(vm.connected)"连接正常" else "首次使用需配对",color=Muted,fontSize=Type.Caption)
- OutlinedTextField(base,{base=it},label={Text("HTTPS 服务地址")},modifier=Modifier.padding(top=12.dp))
- OutlinedTextField(code,{code=it},label={Text("一次性配对码")})
- TextButton(onClick={vm.run{vm.store.base=base;val r=vm.store.request("/pair",JSONObject().put("code",code),false);vm.store.token=r.getString("token");vm.refresh();vm.refreshPersonal();vm.refreshHermes();SignalSync.immediate(context);dismiss()}}){Text("配对并连接")}
- Text("字号 ${vm.font.toInt()}",Modifier.padding(top=16.dp));Slider(vm.font,{vm.font=it;vm.store.prefs.edit().putFloat("font",it).apply()},valueRange=14f..22f,steps=7)
- Row(verticalAlignment=Alignment.CenterVertically){Text("完成、失败与待回应通知",Modifier.weight(1f),fontSize=Type.BodySm);Switch(notify,{notify=it;vm.store.prefs.edit().putBoolean("notifications",it).apply()})}
- Text("后台通知由 Android 定时调度，前台即时更新。\n历史索引 ${vm.index.optInt("done")}/${vm.index.optInt("total")}\n无法读取 ${vm.index.optInt("unreadable")} 份",fontSize=Type.Caption,color=Muted)
- SignalSettings(context)
- Text("离线仅检索已缓存的会话正文。凭据使用 Android Keystore 加密保存。",Modifier.padding(top=12.dp),fontSize=Type.Caption,color=Muted)
- Row(Modifier.fillMaxWidth().padding(top=16.dp),horizontalArrangement=Arrangement.End){
-  TextButton(onClick=dismiss){Text("完成",fontSize=Type.BodySm)}
- }
+  SettingsSection(ReferenceIcons.Sliders,"个人助手","Hermes · DeepSeek V4 Flash"){
+   SettingsLink(Icons.Outlined.Link,"数据连接","邮箱、日历、账本与健康"){navigate("connectors")}
+   SettingsLink(Icons.Outlined.Smartphone,"手机节点","权限、在线状态与工具能力"){navigate("devices")}
+   SettingsLink(Icons.Outlined.History,"安排变更与撤销","查看个人安排的操作回执"){navigate("actions")}
+   SettingsLink(Icons.Outlined.AdminPanelSettings,"权限与执行","当前用户 Full Access · 操作保留回执"){navigate("diagnostics")}
+  }
+  SettingsSection(Icons.Outlined.Schedule,"主动行为","北京时间 09:00 晨报"){
+   HeartbeatSettings(vm)
+  }
+  SettingsSection(Icons.Outlined.MicNone,"语音与快捷入口"){
+   Text("小窗、语音记账和主聊天由 Hermes 连续处理。记账结果以原账本回读为准，重复请求沿用原回执。",fontSize=Type.Caption,color=Muted)
+   SettingsLink(Icons.Outlined.AccountBalanceWallet,"打开语音记账"){context.startActivity(Intent(context,ExpenseVoiceActivity::class.java))}
+   SettingsLink(Icons.Outlined.Assistant,"系统默认助手"){context.startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS))}
+  }
+  SettingsSection(Icons.Outlined.Wifi,"服务与配对",if(vm.connected)"Mac mini 已连接" else "连接暂不可用"){
+   OutlinedTextField(base,{base=it},label={Text("HTTPS 服务地址")},modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),singleLine=true)
+   OutlinedTextField(code,{code=it},label={Text("一次性配对码")},modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),singleLine=true)
+   FilledTonalButton(onClick={vm.run{vm.store.base=base;val r=vm.store.request("/pair",JSONObject().put("code",code),false);vm.store.token=r.getString("token");vm.refresh();vm.refreshPersonal();vm.refreshHermes();SignalSync.immediate(context);dismiss()}},shape=Radii.Pill){Icon(Icons.Outlined.Link,null,Modifier.size(18.dp));Text("配对并连接",Modifier.padding(start=8.dp))}
+  }
+  SettingsSection(Icons.Outlined.TextFields,"显示与通知"){
+   Text("聊天字号 ${vm.font.toInt()}",fontSize=Type.BodySm)
+   Slider(vm.font,{vm.font=it;vm.store.prefs.edit().putFloat("font",it).apply()},valueRange=14f..22f,steps=7)
+   Row(verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text("任务状态通知",fontSize=Type.BodySm);Text("完成、失败与等待回应",fontSize=Type.Caption,color=Muted)};Switch(notify,{notify=it;vm.store.prefs.edit().putBoolean("notifications",it).apply()})}
+   Text("历史索引 ${vm.index.optInt("done")}/${vm.index.optInt("total")} · 暂无法读取 ${vm.index.optInt("unreadable")} 份",fontSize=Type.Caption,color=Muted)
+  }
+  SettingsSection(Icons.Outlined.NotificationsNone,"通知观察") {SignalSettings(context)}
+  Text("离线可查看已缓存内容。凭据由 Android Keystore 加密保存。",Modifier.padding(horizontal=4.dp),fontSize=Type.Caption,color=Faint)
  }
 }
 

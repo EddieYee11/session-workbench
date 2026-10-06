@@ -64,9 +64,19 @@ let stage='configuration';
 def criteria(args):
     if not isinstance(args, dict):
         raise ValueError('查账参数无效')
+    args = dict(args)
+    # action 是业务工具族的通用路由键：BusinessTools.call 按它分派，agent_tools 授权时
+    # 也会补上 'action':'search'。模型照抄同族工具的写法是合理的，查账只有 search 一种
+    # 动作，接受并忽略即可；为它整轮失败会逼模型改用 shell 翻账本。
+    action = args.pop('action', None)
+    if action not in (None, 'search'):
+        raise ValueError('查账只支持 action=search，收到 %r' % (action,))
     allowed = {'date', 'start_date', 'end_date', 'amount', 'keyword', 'limit', 'transaction_type'}
-    if set(args) - allowed:
-        raise ValueError('查账参数含未知字段')
+    unknown = set(args) - allowed
+    if unknown:
+        # 报出收到什么、可用什么：模型一次就能改对，而不是连撞三次再触发熔断。
+        raise ValueError('查账参数含未知字段：' + '、'.join(sorted(unknown))
+                         + '；可用字段：' + '、'.join(sorted(allowed)))
     if args.get('date'):
         if args.get('start_date') or args.get('end_date'):
             raise ValueError('查账日期与日期范围不能同时使用')

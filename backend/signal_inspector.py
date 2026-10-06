@@ -23,8 +23,8 @@ INSTRUCTIONS = (
 
 
 class HermesSignalReviewer:
-    def __init__(self, state: Path, base_url: str = "http://127.0.0.1:8651"):
-        self.key_file = state / "hermes-triage-api-key"
+    def __init__(self, state: Path, base_url: str = "http://127.0.0.1:8649"):
+        self.key_file = state / "hermes-api-key"
         self.base_url = base_url.rstrip("/")
 
     def key(self) -> str:
@@ -130,9 +130,10 @@ class PiSignalReviewer:
 
 
 class SignalInspector:
-    def __init__(self, signals: PersonalSignals, reviewer: HermesSignalReviewer):
+    def __init__(self, signals: PersonalSignals, reviewer: HermesSignalReviewer, external_schedule=False):
         self.signals = signals
         self.reviewer = reviewer
+        self.external_schedule=external_schedule
         self.event = asyncio.Event()
         self.task: asyncio.Task | None = None
 
@@ -179,7 +180,7 @@ class SignalInspector:
     async def _loop(self) -> None:
         while True:
             try:
-                await asyncio.wait_for(self.event.wait(), timeout=1800)
+                await asyncio.wait_for(self.event.wait(), timeout=None if self.external_schedule else 1800)
             except asyncio.TimeoutError:
                 pass
             self.event.clear()

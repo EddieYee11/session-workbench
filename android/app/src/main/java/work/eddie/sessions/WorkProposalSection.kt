@@ -44,7 +44,7 @@ private fun proposalStatus(status:String)=when(status){
  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){
   Row(Modifier.weight(1f),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
    ComIcon(R.drawable.com_icon_work_v1,null,Modifier.size(24.dp))
-   Text(if(pendingOnly)"待授权 · ${items.size}"else if(historyOnly)"授权记录"else"Pi 工作动态",Modifier.padding(start=4.dp),fontSize=18.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+   Text(if(pendingOnly)"待授权 · ${items.size}"else if(historyOnly)"授权记录"else"Hermes 工作动态",Modifier.padding(start=4.dp),fontSize=18.sp,fontWeight=FontWeight.SemiBold,color=Ink)
   }
   TextButton(onClick={vm.refreshWorkProposalsNow()},enabled=!vm.workProposalsLoading&&vm.store.token.isNotEmpty()){
    Text(if(vm.workProposalsLoading)"刷新中" else "刷新",fontSize=Type.Caption)
@@ -53,7 +53,7 @@ private fun proposalStatus(status:String)=when(status){
  Text("请核对目录与指令后批准此任务。刷新不会启动工作。",fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
  if(!vm.workProposalsFresh&&items.isNotEmpty())Text("以下是上次保存的记录；同步后更新。",Modifier.padding(top=5.dp),fontSize=Type.Caption,color=AmberText)
  if(vm.workProposalsError.isNotBlank())Text(vm.workProposalsError,Modifier.padding(top=5.dp),fontSize=Type.Caption,color=AmberText)
- if(vm.workProposalNote.isNotBlank())Text(vm.workProposalNote,Modifier.padding(top=5.dp),fontSize=Type.Caption,color=AmberText)
+ if(vm.workProposalNote.isNotBlank()&&items.none{it.optString("id")==vm.workProposalNoteId})Text(vm.workProposalNote,Modifier.padding(top=5.dp),fontSize=Type.Caption,color=AmberText)
  if(items.isEmpty())Text(if(vm.workProposalsLoading)"正在读取工作动态…" else "暂无工作动态",Modifier.padding(top=10.dp),fontSize=Type.BodySm,color=Muted)
  items.forEach{proposal->WorkProposalCard(vm,proposal)}
 }
@@ -71,9 +71,13 @@ private fun proposalStatus(status:String)=when(status){
     Text("工作目录：${proposal.optString("cwd")}",Modifier.padding(top=6.dp),fontSize=Type.Caption,lineHeight=17.sp,color=Muted)
     Text("原因：${proposal.optString("reason")}",Modifier.padding(top=7.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Ink)
     WorkProposalActions(vm,proposal)
+    // 回执只挂在被操作的那张卡上：点完当场看到结果，而不是等下一次刷新。
+    if(vm.workProposalNoteId==id&&vm.workProposalNote.isNotBlank())Text(
+     vm.workProposalNote,Modifier.padding(top=8.dp),fontSize=Type.Caption,lineHeight=17.sp,
+     color=if(status=="proposed")AmberText else Muted)
     var details by remember(id){mutableStateOf(false)}
     TextButton(onClick={details=!details}){Text(if(details)"收起执行指令" else "查看完整执行指令",fontSize=Type.Caption)}
-    if(details)SelectionContainer{Text("交给 ${if(agent=="pi")"Pi" else "Codex"} 的指令：\n${proposal.optString("prompt")}",Modifier.padding(top=7.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Ink)}
+    if(details)SelectionContainer{Text("交给 ${agentDisplayName(agent)} 的指令：\n${proposal.optString("prompt")}",Modifier.padding(top=7.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Ink)}
     Text("有效至 ${proposalTime(proposal.optDouble("expires_at"))}",Modifier.padding(top=7.dp),fontSize=Type.Caption,color=Muted)
 
     if(status=="unknown"||status=="dispatching")Text("请先去工作页核对实际会话；此卡不会自动重发。",Modifier.padding(top=6.dp),fontSize=Type.Caption,color=AmberText)

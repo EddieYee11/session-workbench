@@ -4,6 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuickVoiceTest {
+    @Test fun hermesAndLegacyReceiptsDoNotReplayAcrossUpgrade(){
+      assertTrue(voiceReceiptAgent("hermes"));assertTrue(voiceReceiptAgent("pi"))
+      assertFalse(voiceReceiptAgent("codex"));assertFalse(voiceReceiptAgent(""))
+    }
     @Test fun piAcceptanceDistinguishesDurableHandoffFromUnknownOrFailedExecution() {
         for (status in listOf("accepted", "starting", "sending", "submitted", "running", "executing", "responding", "completed"))
             assertTrue(piVoiceAccepted(status))

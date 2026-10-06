@@ -10,10 +10,10 @@ import androidx.compose.ui.unit.dp
  var diagnostics by remember{mutableStateOf(false)}
  val cfg=vm.heartbeatState.optJSONObject("settings")
  Column(Modifier.fillMaxWidth().padding(vertical=12.dp)){
-  Text("主动观察",fontSize=Type.BodySm,color=Ink)
-  Text("默认影子模式：只记录观察，不通知、不创建任务。受限启用仅进入今天知情区或待批准建议。",fontSize=Type.Caption,color=Muted)
+  Text("观察建议",fontSize=Type.BodySm,color=Ink)
+  Text("Hermes 记录变化，启用后展示提醒与工作建议。个人安排调整已获授权，操作回执和撤销见「安排变更」。",fontSize=Type.Caption,color=Muted)
   Row{Text("暂停心跳",Modifier.weight(1f));Switch(cfg?.optBoolean("paused",false)?:false,{vm.setHeartbeat("paused",it)},enabled=cfg!=null)}
-  Row{Text("受限启用",Modifier.weight(1f));Switch(!(cfg?.optBoolean("shadow",true)?:true),{vm.setHeartbeat("shadow",!it)},enabled=cfg!=null&&vm.heartbeatState.optBoolean("shadow_verified"))}
+  Row{Text("显示观察建议",Modifier.weight(1f));Switch(!(cfg?.optBoolean("shadow",true)?:true),{vm.setHeartbeat("shadow",!it)},enabled=cfg!=null&&vm.heartbeatState.optBoolean("shadow_verified"))}
   if(!vm.heartbeatState.optBoolean("shadow_verified"))Text("完成两次有效影子观察后可手动启用",fontSize=Type.Micro,color=Muted)
   Text("每日最多24次 · 静默23:00–08:00 · 不发送系统推送",fontSize=Type.Micro,color=Muted)
   if(vm.heartbeatNote.isNotBlank())Text(vm.heartbeatNote,fontSize=Type.Caption,color=AmberText)

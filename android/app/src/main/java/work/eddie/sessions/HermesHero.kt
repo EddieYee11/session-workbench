@@ -16,7 +16,7 @@ private val suggestions=listOf(
  Icons.Outlined.EventNote to "今天有什么安排？",
  Icons.Outlined.Edit to "帮我记一笔",
  Icons.Outlined.Notifications to "看看未读通知",
- Icons.Outlined.SmartToy to "Pi 那边怎么样了",
+ Icons.Outlined.SmartToy to "Hermes 那边怎么样了",
 )
 
 /** 空状态：欢迎语 + 可点示例，点一下填入输入框 */

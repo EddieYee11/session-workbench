@@ -148,7 +148,7 @@ class Store(val context:Context) {
      try{awaitCancellation()}finally{con.disconnect()}
    }
    try{
-     check(con.responseCode in 200..299){"Pi 实时连接失败：${con.responseCode}"}
+     check(con.responseCode in 200..299){"Hermes 实时连接失败：${con.responseCode}"}
      con.inputStream.bufferedReader().use{reader->
        var kind="message"
        val data=StringBuilder()
@@ -166,7 +166,7 @@ class Store(val context:Context) {
            line.startsWith("data:")->{
              if(data.isNotEmpty())data.append('\n')
              data.append(line.substringAfter(':').trimStart())
-             check(data.length<=8_000_000){"Pi 实时事件过大"}
+             check(data.length<=8_000_000){"Hermes 实时事件过大"}
            }
          }
        }
@@ -239,6 +239,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  val workReferences=mutableStateMapOf<String,JSONObject>()
  var hermesSending by mutableStateOf(false)
  var hermesSendNote by mutableStateOf("")
+ var linkedMatter by mutableStateOf<JSONObject?>(null)
  var hermesDraft by mutableStateOf(store.secureText("hermes-draft"))
  val hermesPending:JSONObject get()=hermesOutbox.firstOrNull{it.state=="unknown"}?.body()?:JSONObject()
  var hermesVisible by mutableStateOf(true)
@@ -271,6 +272,26 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  var workProposalsError by mutableStateOf("")
  var workProposalBusy by mutableStateOf("")
  var workProposalNote by mutableStateOf("")
+ var workProposalNoteId by mutableStateOf("")
+ /** 已收到回执的建议：轮询拿到尚未更新的旧状态时，不再把卡片打回「待授权」。 */
+ private val workProposalSettled=LinkedHashMap<String,String>()
+ var goalProposals by mutableStateOf(store.cachedSecure("personal-goal-proposals.enc"))
+ var goalProposalsFresh by mutableStateOf(false)
+ var goalProposalsLoading by mutableStateOf(false)
+ var goalProposalsError by mutableStateOf("")
+ var goalProposalBusy by mutableStateOf("")
+ var goalProposalNote by mutableStateOf("")
+ var goalProposalNoteId by mutableStateOf("")
+ /** 提案 id → 本次会话勾选的条目 id。审批是逐条勾选，勾选状态要在重组间活下来。 */
+ private val goalChecked=mutableStateMapOf<String,Set<String>>()
+ /**
+  * 主对话里的回应请求。点完立刻收成一行灰色回执：
+  * 一是不必等下一轮轮询，二是轮询失败时 live 会保留旧值，
+  * 旧卡片会一直挂在屏幕上且怎么点都没反应。
+  */
+ val approvalOutcomes=mutableStateMapOf<String,String>()
+ val approvalErrors=mutableStateMapOf<String,String>()
+ var approvalBusyId by mutableStateOf("")
  private var workApprovalIds=runCatching{JSONObject(store.secureText("work-approval-ids"))}.getOrDefault(JSONObject())
  private var hermesReconcile:Job?=null
  var externalHermesRoute by mutableIntStateOf(0)
@@ -289,6 +310,8 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  private var hermesVoiceTimer:Job?=null
  var hermesVoicePhase by mutableStateOf("idle")
  var hermesVoiceSeconds by mutableIntStateOf(0)
+ /** 录音期间的实时音量（0~1），驱动输入框底边的语音光晕。 */
+ var hermesVoiceLevel by mutableFloatStateOf(0f)
  var hermesVoiceNote by mutableStateOf("")
  var hermesVoiceAutoSend by mutableStateOf<String?>(null)
  var hermesVoiceSaved by mutableStateOf(store.prefs.getString("hermes-voice-file","").orEmpty())
@@ -384,10 +407,13 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      recorder.setOutputFile(file.absolutePath)
      recorder.prepare();recorder.start()
      hermesRecordingFile=file;hermesVoiceStarted=SystemClock.elapsedRealtime()
-     hermesVoiceSeconds=0;hermesVoicePhase="recording";hermesVoiceNote="正在听你说话，点麦克风结束。"
+     hermesVoiceSeconds=0;hermesVoiceLevel=0f;hermesVoicePhase="recording";hermesVoiceNote="正在听你说话，可取消或发送。"
      hermesVoiceTimer?.cancel();hermesVoiceTimer=viewModelScope.launch{while(hermesVoicePhase=="recording"){
-       delay(1000);hermesVoiceSeconds=((SystemClock.elapsedRealtime()-hermesVoiceStarted)/1000).toInt()
-       if(hermesVoiceSeconds>=60)finishHermesVoice()
+       // 50ms 采样一次峰值振幅：既驱动光晕，也不比 1s 的计时器多占资源。
+       delay(50)
+       hermesVoiceLevel=runCatching{(hermesRecorder?.maxAmplitude?:0)/24000f}.getOrDefault(0f).coerceIn(0f,1f)
+       val elapsed=((SystemClock.elapsedRealtime()-hermesVoiceStarted)/1000).toInt()
+       if(elapsed!=hermesVoiceSeconds){hermesVoiceSeconds=elapsed;if(elapsed>=60)finishHermesVoice()}
      }}
    }catch(_:Exception){runCatching{hermesRecorder?.release()};hermesRecorder=null;file.delete();hermesVoicePhase="idle";hermesVoiceNote="录音无法开始，请检查麦克风权限或占用状态。"}
  }
@@ -396,18 +422,27 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    hermesVoiceTimer?.cancel();hermesVoiceTimer=null
    val file=hermesRecordingFile;hermesRecordingFile=null
    val stopped=runCatching{hermesRecorder?.stop()}.isSuccess
-   runCatching{hermesRecorder?.release()};hermesRecorder=null;hermesVoicePhase="idle"
+   runCatching{hermesRecorder?.release()};hermesRecorder=null;hermesVoicePhase="idle";hermesVoiceLevel=0f
    if(!stopped||file==null||file.length()<512||SystemClock.elapsedRealtime()-hermesVoiceStarted<650){
      file?.delete();hermesVoiceNote="录音太短，请再说一次。";return
    }
    hermesVoiceSaved=file.name;store.prefs.edit().putString("hermes-voice-file",file.name).apply()
-   if(transcribe)transcribeHermesVoice() else hermesVoiceNote="录音已保留，回到 Pi 可重试转写。"
+   if(transcribe)transcribeHermesVoice() else hermesVoiceNote="录音已保留，回到 Hermes 可重试转写。"
+ }
+ /** 取消这次录音：停录、删除文件，不留草稿也不提交给 Hermes。 */
+ fun cancelHermesVoice(){
+   if(hermesVoicePhase!="recording")return
+   hermesVoiceTimer?.cancel();hermesVoiceTimer=null
+   val file=hermesRecordingFile;hermesRecordingFile=null
+   runCatching{hermesRecorder?.stop()};runCatching{hermesRecorder?.release()};hermesRecorder=null
+   file?.delete()
+   hermesVoicePhase="idle";hermesVoiceLevel=0f;hermesVoiceSeconds=0;hermesVoiceNote=""
  }
  fun transcribeHermesVoice(){
    if(hermesVoicePhase!="idle")return
    val file=File(hermesVoiceDir,hermesVoiceSaved)
    if(!hermesVoiceSaved.matches(Regex("[a-f0-9-]{36}\\.m4a"))||!file.exists()){hermesVoiceSaved="";store.prefs.edit().remove("hermes-voice-file").apply();return}
-   hermesVoicePhase="transcribing";hermesVoiceNote="正在转写给 Pi…"
+   hermesVoicePhase="transcribing";hermesVoiceNote="正在转写给 Hermes…"
    viewModelScope.launch{
      try{
        val transcript=uploadVoice(store,file,file.nameWithoutExtension).optString("text").trim()
@@ -421,7 +456,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
         // Let the visible composer lay out the transcription before it clears.
         if(active&&hermesVisible)hermesVoiceAutoSend=transcript else sendHermes()
        }
-       else hermesVoiceNote="已转写到草稿；连接 Pi 后点发送。"
+       else hermesVoiceNote="已转写到草稿；连接 Hermes 后点发送。"
      }catch(e:CancellationException){throw e}
       catch(e:Exception){hermesVoicePhase="idle";hermesVoiceNote="${e.message?:"转写失败"}；录音已保留，可重试或删除。"}
    }
@@ -439,6 +474,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
  }
  fun refreshSignalsNow(){viewModelScope.launch{refreshSignals()}}
  fun refreshWorkProposalsNow(){viewModelScope.launch{refreshWorkProposals()}}
+ fun refreshGoalProposalsNow(){viewModelScope.launch{refreshGoalProposals()}}
  fun resumeTask(id:String){
    if(taskControlBusy.isNotBlank()||!taskLedgerFresh||store.token.isBlank())return
    val task=taskLedger.array("items").firstOrNull{it.optString("id")==id}?:return
@@ -459,13 +495,14 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      finally{taskControlBusy=""}
    }
  }
- suspend fun refreshWorkProposals(){
-   if(workProposalsLoading||store.token.isBlank())return
+ suspend fun refreshWorkProposals(force:Boolean=false){
+   if((workProposalsLoading&&!force)||store.token.isBlank())return
    workProposalsLoading=true;workProposalsError=""
    try{
      val recent=store.request("/personal/work/proposals?limit=20")
      if(recent.optJSONArray("items")==null)error("工作建议数据格式不完整")
      recent.put("synced_at",System.currentTimeMillis()/1000.0)
+     stampSettledProposals(recent)
      workProposals=recent;workProposalsFresh=true
      runCatching{store.secureCache("personal-work-proposals.enc",recent)}
    }catch(e:CancellationException){workProposalsLoading=false;throw e}
@@ -489,6 +526,151 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    finally{workProposalsLoading=false}
  }
  fun workApprovalId(id:String)=workApprovalIds.optString(id)
+
+ suspend fun refreshGoalProposals(force:Boolean=false){
+   if((goalProposalsLoading&&!force)||store.token.isBlank())return
+   goalProposalsLoading=true;goalProposalsError=""
+   try{
+     val recent=store.request("/personal/goal-proposals?limit=10")
+     if(recent.optJSONArray("items")==null)error("目标提案数据格式不完整")
+     recent.put("synced_at",System.currentTimeMillis()/1000.0)
+     goalProposals=recent;goalProposalsFresh=true
+     runCatching{store.secureCache("personal-goal-proposals.enc",recent)}
+   }catch(e:CancellationException){goalProposalsLoading=false;throw e}
+    catch(e:Exception){goalProposalsFresh=false;goalProposalsError=e.message?:"目标提案暂不可用"}
+   finally{goalProposalsLoading=false}
+ }
+
+ /**
+  * 首页要显示的提案：还没批的，加上刚批完那份——回执留在卡上给 Eddie 看落到哪了。
+  * 重进页面后 noteId 还在，但那时卡片已经是只读回执，不再占决策位。
+  */
+ fun visibleGoalProposals():List<JSONObject> =
+   goalProposals.array("items").filter{it.isNull("decision")||it.optString("id")==goalProposalNoteId}
+
+ fun checkedGoals(proposalId:String)=goalChecked[proposalId]
+
+ fun setGoalChecked(proposalId:String,ids:Set<String>){goalChecked[proposalId]=ids}
+
+ /** 未勾选过就按默认规则预勾：高置信且不是「已完成」。 */
+ fun defaultGoalChecked(proposal:JSONObject):Set<String> =
+   proposal.array("items").filter{it.optString("confidence")=="high"&&it.optString("relation")!="completed"}
+     .map{it.optString("id")}.toSet()
+
+ /**
+  * 提交勾选结果。一次提交即定案：服务端拒绝同一提案的第二次审批，
+  * 所以本地先落回执、再刷新，失败也不自动重发。
+  */
+ fun decideGoalProposal(id:String,approved:List<String>,rejected:List<String>){
+   if(goalProposalBusy.isNotBlank()||!goalProposalsFresh||store.token.isBlank())return
+   val proposal=goalProposals.array("items").firstOrNull{it.optString("id")==id}?:return
+   if(!proposal.isNull("decision"))return
+   val requestId=runCatching{saveGoalDecisionId(id)}.getOrElse{
+     goalProposalNote="审批请求未能保存，尚未提交。";goalProposalNoteId=id
+     return
+   }
+   goalProposalBusy=id;goalProposalNote="";goalProposalNoteId=id
+   viewModelScope.launch{
+     try{
+       val result=store.request("/personal/goal-proposals/${enc(id)}/decide",
+         JSONObject().put("request_id",requestId).put("approved",JSONArray(approved)).put("rejected",JSONArray(rejected)))
+       if(result.optString("request_id")!=requestId)error("审批结果待核实")
+       val applied=result.optJSONObject("applied")
+       val count=applied?.optInt("count")?:0
+       applyGoalDecision(id,result)
+       goalProposalNote=when{
+         applied==null->"审批已收到，正在落库"
+         approved.isEmpty()->"已全部驳回，画像与行动台未改动"
+         count>0->"已批准 $count 条并落到画像与行动台"
+         else->"已批准，但本次没有可落库的条目"}
+     }catch(e:Exception){goalProposalNote="审批结果待核实，请刷新目标提案并核对画像与行动台；不会自动重发。";goalProposalsError=e.message?:"暂时无法核实审批结果"}
+     finally{
+       goalProposalBusy=""
+       refreshGoalProposals(force=true)
+     }
+   }
+ }
+ private var goalDecisionIds=runCatching{JSONObject(store.secureText("goal-decision-ids"))}.getOrDefault(JSONObject())
+ private fun saveGoalDecisionId(id:String):String{
+   val current=goalDecisionIds.optString(id)
+   if(current.isNotBlank())return current
+   val requestId=UUID.randomUUID().toString()
+   val updated=JSONObject(goalDecisionIds.toString()).put(id,requestId)
+   store.saveSecureText("goal-decision-ids",updated.toString(),durable=true)
+   goalDecisionIds=updated
+   return requestId
+ }
+ /** 回执到达后当场改写本地状态，不必等下一轮刷新（刷新可能正被轮询占着而直接返回）。 */
+ private fun applyGoalDecision(id:String,decision:JSONObject){
+   val items=goalProposals.optJSONArray("items")?:return
+   val index=(0 until items.length()).firstOrNull{items.optJSONObject(it)?.optString("id")==id}?:return
+   items.optJSONObject(index)?.put("decision",decision)
+   // JSONObject 是可变对象，必须整体换一个新实例才会触发重组。
+   goalProposals=JSONObject(goalProposals.toString())
+ }
+
+ /** 立即重取当前会话的 live（含 approvals），让回应请求的回执当场生效。 */
+ suspend fun refreshLiveNow(){
+   val id=selected
+   if(id.isEmpty())return
+   try{
+     val l=store.request("/sessions/${enc(id)}/live")
+     if(selected==id){live=l;liveSessionId=id;liveFresh=true}
+   }catch(e:CancellationException){throw e}
+   catch(e:Exception){if(selected==id)liveFresh=false}
+ }
+
+ /**
+  * 回应一次审批请求。成功、失败、请求早已结束，三种情况都要给出可见结果并收起卡片：
+  * live 轮询失败时会保留旧值，旧卡片否则会永久挂在屏幕上，且怎么点都没有反应。
+  */
+ fun respondApproval(id:String,body:JSONObject){
+   if(approvalBusyId.isNotBlank()||store.token.isBlank())return
+   approvalBusyId=id
+   viewModelScope.launch{
+     try{
+       store.request("/approvals/${enc(id)}",body)
+       approvalOutcomes[id]=when(body.optString("decision")){"accept"->"已允许";"decline"->"已拒绝";else->"已回应"}
+       approvalErrors.remove(id)
+     }catch(e:CancellationException){throw e}
+     catch(e:Exception){
+       val message=e.message?:"暂时无法送达"
+       approvalErrors[id]=message
+       // 服务端已经没有这条请求，说明它早已结束；同样收起来，不要继续占屏幕。
+       approvalOutcomes[id]=if(message.contains("已结束"))"已结束" else "未送达"
+     }finally{
+       approvalBusyId=""
+       runCatching{refreshLiveNow()}
+     }
+   }
+ }
+
+ /**
+  * 审批回执到达后立即改写本地状态：卡片当场变样，不必等下一轮刷新
+  * （刷新可能正被轮询占着而直接返回）。
+  */
+ private fun applyProposalStatus(id:String,status:String){
+   workProposalSettled[id]=status
+   val items=workProposals.optJSONArray("items")?:return
+   val index=(0 until items.length()).firstOrNull{items.optJSONObject(it)?.optString("id")==id}?:return
+   items.optJSONObject(index)?.put("status",status)
+   // JSONObject 是可变对象，必须整体换一个新实例才会触发重组。
+   workProposals=JSONObject(workProposals.toString())
+ }
+
+ /** 服务端还没跟上时，保留已收到回执的状态，避免卡片回弹成「待授权」。 */
+ private fun stampSettledProposals(list:JSONObject){
+   if(workProposalSettled.isEmpty())return
+   val items=list.optJSONArray("items")?:return
+   val stale=mutableListOf<String>()
+   for(index in 0 until items.length()){
+    val row=items.optJSONObject(index)?:continue
+    val id=row.optString("id")
+    val settled=workProposalSettled[id]?:continue
+    if(row.optString("status")=="proposed")row.put("status",settled) else stale+=id
+   }
+   stale.forEach{workProposalSettled.remove(it)}
+ }
  private fun saveWorkApprovalId(id:String):String{
    val current=workApprovalIds.optString(id)
    if(current.isNotBlank())return current
@@ -535,7 +717,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
         else->"取消已受理，等待执行器确认停止"
        } else when(result.optString("delivery")){
         "delivered"->"指令已送达目标回合，生效仍需查看执行结果"
-        "unsupported"->"当前 Pi 执行会话不支持在线投递；未发送，请查看详情"
+        "unsupported"->"当前执行会话不支持在线投递；未发送，请查看详情"
         "failed"->"工作器拒绝了指令；未自动重试"
         "blocked_state"->"任务状态不允许投递，请先核实"
         "blocked_authorization"->"指令等待明确授权，未投递"
@@ -553,26 +735,25 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    val proposal=workProposals.array("items").firstOrNull{it.optString("id")==id}?:return
    if(proposal.optString("status")!="proposed"||proposal.optDouble("expires_at")<=System.currentTimeMillis()/1000.0)return
    val requestId=runCatching{saveWorkApprovalId(id)}.getOrElse{
-     workProposalNote="审批请求未能保存，尚未启动工作。"
+     workProposalNote="审批请求未能保存，尚未启动工作。";workProposalNoteId=id
      return
    }
-   workProposalBusy=id;workProposalNote=""
+   workProposalBusy=id;workProposalNote="";workProposalNoteId=id
    viewModelScope.launch{
      try{
        val result=store.request("/personal/work/proposals/${enc(id)}/approve",JSONObject().put("request_id",requestId).put("explicit_authorization",true))
        if(result.optString("id")!=id||result.optString("approval_request_id")!=requestId)error("审批结果待核实")
-       workProposalNote=when(result.optString("status")){
+       val next=result.optString("status").ifBlank{"dispatching"}
+       applyProposalStatus(id,next)
+       workProposalNote=when(next){
          "accepted"->"已批准并启动工作会话"
          "unknown"->"派发状态待核实，请在工作页检查；不会自动重发"
          else->"审批已收到，正在核对工作状态"
        }
      }catch(e:Exception){workProposalNote="审批结果待核实，请刷新工作建议并核对工作页；如需重试会复用同一请求号，不会自动重发。";workProposalsError=e.message?:"暂时无法核实审批结果"}
      finally{
-       refreshWorkProposals()
-       val latest=workProposals.array("items").firstOrNull{it.optString("id")==id}
-       if(latest?.optString("status")=="accepted")workProposalNote="已批准并启动工作会话"
-       else if(latest?.optString("status")=="unknown")workProposalNote="派发状态待核实，请在工作页检查；不会自动重发"
        workProposalBusy=""
+       refreshWorkProposals(force=true)
      }
    }
  }
@@ -580,17 +761,17 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    if(workProposalBusy.isNotBlank()||!workProposalsFresh||store.token.isBlank())return
    val proposal=workProposals.array("items").firstOrNull{it.optString("id")==id}?:return
    if(proposal.optString("status")!="proposed"||(!proposal.isNull("approval_request_id")&&proposal.optString("approval_request_id").isNotBlank()))return
-   workProposalBusy=id;workProposalNote=""
+   workProposalBusy=id;workProposalNote="";workProposalNoteId=id
    viewModelScope.launch{
      try{
        val result=store.request("/personal/work/proposals/${enc(id)}/reject",JSONObject())
        if(result.optString("status")!="rejected")error("拒绝结果待核实")
+       applyProposalStatus(id,"rejected")
        workProposalNote="已拒绝这项工作建议"
      }catch(e:Exception){workProposalNote="拒绝结果待核实，请刷新后检查状态。";workProposalsError=e.message?:"暂时无法核实拒绝结果"}
      finally{
-       refreshWorkProposals()
-       if(workProposals.array("items").firstOrNull{it.optString("id")==id}?.optString("status")=="rejected")workProposalNote="已拒绝这项工作建议"
        workProposalBusy=""
+       refreshWorkProposals(force=true)
      }
    }
  }
@@ -705,7 +886,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
    hermesLoading=true
    try{
      val data=store.request("/personal/conversation")
-     if(data.optString("conversation_id").isBlank()||data.optJSONArray("messages")==null||data.optJSONArray("runs")==null)error("Pi 对话数据格式不完整")
+     if(data.optString("conversation_id").isBlank()||data.optJSONArray("messages")==null||data.optJSONArray("runs")==null)error("Hermes 对话数据格式不完整")
      if(data.has("revision")&&data.optLong("revision")<hermes.optLong("revision"))return
      reactionFeedbackTracker.baseline(reactionEvents(data.array("messages")))
      data.put("synced_at",System.currentTimeMillis()/1000.0)
@@ -716,11 +897,13 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      dispatchQueuedHermes()
      runCatching{store.secureCache("hermes-conversation.enc",data)}
    }catch(e:CancellationException){throw e}
-    catch(e:Exception){hermesFresh=false;hermesError=e.message?:"Pi 暂时无法连接"}
+    catch(e:Exception){hermesFresh=false;hermesError=e.message?:"Hermes 暂时无法连接"}
    finally{hermesLoading=false}
  }
  fun sendHermes(requestId:String=UUID.randomUUID().toString()):String?{
-   val message=hermesDraft.trim()
+   val goal=hermesDraft.trim()
+   if(goal.isBlank())return null
+   val message=goal
    if(message.isBlank()||store.token.isBlank())return null
    val rid=requestId
    val reference=hermesReference?.let{JSONObject(it.toString())}
@@ -729,12 +912,12 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      hermesSendNote="这条补充依赖的消息尚未确认接收，请先核对原消息；其他独立消息仍可发送。";return null
    }
    if(hermesOutbox.any{it.id==rid})return null
-   val entry=ConversationOutboxEntry(rid,message,reference,state=if(hermesFresh)"prepared" else "queued_local")
+   val entry=ConversationOutboxEntry(rid,message,reference,state=if(hermesFresh)"prepared" else "queued_local",matterId=linkedMatter?.optString("id").orEmpty())
    hermesSending=true
    try{saveHermesOutbox(hermesOutbox+entry,clearDraft=true)}catch(e:Exception){hermesSendNote=e.message?:"发送状态保存失败，草稿已保留";return null}
    finally{hermesSending=false}
    recordOutgoing(entry.outgoing())
-   hermesSendNote="";hermesError="";hermesDraft="";hermesReference=null
+   hermesSendNote="";hermesError="";hermesDraft="";hermesReference=null;linkedMatter=null
    if(hermesFresh)deliverHermes(entry) else hermesSendNote="已保存到手机，连接恢复后发送。"
    return rid
  }
@@ -766,11 +949,11 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      try{
        settleHermesOutbox(rid,"sending")
        val receipt=store.request("/personal/conversation/messages",entry.body())
-       if(!conversationReceiptConfirmed(receipt.optString("status"),receipt.optString("message_id"),receipt.optString("request_id"),rid))error("Pi 尚未确认接收这条消息")
+       if(!conversationReceiptConfirmed(receipt.optString("status"),receipt.optString("message_id"),receipt.optString("request_id"),rid))error("Hermes 尚未确认接收这条消息")
        if(receipt.optString("request_id")!=rid)error("发送回执请求号不匹配")
        settleHermesOutbox(rid,"accepted",receipt.optString("message_id"))
        updateOutgoing(rid,if(receipt.optString("status") in setOf("failed","unknown"))receipt.optString("status") else "sent",receipt.optString("message_id"))
-       hermesSendNote=if(receipt.optString("status") in listOf("failed","unknown"))"Pi 已接收，请查看这条消息的执行状态。" else "Pi 已接收"
+       hermesSendNote=if(receipt.optString("status") in listOf("failed","unknown"))"Hermes 已接收，请查看这条消息的执行状态。" else "Hermes 已接收"
        // Receipt releases the local send immediately. The snapshot is independent.
        viewModelScope.launch{refreshHermes()}
      }catch(e:CancellationException){
@@ -889,7 +1072,7 @@ class WorkbenchModel(app:Application):AndroidViewModel(app) {
      androidx.work.WorkInfo.State.SUCCEEDED->{voiceDelivery="";info.outputData.getString("sid")?.let{openId(it);externalWorkRoute++};voiceWatch?.cancel()}
      androidx.work.WorkInfo.State.FAILED,androidx.work.WorkInfo.State.CANCELLED->{voiceDelivery="";error=info.outputData.getString("error")?:"语音尚未送达，可打开小窗重试。";voiceWatch?.cancel()}
      androidx.work.WorkInfo.State.ENQUEUED->voiceDelivery="录音已排队，联网后自动发送"
-     androidx.work.WorkInfo.State.RUNNING->voiceDelivery=if(info.progress.getString("phase")=="sending")"正在进入这条 Pi 会话"else"正在把语音交给 Pi"
+     androidx.work.WorkInfo.State.RUNNING->voiceDelivery=if(info.progress.getString("phase")=="sending")"正在进入Hermes 主对话"else"正在把语音交给 Hermes"
      else->Unit
     }
    }

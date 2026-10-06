@@ -19,7 +19,7 @@ import org.json.JSONObject
 
 private fun todayRunTitle(run:JSONObject,messages:List<JSONObject>)=run.optString("title").ifBlank{
  run.optString("summary").ifBlank{messages.firstOrNull{it.optString("id")==run.optString("message_id")}
-  ?.optString("text")?.take(100).orEmpty().ifBlank{"Pi 任务"}}
+  ?.optString("text")?.take(100).orEmpty().ifBlank{"Hermes 任务"}}
 }
 
 /** 「今天」只收需要用户动作的条目；kind 决定排序与颜色。 */

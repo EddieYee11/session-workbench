@@ -18,7 +18,7 @@ from typing import Any, Iterator
 
 
 PROPOSAL_TTL_SECONDS = 24 * 60 * 60
-VALID_AGENTS = {"pi", "codex", "claude"}
+VALID_AGENTS = {"pi", "codex", "claude", "hermes"}
 VALID_CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
 
 

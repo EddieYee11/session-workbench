@@ -52,6 +52,8 @@ class Runtime:
         try:return await asyncio.wait_for(f,45)
         finally:self.pending.pop(i,None)
     async def models(self,agent):
+        if agent=='hermes':
+            return [{'id':'deepseek-v4-flash','label':'DeepSeek','provider':'deepseek','efforts':[],'default_effort':'','is_default':True}]
         if agent=='claude':
             from claude_worker import third_party_config
             _,model=third_party_config(self.state)
@@ -140,7 +142,7 @@ class Runtime:
         sandbox=effective_sandbox(sandbox)
         cwd=str(Path(cwd).expanduser().resolve())
         if not Path(cwd).is_dir() or not Path(cwd).is_relative_to(self.h.home):raise ValueError('请选择 Mac mini 用户目录中的有效目录')
-        if agent=='claude':
+        if agent in ('claude','hermes'):
             if resume:return await self.workers.restore(resume['id'])
             return await self.workers.create({'id':'manual_'+uuid.uuid4().hex,'agent':agent,'cwd':cwd,
                 'sandbox':sandbox,'automatic':False,'title':'Claude Code 工作会话'})
@@ -193,6 +195,10 @@ class Runtime:
                 evidence=await runtime_health.claude(self.state)
                 self.workers.budget.claim(task['id'],automatic=task.get('automatic',True))
             elif task['agent']=='pi':evidence=await runtime_health.pi(self.state)
+            elif task['agent']=='hermes':
+                from hermes_runtime import HermesRuntime
+                evidence=await HermesRuntime(self.state).request('GET','/v1/capabilities')
+                if not evidence.get('features',{}).get('run_submission'):raise ValueError('Hermes Runs unavailable')
             else:
                 await self.ensure_rpc()
                 if not await self.models('codex'):raise ValueError('Codex 未提供可用模型')
@@ -206,8 +212,8 @@ class Runtime:
         return await self.workers.create(task)
     async def resumable(self,s):
         m=self.h.managed().get(s['id'])
-        if s['agent']=='claude':
-            return bool(m and m.get('transport')=='claude-agent-sdk' and not m.get('ended') and s['id'] not in self.workers.workers)
+        if s['agent'] in ('claude','hermes'):
+            return bool(m and m.get('transport') in ('claude-agent-sdk','hermes-runs') and not m.get('ended') and s['id'] not in self.workers.workers)
         if m and not m.get('ended') and (m['agent']=='codex' or await self.alive(m['tmux'])):return False
         if not Path(s['cwd']).is_dir():return False
         if s['agent']=='codex':
@@ -388,12 +394,35 @@ class Runtime:
             if e.get('type')=='agent_end':status='completed'
         return status
     def can_reconcile_task(self,task):
+        if self.h.managed().get(task.get('session_id'),{}).get('transport')=='hermes-runs':
+            import sqlite3
+            try:
+                with sqlite3.connect(self.state/'hermes-runs.sqlite') as db:
+                    row=db.execute('SELECT run_id FROM runs WHERE request_id=?',(task.get('run_id'),)).fetchone()
+                return bool(row and row[0])
+            except sqlite3.Error:return False
         # Recovery needs evidence for this exact run, never a session's stale status.
         return bool(task.get('run_id') and any(e.get('turn_id')==task['run_id'] and
             (e.get('kind')=='status' or e.get('type')=='agent_settled')
             for e in self.events(task.get('session_id',''))))
 
+    async def task_execution_active(self,task):
+        # Unknown business results remain unknown. A dead legacy executor is
+        # separately proven inactive and must not occupy a worker slot forever.
+        meta=self.h.managed().get(task.get('session_id'),{})
+        if meta.get('agent')=='pi' and not meta.get('transport'):
+            if meta.get('ended') or meta.get('tmux') and not await self.alive(meta['tmux']):return False
+            active=None
+            for event in self.events(task.get('session_id','')):
+                if event.get('type') in ('session_start','agent_settled'):active=False
+                elif event.get('type')=='agent_start':active=True
+                elif event.get('type')=='queue_update' and any(event.get('data',{}).get(k) for k in ('steering','followUp')):active=True
+            return active
+        return None
+
     async def task_status(self,task):
+        if self.h.managed().get(task['session_id'],{}).get('transport')=='hermes-runs' and task['session_id'] not in self.workers.workers:
+            await self.workers.restore(task['session_id'])
         if self.h.managed().get(task['session_id'],{}).get('transport'):
             if task['session_id'] in self.workers.workers:
                 return await self.workers.status(task['session_id'])
@@ -427,7 +456,7 @@ class Runtime:
     def task_capabilities(self,task):
         m=self.h.managed().get(task.get('session_id'),{})
         if m.get('transport'):
-            return {'steer':m['agent'] in ('pi','claude'),'transport':m['transport']}
+            return {'steer':m['agent'] in ('pi','claude','hermes'),'transport':m['transport']}
         # Legacy TUI has no reliable native steer; explicit resume upgrades its transport.
         return {'steer':task['agent']=='codex','transport':'codex-app-server' if task['agent']=='codex' else 'pi-tmux'}
     def task_input_state(self,task,request_id):
@@ -437,7 +466,7 @@ class Runtime:
         return None
     async def deliver_task_input(self,task,command):
         worker=self.workers.workers.get(task['session_id'])
-        if worker and task['agent'] in ('pi','claude'):
+        if worker and task['agent'] in ('pi','claude','hermes'):
             return await worker.steer(command['text'],command['request_id'])
         if not self.task_capabilities(task)['steer']:
             return {'state':'unsupported'}

@@ -184,7 +184,7 @@ fun agentWorkEventFor(phase:String,tool:String):AgentWorkEvent?=when{
   taskCount>0->"$taskCount 项任务 · $doneCount 项已验收"
   toolCount>0->"$toolCount 次工具调用"
   tasks.isNotEmpty()->hermesPhaseStatus(phase).ifBlank{"本轮处理记录"}
-  else->hermesPhaseStatus(phase).ifBlank{"Pi 正在处理"}
+  else->hermesPhaseStatus(phase).ifBlank{"Hermes 正在处理"}
  }
  Surface(Modifier.padding(start=8.dp,top=9.dp).widthIn(max=590.dp).fillMaxWidth(.94f).testTag("agent-work-card-$messageId"),shape=RoundedCornerShape(18.dp),color=ToolSurface,border=BorderStroke(1.dp,Line)){
   Column(Modifier.padding(horizontal=13.dp,vertical=11.dp)){

@@ -188,6 +188,8 @@ private fun todayDateLabel():String=runCatching{
    }
    if(vm.personalError.isNotBlank()&&!vm.personalFresh)Text(vm.personalError,Modifier.padding(top=6.dp),fontSize=Type.Caption,color=AmberText)
    TodayStatusLine(vm)
+   // 目标提案只在有待批准时出现，且排在「待我处理」之上：它是需要先拍板的东西。
+   GoalProposalSection(vm)
    TodayDecisionCard(vm,openTask){openTasks("decision")}
    Spacer(Modifier.height(14.dp))
    TodayReminderCards(vm)

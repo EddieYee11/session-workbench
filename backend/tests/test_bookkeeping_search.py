@@ -24,6 +24,17 @@ def test_search_parameters_cannot_change_client_or_escape_scope(args):
         criteria(args)
 
 
+def test_router_action_key_is_tolerated_and_rejections_name_the_field():
+    """同族工具的 action 路由键不该让查账整轮失败；越权字段仍须拦住并报出名字。"""
+    assert criteria({'date': '2026-09-05', 'action': 'search'})['transaction_type'] == 'expense'
+    with pytest.raises(ValueError):
+        criteria({'date': '2026-09-05', 'action': 'add'})
+    with pytest.raises(ValueError) as error:
+        criteria({'date': '2026-09-05', 'client_module': '/tmp/untrusted.js'})
+    assert 'client_module' in str(error.value)
+    assert 'keyword' in str(error.value)  # 可用字段一并给出，模型一次就能改对
+
+
 def test_shared_read_client_filters_beijing_day_exact_cents_and_returns_only_matches(tmp_path):
     if not shutil.which('node'):
         pytest.skip('Node runtime unavailable')

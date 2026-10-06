@@ -83,3 +83,11 @@ def test_enabled_speak_only_becomes_awareness_event(tmp_path):
  asyncio.run(hb.tick(force=True));asyncio.run(hb.tick(force=True));now[0]+=86400
  hb.configure({'shadow':False});row=asyncio.run(hb.tick(force=True))
  assert row['effect']=='awareness' and hb.tasks.list()==[] and hb.proposals.list()==[]
+
+def test_enabled_observer_uses_configured_hermes_executor(tmp_path):
+ import json
+ hb,now=engine(tmp_path)
+ (tmp_path/'agent-config.json').write_text(json.dumps({'main_agent':'hermes'}))
+ asyncio.run(hb.tick(force=True));asyncio.run(hb.tick(force=True));now[0]+=86400
+ hb.configure({'shadow':False});asyncio.run(hb.tick(force=True))
+ assert hb.proposals.list()[0]['agent']=='hermes'

@@ -26,6 +26,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.draw.clip
@@ -80,14 +81,15 @@ fun relTime(ts:Double):String{
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun Workbench(vm:WorkbenchModel,quick:String,workLaunch:Int,clearQuick:()->Unit){
  val sendMotion=rememberMessageSendMotionState(vm.active)
+ val personalFocus=remember{FocusRequester()}
  var settings by remember{mutableStateOf(vm.store.token.isBlank())}
  var advanced by remember{mutableStateOf(false)}
  var page by remember{mutableStateOf(vm.rootPage)}
- var selectedAgent by rememberSaveable{mutableStateOf(vm.store.prefs.getString("lastAgent","claude").takeIf{it in listOf("claude","codex")}?:"claude")}
+ var selectedAgent by rememberSaveable{mutableStateOf(vm.store.prefs.getString("lastAgent","claude").takeIf{it in listOf("pi","claude","codex")}?:"claude")}
  var history by rememberSaveable{mutableStateOf(false)}
  var more by rememberSaveable{mutableStateOf(false)}
  var permissions by rememberSaveable{mutableStateOf(false)}
- val rootPages=listOf("hermes","sources","work")
+ val rootPages=listOf("hermes","sources","activity","memory","work")
  val navigate:(String)->Unit={target->sendMotion.cancel();if(page in rootPages)vm.secondaryReturnPage=page;page=target;more=false;history=false}
  /** 二级页返回到进入它的那一级页，而不是固定回对话。 */
  val goBack:()->Unit={navigate(if(vm.secondaryReturnPage in rootPages)vm.secondaryReturnPage else "hermes")}
@@ -100,12 +102,15 @@ fun relTime(ts:Double):String{
   vm.rootPage=page;vm.hermesVisible=page=="hermes"
   if(vm.store.token.isNotEmpty())when(page){
    "hermes"->vm.refreshHermesNow()
-   "sources"->{vm.refreshPersonalNow();vm.refreshHermesNow();vm.refreshSignalsNow();vm.refreshWorkProposalsNow()}
+   "sources"->{vm.refreshPersonalNow();vm.refreshHermesNow();vm.refreshSignalsNow();vm.refreshWorkProposalsNow();vm.refreshGoalProposalsNow()}
   }
  }
  LaunchedEffect(page,vm.active){
+  var goalTick=0
   while(vm.active){
    if(vm.store.token.isNotEmpty())vm.refreshWorkProposals()
+   // 目标提案每天才产出一份，跟着 10 秒的轮询走没意义，压到约一分钟一次。
+   if(vm.store.token.isNotEmpty()&&goalTick++%6==0)vm.refreshGoalProposals()
    delay(if(page in listOf("activity","sources"))10000 else 60000)
   }
  }
@@ -126,7 +131,8 @@ fun relTime(ts:Double):String{
   if(page=="work"&&vm.selected.isNotBlank())vm.close()else if(page=="activity")taskBack()else if(page in rootPages)navigate("hermes")else goBack()
  }
  if(vm.incomingShare.optString("text").isNotBlank())IncomingShareSheet(vm)
- CompositionLocalProvider(LocalMessageSendMotion provides sendMotion){
+ val personalDock=page in listOf("hermes","sources","activity","memory")
+ CompositionLocalProvider(LocalMessageSendMotion provides sendMotion,LocalPersonalDockEnabled provides personalDock,LocalPersonalComposerFocus provides if(personalDock)personalFocus else null){
  Surface(Modifier.fillMaxSize(),color=Paper){Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().testTag("workbench-inset-root")){
   Column(Modifier.fillMaxSize()){
    Box(Modifier.weight(1f).fillMaxWidth()){
@@ -135,13 +141,18 @@ fun relTime(ts:Double):String{
      "diagnostics"->ConnectionDiagnostics(vm){goBack()}
      "calendar"->PhoneCalendarPage{goBack()}
      "finance"->PersonalDetailPage(vm,page){goBack()}
-     "sources"->PersonalSourcesPage(vm,{id,message->vm.openTaskDetail(id,message)},{filter->vm.openTaskList(filter)},{target->navigate(target)},{navigate("signals")},{sendMotion.cancel();more=true})
-     "activity"->TaskActivityPage(vm,taskBack)
+     "sources"->AgentTodayPage(vm,{navigate("hermes")},{settings=true},{navigate("devices")},{vm.openTaskList("decision");navigate("activity")})
+     "memory"->AgentMemoryPage(vm)
+     "connectors"->AgentConnectionsPage(vm){goBack()}
+     "devices"->AgentDevicePage(vm){goBack()}
+     "actions"->AgentActionPage(vm){goBack()}
+     "activity"->AgentTaskPage(vm,taskBack)
      "signals"->SignalActivityPage(vm){goBack()}
      else->HermesChat(vm,{sendMotion.cancel();more=true},openActivity,{navigate("calendar")})
     }
    }
-   ImeAwareBottomNavigation{enabled->ComBottomNavigation(page,navigate,enabled)}
+   if(personalDock)PersonalDock(vm,page,navigate,sendMotion,personalFocus)
+   else ImeAwareBottomNavigation{enabled->ComBottomNavigation(page,navigate,enabled)}
   }
   if(vm.busy)LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).align(Alignment.TopCenter),color=Ink,trackColor=Color.Transparent)
   MessageSendMotionOverlay(sendMotion,Modifier.matchParentSize())
@@ -152,7 +163,7 @@ fun relTime(ts:Double):String{
  if(more)ModalBottomSheet(onDismissRequest={more=false},containerColor=Paper){
   Column(Modifier.fillMaxWidth().padding(horizontal=24.dp).padding(bottom=32.dp),verticalArrangement=Arrangement.spacedBy(6.dp)){
    Text("Com!",Modifier.padding(bottom=12.dp),fontSize=24.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-   listOf("calendar" to "日历","finance" to "账本","signals" to "通知巡检","permissions" to "权限与上下文","diagnostics" to "连接诊断","settings" to "设置").forEach{(target,label)->
+   listOf("connectors" to "数据连接","devices" to "手机节点","actions" to "安排变更","calendar" to "日历","finance" to "账本","signals" to "通知巡检","permissions" to "权限与上下文","diagnostics" to "连接诊断","settings" to "设置").forEach{(target,label)->
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable{more=false;when(target){"settings"->settings=true;"permissions"->permissions=true;else->navigate(target)}}.padding(horizontal=16.dp,vertical=18.dp),verticalAlignment=Alignment.CenterVertically){
      if(target=="permissions")Icon(Icons.Outlined.AdminPanelSettings,null,Modifier.size(24.dp),tint=Muted)
      else ComPrimaryIcon(target,null,24.dp,Muted)
@@ -166,7 +177,7 @@ fun relTime(ts:Double):String{
   Box(Modifier.fillMaxWidth().fillMaxHeight(.88f)){PermissionsSheetContent()}
  }
  if(settings)ModalBottomSheet(onDismissRequest={settings=false},containerColor=Paper,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)){
-  Box(Modifier.fillMaxWidth().fillMaxHeight(.92f)){SettingsSheet(vm){settings=false}}
+  Box(Modifier.fillMaxWidth().fillMaxHeight(.92f)){SettingsSheet(vm,{settings=false;navigate(it)}){settings=false}}
  }
  if(advanced)NewSession(vm,selectedAgent){advanced=false}
  if(vm.error.isNotBlank())AlertDialog(onDismissRequest={vm.error=""},containerColor=Card,title={Text("操作提示",fontWeight=FontWeight.SemiBold)},text={SelectionContainer{Text(vm.error)}},confirmButton={TextButton(onClick={vm.error=""}){Text("知道了")}})
@@ -223,31 +234,64 @@ private data class MessageViewportPosition(val width:Int,val height:Int,val firs
  }
 }
 
-@Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,enabled:Boolean=true){
- BoxWithConstraints(Modifier.fillMaxWidth().padding(top=4.dp,bottom=4.dp),contentAlignment=Alignment.Center){
- val fontScale=LocalDensity.current.fontScale
- Surface(modifier=Modifier.widthIn(max=420.dp).fillMaxWidth(.94f),shape=RoundedCornerShape(30.dp),color=Card,border=BorderStroke(1.dp,Line),shadowElevation=1.dp){
-  Row(Modifier.padding(3.dp),verticalAlignment=Alignment.CenterVertically){
-   listOf("hermes" to "对话","sources" to "今天","work" to "工作").forEach{(target,label)->
-    val selected=page==target||target=="sources"&&page in listOf("calendar","finance","signals")
-    val background by animateColorAsState(if(selected)Color(0xFF252A31) else Color.Transparent,tween(180),label="导航选中")
-    val foreground=if(selected)Color.White else Muted
-    Column(Modifier.weight(1f).heightIn(min=(48f+12f*(fontScale-1f).coerceAtLeast(0f)).dp).clip(RoundedCornerShape(27.dp)).background(background)
-     .testTag("nav-$target").semantics{contentDescription=label}.selectable(selected=selected,enabled=enabled,role=androidx.compose.ui.semantics.Role.Tab,onClick={navigate(target)}).padding(vertical=5.dp),horizontalAlignment=Alignment.CenterHorizontally){
-     ComPrimaryIcon(target,null,20.dp,foreground)
-     Text(label,fontSize=Type.Caption,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,color=foreground,maxLines=1)
-    }
+internal val LocalPersonalDockEnabled=compositionLocalOf{false}
+internal val LocalPersonalComposerFocus=compositionLocalOf<FocusRequester?>{null}
+
+@Composable private fun PersonalDock(vm:WorkbenchModel,page:String,navigate:(String)->Unit,motion:MessageSendMotionState,focus:FocusRequester){
+ Box(Modifier.fillMaxWidth().padding(horizontal=6.dp,vertical=4.dp),contentAlignment=Alignment.Center){
+  Surface(Modifier.widthIn(max=858.dp).fillMaxWidth().testTag("personal-dock"),shape=RoundedCornerShape(24.dp),color=Card){
+   Column(Modifier.padding(horizontal=4.dp).padding(top=4.dp)){
+    vm.hermesReference?.let{MessageReferencePreview(it){vm.hermesReference=null}}
+    vm.linkedMatter?.let{matter->Row(Modifier.padding(start=14.dp,end=4.dp),verticalAlignment=Alignment.CenterVertically){
+     Text("关联事项 · ${matter.optString("title")}",Modifier.weight(1f),fontSize=Type.Caption,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+     TextButton(onClick={vm.linkedMatter=null}){Text("取消",fontSize=Type.Caption)}
+    }}
+    val hint=when(page){"sources"->"管理你的兴趣和优先级…";"memory"->"告诉 Hermes 更多关于你的事…";"activity"->"告诉 Hermes 接下来想做什么…";else->"消息"}
+    HermesComposer(vm,vm.store.token.isNotBlank(),motion,focus,compact=true,placeholder=hint)
+    ImeAwareBottomNavigation{enabled->ComBottomNavigation(page,navigate,enabled,framed=false)}
    }
   }
  }
+}
+
+@Composable private fun ComNavigationItems(page:String,navigate:(String)->Unit,enabled:Boolean){
+ val fontScale=LocalDensity.current.fontScale
+ Row(Modifier.fillMaxWidth().padding(horizontal=5.dp).padding(top=5.dp,bottom=7.dp),verticalAlignment=Alignment.CenterVertically){
+  listOf("hermes" to "聊天","sources" to "今天","activity" to "任务","memory" to "记忆","work" to "工作").forEach{(target,label)->
+   val selected=page==target||target=="sources"&&page in listOf("calendar","finance","signals")
+   val background by animateColorAsState(if(selected)Track else Color.Transparent,tween(180),label="导航选中")
+   val foreground=if(selected)Ink else Faint
+   Column(Modifier.weight(1f).heightIn(min=(54f+12f*(fontScale-1f).coerceAtLeast(0f)).dp)
+    .testTag("nav-$target").semantics{contentDescription=label}.selectable(selected=selected,enabled=enabled,role=androidx.compose.ui.semantics.Role.Tab,onClick={navigate(target)}),horizontalAlignment=Alignment.CenterHorizontally){
+    Box(Modifier.widthIn(max=72.dp).fillMaxWidth(.54f).height(32.dp).background(background,Radii.Pill),contentAlignment=Alignment.Center){ComPrimaryIcon(target,null,22.dp,foreground)}
+    Spacer(Modifier.height(3.dp))
+    Text(label,fontSize=12.sp,fontWeight=FontWeight.Normal,color=foreground,maxLines=1)
+   }
+  }
+ }
+}
+
+@Composable private fun ComBottomNavigation(page:String,navigate:(String)->Unit,enabled:Boolean=true,framed:Boolean=true){
+ if(!framed)ComNavigationItems(page,navigate,enabled)
+ // Mirror the personal dock's container so the bar keeps one width across tabs.
+ // The old 440dp cap left 「工作」 roughly half the width of the dock pages on
+ // wide/unfolded screens, which read as the bar shrinking when you switched tabs.
+ else Box(Modifier.fillMaxWidth().padding(horizontal=6.dp,vertical=4.dp),contentAlignment=Alignment.Center){
+  Surface(Modifier.widthIn(max=858.dp).fillMaxWidth(),shape=RoundedCornerShape(24.dp),color=Card){ComNavigationItems(page,navigate,enabled)}
  }
 }
 
 @Composable private fun ComPrimaryIcon(target:String,label:String?,size:Dp,tint:Color=Ink,selected:Boolean=false){
  when(target){
-  "sources"->Icon(Icons.Outlined.WbSunny,label,Modifier.size(size),tint=tint)
-  "activity"->Icon(Icons.Outlined.Checklist,label,Modifier.size(size),tint=tint)
-  "settings"->Icon(Icons.Outlined.PersonOutline,label,Modifier.size(size),tint=tint)
+  "sources","calendar"->Icon(ReferenceIcons.Calendar,label,Modifier.size(size),tint=tint)
+  "activity"->Icon(ReferenceIcons.Tasks,label,Modifier.size(size),tint=tint)
+  "memory"->Icon(ReferenceIcons.Memory,label,Modifier.size(size),tint=tint)
+  "settings"->Icon(ReferenceIcons.Sliders,label,Modifier.size(size),tint=tint)
+  "connectors"->Icon(Icons.Outlined.Link,label,Modifier.size(size),tint=tint)
+  "devices"->Icon(Icons.Outlined.Smartphone,label,Modifier.size(size),tint=tint)
+  "actions"->Icon(Icons.Outlined.History,label,Modifier.size(size),tint=tint)
+  "signals"->Icon(Icons.Outlined.NotificationsNone,label,Modifier.size(size),tint=tint)
+  "diagnostics"->Icon(Icons.Outlined.Wifi,label,Modifier.size(size),tint=tint)
   else->ComIcon(when(target){"hermes"->R.drawable.com_icon_chat_v1;"work"->R.drawable.com_icon_work_v1;"finance"->R.drawable.com_icon_finance_v1;else->R.drawable.com_icon_today_v1},label,Modifier.size(size),tint=tint,selected=selected)
  }
 }
@@ -271,7 +315,9 @@ private data class MessageViewportPosition(val width:Int,val height:Int,val firs
 }
 @Composable fun RoundIcon(icon:androidx.compose.ui.graphics.vector.ImageVector,label:String,click:()->Unit){
  val (press,pressMod)=rememberPress(.97f)
- IconButton(onClick=click,modifier=Modifier.size(46.dp).then(pressMod).clip(CircleShape).background(Card).border(1.dp,Line,CircleShape),interactionSource=press){Icon(icon,label,Modifier.size(22.dp),tint=Ink)}
+ IconButton(onClick=click,modifier=Modifier.size(48.dp).then(pressMod),interactionSource=press){
+  Box(Modifier.size(40.dp).background(Card.copy(alpha=.88f),CircleShape).border(1.dp,Line.copy(alpha=.5f),CircleShape),contentAlignment=Alignment.Center){Icon(if(icon==Icons.Outlined.Tune)ReferenceIcons.Sliders else icon,label,Modifier.size(20.dp),tint=Ink)}
+ }
 }
 
 @Composable fun QuickChip(icon:androidx.compose.ui.graphics.vector.ImageVector,label:String,enabled:Boolean=true,click:()->Unit){
@@ -290,7 +336,7 @@ private data class MessageViewportPosition(val width:Int,val height:Int,val firs
   ?:sessions.firstOrNull{it.optString("status")=="running"}?:sessions.firstOrNull()
  val status=focus?.optString("status").orEmpty()
  val avatar=rememberCompanionState("home:$agent:${focus?.optString("id")}",status,fresh)
- val title=when{vm.voiceDelivery.isNotBlank()->"这句话，\nPi 正在接住。";fresh&&status=="waiting"->"下一步，\n我们一起决定。";fresh&&status=="running"->"$name 在忙，\n灵感也可以继续。";else->"今天，想一起\n做点什么？"}
+ val title=when{vm.voiceDelivery.isNotBlank()->"这句话，\nHermes 正在接住。";fresh&&status=="waiting"->"下一步，\n我们一起决定。";fresh&&status=="running"->"$name 在忙，\n灵感也可以继续。";else->"今天，想一起\n做点什么？"}
  val subtitle=when{!vm.connected->"暂时离线，已有的对话仍在这里";status=="failed"&&fresh->"有一步需要看看，点开下方会话继续";status=="waiting"&&fresh->"有件事，正在等你的回应";else->"把想法交给 $name，让它慢慢成形。"}
  val density=LocalDensity.current
  val imeBottom=WindowInsets.ime.getBottom(density)
@@ -299,30 +345,11 @@ private data class MessageViewportPosition(val width:Int,val height:Int,val firs
  WashBackground(Modifier.fillMaxSize()){
  Column(Modifier.fillMaxSize()){
   Box(Modifier.fillMaxWidth().height(56.dp).padding(horizontal=16.dp)){
-   Box(Modifier.align(Alignment.CenterStart)){RoundIcon(Icons.Outlined.History,"工作会话历史",menu)}
-   Text("工作",Modifier.align(Alignment.Center),fontSize=Type.AppTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.8).sp,color=Ink)
-   Box(Modifier.align(Alignment.CenterEnd)){RoundIcon(Icons.Outlined.MoreHoriz,"更多",more)}
+   Box(Modifier.align(Alignment.CenterStart)){RoundIcon(Icons.Outlined.Menu,"工作会话历史",menu)}
+   Text("Com!",Modifier.align(Alignment.Center),fontSize=Type.AppTitle,fontWeight=FontWeight.SemiBold,letterSpacing=(-.8).sp,color=Ink)
+   Box(Modifier.align(Alignment.CenterEnd)){RoundIcon(Icons.Outlined.Tune,"更多",more)}
   }
-  if(sessions.isNotEmpty()){
-   Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=8.dp)){
-    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){
-     Pill(listOf("Claude","Codex"),if(agent=="claude")0 else 1){select(if(it==0)"claude"else"codex")}
-     TextButton(onClick=advanced,modifier=Modifier.semantics{contentDescription="新会话设置"}){Text("会话设置")}
-    }
-    if(!fresh)Text("上次保存的工作会话 · 连接后更新",Modifier.padding(vertical=8.dp),fontSize=Type.Caption,color=AmberText)
-    sessions.take(12).groupBy{it.optString("cwd")}.forEach{(path,items)->
-     Text(path.shortPath().ifBlank{"最近工作"},Modifier.padding(top=18.dp,bottom=8.dp),fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Muted)
-     items.take(3).forEach{item->
-      Surface(onClick={pick(item)},modifier=Modifier.fillMaxWidth().padding(bottom=8.dp),shape=RoundedCornerShape(Radii.L),color=Card,border=BorderStroke(1.dp,Line)){
-       Column(Modifier.padding(14.dp)){
-        Text(item.optString("display_title").ifBlank{"继续会话"},fontSize=Type.BodySm,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
-        Text((if(fresh)statusLabel(item.optString("status")) else "已保存")+" · "+relTime(item.optDouble("updated")),Modifier.padding(top=4.dp),fontSize=Type.Caption,color=Muted)
-       }
-      }
-     }
-    }
-   }
-  }else BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()){
+  BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()){
    // The available height already follows the system IME animation. Use it directly;
    // a second size animation would trail the keyboard and briefly crop the headline.
    val restingHeight=maxHeight+with(density){imeBottom.toDp()}
@@ -347,7 +374,7 @@ private data class MessageViewportPosition(val width:Int,val height:Int,val firs
      if(vm.voiceDelivery.isNotBlank())"thinking" else avatar,heroSize,
      headingSize,headingLineHeight,headingReveal,secondaryReveal,
     )
-    Pill(listOf("Claude","Codex"),if(agent=="claude")0 else 1){select(if(it==0)"claude"else"codex")}
+    Pill(listOf("Pi","Claude","Codex"),listOf("pi","claude","codex").indexOf(agent).coerceAtLeast(0)){select(listOf("pi","claude","codex")[it])}
     TextButton(onClick=advanced,modifier=Modifier.semantics{contentDescription="新会话设置"}){Text("新会话设置",fontSize=Type.Caption)}
     Column(Modifier.homeReveal(secondaryReveal),horizontalAlignment=Alignment.CenterHorizontally){
     Spacer(Modifier.height(12.dp))
@@ -492,7 +519,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
    val (press,pressMod)=rememberPress(.97f)
    if(canSend)IconButton(onClick={haptics(HapticCue.Commit);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}
    else if(running)IconButton(onClick={haptics(HapticCue.RecordingStop);stop()},enabled=enabled,modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ink),interactionSource=press){Icon(Icons.Outlined.Stop,"停止当前执行",tint=Color.White,modifier=Modifier.size(20.dp))}
-   else if(voice!=null)IconButton(onClick=voice,enabled=!readOnly,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.MicNone,"快速语音 · Pi",Modifier.size(23.dp),tint=Muted)}
+   else if(voice!=null)IconButton(onClick=voice,enabled=!readOnly,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.MicNone,"快速语音 · Hermes",Modifier.size(23.dp),tint=Muted)}
   }
  }
 }
@@ -566,7 +593,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
    if(!vm.connected)Text("连接中断 · 远端任务不会因此停止",Modifier.padding(horizontal=22.dp),fontSize=Type.Caption,color=Muted)
    if(!caps.optBoolean("input"))Column(Modifier.padding(horizontal=20.dp,vertical=12.dp)){
     Button(onClick={vm.resume()},enabled=vm.connected&&!vm.busy&&caps.optBoolean("resume"),shape=RoundedCornerShape(Radii.Xxl),modifier=Modifier.fillMaxWidth().height(50.dp)){Text(if(caps.optBoolean("restart_for_identity"))"升级并恢复会话"else"继续这个会话",fontSize=Type.Body,fontWeight=FontWeight.Medium)}
-    if(caps.optBoolean("restart_for_identity"))Text("重启空闲 Pi 进程，保留对话历史与草稿",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
+    if(caps.optBoolean("restart_for_identity"))Text("重启空闲执行器进程，保留对话历史与草稿",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Muted)
     if(!caps.optBoolean("resume"))Text("当前正在使用或状态未确认",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=Faint)
    }
   }

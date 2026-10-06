@@ -13,7 +13,7 @@ import java.util.UUID
 import kotlin.math.ln
 
 /**
- * 快速语音共用录音和转写链；记账入口保留金额确认，两个入口均持久交办给原生 Pi。
+ * 快速语音共用录音和转写链；记账入口保留金额确认，两个入口均持久交办给原生 Hermes。
  * phase: ready | recording | transcribing | confirm | sending | sent
  */
 class QuickVoiceModel(app: Application) : AndroidViewModel(app) {

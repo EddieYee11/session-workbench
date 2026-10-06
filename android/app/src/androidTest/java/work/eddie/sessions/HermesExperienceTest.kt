@@ -78,8 +78,8 @@ class HermesExperienceTest {
         }
         ui.onNodeWithText("记一笔").assertDoesNotExist()
         ui.onNodeWithText("今日日程").assertDoesNotExist()
-        ui.onNodeWithTag("hermes-message-list").performScrollToIndex(1)
-            .performTouchInput { swipeUp() }
+        ui.onNodeWithTag("hermes-message-list").performScrollToIndex(2)
+            .performTouchInput { swipeDown() }
         ui.waitForIdle()
         ui.onNodeWithTag("hermes-header-avatar",true).assertIsNotDisplayed()
         val viewport = ui.onNodeWithTag("hermes-message-list").fetchSemanticsNode().boundsInRoot

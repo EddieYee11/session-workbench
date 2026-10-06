@@ -132,10 +132,10 @@ def render() -> str:
         return ""
     lines = [
         "本机发现的能力（文件扫描不能证明已加载或可用，调用前查询 capability_search）：",
-        "· Pi 主线可直接执行原生工具及项目工作；独立 Pi / Claude / Codex 按实际需要选择，由运行时健康探测确认可用",
+        "· Hermes主线直接使用business_operation及已加载原生工具；默认Hermes后台，独立 Pi / Claude / Codex 按实际需要选择，由运行时健康探测确认可用",
     ]
     for item in items:
-        head = f"· Pi · {item['label']}"
+        head = f"· 迁移能力 · {item['label']}"
         if item["label"] != item["id"]:
             head += f"（{item['id']}）"
         lines.append(f"{head}：{item['text']}")
@@ -207,7 +207,7 @@ class CapabilityRegistry:
         import sqlite3
         with sqlite3.connect(self.path) as db:
             items = [json.loads(row[0]) for row in db.execute('SELECT data FROM capabilities')]
-        for executor in ('pi','claude','codex'):
+        for executor in ('pi','claude','codex','hermes'):
             if not any(i['id']=='runtime:'+executor and i['runtime']==executor and i['host']==self.host for i in items):
                 items.append(dict(id='runtime:'+executor,runtime=executor,host=self.host,project=project,state='discovered',config_version=self.version(executor)))
         discovered=manifest()

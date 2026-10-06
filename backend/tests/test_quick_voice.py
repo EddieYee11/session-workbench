@@ -252,22 +252,23 @@ def api(tmp_path, monkeypatch):
     import app
     app = importlib.reload(app)
     monkeypatch.setattr(app.quick_voice, 'start', lambda: None)
+    monkeypatch.setattr(app.conversation, 'start', lambda: None)
     with TestClient(app.app) as client:
         yield app, client
 
 
-def test_authenticated_api_contract_idempotency_and_receipt_without_hermes(api, monkeypatch):
+def test_authenticated_voice_contract_uses_main_hermes_and_preserves_idempotency(api, monkeypatch):
     app, client = api
     def forbidden(*args, **kwargs):
-        raise AssertionError('quick voice must not invoke Hermes')
-    monkeypatch.setattr(app.conversation, 'submit', forbidden)
+        raise AssertionError('unified voice must not start the legacy Pi lane')
+    monkeypatch.setattr(app.legacy_voice, 'submit', forbidden)
     path = '/personal/quick-voice/messages'
     payload = {'request_id': 'quickvoice-api-0001', 'text': '午饭35元', 'purpose': 'expense'}
     assert client.post(path, json=payload).status_code == 401
     headers = {'Authorization': 'Bearer ' + app.TOKEN}
     receipt = client.post(path, json=payload, headers=headers)
     assert receipt.status_code == 200
-    assert receipt.json()['agent'] == 'pi' and receipt.json()['status'] == 'accepted'
+    assert receipt.json()['agent'] == 'hermes' and receipt.json()['status'] == 'accepted'
     assert client.post(path, json=payload, headers=headers).json() == receipt.json()
     assert client.post(path, json={**payload, 'purpose': 'conversation'}, headers=headers).status_code == 409
     rid = payload['request_id']

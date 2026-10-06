@@ -86,6 +86,21 @@ class WorkerRuntime:
         require_host(self.runtime.state)
         if task['agent']=='claude' and any(w.status=='running' for w in self.workers.values() if isinstance(w,ClaudeWorker)):
             raise ValueError('Claude 并发上限一项')
+        if task['agent']=='hermes':
+            from hermes_runtime import HermesRuntime
+            sid='hermes:com-'+uuid.uuid4().hex
+            worker=HermesRuntime(self.runtime.state,sid.split(':',1)[1],emit=lambda e:self.runtime.emit(sid,e),
+                context={k:task.get(k) for k in ('id','origin_session_id','origin_message_id','origin_request_id')})
+            await worker.start()
+            meta={'sid':sid,'native_id':worker.session_id,'agent':'hermes','cwd':task['cwd'],'created':time.time(),
+                  'source':'Com 后台任务','sandbox':task['sandbox'],'transport':'hermes-runs','ended':False,'tmux':'',
+                  'model':'deepseek-v4-flash','effort':'','task_id':task['id'],'automatic':task.get('automatic',True)}
+            self.runtime.h.save_managed(sid,meta)
+            with self.runtime.h.db() as db:
+                db.execute('INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?,?,?,?,?)',
+                           (sid,'hermes',worker.session_id,'',task['cwd'],task.get('title','后台任务'),time.time(),'','Hermes Runs'))
+            self.workers[sid]=worker;self.statuses[sid]='ready'
+            return sid
         if task['agent']=='codex':
             models=await self.runtime.models('codex')
             default=next((m for m in models if m.get('is_default')),None)
@@ -135,6 +150,18 @@ class WorkerRuntime:
         if sid in self.workers:
             return sid
         meta=self.runtime.h.managed().get(sid)
+        if meta and meta.get('transport')=='hermes-runs' and not meta.get('ended'):
+            from hermes_runtime import HermesRuntime
+            worker=HermesRuntime(self.runtime.state,meta['native_id'],emit=lambda e:self.runtime.emit(sid,e))
+            import sqlite3
+            with sqlite3.connect(worker.path) as db:
+                row=db.execute('SELECT request_id,run_id,status FROM runs WHERE session_id=? ORDER BY rowid DESC LIMIT 1',(worker.session_id,)).fetchone()
+            self.workers[sid]=worker;self.statuses[sid]='unknown' if row else 'ready'
+            if row and row[1]:
+                worker.run_id=row[1]
+                worker.delivered.add(row[0])
+                meta['restored_turn_id']=row[0];self.runtime.h.save_managed(sid,meta)
+            return sid
         if not meta or meta.get('transport')!='claude-agent-sdk' or meta.get('ended'):
             raise ValueError('缺少 Com 自有原生会话映射，暂不能恢复；请在工作页新建会话并引用原记录')
         task=next((t for t in getattr(self.runtime,'task_store',object()).list() if t['id']==meta['task_id']),None) if hasattr(self.runtime,'task_store') else None
@@ -195,6 +222,19 @@ class WorkerRuntime:
         worker=self.workers.get(sid)
         if not worker:
             return 'unknown'
+        if getattr(worker,'runtime_name','')=='hermes' and worker.run_id:
+            try:
+                await worker.reconcile_steering()
+                run=await worker.request('GET','/v1/runs/'+worker.run_id)
+                status=run.get('status','unknown')
+                status={'cancelled':'interrupted','queued':'running','interrupted':'interrupted'}.get(status,status)
+                if status in ('completed','failed','interrupted') and self.statuses[sid] not in ('completed','failed','interrupted'):
+                    meta=self.runtime.h.managed().get(sid,{})
+                    turn=meta.get('restored_turn_id')
+                    if turn:
+                        self.runtime.emit(sid,{'type':'message_end','turn_id':turn,'data':{'message':{'role':'assistant','stopReason':'stop' if status=='completed' else 'aborted' if status=='interrupted' else 'error','content':[{'type':'text','text':run.get('output','')}]}}})
+                self.statuses[sid]=status
+            except Exception:self.statuses[sid]='unknown'
         return worker.status if isinstance(worker,ClaudeWorker) else self.statuses[sid]
 
     async def stop(self,sid):

@@ -29,3 +29,7 @@ websockets==17.1
 
 claude-agent-sdk==0.2.163
 mcp>=1.23,<2
+
+# Reuse the separately authorized Google Calendar account.
+google-auth==2.59.1
+requests==2.34.2

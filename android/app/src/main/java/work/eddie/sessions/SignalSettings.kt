@@ -63,7 +63,7 @@ private fun openListenerSettings(context:Context){
  }}
  HorizontalDivider(Modifier.padding(vertical=12.dp),color=Line)
  Text("个人 Agent · 手机通知",fontWeight=FontWeight.SemiBold)
- Text("由你开启后，所选应用的新通知标题和预览会在手机加密排队，发送到 Mac mini，由隔离的 Pi / DeepSeek 分析，生成仅供你查看的记录与回复草稿。验证码、OTP 等敏感通知在手机端整条跳过。不会自动回复或发送消息。",Modifier.padding(top=5.dp,bottom=8.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
+ Text("由你开启后，所选应用的新通知标题和预览会在手机加密排队，发送到 Mac mini，由隔离的 Hermes / DeepSeek 分析，生成仅供你查看的记录与回复草稿。验证码、OTP 等敏感通知在手机端整条跳过。不会自动回复或发送消息。",Modifier.padding(top=5.dp,bottom=8.dp),fontSize=Type.Caption,lineHeight=18.sp,color=Muted)
  Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
   Text("采集通知",Modifier.weight(1f),fontSize=Type.BodySm,color=Ink)
   Switch(enabled,{value->

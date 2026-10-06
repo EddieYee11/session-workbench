@@ -236,7 +236,7 @@ private val taskFilters=listOf("all" to "全部","decision" to "等我","active"
        WorkProposalActions(vm,proposal)
        var proposalDetails by rememberSaveable(task.id){mutableStateOf(false)}
        TextButton(onClick={proposalDetails=!proposalDetails}){Text(if(proposalDetails)"收起执行指令"else"查看完整执行指令",fontSize=Type.Caption)}
-       if(proposalDetails)SelectionContainer{Text("交给 ${if(proposal.optString("agent")=="pi")"Pi"else"Codex"} 的指令：\n${proposal.optString("prompt")}",fontSize=Type.Caption,lineHeight=19.sp,color=Ink)}
+       if(proposalDetails)SelectionContainer{Text("交给 ${agentDisplayName(proposal.optString("agent"))} 的指令：\n${proposal.optString("prompt")}",fontSize=Type.Caption,lineHeight=19.sp,color=Ink)}
       }
       else{
        Text("授权建议正在同步；允许与拒绝仅针对这项任务。",Modifier.padding(top=8.dp),fontSize=Type.Caption,color=AmberText)

@@ -39,7 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * ASSIST 只启动底部快速语音小窗，转写后持久交办给原生 Pi；从不打开主界面。
+ * ASSIST 只启动底部快速语音小窗，转写后持久交办给原生 Hermes；从不打开主界面。
  * 记账使用独立 ExpenseVoiceActivity，继续复用原确认和投递流程。
  */
 open class QuickVoiceActivity:ComponentActivity(){
@@ -57,7 +57,7 @@ open class QuickVoiceActivity:ComponentActivity(){
   val lp=window.attributes
   lp.y=(28*resources.displayMetrics.density).toInt()
   window.attributes=lp
-  setContent{MaterialTheme(colorScheme=Palette,typography=ComTypography){
+  setContent{MaterialTheme(colorScheme=Palette,typography=ComTypography,shapes=ComShapes){
    if(conversationMode)AssistantVoiceCard(vm,::closeWindow)else ExpenseVoiceCard(vm,::closeWindow)
   }}
  }
@@ -105,7 +105,7 @@ class ExpenseVoiceActivity:QuickVoiceActivity(){override val conversationMode=fa
  val sent=vm.phase=="sent"
  val canRetrySending=vm.phase=="confirm"&&vm.transcript.isNotBlank()
  val botState=when{recording->"listening";busy->"thinking";sent->"happy";vm.message.isNotBlank()->"error";else->"idle"}
- val avatarSize by animateDpAsState(if(busy||sent)100.dp else 174.dp,spring(dampingRatio=.88f,stiffness=360f),label="Pi 小窗形象尺寸")
+ val avatarSize by animateDpAsState(if(busy||sent)100.dp else 174.dp,spring(dampingRatio=.88f,stiffness=360f),label="Hermes 小窗形象尺寸")
  val heroHeight by animateDpAsState(if(busy||sent)88.dp else 164.dp,spring(dampingRatio=.88f,stiffness=360f),label="小窗回复空间")
  val contentScroll=rememberScrollState()
  LaunchedEffect(recording){if(recording)contentScroll.animateScrollTo(0)}
@@ -120,7 +120,7 @@ class ExpenseVoiceActivity:QuickVoiceActivity(){override val conversationMode=fa
       Surface(color=PiSoft,shape=CircleShape){
        Row(Modifier.padding(horizontal=11.dp,vertical=7.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)){
         Box(Modifier.size(5.dp).background(PiGreen,CircleShape))
-        Text("派 · 随时聊",fontWeight=FontWeight.SemiBold,color=PiGreen,fontSize=12.sp)
+        Text("Hermes · 随时聊",fontWeight=FontWeight.SemiBold,color=PiGreen,fontSize=12.sp)
        }
       }
       Spacer(Modifier.weight(1f))
@@ -131,10 +131,10 @@ class ExpenseVoiceActivity:QuickVoiceActivity(){override val conversationMode=fa
       Box(Modifier.fillMaxWidth().height(heroHeight),contentAlignment=Alignment.Center){
        CompanionAvatar("pi",botState,Modifier.size(avatarSize),interactive=false)
       }
-      AnimatedContent(when{recording->"说吧，派在听。";sent->"已排队，交给派。";busy->"正在交给派。";canRetrySending->"这句话，还在这里。";else->"想到了，就告诉派。"},transitionSpec={fadeIn(tween(160)) togetherWith fadeOut(tween(100))},label="voiceTitle"){
+      AnimatedContent(when{recording->"说吧，Hermes 在听。";sent->"已排队，交给 Hermes。";busy->"正在交给 Hermes。";canRetrySending->"这句话，还在这里。";else->"想到了，就告诉 Hermes。"},transitionSpec={fadeIn(tween(160)) togetherWith fadeOut(tween(100))},label="voiceTitle"){
        Text(it,color=Ink,fontSize=if(busy||sent)22.sp else 25.sp,fontWeight=FontWeight.SemiBold,textAlign=TextAlign.Center)
       }
-      Text(when{recording->"停顿后自动发送";sent->"可在 Com! 工作页查看结果";vm.phase=="transcribing"->"识别后自动发送";busy->"受理后在后台继续处理";else->"记账、收藏等沿用派的能力"},Modifier.padding(top=8.dp,bottom=12.dp),fontSize=12.sp,color=Muted)
+      Text(when{recording->"停顿后自动发送";sent->"可在 Com! 工作页查看结果";vm.phase=="transcribing"->"识别后自动发送";busy->"受理后在后台继续处理";else->"记账、收藏等由 Hermes 直接处理"},Modifier.padding(top=8.dp,bottom=12.dp),fontSize=12.sp,color=Muted)
       if(recording){
        MicLevels(vm.levels,vm.seconds,tall=true)
        TextButton(onClick=vm::cancelRecording){Text("取消这次录音",color=Muted)}
@@ -148,7 +148,7 @@ class ExpenseVoiceActivity:QuickVoiceActivity(){override val conversationMode=fa
      Button(onClick={when{recording->vm.finishRecording();canRetrySending->vm.sendConversation();else->{vm.retry();record()}}},enabled=!busy&&!sent,modifier=Modifier.fillMaxWidth().height(54.dp).padding(top=2.dp).then(motion),shape=Radii.Pill,interactionSource=press,colors=ButtonDefaults.buttonColors(containerColor=buttonColor)){
       Icon(if(recording||canRetrySending)Icons.Outlined.ArrowUpward else Icons.Outlined.Mic,null,Modifier.size(21.dp))
       Spacer(Modifier.width(8.dp))
-      Text(when{recording->"说完了，立即发送";sent->"已交办给派";busy->"正在发送";canRetrySending->"重试发送这句话";vm.message.isNotBlank()->"重新说一句";else->"开始说话"},fontWeight=FontWeight.SemiBold)
+      Text(when{recording->"说完了，立即发送";sent->"已交办给 Hermes";busy->"正在发送";canRetrySending->"重试发送这句话";vm.message.isNotBlank()->"重新说一句";else->"开始说话"},fontWeight=FontWeight.SemiBold)
      }
     }
    }
@@ -217,12 +217,12 @@ class ExpenseVoiceActivity:QuickVoiceActivity(){override val conversationMode=fa
       "confirm"->ExpenseConfirm(vm,countdown,{vm.retry();record()},{haptics(HapticCue.Commit);vm.confirmExpense()},{close()})
       "sending"->{
        CircularProgressIndicator(Modifier.padding(top=18.dp).size(30.dp),strokeWidth=3.dp,color=Muted)
-       Text("正在交给派…",Modifier.padding(top=12.dp,bottom=8.dp),fontSize=13.sp,color=Muted)
+       Text("正在交给 Hermes…",Modifier.padding(top=12.dp,bottom=8.dp),fontSize=13.sp,color=Muted)
       }
       "sent"->{
-       Icon(Icons.Outlined.CheckCircle,"已交办给派",Modifier.padding(top=14.dp).size(40.dp),tint=PiGreen)
-       Text("已交办给派",Modifier.padding(top=8.dp,bottom=6.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
-       Text("派会回查账本，结果见工作会话",fontSize=11.sp,color=Muted)
+       Icon(Icons.Outlined.CheckCircle,"已交办给 Hermes",Modifier.padding(top=14.dp).size(40.dp),tint=PiGreen)
+       Text("已交办给 Hermes",Modifier.padding(top=8.dp,bottom=6.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)
+       Text("Hermes 会回查账本，结果见工作会话",fontSize=11.sp,color=Muted)
       }
       else->{
        if(vm.message.isNotBlank())Text(vm.message,Modifier.padding(top=10.dp),fontSize=13.sp,lineHeight=19.sp,color=if(vm.paired)Muted else AmberText,textAlign=TextAlign.Center)
@@ -249,11 +249,11 @@ class ExpenseVoiceActivity:QuickVoiceActivity(){override val conversationMode=fa
   }
   Text("“${vm.transcript.take(40)}”",Modifier.padding(top=8.dp),fontSize=11.sp,color=Faint,textAlign=TextAlign.Center)
   if(vm.message.isNotBlank())Text(vm.message,Modifier.padding(top=4.dp),fontSize=11.sp,color=AmberText)
-  Text("$countdown 秒后交给派",Modifier.padding(top=6.dp),fontSize=11.sp,color=Muted)
+  Text("$countdown 秒后交给 Hermes",Modifier.padding(top=6.dp),fontSize=11.sp,color=Muted)
   Row(Modifier.padding(top=10.dp),verticalAlignment=Alignment.CenterVertically){
    OutlinedButton(onClick=onRetry,shape=RoundedCornerShape(50)){Text("重说")}
    Spacer(Modifier.width(10.dp))
-   Button(onClick=onConfirm,shape=RoundedCornerShape(50)){Text("交给派")}
+   Button(onClick=onConfirm,shape=RoundedCornerShape(50)){Text("交给 Hermes")}
   }
  }else{
   Text("没听清金额",Modifier.padding(top=8.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold,color=Ink)

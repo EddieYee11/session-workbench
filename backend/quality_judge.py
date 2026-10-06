@@ -65,6 +65,14 @@ def review_input(task, evidence):
 
 async def review(task, evidence, state):
     name = 'judge-' + hashlib.sha256((task['id'] + ':' + str(task.get('run_id'))).encode()).hexdigest()[:24]
+    if task.get('agent')=='hermes':
+        from hermes_review import review_json
+        import time
+        try:
+            result=normalize(await review_json(state,name+'-'+str(time.time_ns()),INSTRUCTIONS,review_input(task,evidence),timeout=90))
+            return {**result,'reviewer':'hermes/deepseek-v4-flash','evidence_references':[e['reference'] for e in evidence]}
+        except (ValueError,RuntimeError,OSError,asyncio.TimeoutError):
+            return {'verdict':'unknown','reason':'Hermes 语义评审未取得可靠结论','evidence_gaps':[{'criterion_id':'original_goal','missing_evidence':'待核验最新要求与执行证据'}],'next_steps':['补齐证据后再验收'],'reviewer':'hermes/deepseek-v4-flash'}
     rpc = PiRPC(state, name, Path(state), tools=False, argv=[
         '/usr/local/bin/pi', '--mode', 'rpc', '--provider', 'opencode-go', '--model', 'deepseek-v4.1-flash',
         '--no-context-files', '--no-extensions', '--no-skills', '--no-builtin-tools',

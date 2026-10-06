@@ -12,7 +12,7 @@ import java.net.URL
 /**
  * 快速语音及记账共用的幂等投递链：
  * - transcribe：只转写，输出 transcript；音频转完即删。
- * - send：持久受理后交给原生 Pi（request_id 去重），关掉小窗也不会取消已确认的发送。
+ * - send：持久受理后交给原生 Hermes（request_id 去重），关掉小窗也不会取消已确认的发送。
  */
 class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorker(context,params){
  override suspend fun doWork():Result{
@@ -54,7 +54,7 @@ class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorke
    val saved=JSONObject(receipt.readText())
    // A receipt issued by a previous Hermes build is not permission to replay it
    // through another agent after an app update.
-   check(saved.optString("agent")=="pi"){"这条语音旧版已交给 Hermes，请先核实结果，不会再次交给派。"}
+   check(voiceReceiptAgent(saved.optString("agent"))){"这条语音已有旧版受理回执，请先核实结果，不会重复交办。"}
    validateReceipt(saved,requestId,text)
    return accepted(saved)
   }
@@ -71,16 +71,18 @@ class QuickVoiceDelivery(context:Context,params:WorkerParameters):CoroutineWorke
  }
 
  private fun validateReceipt(receipt:JSONObject,requestId:String,text:String){
-  check(receipt.optString("request_id")==requestId&&receipt.optString("agent")=="pi"&&receipt.optString("text")==text){"派的受理回执不匹配，请重试同一条消息核实。"}
-  check(receipt.optString("message_id").isNotBlank()){"派尚未确认受理这条消息。"}
+  check(receipt.optString("request_id")==requestId&&voiceReceiptAgent(receipt.optString("agent"))&&receipt.optString("text")==text){"Hermes 的受理回执不匹配，请重试同一条消息核实。"}
+  check(receipt.optString("message_id").isNotBlank()){"Hermes 尚未确认受理这条消息。"}
   val status=receipt.optString("status")
-  check(piVoiceAccepted(status)){receipt.optString("error").ifBlank{"派的投递结果待核实，可重试同一条消息查看；不会重复交办。"}}
+  check(piVoiceAccepted(status)){receipt.optString("error").ifBlank{"Hermes 的投递结果待核实，可重试同一条消息查看；不会重复交办。"}}
  }
 
  private fun accepted(receipt:JSONObject)=Result.success(workDataOf(
   "message_id" to receipt.optString("message_id"),"request_id" to receipt.optString("request_id"),
   "status" to receipt.optString("status"),"session_id" to receipt.optString("session_id")))
 }
+
+internal fun voiceReceiptAgent(agent:String)=agent in setOf("hermes","pi")
 
 internal fun piVoiceAccepted(status:String)=status in setOf("accepted","starting","sending","submitted","running","executing","responding","completed")
 

@@ -71,6 +71,17 @@ def worker_result(events, run_id=None):
     return next(reversed(messages.values()), '')[-12000:]
 
 
+def approved_transaction(task):
+    """Scheduling key: an approved ledger deletion does not edit project files."""
+    auth=task.get('authorization') or {}
+    action=auth.get('actual_action') or {}
+    args=action.get('args') or {}
+    if (auth.get('source_message_id') and action.get('tool')=='bookkeeping' and
+            args.get('action')=='delete' and isinstance(args.get('id'),str) and args['id']):
+        return args['id']
+    return None
+
+
 def worker_error(events, run_id=None):
     for event in reversed(events):
         if run_id and event.get('turn_id') != run_id:
@@ -404,8 +415,11 @@ class TaskStore:
             task = json.loads(db.execute('SELECT data FROM tasks WHERE id=?', (tid,)).fetchone()[0])
             if task['status'] in ('execution_finished', 'failed', 'cancelled'):
                 return
+            pending=[dict(r) for r in db.execute("SELECT * FROM inputs WHERE task_id=? AND state NOT IN ('delivered','revoked','blocked_authorization')",(tid,))]
+            requirements_current=not pending
             structured={'execution_status':status,'verification_status':'pending',
                         'summary':result,'artifacts':task.get('artifacts',[]),
+                        'context_revision':task.get('context_revision',1),'latest_requirements_confirmed':requirements_current,
                         'evidence':[{'event_seq':r[0]} for r in db.execute('SELECT seq FROM events WHERE task_id=?',(tid,))],
                         'uncertain':status in ('unknown','uncertain')}
             task.update(status=status, result=result, structured_result=structured,
@@ -416,6 +430,8 @@ class TaskStore:
             self._event(db, tid, 'terminal:' + tid + (':'+str(task.get('run_id')) if previous else ''), status, result)
             label = {'execution_finished':'执行结束，待验收','failed':'执行失败','cancelled':'已取消'}.get(status,'执行状态待核实')
             text = f"任务「{task['title']}」：{label}。\n{result}"
+            if task.get('agent')=='hermes' and not requirements_current:
+                text='最新补充尚未确认被执行器消费，本结果不能作为最新要求的完成证明。\n'+text
             db.execute('INSERT OR REPLACE INTO outbox(task_id,text) VALUES (?,?)', (tid, text))
             for row in db.execute("SELECT request_id FROM inputs WHERE task_id=? AND state IN ('pending_start','queued')",(tid,)).fetchall():
                 db.execute("UPDATE inputs SET state='blocked_state',error=?,updated_at=? WHERE request_id=?",
@@ -429,7 +445,7 @@ class TaskStore:
                 receipt_id=row['task_id']+(':'+str(task.get('run_id')) if task.get('result_round',0)>1 else '')
                 linked=getattr(conversation,'task_receipt_for_message',None)
                 parent=None
-                if linked and task.get('origin_session_id') in ('personal-main','com-personal-main','com-pi-main') and hasattr(conversation,'db'):
+                if linked and task.get('origin_session_id') in ('personal-main','com-personal-main','com-pi-main','com-hermes-main') and hasattr(conversation,'db'):
                     with conversation.db() as source_db:
                         human=source_db.execute("SELECT id FROM messages WHERE id=? AND role='user'",(task.get('origin_message_id'),)).fetchone()
                     if human:parent=human['id']
@@ -460,7 +476,9 @@ class TaskStore:
             summary=json.dumps({'tool':name,'call_id':data.get('toolCallId') or event.get('id'),
                                 'source_seq':event.get('seq',i),'time':event.get('time'),
                                 **({'usage':event.get('usage'),'amount_status':'unknown'} if kind=='usage' else {})},ensure_ascii=False)
-            self.change(task['id'],'native:'+task['id']+':'+str(event.get('seq',i)),kind,summary)
+            # Each resumed worker has its own native event sequence starting at
+            # zero. Qualify it by session so old events cannot block completion.
+            self.change(task['id'],'native:'+task['id']+':'+str(task.get('session_id',''))+':'+str(event.get('seq',i)),kind,summary)
 
     def verify(self,tid,evidence,artifacts=None):
         if not isinstance(evidence,list) or not evidence or any(not isinstance(e,dict) or not e.get('reference') or e.get('passed') is False for e in evidence):
@@ -553,6 +571,11 @@ class TaskController:
             if task['status'] not in ('running', 'waiting', 'cancel_requested','unknown'):
                 continue
             if task['status']=='unknown' and not getattr(self.runtime,'can_reconcile_task',lambda _:False)(task):
+                active=getattr(self.runtime,'task_execution_active',None)
+                observed=await active(task) if active else None
+                if observed is not None and task.get('execution_active') is not observed:
+                    self.store.change(task['id'],'executor-active:'+task['id']+':'+str(time.time_ns()),'execution.activity',
+                        '独立核实原执行器活动；业务结果仍待核实，不重放指令',execution_active=observed)
                 continue
             inspect = getattr(self.runtime, 'task_status', None)
             try:
@@ -560,6 +583,10 @@ class TaskController:
             except Exception:
                 status = 'unknown'
             self.store.observe_events(task,self.runtime.events(task['session_id']))
+            if task.get('agent')=='hermes':
+                for command in task.get('inputs',[]):
+                    if command['state']=='unknown' and getattr(self.runtime,'task_input_state',lambda *_:None)(task,command['request_id'])=='delivered':
+                        self.store.transition_input(command['request_id'],('unknown',),'delivered','原生会话确认已消费补充；恢复回执，不重发')
             if status == 'unknown' and task['status']!='unknown':
                 self.store.change(task['id'],'unavailable:'+task['id'],'execution_unknown',status='unknown',verification_status='uncertain')
             if status in ('running','waiting') and task['status'] != status and task['status'] != 'cancel_requested':
@@ -582,7 +609,8 @@ class TaskController:
     async def start_queued(self):
         """Dispatch separately from the main conversation, at most one new job per tick."""
         tasks = self.store.list()
-        active = [t for t in tasks if t['status'] in ('running','waiting','unknown','dispatching','cancel_requested')]
+        active = [t for t in tasks if t['status'] in ('running','waiting','unknown','dispatching','cancel_requested') and
+                  not (t['status']=='unknown' and t.get('execution_active') is False)]
         if len(active) >= 2:
             for task in tasks:
                 if task['status']=='queued':self.queue_blocked(task,'并发已满，等待现有任务结束或核实状态',[item['id'] for item in active])
@@ -607,8 +635,11 @@ class TaskController:
                 self.queue_blocked(task,'Claude 并发上限为一项',[item['id'] for item in active if item['agent']=='claude'])
                 continue
             # Context isolation is not file isolation. Readers may run together; writers serialize.
-            writers=[t for t in active if (Path(t['cwd']).is_relative_to(Path(task['cwd'])) or Path(task['cwd']).is_relative_to(Path(t['cwd']))) and
-                     (not inspection_task(t) or t['status']=='unknown')]
+            entity=approved_transaction(task)
+            writers=([t for t in active if approved_transaction(t)==entity] if entity else
+                     [t for t in active if (Path(t['cwd']).is_relative_to(Path(task['cwd'])) or
+                      Path(task['cwd']).is_relative_to(Path(t['cwd']))) and
+                      (not inspection_task(t) or t['status']=='unknown')])
             if writers and not inspection_task(task):
                 self.queue_blocked(task,'同目录任务仍在执行或状态待核实，暂不启动可能写入的任务',[item['id'] for item in writers])
                 continue

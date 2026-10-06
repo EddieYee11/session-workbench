@@ -20,7 +20,7 @@ import org.json.JSONObject
   "App ${BuildConfig.VERSION_NAME} / ${BuildConfig.VERSION_CODE}",
   "服务 ${health.optString("version","未读取")} / build ${health.optString("build_commit","未知")}",
   "API 契约 ${health.optInt("api_contract",0)}",
-  "主 Pi 配置：${if(health.optJSONObject("features")?.optBoolean("pi_main")==true)"已选择" else "未核实"}",
+  "主 Hermes 配置：${if(health.optJSONObject("features")?.optBoolean("pi_main")==true)"已选择" else "未核实"}",
   "主线连接：${if(vm.hermesStreaming)"实时连接中" else if(vm.hermesFresh)"已同步" else "未同步"}",
   "工作器权限配置：${health.optString("worker_operation_mode","未核实")}",
   "任务：${sourceReadState(vm.taskLedgerFresh,vm.workProposalsLoading,vm.taskLedger.has("items"),vm.taskLedger.optDouble("synced_at",0.0),vm.taskLedgerError).let{when(it.phase){ReadPhase.Synced->"已同步";ReadPhase.Cached->"缓存";ReadPhase.Loading->"读取中";ReadPhase.Failed->"读取失败";ReadPhase.NotLoaded->"未读取"}+" · "+it.timeLabel}}",
