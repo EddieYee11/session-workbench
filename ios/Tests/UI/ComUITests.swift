@@ -13,6 +13,24 @@ final class ComUITests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+    @MainActor func testRichReplyAndConnectionActions() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-rich-reply", "-appearance", "light"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["今日重点"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["下一步"].exists)
+        capture("rich-agent-bubble", app: app)
+        app.buttons["设置与连接"].tap()
+        app.buttons["管理数据连接"].tap()
+        XCTAssertTrue(app.navigationBars["数据连接"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["未连接"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["已连接"].exists)
+        capture("connection-list", app: app)
+        app.buttons.containing(.staticText, identifier: "GitHub").firstMatch.tap()
+        XCTAssertTrue(app.buttons["断开同步"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["连接"].exists)
+        capture("connected-source-actions", app: app)
+    }
     @MainActor func testNavigationAndScreenshots() throws {
         let app = app()
         XCTAssertTrue(app.buttons["tab-聊天"].waitForExistence(timeout: 15))

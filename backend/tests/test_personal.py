@@ -67,3 +67,32 @@ def test_projection_preserves_scope_and_minor_units():
     assert finance["month_transaction_count"] == 1
     assert finance["month_start"] == "2026-10-01T00:00:00+08:00"
     assert "items" not in finance
+
+
+def test_connector_disconnect_skips_reads_and_reconnect_is_scoped(tmp_path):
+    import asyncio
+    from personal_hub import PersonalHub
+    hub = PersonalHub(tmp_path)
+    calls = []
+    async def read(name):
+        calls.append(name)
+        return {"count": 0}
+    hub.sync_source = read
+    hub.configure("gmail", {"enabled": False})
+    asyncio.run(hub.sync("gmail", force=True))
+    assert calls == []
+    assert next(row for row in hub.status()["sources"] if row["name"] == "gmail")["status"] == "disconnected"
+    hub.configure("gmail", {"enabled": True})
+    asyncio.run(hub.sync("gmail", force=True))
+    assert calls == ["gmail"]
+    assert next(row for row in hub.status()["sources"] if row["name"] == "gmail")["status"] == "connected"
+
+
+def test_connector_toggle_preserves_credentials_without_exposing_them(tmp_path):
+    from personal_hub import PersonalHub
+    hub = PersonalHub(tmp_path)
+    hub.configure("work_mail", {"host": "imap.example.com", "username": "fixture", "password": "test-only"})
+    result = hub.configure("work_mail", {"enabled": False})
+    assert hub.config("work_mail")["password"] == "test-only"
+    assert "password" not in str(result)
+    assert "test-only" not in str(hub.status())

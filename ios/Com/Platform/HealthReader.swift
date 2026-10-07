@@ -55,7 +55,13 @@ import ComCore
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
         return try await withCheckedThrowingContinuation { continuation in
             let query = HKStatisticsQuery(quantityType: type, quantitySamplePredicate: predicate, options: options) { _, result, error in
-                if let error { continuation.resume(throwing: error); return }
+                if let error {
+                    let failure = error as NSError
+                    if failure.domain == HKErrorDomain && failure.code == HKError.Code.errorNoData.rawValue {
+                        continuation.resume(returning: .null)
+                    } else { continuation.resume(throwing: error) }
+                    return
+                }
                 let quantity = options == .cumulativeSum ? result?.sumQuantity() : result?.averageQuantity()
                 continuation.resume(returning: quantity.map { .number($0.doubleValue(for: unit)) } ?? .null)
             }

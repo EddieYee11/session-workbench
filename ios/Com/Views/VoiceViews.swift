@@ -115,18 +115,19 @@ struct VoiceSessionPanel: View {
                 .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: Space.lg) {
                 HStack(spacing: Space.sm) {
-                    Circle().fill(model.voice.phase == .recording ? Palette.coral : Palette.accent).frame(width: 6, height: 6)
-                    Text(model.voice.phase == .recording ? "正在录音" : model.voice.phase == .transcribing ? "正在转写" : "Com 语音").font(TypeScale.footnote).foregroundStyle(.secondary)
+                    StatusDot(tone: model.voice.phase == .recording ? .danger : .accent)
+                    Text(model.voice.phase == .recording ? "正在录音" : model.voice.phase == .transcribing ? "正在转写" : "Com 语音").font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.textSecondary)
                     Spacer()
-                    Text(String(format: "%d:%02d", model.voice.seconds / 60, model.voice.seconds % 60)).font(TypeScale.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(String(format: "%d:%02d", model.voice.seconds / 60, model.voice.seconds % 60)).font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textSecondary)
+                        .padding(.horizontal, Space.sm).padding(.vertical, Space.xxs).background(Palette.fill, in: .capsule)
                 }
                 RhythmicText(text: model.voice.phase == .ready ? model.voice.transcript : title)
-                    .font(model.voice.phase == .ready ? TypeScale.chat : TypeScale.sectionTitle)
+                    .font(model.voice.phase == .ready ? TypeScale.callout : TypeScale.title)
                     .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("voice-rhythmic-text")
                 if model.voice.phase == .ready {
                     TextField("确认语音内容", text: $model.draft, axis: .vertical).lineLimit(1...4)
-                        .font(TypeScale.chat).padding(Space.md).background(Palette.surface.opacity(0.85), in: .rect(cornerRadius: Radius.small))
+                        .font(TypeScale.callout).padding(Space.md).background(Palette.fill.opacity(0.9), in: .rect(cornerRadius: Radius.sm, style: .continuous))
                         .accessibilityIdentifier("voice-transcript-input")
                         .onChange(of: model.draft) { _, _ in model.persistSoon() }
                 } else {
@@ -134,13 +135,13 @@ struct VoiceSessionPanel: View {
                         ForEach(0..<40, id: \.self) { i in
                             let samples = Array(model.voice.levels.suffix(40))
                             let energy = i < samples.count ? samples[i] : 0.02
-                            Capsule().fill(Color.primary.opacity(0.35)).frame(height: max(3, energy * 28))
+                            Capsule().fill(Palette.textPrimary.opacity(0.35)).frame(height: max(3, energy * 28))
                         }
                     }.frame(height: 28).accessibilityHidden(true)
                 }
-                if !model.voice.error.isEmpty { Text(model.voice.error).font(TypeScale.footnote).foregroundStyle(.secondary).lineLimit(3) }
+                if !model.voice.error.isEmpty { Text(model.voice.error).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).lineLimit(3) }
                 HStack {
-                    CircleActionButton(symbol: "xmark", label: "放弃录音") {
+                    CircleActionButton(symbol: "xmark", label: "放弃录音", size: 40) {
                         if model.draft == model.voice.transcript { model.draft = ""; model.persistSoon() }
                         model.voice.cancel()
                         if quick { model.showQuickVoice = false }
@@ -153,11 +154,11 @@ struct VoiceSessionPanel: View {
                             Text(model.voice.phase == .recording ? "完成录音" : model.voice.phase == .ready ? "确认发送" : model.voice.phase == .transcribing ? "转写中" : model.voice.hasCapture ? "重新转写" : "开始录音")
                         }
                     }
-                    .buttonStyle(.limeProminent)
+                    .buttonStyle(.primaryAction)
                     .disabled(model.voice.phase == .transcribing || model.sending || (model.voice.phase == .ready && model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }.buttonStyle(.plain)
             }.padding(Space.lg)
-        }.frame(height: model.voice.phase == .ready ? 260 : 220).clipShape(.rect(cornerRadius: Radius.panel))
+        }.frame(height: model.voice.phase == .ready ? 260 : 220).clipShape(.rect(cornerRadius: Radius.xl, style: .continuous))
     }
     private func primaryAction() {
         if model.voice.phase == .recording {
@@ -176,15 +177,19 @@ struct QuickVoiceView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         VStack(spacing: Space.md) {
-            HStack {
-                Text("Com 语音").font(TypeScale.groupTitle)
+            HStack(spacing: Space.md) {
+                CompanionPortrait(size: 32)
+                Text("Com 语音").font(TypeScale.headline)
                 Spacer()
                 if model.voice.phase != .recording && model.voice.phase != .transcribing {
-                    Button { model.showQuickVoice = false } label: { Image(systemName: "chevron.down").frame(width: 32, height: 32) }.accessibilityLabel("保留录音并收起")
+                    Button { model.showQuickVoice = false } label: {
+                        Image(systemName: "chevron.down").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                            .frame(width: 32, height: 32).background(Palette.fill, in: .circle)
+                    }.buttonStyle(.plain).accessibilityLabel("保留录音并收起")
                 }
-            }.padding(.horizontal, 22).padding(.top, 24)
-            VoiceSessionPanel(quick: true).background(Palette.surface, in: .rect(cornerRadius: Radius.panel)).padding(.horizontal, 12)
-            Text("完成录音后转写，确认内容再发送。").font(TypeScale.footnote).foregroundStyle(.secondary)
+            }.padding(.horizontal, Layout.margin).padding(.top, Space.xl)
+            VoiceSessionPanel(quick: true).background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous)).elevation(.raised).padding(.horizontal, Space.md)
+            Text("完成录音后转写，确认内容再发送。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
             Spacer(minLength: 0)
         }
     }

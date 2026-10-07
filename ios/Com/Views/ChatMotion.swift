@@ -25,9 +25,9 @@ struct OutgoingBubbleFlight: View {
     @State private var progress = 0.0
     var body: some View {
         if let destination = flight.destination {
-            Text(flight.text).font(TypeScale.chat).padding(.horizontal, Space.lg).padding(.vertical, Space.md)
+            Text(flight.text).font(TypeScale.callout).foregroundStyle(Palette.onInk).padding(.horizontal, Space.lg).padding(.vertical, Space.md)
                 .frame(width: destination.width, height: destination.height, alignment: .leading)
-                .background(Palette.surface, in: .rect(cornerRadius: Radius.row))
+                .background(Palette.ink, in: .rect(cornerRadius: Radius.md, style: .continuous))
                 .modifier(FlightPath(origin: flight.origin, destination: destination, progress: progress))
                 .position(x: destination.midX, y: destination.midY)
                 .allowsHitTesting(false).accessibilityHidden(true)
@@ -38,7 +38,7 @@ struct OutgoingBubbleFlight: View {
                     landed()
                 }
         } else {
-            Text(flight.text).font(TypeScale.chat).padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
+            Text(flight.text).font(TypeScale.callout).padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
                 .frame(width: flight.origin.width, height: flight.origin.height, alignment: .leading)
                 .position(x: flight.origin.midX, y: flight.origin.midY)
                 .allowsHitTesting(false).accessibilityHidden(true)
@@ -62,6 +62,14 @@ nonisolated private struct FlightPath: GeometryEffect {
             .rotated(by: -1.5 * .pi / 180 * arc).scaledBy(x: scale, y: scale)
             .translatedBy(x: -size.width / 2, y: -size.height / 2)
         return ProjectionTransform(transform)
+    }
+}
+
+extension View {
+    /// The user's own message: inverted ink bubble. Shared with the send flight.
+    func userBubble() -> some View {
+        foregroundStyle(Palette.onInk).padding(.horizontal, Space.lg).padding(.vertical, Space.md)
+            .background(Palette.ink, in: .rect(cornerRadius: Radius.md, style: .continuous))
     }
 }
 

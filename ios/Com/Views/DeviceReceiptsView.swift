@@ -7,21 +7,21 @@ struct DeviceReceiptsView: View {
     @State private var working = false
     @State private var note = ""
     var body: some View {
-        PageCanvas {
-            if records.isEmpty { Text("暂无本机设备操作回执").font(TypeScale.footnote).foregroundStyle(.secondary) }
-            if !note.isEmpty { Text(note).font(TypeScale.footnote).foregroundStyle(Palette.coral) }
+        ScrollPage(spacing: Space.md) {
+            if records.isEmpty { EmptyState(title: "暂无本机设备操作回执", description: "", symbol: "checkmark.seal") }
+            if !note.isEmpty { InlineNotice(text: note) }
             ForEach(records.map(RemoteRow.init)) { row in
-                RowCard {
+                Card {
                     VStack(alignment: .leading, spacing: Space.md) {
                         HStack {
-                            Text(row.value["tool"].string).font(TypeScale.chat.weight(.semibold))
+                            Text(row.value["tool"].string).font(TypeScale.headline)
                             Spacer()
-                            Text(displayStatus(row.value["status"].string)).font(TypeScale.footnote).foregroundStyle(.secondary)
+                            StatusPill(text: displayStatus(row.value["status"].string), tone: row.value["status"].string == "succeeded" ? .success : statusTone(row.value["status"].string))
                         }
                         RawDetails(title: "回读与操作证据", value: row.value["result"])
                         if row.value["status"].string == "succeeded" && row.value["result"]["verified"].bool && !row.value["result"]["undo"].isNull {
-                            Button { Task { await undo(row.value) } } label: {
-                                Text(row.value["undo_requested"].bool ? "已申请撤销，请核对回执" : "撤销此操作").foregroundStyle(Palette.coral)
+                            Button(role: .destructive) { Task { await undo(row.value) } } label: {
+                                Text(row.value["undo_requested"].bool ? "已申请撤销，请核对回执" : "撤销此操作")
                             }
                             .buttonStyle(.quiet)
                             .disabled(working || row.value["undo_requested"].bool)

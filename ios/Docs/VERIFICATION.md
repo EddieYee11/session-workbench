@@ -63,3 +63,16 @@
 - 发送 UI 检查使用隔离 Debug 数据，模拟受理及延迟快照，没有向 Hermes 提交测试业务。实际服务只读合同检查确认用户消息包含请求 ID；不能把隔离 UI 发送测试当作一次真实 Hermes 执行。
 - 最终真机签名构建成功，02:05 覆盖安装到 Eddie 的 iPhone 17 Pro；02:11 正常启动成功（不带 UI 测试参数），`devicectl` 返回 `Launched application with work.eddie.com bundle identifier.`。真机手持的键盘手感、120Hz 动效、实际说话与后台往返尚未在本轮目视验收。
 - 证据位于 `verification/com-chat-motion/`：`Verified.xcresult`、`Handoff.xcresult`、`Landing.xcresult`、`build-device-landing.log`、`install-device.log`、`launch-device.log`；当前发送录屏为 `send-animation.mp4`，键盘与新回复截图为 `keyboard.png`、`unread.png`。
+
+
+## 2026-10-07 · 方向 D、双向气泡与数据连接
+
+- 应用用户提供的 `0001-iOS-D-App-UI.patch`，统一奶油底色、青柠操作、分组卡片、悬浮底栏和五页布局。App 图标使用 Android 同源 `docs/assets/com-companions-master.png`，导出无透明 1024px 明/暗/着色版本；Hermes 形象按 Android `CrabAvatar.kt` 的像素网格及状态移植，后台/减少动态效果暂停。
+- Agent 回复恢复独立白色气泡；Markdown 标题、略大加粗、列表、引用、代码与段落分层。超长普通中文只在句子边界分段，不删原文、不生成虚假标题。事项详情将主操作、建议、处理标签与更正/来源分区；任务按财务、开发、健康、运动、日程、出行、购物、创作、设计、沟通、研究、事务、提醒区分图标。分类只影响显示，不改变执行器。
+- 工作台提供可输入的工作对话入口，文字带入执行器/模型/项目设置；已有会话继续使用双向气泡。定时卡片折叠正文，显示真实状态/下一次运行/安排（字段存在时）。
+- HealthKit `errorNoData` 改成该指标 `null`，不会中断其他指标；真实读取错误仍明确显示。重复读取锁定按钮，空数据与读权限不可判定保持真实说明。iPhone 的健康权限和具体记录仍需本人授权及手持验收。
+- 数据连接读真实 `/personal/connectors`，中文状态、账号配置、检查/重连/断开同步；密码直接通过认证 TLS 提交，不写入操作回执。服务端 enabled 开关保留历史和原授权，只停止 Com 后续同步；重连只同步所选来源。后端控制测试覆盖断开不读取、限定来源重连、凭据保留与不回显。
+- 模拟器已有核心/UI 12 项全通过；新增长回复标题和连接状态/已连接操作检查 1 项通过。初轮详情返回偶发失败，经针对复跑与完整回归均通过，未据单次失败擅自改变详情实现。证据：`verification/refined-ui.xcresult`、`refined-ui-actions.xcresult` 及导出截图目录。
+- 后端个人来源与眼镜接口受影响测试 14 项通过。mini 只读链路检查：GitHub、苹果日历、Google 日历、账本连接，Gmail/工作邮箱/佳明缺授权，手机日历/健康来源不可用；4 条定时任务可读取。没有宣称全部数据已连接，没有写入测试业务。
+- 快捷语音使用原生 `OpenComVoice` AppIntent，启动时注册 App Shortcuts 参数；设置页提供光效小窗入口和操作按钮绑定说明。模拟器覆盖独立小窗和录音后可编辑转写；真实按键、麦克风、ASR/发送由手持验证。
+- 11:47 最终签名构建安装到 iPhone 17 Pro，11:48 正常启动成功；本轮 App icon/界面安装明确，真机手持录音、操作按钮与健康记录的确认仍保留。快捷指令热启动事件消费后清除冷启动标志，避免下一次打开 App 意外再次录音。

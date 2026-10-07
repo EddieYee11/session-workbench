@@ -9,25 +9,23 @@ struct ShareInboxView: View {
     @State private var note = ""
     var body: some View {
         NavigationStack {
-            PageCanvas {
-                Text("检查后放入聊天草稿。此处不会自动交办。").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
+            ScrollPage(spacing: Space.md) {
+                InlineNotice(text: "检查后放入聊天草稿。此处不会自动交办。", tone: .neutral).padding(.bottom, Space.xs)
                 ForEach(drafts) { draft in
-                    RowCard {
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            if !draft.text.isEmpty { Text(draft.text).font(TypeScale.chat).textSelection(.enabled) }
+                    Card {
+                        VStack(alignment: .leading, spacing: Space.md) {
+                            if !draft.text.isEmpty { Text(draft.text).font(TypeScale.callout).textSelection(.enabled) }
                             ForEach(draft.attachments) { attachment in
-                                Label(attachment.name, systemImage: "paperclip").font(TypeScale.footnote).foregroundStyle(.secondary)
+                                Label(attachment.name, systemImage: "paperclip").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
                             }
-                            HStack(spacing: Space.md) {
-                                Button("加入聊天草稿") { Task { await importDraft(draft) } }.buttonStyle(.limeProminent).disabled(loading || !model.isPaired)
-                                Button { ShareInbox.remove(draft); drafts = ShareInbox.all() } label: {
-                                    Text("丢弃这次分享").foregroundStyle(Palette.coral)
-                                }.buttonStyle(.quiet).disabled(loading)
-                            }
+                            HStack(spacing: Space.lg) {
+                                Button("加入聊天草稿") { Task { await importDraft(draft) } }.buttonStyle(.primaryCompact).disabled(loading || !model.isPaired)
+                                Button("丢弃这次分享", role: .destructive) { ShareInbox.remove(draft); drafts = ShareInbox.all() }.buttonStyle(.quiet).disabled(loading)
+                            }.padding(.top, Space.xs)
                         }
                     }
                 }
-                if !note.isEmpty { Text(note).font(TypeScale.footnote).foregroundStyle(Palette.coral) }
+                if !note.isEmpty { InlineNotice(text: note) }
             }.navigationTitle("分享收件箱").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
         }

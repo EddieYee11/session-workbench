@@ -21,15 +21,17 @@ class PersonalHub:
         with self.db() as d:r=d.execute('SELECT data FROM connector_config WHERE name=?',(name,)).fetchone()
         return json.loads(r[0]) if r else {}
     def configure(self,name,data):
-        if name not in ('work_mail','garmin'):raise ValueError('Unsupported connector settings')
-        allowed={'work_mail':('host','username','password','port'),'garmin':('domain','username','password')}[name]
-        cfg={k:v for k,v in data.items() if k in allowed}
-        if name=='work_mail':
-            if not all(isinstance(cfg.get(k),str) and cfg[k] for k in ('host','username','password')):raise ValueError('需要邮箱服务器、账号和专用密码')
-            if '/' in cfg['host'] or len(cfg['host'])>253:raise ValueError('Invalid mail hostname')
-        if name=='garmin' and cfg.get('domain') not in ('garmin.cn','garmin.com'):raise ValueError('Unsupported Garmin region')
+        if name not in SOURCES:raise ValueError('Unsupported connector settings')
+        if 'enabled' in data and not isinstance(data['enabled'],bool):raise ValueError('enabled must be boolean')
+        allowed={'work_mail':('host','username','password','port'),'garmin':('domain','username','password')}.get(name,())
+        cfg={**self.config(name),**{k:v for k,v in data.items() if k in (*allowed,'enabled')}}
+        if any(k in data for k in allowed):
+            if name=='work_mail':
+                if not all(isinstance(cfg.get(k),str) and cfg[k] for k in ('host','username','password')):raise ValueError('需要邮箱服务器、账号和专用密码')
+                if '/' in cfg['host'] or len(cfg['host'])>253:raise ValueError('Invalid mail hostname')
+            if name=='garmin' and cfg.get('domain') not in ('garmin.cn','garmin.com'):raise ValueError('Unsupported Garmin region')
         with self.db() as d:d.execute('INSERT OR REPLACE INTO connector_config VALUES (?,?)',(name,json.dumps(cfg)))
-        return {'saved':True,'name':name}
+        return {'saved':True,'name':name,'enabled':cfg.get('enabled',True)}
     def matter(self,source,source_id,title,facts,**extra):
         ident='matter_'+hashlib.sha256((source+':'+source_id).encode()).hexdigest()[:24]
         with self.db() as d:
@@ -219,12 +221,13 @@ class PersonalHub:
     async def sync(self,group='all',force=False):
         async with self.lock:
             old={r['name']:r for r in self.status()['sources']}
-            names=['garmin','phone_health'] if group=='health' else [n for n in SOURCES if n not in ('garmin','phone_health')] if group=='mail' else list(SOURCES)
+            names=['garmin','phone_health'] if group=='health' else [n for n in SOURCES if n not in ('garmin','phone_health')] if group=='mail' else [group] if group in SOURCES else list(SOURCES)
             async def one(name):
+                if self.config(name).get('enabled',True) is False:return
                 previous=old.get(name,{})
                 if not force and time.time()-previous.get('attempted_at',0)<SOURCES[name]:return
                 row={**previous,'name':name,'attempted_at':time.time(),'interval_seconds':SOURCES[name]}
-                try:row.update(await self.sync_source(name),status='connected',updated_at=time.time(),error='')
+                try:row.update(await self.sync_source(name),status='connected',updated_at=time.time(),error='',error_type=None)
                 except Exception as e:row.update(status='needs_connection' if name in ('gmail','google_calendar','work_mail','garmin') else 'unavailable',error=str(e)[:170],error_type=type(e).__name__)
                 with self.db() as d:d.execute('INSERT OR REPLACE INTO sources VALUES(?,?)',(name,json.dumps(row,ensure_ascii=False)))
             await asyncio.gather(*(one(n) for n in names))
@@ -232,7 +235,7 @@ class PersonalHub:
             return self.status()
     def status(self):
         with self.db() as d:rows={k:json.loads(v) for k,v in d.execute('SELECT name,data FROM sources')}
-        return {'sources':[rows.get(n,{'name':n,'status':'not_synced','interval_seconds':interval}) for n,interval in SOURCES.items()],
+        return {'sources':[{**rows.get(n,{'name':n,'status':'not_synced','interval_seconds':interval}),**({'status':'disconnected'} if self.config(n).get('enabled',True) is False else {}),'enabled':self.config(n).get('enabled',True)} for n,interval in SOURCES.items()],
                 'connections':{'gmail':{'action':'Google OAuth','required':'在 mini 的既有 gws 授权入口重新授权 Gmail/Calendar'},'work_mail':{'action':'IMAP','fields':['host','username','password','port']},'garmin':{'action':'existing_session','regions':['garmin.cn','garmin.com']}},'timezone':'Asia/Shanghai','morning_at':'09:00'}
     def briefing(self):
         rows=self.matters();now=time.time();cards=[]

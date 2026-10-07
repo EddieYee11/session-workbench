@@ -5,7 +5,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
     case chat = "聊天", today = "今天", tasks = "任务", memory = "记忆", work = "工作"
     var id: String { rawValue }
     var symbol: String {
-        switch self { case .chat: "bubble.left"; case .today: "newspaper"; case .tasks: "checkmark.square"; case .memory: "sparkles"; case .work: "square.grid.2x2" }
+        switch self { case .chat: "bubble.left"; case .today: "newspaper"; case .tasks: "checkmark.square"; case .memory: "brain"; case .work: "square.grid.2x2" }
     }
 }
 
@@ -483,6 +483,14 @@ extension AppModel {
             conversation.messages = (0..<35).map { i in .object(["id": .string("history-\(i)"), "role": .string(i % 2 == 0 ? "user" : "assistant"), "text": .string("历史消息 \(i)。保留阅读位置，也能顺畅查看新消息。"), "created_at": .number(Double(i)), "status": .string("completed")]) }
         }
         datasets["/personal/briefing"] = .object(["cards": fixture["cards"]])
+        if ProcessInfo.processInfo.arguments.contains("--ui-rich-reply") {
+            conversation.messages = [.object(["id": .string("rich-preview"), "role": .string("assistant"), "text": .string("## 今日重点\n\n**先完成核心任务**，再处理零散事项。\n\n### 下一步\n\n- 梳理项目资料\n- 确认交付时间\n\n> 来源与建议分开核对。")])]
+        }
+        datasets["/personal/connectors"] = .object(["sources": .array([
+            .object(["name": .string("gmail"), "status": .string("needs_connection")]),
+            .object(["name": .string("github"), "status": .string("connected")]),
+            .object(["name": .string("garmin"), "status": .string("needs_connection")])
+        ])])
         datasets["/personal/tasks"] = .object(["items": fixture["tasks"]])
         datasets["/personal/memory"] = .object(["items": fixture["memories"], "categories": .array([.string("工作"), .string("兴趣"), .string("关于我")])])
         datasets["/sessions"] = .object(["sessions": fixture["sessions"]])

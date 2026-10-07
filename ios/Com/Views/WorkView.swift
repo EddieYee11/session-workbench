@@ -6,44 +6,70 @@ struct WorkView: View {
     @State private var filter = ""
     @State private var query = ""
     @State private var creating = false
+    @State private var workDraft = ""
     private var sessions: [JSON] { model.datasets["/sessions"]?["sessions"].array ?? [] }
     private var filtered: [JSON] { sessions.filter { (filter.isEmpty || $0["agent"].string == filter) && (query.isEmpty || $0["display_title"].string.localizedCaseInsensitiveContains(query) || $0["cwd"].string.localizedCaseInsensitiveContains(query)) } }
     var body: some View {
-        PageCanvas {
-            PageHeading(title: "工作台", subtitle: "与你一起，把事情做好。")
-            Picker("执行器", selection: $filter) { Text("全部").tag(""); Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
-            HStack {
-                Spacer()
-                CircleActionButton(symbol: "plus", label: "新建工作", filled: true) { creating = true }
+        ScreenScaffold(title: "工作台", freshness: "/sessions") {
+            Card {
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    Text("今天想一起完成什么？").font(TypeScale.title)
+                    Text("选择伙伴，开启一段工作对话。").font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary)
+                    HStack(alignment: .bottom, spacing: Space.sm) {
+                        TextField("描述你的工作…", text: $workDraft, axis: .vertical).lineLimit(1...5).font(TypeScale.callout)
+                        CircleActionButton(symbol: "arrow.up", label: "选择伙伴并开始工作", filled: true, size: 36) { creating = true }
+                            .disabled(workDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }.padding(Space.md).background(Palette.fill, in: .rect(cornerRadius: Radius.lg))
+                    HStack { ForEach(["codex", "claude", "pi"], id: \.self) { agent in
+                        Button { filter = agent; creating = true } label: { Label(agentName(agent), systemImage: agentSymbol(agent)) }.buttonStyle(.quiet)
+                    } }
+                }
             }
-            InlineSearch(text: $query, prompt: "搜索工作与项目")
-            Freshness(path: "/sessions")
+            VStack(alignment: .leading, spacing: Space.md) {
+                Picker("执行器", selection: $filter) { Text("全部").tag(""); Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
+                SearchField(text: $query, prompt: "搜索工作与项目")
+            }
             if filtered.isEmpty { EmptyState(title: "从一个想法开始", description: "创建工作或回看 Mac mini 上的历史会话。", symbol: "terminal") }
             let projects = Dictionary(grouping: filtered) { $0["cwd"].string }
             ForEach(projects.keys.sorted(), id: \.self) { project in
-                Eyebrow(text: URL(fileURLWithPath: project).lastPathComponent)
-                ForEach((projects[project] ?? []).map(RemoteRow.init)) { row in
-                    Button { model.selectedSession = row.value } label: {
-                        RowCard {
-                            HStack(alignment: .top, spacing: Space.lg) {
-                                IconBadge(symbol: "point.3.connected.trianglepath.dotted")
-                                VStack(alignment: .leading, spacing: Space.sm) {
-                                    Text(row.value["display_title"].string.isEmpty ? row.value["title"].string : row.value["display_title"].string).font(TypeScale.chat.weight(.semibold)).lineLimit(2)
-                                    if !row.value["snippet"].string.isEmpty { Text(row.value["snippet"].string).font(TypeScale.footnote).foregroundStyle(.secondary).lineLimit(1) }
-                                    Text(agentName(row.value["agent"].string) + " · " + displayStatus(row.value["status"].string)).font(TypeScale.footnote).foregroundStyle(.tertiary)
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                                if row.value["status"].string == "waiting" { Circle().fill(Palette.coral).frame(width: 6, height: 6).accessibilityLabel("等你回应") }
-                            }
+                GroupSection(URL(fileURLWithPath: project).lastPathComponent) {
+                    GroupedCard(dividerInset: Layout.rowInset) {
+                        ForEach((projects[project] ?? []).map(RemoteRow.init)) { row in
+                            let status = row.value["status"].string
+                            Button { model.selectedSession = row.value } label: {
+                                ListRow(symbol: agentSymbol(row.value["agent"].string), tone: statusTone(status),
+                                        title: row.value["display_title"].string.isEmpty ? row.value["title"].string : row.value["display_title"].string,
+                                        status: agentName(row.value["agent"].string) + " · " + displayStatus(status), statusTone: statusTone(status),
+                                        subtitle: row.value["snippet"].string, subtitleLines: 1) {
+                                    HStack(spacing: Space.sm) {
+                                        if status == "waiting" { StatusDot(tone: .warning).accessibilityLabel("等你回应") }
+                                        Chevron()
+                                    }
+                                }
+                            }.buttonStyle(.row)
                         }
-                    }.buttonStyle(.plain)
+                    }
                 }
             }
-        }.refreshable { await model.refresh(.work) }
-            .sheet(isPresented: $creating) { NewWorkView() }
+        } accessory: {
+            Button { creating = true } label: { Label("新建工作", systemImage: "plus") }.buttonStyle(.primaryCompact)
+        }
+        .refreshable { await model.refresh(.work) }
+        .sheet(isPresented: $creating) { NewWorkView(initialAgent: filter.isEmpty ? "codex" : filter, initialPrompt: workDraft) }
+    }
+}
+
+private func agentSymbol(_ agent: String) -> String {
+    switch agent {
+    case "codex": "chevron.left.forwardslash.chevron.right"
+    case "claude": "sparkle"
+    case "pi": "terminal"
+    default: "point.3.connected.trianglepath.dotted"
     }
 }
 
 struct NewWorkView: View {
+    init(initialAgent: String = "codex", initialPrompt: String = "") { _agent = State(initialValue: initialAgent); _prompt = State(initialValue: initialPrompt) }
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var agent = "codex"
@@ -57,35 +83,41 @@ struct NewWorkView: View {
     @State private var note = ""
     var body: some View {
         NavigationStack {
-            PageCanvas {
-                SurfaceCard {
-                    VStack(alignment: .leading, spacing: Space.md) {
-                        Text("谁来一起做").font(TypeScale.groupTitle)
-                        Picker("执行器", selection: $agent) { Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
+            ScrollPage(spacing: Space.xxl) {
+                GroupSection("谁来一起做") {
+                    Picker("执行器", selection: $agent) { Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
+                }
+                GroupSection("这次想完成什么") {
+                    TextField("工作要求", text: $prompt, axis: .vertical).lineLimit(4...10).font(TypeScale.callout)
+                        .padding(Space.lg).background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous)).elevation(.raised)
+                }
+                GroupSection("项目", footer: directory) {
+                    GroupedCard {
+                        Button { pickingDirectory = true } label: { NavigationRowLabel(title: URL(fileURLWithPath: directory).lastPathComponent, symbol: "folder") }.buttonStyle(.row)
                     }
                 }
-                SurfaceCard {
-                    VStack(alignment: .leading, spacing: Space.md) {
-                        Text("这次想完成什么").font(TypeScale.groupTitle)
-                        TextField("工作要求", text: $prompt, axis: .vertical).lineLimit(4...10)
-                    }
-                }
-                SurfaceCard {
-                    VStack(alignment: .leading, spacing: Space.md) {
-                        Text("项目").font(TypeScale.groupTitle)
-                        Button { pickingDirectory = true } label: { Label(URL(fileURLWithPath: directory).lastPathComponent, systemImage: "folder").font(TypeScale.chat) }
-                        Text(directory).font(TypeScale.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                SurfaceCard {
-                    VStack(alignment: .leading, spacing: Space.md) {
-                        Text("模型").font(TypeScale.groupTitle)
-                        Picker("模型", selection: $selection) { Text("执行器默认").tag(""); ForEach(models.map(RemoteRow.init)) { row in Text(row.value["label"].string.isEmpty ? row.id : row.value["label"].string).tag(row.id) } }
+                GroupSection("模型") {
+                    GroupedCard {
+                        HStack {
+                            Text("模型").font(TypeScale.callout)
+                            Spacer(minLength: Space.sm)
+                            Picker("模型", selection: $selection) { Text("执行器默认").tag(""); ForEach(models.map(RemoteRow.init)) { row in Text(row.value["label"].string.isEmpty ? row.id : row.value["label"].string).tag(row.id) } }
+                                .labelsHidden().tint(Palette.textSecondary)
+                        }.padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
                         let efforts = models.first { $0.id == selection }?["efforts"].array.map(\.string) ?? []
-                        if !efforts.isEmpty { Picker("推理强度", selection: $effort) { Text("默认").tag(""); ForEach(efforts, id: \.self) { Text($0).tag($0) } } }
+                        if !efforts.isEmpty {
+                            HStack {
+                                Text("推理强度").font(TypeScale.callout)
+                                Spacer(minLength: Space.sm)
+                                Picker("推理强度", selection: $effort) { Text("默认").tag(""); ForEach(efforts, id: \.self) { Text($0).tag($0) } }
+                                    .labelsHidden().tint(Palette.textSecondary)
+                            }.padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
+                        }
                     }
                 }
-                if !note.isEmpty { Text(note).font(TypeScale.footnote).foregroundStyle(Palette.coral).frame(maxWidth: .infinity, alignment: .leading) }
+                if !note.isEmpty { InlineNotice(text: note) }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 Button {
                     working = true
                     Task {
@@ -101,11 +133,12 @@ struct NewWorkView: View {
                     HStack(spacing: Space.sm) {
                         if working { ProgressView().tint(Palette.onAccent) } else { Image(systemName: "arrow.up.right") }
                         Text("开始工作")
-                    }.frame(maxWidth: .infinity)
+                    }
                 }
-                .buttonStyle(.limeProminent)
+                .buttonStyle(.primaryFull)
                 .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || working)
-                .opacity(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || working ? 0.5 : 1)
+                .padding(.horizontal, Layout.margin).padding(.top, Space.sm).padding(.bottom, Space.sm)
+                .background(Palette.background)
             }
             .navigationTitle("新工作").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
@@ -113,7 +146,7 @@ struct NewWorkView: View {
                 selection = ""; effort = ""
                 if let data = await model.load("/models?agent=" + agent) { models = data["models"].array }
             }
-            .sheet(isPresented: $pickingDirectory) { DirectoryPicker(path: $directory) }
+            .sheet(isPresented: $pickingDirectory) { DirectoryPicker(path: $directory).presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
         }
     }
 }
@@ -125,27 +158,33 @@ struct DirectoryPicker: View {
     @State private var data: JSON = .null
     var body: some View {
         NavigationStack {
-            PageCanvas {
-                Text(data["path"].string).font(TypeScale.footnote).foregroundStyle(.secondary).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                if !data["parent"].isNull {
-                    Button { Task { await browse(data["parent"].string) } } label: {
-                        RowCard { Label("上一级", systemImage: "arrow.up").font(TypeScale.chat).frame(maxWidth: .infinity, alignment: .leading) }
-                    }.buttonStyle(.plain)
-                }
-                if !data["directories"].array.isEmpty {
-                    Eyebrow(text: "文件夹")
-                    ForEach(data["directories"].array.map(\.string), id: \.self) { directory in
-                        Button { Task { await browse(directory) } } label: {
-                            RowCard { Label(URL(fileURLWithPath: directory).lastPathComponent, systemImage: "folder").font(TypeScale.chat).frame(maxWidth: .infinity, alignment: .leading) }
-                        }.buttonStyle(.plain)
+            ScrollPage {
+                CodeBlock(text: data["path"].string)
+                if !data["parent"].isNull || !data["directories"].array.isEmpty {
+                    GroupSection("文件夹") {
+                        GroupedCard(dividerInset: Layout.rowInset) {
+                            if !data["parent"].isNull {
+                                Button { Task { await browse(data["parent"].string) } } label: {
+                                    ListRow(symbol: "arrow.up", title: "上一级") { EmptyView() }
+                                }.buttonStyle(.row)
+                            }
+                            ForEach(data["directories"].array.map(\.string), id: \.self) { directory in
+                                Button { Task { await browse(directory) } } label: {
+                                    ListRow(symbol: "folder", tone: .info, title: URL(fileURLWithPath: directory).lastPathComponent)
+                                }.buttonStyle(.row)
+                            }
+                        }
                     }
                 }
                 if !data["recent"].array.isEmpty {
-                    Eyebrow(text: "最近使用")
-                    ForEach(data["recent"].array.map(\.string), id: \.self) { directory in
-                        Button { Task { await browse(directory) } } label: {
-                            RowCard { Text(URL(fileURLWithPath: directory).lastPathComponent).font(TypeScale.chat).frame(maxWidth: .infinity, alignment: .leading) }
-                        }.buttonStyle(.plain)
+                    GroupSection("最近使用") {
+                        GroupedCard(dividerInset: Layout.rowInset) {
+                            ForEach(data["recent"].array.map(\.string), id: \.self) { directory in
+                                Button { Task { await browse(directory) } } label: {
+                                    ListRow(symbol: "clock", title: URL(fileURLWithPath: directory).lastPathComponent)
+                                }.buttonStyle(.row)
+                            }
+                        }
                     }
                 }
             }
@@ -178,33 +217,35 @@ struct WorkDetailView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: Space.xl) {
-                        HStack { Pill(text: agentName(metadata["agent"].string), color: Palette.cyan); Spacer(); Text(displayStatus(live["status"].string.isEmpty ? metadata["status"].string : live["status"].string)).font(TypeScale.footnote).foregroundStyle(.secondary) }
-                        Text(metadata["display_title"].string.isEmpty ? metadata["title"].string : metadata["display_title"].string).font(TypeScale.sectionTitle)
-                        if !note.isEmpty { Text(note).font(TypeScale.footnote).foregroundStyle(Palette.coral) }
+                        let liveStatus = live["status"].string.isEmpty ? metadata["status"].string : live["status"].string
+                        DetailHeader(title: metadata["display_title"].string.isEmpty ? metadata["title"].string : metadata["display_title"].string) {
+                            StatusPill(text: agentName(metadata["agent"].string), tone: .accent)
+                            StatusPill(text: displayStatus(liveStatus), tone: statusTone(liveStatus))
+                        }
+                        if !note.isEmpty { InlineNotice(text: note) }
                         if messages.isEmpty { EmptyState(title: "会话已打开", description: "回看历史不会启动执行器。", symbol: "bubble.left") }
                         ForEach(messages.map(RemoteRow.init)) { row in MessageView(message: row.value, sourceSession: currentID).id(row.id) }
                         ForEach(Array(live["approvals"].array.enumerated()), id: \.offset) { _, approval in
                             WorkApprovalCard(approval: approval) { await refresh() }
                         }
                         Color.clear.frame(height: 1).id("work-bottom")
-                    }.padding(20)
-                }.scrollDismissesKeyboard(.interactively)
+                    }.padding(.horizontal, Layout.margin).padding(.top, Space.sm).padding(.bottom, Space.xl)
+                }.scrollDismissesKeyboard(.interactively).scrollIndicators(.hidden).background(Palette.background)
                     .safeAreaInset(edge: .bottom) {
                         VStack(spacing: Space.md) {
                             if metadata["capabilities"]["input"].bool {
-                                HStack(alignment: .bottom, spacing: Space.md) {
-                                    TextField("继续这项工作", text: $draft, axis: .vertical).lineLimit(1...6)
-                                    CircleActionButton(symbol: "arrow.up", label: "发送工作消息", filled: true) { submit() }
+                                HStack(alignment: .bottom, spacing: Space.sm) {
+                                    TextField("继续这项工作", text: $draft, axis: .vertical).font(TypeScale.callout).lineLimit(1...6).padding(.vertical, Space.sm).padding(.leading, Space.sm)
+                                    CircleActionButton(symbol: "arrow.up", label: "发送工作消息", filled: true, size: 36) { submit() }
                                         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                                         .opacity(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1)
                                 }
-                                .padding(Space.lg)
-                                .background(Palette.surface, in: .rect(cornerRadius: Radius.panel))
-                                .shadow(color: .black.opacity(0.06), radius: 14, y: 5)
+                                .padding(Space.sm)
+                                .composerSurface()
                             } else if metadata["capabilities"]["resume"].bool {
-                                Button("恢复此会话输入") { resume() }.buttonStyle(.limeProminent).disabled(sending)
-                            } else { Text("当前为历史回看，执行器暂不支持继续输入。").font(TypeScale.footnote).foregroundStyle(.secondary) }
-                        }.padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
+                                Button("恢复此会话输入") { resume() }.buttonStyle(.primaryFull).disabled(sending)
+                            } else { InlineNotice(text: "当前为历史回看，执行器暂不支持继续输入。", tone: .neutral) }
+                        }.padding(.horizontal, Space.md).padding(.top, Space.xs).padding(.bottom, Space.sm)
                     }
                     .onChange(of: messages) { _, _ in
                         if let target = model.workJumpMessage, messages.contains(where: { $0.id == target }) { proxy.scrollTo(target, anchor: .center); model.workJumpMessage = nil }

@@ -7,7 +7,7 @@ import AppIntents
     var body: some Scene {
         WindowGroup {
             RootView().environment(model)
-                .task { await model.start() }
+                .task { ComShortcuts.updateAppShortcutParameters(); await model.start() }
                 .onChange(of: scenePhase) { _, phase in Task { await model.setActive(phase == .active) } }
                 .onOpenURL { url in
                     guard url.scheme == "com-eddie" else { return }

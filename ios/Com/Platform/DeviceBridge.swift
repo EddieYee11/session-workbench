@@ -15,6 +15,8 @@ import ComCore
     private let location = LocationReader()
     var connected = false
     var note = "仅在 App 使用期间连接手机能力"
+    var readingHealth = false
+    var healthNote = ""
     var healthSync = UserDefaults.standard.bool(forKey: "healthSync")
     var contactsSync = UserDefaults.standard.bool(forKey: "contactsSync")
     private var socket: URLSessionWebSocketTask?
@@ -75,11 +77,16 @@ import ComCore
         await connect()
     }
     func readHealth() async {
+        guard !readingHealth else { return }
+        readingHealth = true; healthNote = ""
+        defer { readingHealth = false }
         do {
             if !UserDefaults.standard.bool(forKey: "healthRequested") { try await health.requestPermission() }
-            model?.localHealth = try await health.summary(days: 1); note = "健康摘要已读取到本机"
+            model?.localHealth = try await health.summary(days: 1)
+            healthNote = model?.localHealth["missing_reason"].string ?? ""
+            if healthNote.isEmpty { healthNote = "最近 24 小时的摘要已更新" }
             await connect()
-        } catch { note = error.localizedDescription; model?.banner = note }
+        } catch { healthNote = "读取未完成：" + error.localizedDescription }
     }
     func connect() async {
         stop()
