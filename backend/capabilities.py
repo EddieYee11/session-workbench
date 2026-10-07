@@ -125,20 +125,27 @@ def manifest() -> list[dict]:
     return items
 
 
-def render() -> str:
-    """供注入主对话的紧凑文本块；拿不到清单返回空串。"""
+CAP_TEXT_LIMIT = 110
+
+
+def render(limit: int = CAP_TEXT_LIMIT) -> str:
+    """供注入主对话的紧凑文本块；拿不到清单返回空串。
+
+    每轮都注入，所以只留标签、id 和一小段关键词；完整触发词与用法交给
+    capability_search 现查，避免把整份清单塞进上下文。
+    """
     items = manifest()
     if not items:
         return ""
     lines = [
-        "本机发现的能力（文件扫描不能证明已加载或可用，调用前查询 capability_search）：",
+        "本机发现的能力（文件扫描不能证明已加载或可用，完整说明用 capability_search 现查；下列只是路由提示）：",
         "· Hermes主线直接使用business_operation及已加载原生工具；默认Hermes后台，独立 Pi / Claude / Codex 按实际需要选择，由运行时健康探测确认可用",
     ]
     for item in items:
-        head = f"· 迁移能力 · {item['label']}"
+        head = f"· {item['label']}"
         if item["label"] != item["id"]:
             head += f"（{item['id']}）"
-        lines.append(f"{head}：{item['text']}")
+        lines.append(f"{head}：{_trim(item['text'], limit)}")
     return "\n".join(lines)
 
 

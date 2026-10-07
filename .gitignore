@@ -27,6 +27,7 @@ verification/
 # Native iOS build products and local signing state.
 ios/.build/
 ios/DerivedData/
+ios/DerivedDataDevice/
 ios/build/
 ios/**/xcuserdata/
 ios/.swiftpm/

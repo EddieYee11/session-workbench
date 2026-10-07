@@ -3,7 +3,8 @@ import CoreGraphics
 import ImageIO
 import CoreImage
 
-// Re-export the same master used by Android, retaining its full square framing.
+// Reuse the Android adaptive icon viewport: 18/108 inset on every side.
+// This is the existing close-up composition, not newly generated artwork.
 let output = URL(fileURLWithPath: CommandLine.arguments[1])
 let source = URL(fileURLWithPath: CommandLine.arguments[2])
 guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
@@ -17,7 +18,10 @@ func render(_ name: String, dark: Bool, tinted: Bool) throws {
     context.setFillColor(CGColor(red: dark ? 0.075 : 247.0/255, green: dark ? 0.075 : 247.0/255, blue: dark ? 0.075 : 249.0/255, alpha: 1))
     context.fill(rect)
     context.interpolationQuality = .high
-    context.draw(artwork, in: rect)
+    let viewport = CGRect(x: CGFloat(artwork.width) / 6, y: CGFloat(artwork.height) / 6,
+                          width: CGFloat(artwork.width) * 2 / 3, height: CGFloat(artwork.height) * 2 / 3)
+    guard let closeUp = artwork.cropping(to: viewport) else { fatalError("Invalid adaptive viewport") }
+    context.draw(closeUp, in: rect)
     if tinted, let original = context.makeImage() {
         let monochrome = CIImage(cgImage: original).applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0])
         if let gray = CIContext().createCGImage(monochrome, from: rect) { context.draw(gray, in: rect) }

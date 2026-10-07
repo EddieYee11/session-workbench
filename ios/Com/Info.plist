@@ -9,10 +9,11 @@
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
 <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+<key>CADisableMinimumFrameDurationOnPhone</key><true/>
 <key>UILaunchScreen</key><dict/>
 <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
-<key>NSMicrophoneUsageDescription</key><string>录制你主动发起的语音，转写后由你确认发送给 Com。</string>
+<key>NSMicrophoneUsageDescription</key><string>录制你主动发起的语音，转写为文字后自动发送给 Com。</string>
 <key>NSHealthShareUsageDescription</key><string>读取你选择的活动、心率、睡眠和运动数据，在今天页展示；同步到你的 Mac mini 需另外开启。</string>
 <key>NSCalendarsFullAccessUsageDescription</key><string>查看日程并完成你明确交办的创建或调整，保留操作回执。</string>
 <key>NSRemindersFullAccessUsageDescription</key><string>查看提醒事项并完成你明确交办的创建或调整。</string>

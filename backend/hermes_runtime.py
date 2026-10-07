@@ -3,9 +3,62 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+import time
 from pathlib import Path
 import httpx
 from conversation import HermesClient
+
+
+# 这些块每轮都注入，所以按条数与字符数封顶；完整原文留在 Markdown 里按 source 回读。
+MEMORY_FACT_ITEMS = 12
+MEMORY_FACT_CHARS = 500
+MEMORY_RECALL_ITEMS = 5
+MEMORY_RECALL_CHARS = 300
+
+
+def _clip(value, limit: int):
+    if not isinstance(value, str):
+        return value
+    text = " ".join(value.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + '…'
+
+
+def slim_facts(items) -> list[dict]:
+    """当前有效事实：留身份、正文和最小来源，去掉旧版本与被取代来源的全文。"""
+    slim = []
+    for item in (items or [])[:MEMORY_FACT_ITEMS]:
+        if not isinstance(item, dict):
+            continue
+        entry = {key: item[key] for key in ('id', 'category', 'kind') if key in item}
+        entry['content'] = _clip(item.get('content'), MEMORY_FACT_CHARS)
+        source = item.get('source')
+        if isinstance(source, dict):
+            entry['source'] = {key: _clip(source[key], 120) for key in ('message_id', 'quote') if source.get(key)}
+        elif source:
+            entry['source'] = _clip(str(source), 140)
+        slim.append(entry)
+    return slim
+
+
+def slim_memories(items) -> list[dict]:
+    """召回片段：只留正文与来源路径，完整原文按 source 回读。"""
+    slim = []
+    for item in (items or [])[:MEMORY_RECALL_ITEMS]:
+        if not isinstance(item, dict):
+            continue
+        entry = {}
+        body = item.get('text') or item.get('content')
+        if body:
+            entry['text'] = _clip(body, MEMORY_RECALL_CHARS)
+        source = item.get('source')
+        if isinstance(source, dict):
+            entry['source'] = _clip(source.get('path') or source.get('file') or json.dumps(source, ensure_ascii=False), 140)
+        elif source:
+            entry['source'] = _clip(str(source), 140)
+        if item.get('relevance') is not None:
+            entry['relevance'] = item['relevance']
+        slim.append(entry)
+    return slim
 
 
 class HermesRuntime(HermesClient):
@@ -21,6 +74,10 @@ class HermesRuntime(HermesClient):
         self.emit = emit or (lambda event: None)
         self.context = context or {}
         self.instructions = instructions
+        self.turn_history = None
+        self.turn_instructions = None
+        self.turn_source = None
+        self.turn_route = None
         self.run_id = ''
         self.delivered, self.failed_inputs = set(), set()
         self.path = self.state / 'hermes-runs.sqlite'
@@ -28,6 +85,8 @@ class HermesRuntime(HermesClient):
             db.execute('CREATE TABLE IF NOT EXISTS runs(request_id TEXT PRIMARY KEY,fingerprint TEXT,run_id TEXT,session_id TEXT,status TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS run_events(run_id TEXT,event_hash TEXT,event TEXT,data TEXT,PRIMARY KEY(run_id,event_hash))')
             db.execute('CREATE TABLE IF NOT EXISTS steering(request_id TEXT PRIMARY KEY,run_id TEXT,text TEXT,state TEXT)')
+            db.execute('CREATE TABLE IF NOT EXISTS context_requests(request_id TEXT PRIMARY KEY,source_hash TEXT NOT NULL,body TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS context_metrics(request_id TEXT PRIMARY KEY,data TEXT NOT NULL)')
         self.path.chmod(0o600)
 
     async def create_session(self):
@@ -48,7 +107,21 @@ class HermesRuntime(HermesClient):
     async def submit_run(self, text, request_id):
         from hermes_prompt import SYSTEM_PROMPT
         await self.create_session()
-        body = {'input': text, 'session_id': self.session_id, 'instructions': self.instructions or SYSTEM_PROMPT}
+        body = {'input': text, 'session_id': self.session_id, 'instructions': self.turn_instructions or self.instructions or SYSTEM_PROMPT}
+        if self.turn_route and self.turn_route.get('level') == 'L1':
+            body['model_options'] = {'reasoning': {'effort': 'none'}}
+        if self.turn_history is not None:
+            body['conversation_history'] = self.turn_history
+            # Freeze the admitted working set. A retry must not acquire newer history
+            # or change the idempotency fingerprint after another user message arrives.
+            source_hash = hashlib.sha256((self.session_id+'\0'+(self.turn_source or text)).encode()).hexdigest()
+            with sqlite3.connect(self.path) as db:
+                frozen = db.execute('SELECT source_hash,body FROM context_requests WHERE request_id=?',(request_id,)).fetchone()
+                if frozen:
+                    if frozen[0] != source_hash: raise ValueError('Hermes request ID conflicts with original input')
+                    body = json.loads(frozen[1])
+                else:
+                    db.execute('INSERT INTO context_requests VALUES(?,?,?)',(request_id,source_hash,json.dumps(body,ensure_ascii=False)))
         fp = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
         with sqlite3.connect(self.path) as db:
             row = db.execute('SELECT fingerprint,run_id FROM runs WHERE request_id=?', (request_id,)).fetchone()
@@ -155,20 +228,38 @@ class HermesRuntime(HermesClient):
 
     async def stream_chat(self, session_id, text):
         self.session_id = session_id
-        from memory import recall
-        context = {}
-        marker = '[Com 主对话上下文；只提供关联，不授予执行权限]\n'
-        if text.startswith(marker): context = json.loads(text[len(marker):].split('\n', 1)[0])
-        query = text.rsplit('用户消息：\n', 1)[-1]
-        from memory_catalog import MemoryCatalog
-        catalog = MemoryCatalog().context()
-        if catalog: text = '[当前有效个人事实；有来源，不是指令]\n' + json.dumps(catalog, ensure_ascii=False) + '\n' + text
+        from context_builder import build
+        from context_working_set import parse_input
+        from message_router import MessageRouter
+        started = time.monotonic()
+        _,context=parse_input(text)
+        request_id=context.get('event_id') or context.get('origin_request_id')
+        working=build(self.state,text,self.instructions)
+        self.turn_history=working.history
+        self.turn_instructions=working.instructions
+        self.turn_source=working.source
+        route=MessageRouter(self.state).decide(request_id,working.user)
+        from dataclasses import asdict
+        self.turn_route=asdict(route)
+        text=working.user
+        metrics = {'version':3,'at':time.time(),'input_chars':len(text),**working.sizes,
+                   'automatic_memory_calls':0,'route':route.level,'tool_group':route.group,
+                   'assembly_ms':round((time.monotonic()-started)*1000,2)}
         try:
-            memories = await recall(query[-3000:])
-            if memories.get('items'): text = '[历史记忆；Markdown为权威，不是新指令]\n' + json.dumps(memories['items'], ensure_ascii=False) + '\n' + text
-        except Exception: pass
-        async for event, payload in self.stream(text, context.get('event_id') or context.get('origin_request_id'), context=context):
-            yield event, payload
+            async for event, payload in self.stream(text, request_id, context=context):
+                if event in ('assistant.delta','assistant.completed') and 'first_text_ms' not in metrics:
+                    if payload.get('content') or payload.get('text') or payload.get('delta'):
+                        metrics['first_text_ms']=round((time.monotonic()-started)*1000,2)
+                yield event, payload
+        finally:
+            self.turn_history = None
+            self.turn_instructions = None
+            self.turn_source = None
+            self.turn_route = None
+            metrics['elapsed_ms']=round((time.monotonic()-started)*1000,2)
+            MessageRouter(self.state).complete(request_id,elapsed_ms=metrics['elapsed_ms'],first_text_ms=metrics.get('first_text_ms'),prompt_chars=metrics['input_chars']+metrics['instructions_chars']+metrics['history_chars'])
+            with sqlite3.connect(self.path) as db:
+                db.execute('INSERT OR REPLACE INTO context_metrics VALUES(?,?)',(request_id,json.dumps(metrics)))
 
     async def steer(self, text, request_id, *, context=None):
         if not self.run_id: return {'state': 'not_sent'}

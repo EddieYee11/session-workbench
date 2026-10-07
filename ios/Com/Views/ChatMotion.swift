@@ -5,8 +5,12 @@ struct ChatFramePreference: PreferenceKey {
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, new in new }) }
 }
 extension View {
-    func chatFrame(_ id: String) -> some View {
-        background(GeometryReader { geometry in Color.clear.preference(key: ChatFramePreference.self, value: [id: geometry.frame(in: .named("chat-stage"))]) })
+    func chatFrame(_ id: String, enabled: Bool = true) -> some View {
+        background {
+            if enabled {
+                GeometryReader { geometry in Color.clear.preference(key: ChatFramePreference.self, value: [id: geometry.frame(in: .named("chat-stage"))]) }
+            }
+        }
     }
 }
 struct OutgoingFlight: Identifiable {

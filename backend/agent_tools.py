@@ -70,8 +70,13 @@ class AgentTools:
                 self.capabilities.observe(tool,state='loaded')
             return {'status':'loaded'}
         if name=='memory_recall':
-            from memory import recall
-            return await recall(args.get('query', ''), args.get('banks'))
+            from memory import recall_on_demand
+            return await recall_on_demand(args.get('query', ''), args.get('banks'))
+        if name=='context_read':
+            from context_working_set import read_history, read_module
+            if args.get('kind')=='module':return read_module(args.get('reference',''))
+            if args.get('kind')=='history':return read_history(self.path.parent,args.get('query',''),args.get('reference',''),args.get('limit',5),args.get('offset',0),args.get('before',''))
+            raise ValueError('Unknown context kind')
         if name=='memory_save':
             row=source(self.conversation,context)
             quote=args.get('source_quote','')

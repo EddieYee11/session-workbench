@@ -44,6 +44,9 @@ enum SectionTab: String, CaseIterable, Identifiable {
     private var streamTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var cacheTask: Task<Void, Never>?
+    private let cacheWriter = AppCacheWriter()
+    private var cacheWriteTask: Task<Void, Never>?
+    private var cacheRevision = 0
     private var lifecycle = 0
     private var started = false
     private var issuing: Set<String> = []
@@ -146,7 +149,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         devices.stop()
         if !value {
             if voice.phase == .recording { voice.finishRecording() }
-            persistNow(); ComNotifications.schedule(); return
+            persistNow(); await cacheWriteTask?.value; ComNotifications.schedule(); return
         }
         showShareInbox = !ShareInbox.all().isEmpty
         if UserDefaults.standard.bool(forKey: "openVoiceIntent") { UserDefaults.standard.set(false, forKey: "openVoiceIntent"); openVoice(quick: true) }
@@ -177,7 +180,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
         diagnose("load-start:" + route)
         do {
             let data = try await api.request(path)
-            datasets[path] = data; fetchedAt[path] = Date(); errors[path] = nil; persistSoon()
+            if !path.hasPrefix("/personal/conversation") { datasets[path] = data }
+            fetchedAt[path] = Date(); errors[path] = nil; persistSoon()
             diagnose("load-finished:" + route)
             return data
         } catch {
@@ -254,19 +258,22 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
         tab = .chat; jumpMessage = id
     }
-    func send(voiceMessage: Bool = false, matter: String? = nil) async {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !sending else { return }
+    func send(voiceMessage: Bool = false, matter: String? = nil, textOverride: String? = nil) async {
+        let text = (textOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, (!sending || voiceMessage) else { return }
         var extra: [String: JSON] = [:]
         if let reference { extra["reference"] = reference }
         if !attachments.isEmpty { extra["attachment_ids"] = .array(attachments.map { .string($0.id) }) }
         if let matter { extra["matter_id"] = .string(matter) }
-        let entry = PendingMessage(text: text, path: "/personal/conversation/messages", extra: extra)
+        let voiceID = voiceMessage ? "voice-" + voice.captureID : nil
+        if let voiceID, pending.contains(where: { $0.id == voiceID }) { return }
+        let entry = PendingMessage(text: text, path: "/personal/conversation/messages", extra: extra, requestID: voiceID)
         pending.append(entry)
         #if DEBUG
         if isUITesting {
             lastSubmittedID = entry.id
-            draft = ""; reference = nil; attachments = []
+            if voiceMessage { voice.cancel(); showQuickVoice = false }
+            if textOverride == nil { draft = "" }; reference = nil; attachments = []
             if ProcessInfo.processInfo.arguments.contains("--ui-send-rejected") {
                 pending[pending.count - 1].state = .rejected; pending[pending.count - 1].note = "测试中的发送未被受理"
                 return
@@ -282,7 +289,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
         do { try SecureVault.save(pending, name: "outbox") }
         catch { pending.removeAll { $0.id == entry.id }; banner = "发送记录保存失败，草稿已保留"; return }
         lastSubmittedID = entry.id
-        draft = ""; reference = nil; attachments = []; persistNow()
+        if voiceMessage { voice.cancel(); showQuickVoice = false }
+        if textOverride == nil { draft = "" }; reference = nil; attachments = []; persistNow()
         await deliver(entry.id)
     }
     func deliver(_ id: String) async {
@@ -295,32 +303,32 @@ enum SectionTab: String, CaseIterable, Identifiable {
             if entry.state != .queued {
                 do {
                     let receipt = try await api.request(entry.receiptPath)
-                    if receipt["status"].string == "unknown" { pending[index].note = "服务端结果待核实，不会重复提交"; return }
-                    pending[index].state = .delivered; pending[index].note = "已受理"
+                    if receipt["status"].string == "unknown" { updatePending(id) { $0.note = "服务端结果待核实，不会重复提交" }; return }
+                    updatePending(id) { $0.state = .delivered }; updatePending(id) { $0.note = "已受理" }
                     await refresh(.chat); return
                 } catch let error as APIError where error.status == 404 {
                     // A main-message submission is transactionally idempotent by request_id.
-                    guard entry.path.hasPrefix("/personal/") else { pending[index].note = "未查到工作回执，请检查会话"; return }
+                    guard entry.path.hasPrefix("/personal/") else { updatePending(id) { $0.note = "未查到工作回执，请检查会话" }; return }
                 }
             }
-            pending[index].state = .checking; pending[index].note = "正在发送"
+            updatePending(id) { $0.state = .checking }; updatePending(id) { $0.note = "正在发送" }
             try SecureVault.save(pending, name: "outbox")
             let receipt = try await api.request(entry.path, body: entry.body)
             diagnose("deliver-receipt:" + receipt["status"].string)
             if receipt["status"].string == "unknown" {
-                pending[index].state = .uncertain; pending[index].note = "送达待核实"
+                updatePending(id) { $0.state = .uncertain }; updatePending(id) { $0.note = "送达待核实" }
             } else if receipt["status"].string == "rejected" {
-                pending[index].state = .rejected; pending[index].note = receipt["error"].string
+                updatePending(id) { $0.state = .rejected }; updatePending(id) { $0.note = receipt["error"].string }
             } else {
-                pending[index].state = .delivered; pending[index].note = "已受理"; Haptics.sent()
+                updatePending(id) { $0.state = .delivered }; updatePending(id) { $0.note = "已受理" }; Haptics.sent()
             }
             await refresh(.chat)
         } catch {
             diagnose("deliver-failed:" + id, error: error)
             if let e = error as? APIError, (400..<500).contains(e.status), e.status != 408, e.status != 429 {
-                pending[index].state = .rejected
-            } else { pending[index].state = .uncertain }
-            pending[index].note = error.localizedDescription
+                updatePending(id) { $0.state = .rejected }
+            } else { updatePending(id) { $0.state = .uncertain } }
+            updatePending(id) { $0.note = error.localizedDescription }
         }
     }
     func recoverOutbox() async {
@@ -346,7 +354,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         do {
             let receipt: JSON
             if entry.state == .queued {
-                pending[index].state = .checking
+                updatePending(id) { $0.state = .checking }
                 try SecureVault.save(pending, name: "outbox")
                 receipt = try await api.request(entry.path, body: entry.body)
             } else {
@@ -354,14 +362,14 @@ enum SectionTab: String, CaseIterable, Identifiable {
                 receipt = try await api.request(entry.receiptPath)
             }
             switch receipt["status"].string {
-            case "accepted": pending[index].state = .delivered; pending[index].note = "已受理"
-            case "rejected": pending[index].state = .rejected; pending[index].note = receipt["error"].string
-            default: pending[index].state = .uncertain; pending[index].note = "结果待核实，不会重复提交"
+            case "accepted": updatePending(id) { $0.state = .delivered }; updatePending(id) { $0.note = "已受理" }
+            case "rejected": updatePending(id) { $0.state = .rejected }; updatePending(id) { $0.note = receipt["error"].string }
+            default: updatePending(id) { $0.state = .uncertain }; updatePending(id) { $0.note = "结果待核实，不会重复提交" }
             }
             await refresh(.work)
             return receipt
         } catch {
-            pending[index].state = .uncertain; pending[index].note = error.localizedDescription
+            updatePending(id) { $0.state = .uncertain }; updatePending(id) { $0.note = error.localizedDescription }
             return nil
         }
     }
@@ -370,7 +378,20 @@ enum SectionTab: String, CaseIterable, Identifiable {
         await setActive(false)
         SecureVault.deleteSecret("token"); api = nil; isPaired = false; streaming = false
     }
+    private func updatePending(_ id: String, _ edit: (inout PendingMessage) -> Void) {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
+        edit(&pending[index])
+    }
     func removeRejected(_ id: String) { pending.removeAll { $0.id == id && $0.state == .rejected }; persistNow() }
+    func restoreRejected(_ id: String) {
+        guard draft.isEmpty, attachments.isEmpty, let entry = pending.first(where: { $0.id == id && $0.state == .rejected }) else { return }
+        draft = entry.text
+        reference = entry.body["reference"].isNull ? nil : entry.body["reference"]
+        attachments = entry.body["attachment_ids"].array.enumerated().map { index, value in
+            .object(["id": value, "name": .string("附件 \(index + 1)")])
+        }
+        removeRejected(id)
+    }
     func mutate(_ path: String, fields: [String: JSON] = [:]) async throws -> JSON {
         guard let api else { throw APIError(status: 0, detail: "请先连接 Mac mini") }
         let body = JSON.object(fields.merging(["request_id": .string(UUID().uuidString.lowercased())]) { a, _ in a })
@@ -392,6 +413,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if quick { showQuickVoice = true }
         #if DEBUG
         if isUITesting {
+            if ProcessInfo.processInfo.arguments.contains("--ui-voice-during-send") { sending = true }
+            voice.captureID = UUID().uuidString.lowercased()
             voice.phase = .recording; voice.seconds = 8; voice.level = 0.8
             voice.levels = (0..<40).map { 0.08 + abs(sin(Double($0) * 0.6)) * 0.75 }
             return
@@ -401,18 +424,33 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if !voice.hasCapture && voice.phase != .transcribing { Task { await voice.start() } }
     }
     func transcribeVoice() async {
+        guard voice.phase != .transcribing && voice.phase != .ready else { return }
+        let capture = voice.captureID
         #if DEBUG
         if isUITesting {
             voice.phase = .transcribing
             try? await Task.sleep(for: .milliseconds(300))
+            guard voice.captureID == capture, voice.phase == .transcribing else { return }
             voice.transcript = "帮我整理今天的安排，再留一点时间去攀岩。"
-            draft = voice.transcript; voice.phase = .ready
-            return
+            voice.phase = .ready
+        } else {
+            guard let api else { banner = "请先连接 Mac mini"; return }
+            await voice.transcribe(using: api)
         }
-        #endif
+        #else
         guard let api else { banner = "请先连接 Mac mini"; return }
         await voice.transcribe(using: api)
-        if !voice.transcript.isEmpty { draft = voice.transcript; persistNow() }
+        #endif
+        guard voice.phase == .ready, voice.captureID == capture, !voice.transcript.isEmpty else { return }
+        // Show the glyph reveal before entering the same durable text-message outbox.
+        let text = voice.transcript
+        try? await Task.sleep(for: .milliseconds(1200))
+        guard !Task.isCancelled, voice.phase == .ready, voice.captureID == capture else { return }
+        await send(voiceMessage: true, textOverride: text)
+        if voice.phase == .ready {
+            voice.error = "发送暂未进入队列，录音已保留，请稍后重试。"
+            voice.phase = .failed
+        }
     }
     func persistSoon() {
         cacheTask?.cancel()
@@ -423,14 +461,17 @@ enum SectionTab: String, CaseIterable, Identifiable {
     }
     func persistNow() {
         guard !isUITesting else { return }
-        do {
-            try SecureVault.save(conversation, name: "conversation")
-            try SecureVault.save(datasets, name: "datasets")
-            try SecureVault.save(fetchedAt, name: "timestamps")
-            try SecureVault.save(pending, name: "outbox")
-            try SecureVault.save(draft, name: "draft")
-            try SecureVault.save(attachments, name: "draft-attachments")
-        } catch { banner = "本地保存失败：" + error.localizedDescription }
+        do { try SecureVault.save(pending, name: "outbox") }
+        catch { banner = "发送记录保存失败：" + error.localizedDescription }
+        cacheRevision += 1
+        let revision = cacheRevision
+        let snapshot = AppCacheSnapshot(conversation: conversation,
+            datasets: datasets.filter { !$0.key.hasPrefix("/personal/conversation") },
+            timestamps: fetchedAt, draft: draft, attachments: attachments)
+        cacheWriteTask = Task { [weak self, cacheWriter] in
+            do { try await cacheWriter.save(snapshot, revision: revision) }
+            catch { self?.banner = "本地保存失败：" + error.localizedDescription }
+        }
     }
 }
 
@@ -487,6 +528,12 @@ extension AppModel {
         conversation.messages = fixture["messages"].array
         if ProcessInfo.processInfo.arguments.contains("--ui-long-chat") {
             conversation.messages = (0..<35).map { i in .object(["id": .string("history-\(i)"), "role": .string(i % 2 == 0 ? "user" : "assistant"), "text": .string("历史消息 \(i)。保留阅读位置，也能顺畅查看新消息。"), "created_at": .number(Double(i)), "status": .string("completed")]) }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--ui-stress-chat") {
+            conversation.messages = (0..<301).map { i in
+                let text = i % 3 == 1 ? "## 回复 \(i)\n\n" + String(repeating: "这一段包含**重点**、上下文与核验说明。长消息也应顺畅阅读。\n\n", count: 12) : "历史消息 \(i)。保持阅读位置，回到最新可可靠到达。"
+                return .object(["id": .string("stress-\(i)"), "role": .string(i % 2 == 0 ? "user" : "assistant"), "text": .string(text), "created_at": .number(Double(i)), "status": .string("completed")])
+            }
         }
         datasets["/personal/briefing"] = .object(["cards": fixture["cards"]])
         if ProcessInfo.processInfo.arguments.contains("--ui-rich-reply") {

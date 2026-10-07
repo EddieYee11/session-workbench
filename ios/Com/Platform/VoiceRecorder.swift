@@ -63,7 +63,7 @@ import ComCore
                     self.levels.append(self.level); if self.levels.count > 48 { self.levels.removeFirst() }
                     let elapsed = Int(Date().timeIntervalSince(started))
                     if elapsed != self.seconds { self.seconds = elapsed; self.saveCapture() }
-                    if elapsed >= 60 { self.finishRecording(); self.error = "已达到 60 秒，录音已暂停。转写后确认发送。"; return }
+                    if elapsed >= 60 { self.finishRecording(); self.error = "已达到 60 秒，录音已保留。"; return }
                 }
             }
         } catch { self.error = error.localizedDescription; phase = .failed }

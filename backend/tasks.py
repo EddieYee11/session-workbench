@@ -250,6 +250,43 @@ class TaskStore:
                 task['inputs'] = [dict(r) for r in db.execute('SELECT * FROM inputs WHERE task_id=? ORDER BY updated_at,request_id', (task['id'],))]
             return tasks
 
+    def context_index(self):
+        """Read only task rows, without loading every event, input or source transcript."""
+        with self.db() as db:
+            tasks=[json.loads(r[0]) for r in db.execute('SELECT data FROM tasks')]
+        active={'queued','paused','dispatching','running','waiting','cancel_requested','unknown','approval_required'}
+        tasks=sorted((t for t in tasks if t.get('status') in active),key=lambda t:t.get('updated_at',t.get('created_at',0)),reverse=True)
+        result=[]
+        for t in tasks[:5]:
+            item={k:t[k] for k in ('id','title','status','agent','verification_status') if k in t}
+            item['next']=str(t.get('block_reason') or t.get('completion_condition') or '')[:120]
+            result.append(item)
+        return result
+
+    def context_for_source(self, message_id='', reference=None):
+        reference=reference or {}
+        with self.db() as db:
+            tasks=[json.loads(r[0]) for r in db.execute('SELECT data FROM tasks')]
+        ids={str(message_id),str(reference.get('id',''))}
+        matches=[t for t in tasks if t.get('message_id') in ids or bool(set(t.get('source_message_ids',[])) & ids) or
+                 str(reference.get('id',''))=='task-result:'+t['id'] or
+                 bool(reference.get('source_session_id') and reference['source_session_id']==t.get('session_id'))]
+        if len(matches)!=1:return None
+        t=matches[0];brief=t.get('work_brief',{})
+        constraints=list(dict.fromkeys(str(x) for x in t.get('constraints',[]) if not readonly_restriction(str(x))))
+        result={'task_id':t['id'],'context_revision':t.get('context_revision',1),
+                'goal':str(brief.get('goal',t.get('title','')))[:250],
+                'latest_instruction':str(brief.get('latest_instruction',''))[:600],
+                'completion_condition':str(t.get('completion_condition',''))[:200],
+                'constraints':constraints,'detail_tool':'task_status'}
+        if len(json.dumps(result,ensure_ascii=False))>2000:
+            result['constraints']=[];result['truncated']=True
+            for constraint in constraints:
+                trial={**result,'constraints':[*result['constraints'],constraint]}
+                if len(json.dumps(trial,ensure_ascii=False))>2000:break
+                result=trial
+        return result
+
     def context(self):
         """Prioritize active work and bound context without losing the newest assignments."""
         tasks = sorted(self.list(), key=lambda t:(t['status'] in ('queued','paused','dispatching','running','waiting','cancel_requested','unknown','approval_required'), t.get('updated_at', t.get('created_at',0))), reverse=True)[:30]

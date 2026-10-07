@@ -40,8 +40,8 @@ public struct PendingMessage: Identifiable, Codable, Sendable, Equatable {
     public var state: DeliveryState
     public var note: String
     public var createdAt: Date
-    public init(text: String, path: String = "/personal/conversation/messages", extra: [String: JSON] = [:]) {
-        id = UUID().uuidString.lowercased(); self.text = text; self.path = path
+    public init(text: String, path: String = "/personal/conversation/messages", extra: [String: JSON] = [:], requestID: String? = nil) {
+        id = requestID ?? UUID().uuidString.lowercased(); self.text = text; self.path = path
         body = .object(extra.merging(["request_id": .string(id), "text": .string(text)]) { _, b in b })
         state = .queued; note = "等待发送"; createdAt = Date()
     }

@@ -3,6 +3,29 @@ import Security
 import CryptoKit
 import ComCore
 
+struct AppCacheSnapshot: Sendable {
+    let conversation: ConversationState
+    let datasets: [String: JSON]
+    let timestamps: [String: Date]
+    let draft: String
+    let attachments: [JSON]
+}
+
+/// Serialization, encryption and disk IO run on this actor, never the UI actor.
+/// The outbox is deliberately excluded: its write-before-send barrier is synchronous.
+actor AppCacheWriter {
+    private var savedRevision = 0
+    func save(_ snapshot: AppCacheSnapshot, revision: Int) throws {
+        guard revision > savedRevision else { return }
+        try SecureVault.save(snapshot.conversation, name: "conversation")
+        try SecureVault.save(snapshot.datasets, name: "datasets")
+        try SecureVault.save(snapshot.timestamps, name: "timestamps")
+        try SecureVault.save(snapshot.draft, name: "draft")
+        try SecureVault.save(snapshot.attachments, name: "draft-attachments")
+        savedRevision = revision
+    }
+}
+
 enum SecureVault {
     static let service = "work.eddie.com"
     static var directory: URL {
@@ -38,7 +61,9 @@ enum SecureVault {
         return files.filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "sealed" }.compactMap { try? load(JSON.self, name: $0.deletingPathExtension().lastPathComponent) }
     }
     static func operationRecords() -> [JSON] { records(prefix: "operation-") }
+    private static let keyLock = NSLock()
     private static func key() throws -> SymmetricKey {
+        keyLock.lock(); defer { keyLock.unlock() }
         if let data = secret("cache-key") { return SymmetricKey(data: data) }
         let key = SymmetricKey(size: .bits256)
         try storeSecret(key.withUnsafeBytes { Data($0) }, account: "cache-key"); return key

@@ -17,16 +17,38 @@ struct ChatView: View {
     @State private var followKeyboard = false
     @State private var composing = false
     @State private var manuallyReading = false
-    private var rows: [ChatTimelineRow] { ChatTimeline.rows(messages: model.conversation.messages, pending: model.pending) }
+    @State private var interacting = false
+    @State private var followLatest = true
+    @State private var timeline: [ChatTimelineRow] = []
+    @State private var historyWindow = 30
+    @State private var scrollPosition = ScrollPosition(idType: String.self)
+    @State private var positioned = false
+    @State private var viewport = ChatViewport()
+    private var rows: [ChatTimelineRow] { Array(timeline.suffix(historyWindow)) }
     private var assistants: Set<String> { Set(model.conversation.messages.filter { $0["role"].string == "assistant" }.map(\.id)) }
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
+            ZStack(alignment: .bottomTrailing) {
             ScrollView {
-                LazyVStack(spacing: Space.xl) {
-                    if model.moreHistory && !model.conversation.messages.isEmpty {
+                VStack(spacing: Space.xl) {
+                    if (historyWindow < timeline.count || model.moreHistory) && !model.conversation.messages.isEmpty {
                         Button(historyLoading ? "正在读取…" : "更早的对话") {
-                            historyLoading = true; Task { await model.loadHistory(); historyLoading = false }
+                            followLatest = false; manuallyReading = true
+                            let anchor = rows.first(where: { viewport.visibleRows.contains($0.id) })?.id
+                            historyLoading = true
+                            Task {
+                                if historyWindow < timeline.count {
+                                    historyWindow += 30
+                                } else {
+                                    let count = timeline.count
+                                    await model.loadHistory()
+                                    historyWindow += max(0, model.conversation.messages.count - count)
+                                }
+                                await Task.yield()
+                                if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+                                historyLoading = false
+                            }
                         }.buttonStyle(.secondaryAction).disabled(historyLoading)
                     }
                     if model.conversation.messages.isEmpty && rows.isEmpty {
@@ -38,31 +60,49 @@ struct ChatView: View {
                     }
                     ForEach(rows) { row in
                         MessageView(message: row.message, layoutID: row.id, flying: flights[row.id] != nil, pending: row.pending)
+                            .equatable()
                             .id(row.id)
                             .transition(.asymmetric(
                                 insertion: reduce ? .opacity : .scale(scale: 0.96).combined(with: .offset(y: 8)).combined(with: .opacity),
                                 removal: .opacity
                             ))
-                            .animation(reduce ? nil : .spring(duration: 0.38, bounce: 0.18), value: rows.count)
+
                     }
                     if model.busy {
                         LoadingState(text: model.activeRuns.first?["phase"].string ?? "处理中")
                     }
                     Color.clear.frame(height: 1).id("latest")
-                }.padding(.horizontal, Layout.margin).padding(.top, Space.sm).padding(.bottom, Space.md)
+                }.scrollTargetLayout().padding(.horizontal, Layout.margin).padding(.top, Space.sm).padding(.bottom, Space.md)
             }
-            .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .alignment)
+            .scrollPosition($scrollPosition)
+            .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { viewport.visibleRows = $0 }
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: Bool.self) { g in g.contentSize.height - g.visibleRect.maxY < 70 } action: { _, near in
+            .onScrollGeometryChange(for: Bool.self) { g in g.contentSize.height + g.contentInsets.bottom - g.visibleRect.maxY < 70 } action: { _, near in
                 atBottom = near
-                if near { unread = [] }
+                if near {
+                    unread = []
+                }
             }
             .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { old, new in
-                if !manuallyReading && (followKeyboard || composing) && old.height != new.height { proxy.scrollTo("latest", anchor: .bottom) }
+                if followLatest && !interacting && old.height != new.height {
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard followLatest && !interacting else { return }
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
+                }
             }
             .onScrollPhaseChange { _, phase in
-                if phase == .tracking || phase == .interacting { manuallyReading = true; followKeyboard = false }
+                if phase == .interacting || phase == .decelerating || phase == .animating { viewport.frames.start() }
+                else if phase == .idle { viewport.frames.stop() }
+                interacting = phase == .tracking || phase == .interacting || phase == .decelerating
+                if phase == .tracking || phase == .interacting {
+                    manuallyReading = true; followKeyboard = false; followLatest = false
+                }
+                if phase == .idle && atBottom { followLatest = true; manuallyReading = false }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
                 guard !manuallyReading else { return }
@@ -71,12 +111,17 @@ struct ChatView: View {
                 let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
                 Task { @MainActor in
                     await Task.yield()
-                    withAnimation(.easeOut(duration: duration)) { proxy.scrollTo("latest", anchor: .bottom) }
+                    guard followKeyboard && !manuallyReading && !interacting else { return }
+                    withAnimation(.easeOut(duration: duration)) { scrollPosition.scrollTo(edge: .bottom) }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
                 if followKeyboard {
-                    Task { @MainActor in await Task.yield(); proxy.scrollTo("latest", anchor: .bottom) }
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard !manuallyReading && !interacting && followLatest else { return }
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
                 }
                 followKeyboard = false
             }
@@ -84,7 +129,13 @@ struct ChatView: View {
                 let new = assistants.subtracting(knownAssistants)
                 knownAssistants = assistants
                 if !historyLoading && !atBottom { unread.formUnion(new) }
-                if atBottom && !historyLoading { proxy.scrollTo("latest", anchor: .bottom) }
+                if followLatest && !interacting && !historyLoading {
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard followLatest && !interacting && !historyLoading else { return }
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
+                }
             }
             .onChange(of: model.lastSubmittedID) { _, id in
                 guard let id, let entry = model.pending.first(where: { $0.id == id }) else { return }
@@ -92,10 +143,10 @@ struct ChatView: View {
                 if !reduce, let origin = frames["composer"], origin.width > 0 {
                     flights[key] = OutgoingFlight(id: key, text: entry.text, origin: origin.insetBy(dx: -18, dy: -7))
                 }
-                unread = []; atBottom = true; manuallyReading = false
+                unread = []; atBottom = true; manuallyReading = false; followLatest = true; interacting = false
                 Task { @MainActor in
                     await Task.yield()
-                    proxy.scrollTo("latest", anchor: .bottom)
+                    scrollPosition.scrollTo(edge: .bottom)
                     // Resolve the landing after the scroll/layout transaction,
                     // rather than targeting the row's old offscreen position.
                     try? await Task.sleep(for: .milliseconds(50))
@@ -108,26 +159,55 @@ struct ChatView: View {
             }
             .onChange(of: model.jumpMessage) { _, id in
                 guard let id else { return }
-                let target = rows.first(where: { $0.message.id == id })?.id ?? id
-                withAnimation(reduce ? nil : .smooth(duration: 0.25)) { proxy.scrollTo(target, anchor: .center) }
+                followLatest = false; manuallyReading = true
+                rebuildTimeline()
+                if let index = timeline.firstIndex(where: { $0.message.id == id }) {
+                    historyWindow = max(historyWindow, timeline.count - index)
+                }
+                let target = timeline.first(where: { $0.message.id == id })?.id ?? id
+                Task { @MainActor in
+                    await Task.yield()
+                    withAnimation(reduce ? nil : .smooth(duration: 0.25)) { proxy.scrollTo(target, anchor: .center) }
+                }
                 model.jumpMessage = nil
             }
-            .onAppear { knownAssistants = assistants; proxy.scrollTo("latest", anchor: .bottom) }
-            .overlay(alignment: .bottomTrailing) {
+            .onAppear {
+                knownAssistants = assistants
+                if !positioned {
+                    positioned = true
+                    Task { @MainActor in
+                        await Task.yield()
+                        guard followLatest && !interacting else { return }
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
+                }
+            }
+            .onChange(of: model.conversation.messages, initial: true) { _, _ in rebuildTimeline() }
+            .onChange(of: model.pending) { _, _ in rebuildTimeline() }
                 if !atBottom {
                     Button {
-                        unread = []; manuallyReading = false
-                        withAnimation(reduce ? nil : .spring(duration: 0.28, bounce: 0.06)) { proxy.scrollTo("latest", anchor: .bottom) }
+                        manuallyReading = false; followLatest = true; interacting = false
+                        // This sibling button sits outside text selection and scroll hit testing.
+                        // Animate the measured edge of this fully laid-out page.
+                        Task { @MainActor in
+                            await Task.yield()
+                            withAnimation(reduce ? nil : .easeInOut(duration: 0.48)) {
+                                scrollPosition.scrollTo(edge: .bottom)
+                            }
+                        }
                     } label: {
                         HStack(spacing: Space.sm) { if !unread.isEmpty { Text("\(unread.count) 条新回复").font(TypeScale.footnote.weight(.semibold)) }; Image(systemName: "arrow.down").font(TypeScale.footnote.weight(.semibold)) }
-                            .foregroundStyle(Palette.textPrimary).padding(.horizontal, Space.md + 2).padding(.vertical, Space.md - 2)
-                    }.floatingGlass(.capsule)
-                        .buttonStyle(MessagePressStyle()).padding(Space.lg).accessibilityLabel(unread.isEmpty ? "回到最新消息" : "\(unread.count) 条新回复，回到最新消息")
+                            .foregroundStyle(Palette.textPrimary)
+                            .frame(minWidth: 44, minHeight: 44).padding(.horizontal, Space.sm)
+                            .background(.regularMaterial, in: Capsule())
+                            .contentShape(Rectangle())
+                    }
+                        .buttonStyle(.plain).zIndex(1).padding(Space.lg).accessibilityIdentifier("chat-jump-latest").accessibilityLabel(unread.isEmpty ? "回到最新消息" : "\(unread.count) 条新回复，回到最新消息")
                 }
             }
             ComposerView(focusChanged: { focused in
                 composing = focused; followKeyboard = focused || atBottom
-                if focused { manuallyReading = false }
+                if focused && atBottom { manuallyReading = false; followLatest = true }
             }).padding(.horizontal, Space.md).padding(.top, Space.xs).padding(.bottom, Space.sm)
             }
         }
@@ -137,7 +217,7 @@ struct ChatView: View {
         .toolbar { ToolbarItem(placement: .principal) { CompanionTitle() } }
         .coordinateSpace(name: "chat-stage")
         .onPreferenceChange(ChatFramePreference.self) { values in
-            frames = values
+            if frames != values { frames = values }
             for key in Array(flights.keys) {
                 if flights[key]?.layoutReady == true && flights[key]?.destination == nil, let target = values[key] { flights[key]?.destination = target }
             }
@@ -147,7 +227,8 @@ struct ChatView: View {
                 ForEach(Array(flights.values)) { flight in OutgoingBubbleFlight(flight: flight) { flights.removeValue(forKey: flight.id) } }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).allowsHitTesting(false)
         }
-        .onChange(of: model.active) { _, active in if !active { flights = [:] } }
+        .onDisappear { viewport.frames.stop() }
+        .onChange(of: model.active) { _, active in if !active { flights = [:]; viewport.frames.stop() } }
         .onChange(of: reduce) { _, enabled in if enabled { flights = [:] } }
         .refreshable { await model.refresh(.chat) }
         #if DEBUG
@@ -158,9 +239,29 @@ struct ChatView: View {
         }
         #endif
     }
+    private func rebuildTimeline() {
+        let next = ChatTimeline.rows(messages: model.conversation.messages, pending: model.pending)
+        if next != timeline {
+            // A new reply must not evict the first rendered row and shift the reader.
+            // Grow this mounted page from its stable first identity; older pages load explicitly.
+            if let first = rows.first?.id, let index = next.firstIndex(where: { $0.id == first }) {
+                historyWindow = max(historyWindow, next.count - index)
+            }
+            timeline = next
+        }
+    }
 }
 
-struct MessageView: View {
+@MainActor private final class ChatViewport {
+    var visibleRows: [String] = []
+    let frames = ScrollFrameMonitor()
+}
+
+struct MessageView: View, Equatable {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.message == rhs.message && lhs.sourceSession == rhs.sourceSession &&
+        lhs.layoutID == rhs.layoutID && lhs.flying == rhs.flying && lhs.pending == rhs.pending
+    }
     @Environment(AppModel.self) private var model
     let message: JSON
     var sourceSession = "personal-main"
@@ -181,7 +282,7 @@ struct MessageView: View {
             }
             if user {
                 Text(text).font(TypeScale.callout).textSelection(.enabled).userBubble()
-                    .chatFrame(layoutID ?? message.id).opacity(flying ? 0 : 1)
+                    .chatFrame(layoutID ?? message.id, enabled: flying).opacity(flying ? 0 : 1)
                     .accessibilityIdentifier("chat-bubble-" + message.id)
             } else {
                 VStack(alignment: .leading, spacing: Space.sm) {
@@ -238,7 +339,7 @@ struct MessageView: View {
                 if pending.state == .checking { ProgressView().controlSize(.mini) }
                 Text(pending.state == .delivered ? "已受理 · 正在同步" : pending.note).font(TypeScale.footnote).foregroundStyle(pending.state == .rejected ? Palette.danger : Palette.textSecondary)
                 if pending.state == .uncertain { Button("查回执") { Task { await model.deliver(pending.id) } }.buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold)) }
-                if pending.state == .rejected && model.draft.isEmpty { Button("回到草稿") { model.draft = pending.text; model.reference = pending.body["reference"].isNull ? nil : pending.body["reference"]; model.removeRejected(pending.id) }.buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold)) }
+                if pending.state == .rejected && model.draft.isEmpty && model.attachments.isEmpty { Button("回到草稿") { model.restoreRejected(pending.id) }.buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold)) }
             }
         } else if !message["status"].string.isEmpty {
             let status = message["status"].string
@@ -294,7 +395,7 @@ struct ComposerView: View {
                         }.disabled(uploading).accessibilityLabel("附件与成果")
                         TextField("发消息", text: $model.draft, axis: .vertical).font(TypeScale.callout).lineLimit(1...6).focused($focused).padding(.vertical, Space.sm).accessibilityIdentifier("message-input").chatFrame("composer")
                         if model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Button { focused = false; model.openVoice() } label: { Image(systemName: "mic").font(.system(size: 20, weight: .medium)).foregroundStyle(Palette.textSecondary).frame(width: 36, height: 36) }.accessibilityLabel("开始语音")
+                            Button { focused = false; model.openVoice() } label: { Image(systemName: "mic").font(.system(size: 20, weight: .medium)).foregroundStyle(Palette.textSecondary).frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).contentShape(Rectangle()).accessibilityIdentifier("chat-voice-start").accessibilityLabel("开始语音")
                         } else {
                             CircleActionButton(symbol: "arrow.up", label: "发送消息", filled: true, size: 36) {
                                 let fromVoice = model.voice.phase == .ready

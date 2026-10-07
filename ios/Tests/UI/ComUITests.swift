@@ -163,18 +163,37 @@ final class ComUITests: XCTestCase {
         capture("shared-memory-detail", app: app)
     }
 
-    @MainActor func testInlineVoiceAndEditableTranscript() throws {
+    @MainActor func testInlineVoiceAutomaticallySendsOneTextMessage() throws {
         let app = app()
         XCTAssertTrue(app.buttons["开始语音"].waitForExistence(timeout: 15))
         app.buttons["开始语音"].tap()
         XCTAssertTrue(app.staticTexts["正在录音"].waitForExistence(timeout: 5))
-        capture("08-inline-voice", app: app)
         app.buttons["完成录音"].tap()
-        XCTAssertTrue(app.textFields["voice-transcript-input"].waitForExistence(timeout: 5) || app.textViews["voice-transcript-input"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["确认发送"].exists)
-        capture("09-voice-transcript", app: app)
-        app.buttons["放弃录音"].tap()
-        XCTAssertTrue(app.buttons["开始语音"].waitForExistence(timeout: 5))
+        let text = "帮我整理今天的安排，再留一点时间去攀岩。"
+        XCTAssertTrue(app.staticTexts["voice-rhythmic-text"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["确认发送"].exists)
+        XCTAssertTrue(app.buttons["开始语音"].waitForExistence(timeout: 8))
+        let bubbles = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "chat-bubble-", text))
+        XCTAssertEqual(bubbles.count, 1)
+        sleep(2)
+        XCTAssertEqual(bubbles.count, 1, "The accepted reply must replace the same voice outbox entry")
+        capture("voice-auto-sent", app: app)
+    }
+
+    @MainActor func testVoiceCanFinishWhilePreviousTextIsSending() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-voice-during-send"]
+        app.launch()
+        XCTAssertTrue(app.buttons["开始语音"].waitForExistence(timeout: 15))
+        app.buttons["开始语音"].tap()
+        let finish = app.buttons["完成录音"]
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        XCTAssertTrue(finish.isEnabled)
+        finish.tap()
+        let text = "帮我整理今天的安排，再留一点时间去攀岩。"
+        let bubbles = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "chat-bubble-", text))
+        let sent = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in bubbles.count == 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [sent], timeout: 8), .completed)
     }
 
     @MainActor func testQuickVoiceWindow() throws {
@@ -182,15 +201,26 @@ final class ComUITests: XCTestCase {
         app.launchArguments += ["--ui-testing", "--ui-quick-voice", "-appearance", "light"]
         app.launch()
         XCTAssertTrue(app.staticTexts["正在录音"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["完成录音"].exists)
-        XCTAssertFalse(app.buttons["确认发送"].exists)
-        capture("10-action-button-voice", app: app)
         app.buttons["完成录音"].tap()
-        XCTAssertTrue(app.buttons["确认发送"].waitForExistence(timeout: 5))
-        app.buttons["保留录音并收起"].tap()
-        XCTAssertTrue(app.buttons["tab-聊天"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["确认发送"].exists)
-        capture("11-preserved-transcript", app: app)
+        XCTAssertFalse(app.buttons["确认发送"].exists)
+        XCTAssertTrue(app.buttons["tab-聊天"].waitForExistence(timeout: 8))
+        let text = "帮我整理今天的安排，再留一点时间去攀岩。"
+        let bubbles = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "chat-bubble-", text))
+        let sent = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in bubbles.count == 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [sent], timeout: 8), .completed)
+        XCTAssertEqual(bubbles.count, 1)
+        capture("quick-voice-auto-sent", app: app)
+    }
+
+    @MainActor func testCancelledVoiceNeverSendsLateTranscript() throws {
+        let app = app()
+        XCTAssertTrue(app.buttons["开始语音"].waitForExistence(timeout: 15))
+        app.buttons["开始语音"].tap()
+        app.buttons["完成录音"].tap()
+        app.buttons["放弃录音"].tap()
+        sleep(2)
+        let bubbles = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "chat-bubble-", "帮我整理今天的安排，再留一点时间去攀岩。"))
+        XCTAssertEqual(bubbles.count, 0)
     }
 
     @MainActor func testKeyboardLiftsTimelineAndSendKeepsOneBubble() throws {
@@ -231,6 +261,55 @@ final class ComUITests: XCTestCase {
         jump.tap()
         XCTAssertTrue(app.staticTexts["新的回复已经到达，阅读位置保留。"].waitForExistence(timeout: 5))
         XCTAssertFalse(jump.exists)
+    }
+
+    @MainActor func testLongMarkdownScrollReturnsToLatest() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-stress-chat", "--ui-incoming-control", "-appearance", "light"]
+        app.launch()
+        let last = app.staticTexts["chat-bubble-stress-300"]
+        XCTAssertTrue(last.waitForExistence(timeout: 15))
+        for _ in 0..<4 { app.swipeDown(velocity: .fast) }
+        let jump = app.buttons["chat-jump-latest"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(jump.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(jump.frame.height, 44)
+        jump.tap()
+        let returned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            last.exists && last.isHittable && !jump.exists
+        }, object: nil)
+        let result = XCTWaiter.wait(for: [returned], timeout: 5)
+        capture("stress-first-return", app: app)
+        XCTAssertEqual(result, .completed)
+        app.swipeDown(); app.swipeDown()
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        app.buttons["模拟新回复"].tap()
+        XCTAssertTrue(jump.exists, "Incoming data must not pull the reader away from history")
+        jump.tap()
+        let reply = app.staticTexts["新的回复已经到达，阅读位置保留。"]
+        let arrived = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in reply.exists && reply.isHittable && !jump.exists }, object: nil)
+        let arrivedResult = XCTWaiter.wait(for: [arrived], timeout: 5)
+        XCTAssertEqual(arrivedResult, .completed)
+        capture("stress-latest-visible", app: app)
+    }
+
+    @MainActor func testReadingAnchorDoesNotMoveAfterLayoutOrIncomingReply() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-stress-chat", "--ui-incoming-control", "-appearance", "light"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["chat-bubble-stress-300"].waitForExistence(timeout: 15))
+        app.swipeDown(velocity: .slow); app.swipeDown(velocity: .slow)
+        let bubbles = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat-bubble-stress-"))
+        let anchor = try XCTUnwrap(bubbles.allElementsBoundByIndex.first { $0.isHittable && $0.frame.maxY > 200 && $0.frame.minY < 700 })
+        let id = anchor.identifier
+        let y = anchor.frame.minY
+        // No finger input: neither deferred Markdown layout nor incoming data may move this row.
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertEqual(app.staticTexts[id].frame.minY, y, accuracy: 2)
+        app.buttons["模拟新回复"].tap()
+        XCTAssertTrue(app.buttons["chat-jump-latest"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts[id].frame.minY, y, accuracy: 2)
+        capture("stable-reading-anchor", app: app)
     }
 
     @MainActor func testRejectedSendReturnsToDraft() throws {

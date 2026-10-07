@@ -163,6 +163,9 @@ class BusinessTools:
     async def calendar(self, args):
         script = self.home / '.hermes/skills/apple/macos-calendar/scripts/calendar.sh'
         action = args.get('action')
+        if action == 'list':
+            from calendar_bridge import CalendarBridge
+            return {'items':await CalendarBridge(self.home).read(args['start_date'],args['end_date']),'source':'Apple Calendar'}
         if action == 'list_calendars': command, body = 'list-calendars', b''
         elif action == 'create':
             if not args.get('summary') or not args.get('date'): raise ValueError('Calendar title and date required')

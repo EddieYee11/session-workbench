@@ -182,3 +182,67 @@ if __name__ == '__main__':
     elif args.action == 'sync': print(asyncio.run(sync_once()))
     elif args.action == 'reflect': print(asyncio.run(reflect_to_markdown(args.query, args.bank)))
     else: print(json.dumps(asyncio.run(recall(args.query)), ensure_ascii=False, indent=2))
+
+
+def _markdown_matches(terms, banks):
+    """Read only allowlisted current sources; return short matching passages."""
+    rows=[]
+    for (bank,relative),path in sources(ROOT).items():
+        if bank not in banks or relative.startswith('_global/记忆库/Com/'):
+            continue  # Versioned files contain old revisions; use the live catalog instead.
+        try:
+            path.resolve().relative_to(ROOT.resolve())
+            raw=path.read_bytes();clean=sanitize(raw.decode('utf-8'))
+        except (OSError,UnicodeError,ValueError):continue
+        passages=re.split(r'\n\s*\n',clean)
+        scored=[(sum(len(t) for t in terms if t in passage.lower()),passage) for passage in passages]
+        best=sorted((item for item in scored if item[0]),key=lambda item:item[0],reverse=True)[:2]
+        if best:
+            rows.append({'text':'\n\n'.join(p for _,p in best),'source':relative,'sha256':digest(raw),
+                         'bank':bank,'relevance':sum(score for score,_ in best),'retrieval':'current_markdown'})
+    return sorted(rows,key=lambda row:row['relevance'],reverse=True)[:4]
+
+
+async def recall_on_demand(query, banks=None):
+    """Return current catalogue facts immediately even while the semantic index catches up."""
+    from memory_catalog import MemoryCatalog
+    from context_working_set import clip
+    query = str(query).strip()[:3000]
+    if not query: return {'status':'empty','items':[],'authority':'Markdown'}
+    if banks is not None and (not isinstance(banks,list) or not banks or any(b not in ROUTES for b in banks)):
+        raise ValueError('未知记忆 bank')
+    words=re.findall(r'[a-z0-9_]+|[\u4e00-\u9fff]{2,}',query.lower())
+    terms=set(words)
+    for word in words:
+        if re.fullmatch(r'[\u4e00-\u9fff]+',word):terms.update(word[i:i+2] for i in range(len(word)-1))
+    local=[]
+    if banks is None or 'personal-main' in banks:
+        catalog=MemoryCatalog()
+        for row in catalog.list():
+            score=sum(len(t) for t in terms if t in (row['content']+' '+row['category']).lower())
+            if score:
+                path=catalog.path(row['id'])
+                local.append({'text':row['content'],'id':row['id'],'version':row['version'],
+                    'kind':row['kind'],'source':str(path.relative_to(ROOT)),'sha256':digest(path.read_bytes()),
+                    'bank':'personal-main','relevance':score,'current_catalog':True})
+    local.sort(key=lambda r:r['relevance'],reverse=True)
+    fallback_task=asyncio.create_task(asyncio.to_thread(_markdown_matches,terms,banks or list(ROUTES)))
+    semantic_state='ok'
+    try:
+        semantic=await asyncio.wait_for(recall(query,banks),timeout=1.5)
+    except (TimeoutError,httpx.HTTPError):
+        semantic_state='time_budget_exceeded'
+        semantic={'status':'unavailable','items':[],'unavailable_banks':banks or list(ROUTES)}
+    fallback=await fallback_task
+    if semantic_state=='ok':semantic_state=semantic['status']
+    items=[];seen=set();remaining=1500
+    for item in local[:3]+semantic.get('items',[])+fallback:
+        identity=item.get('source') or item.get('text')
+        if identity in seen:continue
+        seen.add(identity);body=clip(item['text'],min(2000,remaining))
+        items.append({**item,'text':body,'truncated':body!=item['text']});remaining-=len(body)
+        if len(items)>=5 or remaining<80:break
+    return {**semantic,'status':'partial' if items and semantic['status']=='unavailable' else semantic['status'],
+            'items':items,'authority':'Markdown','reference_only':True,
+            'retrieval':{'semantic':semantic_state,'current_markdown':'ok'},
+            'guidance':'Semantic time budget is not evidence that memory is missing. Use returned current sources; do not automatically retry the same query.'}

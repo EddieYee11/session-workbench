@@ -1,7 +1,9 @@
-"""Single consumer uses the same Pi turn lock and original authorization context."""
+"""Durable background work with original authorization and an independent Hermes turn."""
 import asyncio
 import json
+import hashlib
 from pi_main import MAIN_PROMPT
+from conversation import slim_tasks
 
 FOLLOW_UP = '先核实结果；只在原授权范围和完成条件内推进。无变化或无下一步时不通知。'
 PROACTIVE = ('这是按用户已批准的时间表生成的主动消息，不是新用户交办。用你平时的口吻给 Eddie 发一条简短消息'
@@ -42,7 +44,7 @@ class BackgroundEvents:
         if not context.get('origin_message_id'):
             self.events.finish(event['id'],'uncertain')
             return True
-        context['tasks']=self.store.context()
+        context['tasks']=self.store.context_index() if hasattr(self.store,'context_index') else slim_tasks(self.store.context())
         context['event_id']=event['id']
         if data.get('goal'):
             context['goal_id']=data['goal']['id']
@@ -61,8 +63,16 @@ class BackgroundEvents:
               '\n'+MAIN_PROMPT+'\n后台事件（不是新用户交办）：\n'+json.dumps(data,ensure_ascii=False)+
               '\n'+tail)
         completed=False;output=''
+        client = self.conversation.client
+        from hermes_runtime import HermesRuntime
+        if isinstance(client, HermesRuntime):
+            # Never borrow the foreground runtime's run_id or native transcript.
+            client = HermesRuntime(client.state,'com-event-'+hashlib.sha256(event['id'].encode()).hexdigest()[:24])
+            session = client.session_id
+        else:
+            session = await self.conversation._ensure_session()
         try:
-            async for kind,payload in self.conversation.client.stream_chat(await self.conversation._ensure_session(),text):
+            async for kind,payload in client.stream_chat(session,text):
                 if kind=='assistant.completed':output=payload.get('content','')
                 if kind=='run.completed':completed=True
         finally:

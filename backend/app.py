@@ -98,6 +98,8 @@ autonomy=PersonalAutonomy(STATE,personal_hub)
 agent_tools.autonomy=autonomy
 agent_tools.artifact_access=artifact_access
 conversation.task_context=lambda: task_store.context()
+conversation.task_index=task_store.context_index
+conversation.task_brief=task_store.context_for_source
 conversation.task_environment=lambda: {'workspace_root':str(work_proposals.workspace),
                                       'automatic_executor':MAIN_AGENT,'maximum_running_tasks':2,'claude_maximum_running':1,'host':capability_registry.host,
                                       'current_date':datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(),'timezone':'Asia/Shanghai',
