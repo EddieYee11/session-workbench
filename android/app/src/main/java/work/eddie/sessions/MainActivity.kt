@@ -53,8 +53,8 @@ class MainActivity:ComponentActivity(){
  var quick by mutableStateOf("")
  var workLaunch by mutableIntStateOf(0)
  override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
-   // APP 恒深色：系统栏图标恒浅色，不跟随系统深浅设置（detectDarkMode 恒 true）
-   val transparentBars=SystemBarStyle.auto(android.graphics.Color.TRANSPARENT,android.graphics.Color.TRANSPARENT){true}
+   // 奶油白画布使用深色系统栏图标。
+   val transparentBars=SystemBarStyle.auto(android.graphics.Color.TRANSPARENT,android.graphics.Color.TRANSPARENT){false}
    enableEdgeToEdge(statusBarStyle=transparentBars,navigationBarStyle=transparentBars)
    handleIntent(intent)
    if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS),10)

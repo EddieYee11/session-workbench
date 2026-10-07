@@ -238,7 +238,7 @@ internal val LocalPersonalDockEnabled=compositionLocalOf{false}
 internal val LocalPersonalComposerFocus=compositionLocalOf<FocusRequester?>{null}
 
 @Composable private fun PersonalDock(vm:WorkbenchModel,page:String,navigate:(String)->Unit,motion:MessageSendMotionState,focus:FocusRequester){
- Box(Modifier.fillMaxWidth().padding(horizontal=6.dp,vertical=4.dp),contentAlignment=Alignment.Center){
+ Box(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp),contentAlignment=Alignment.Center){
   Surface(Modifier.widthIn(max=858.dp).fillMaxWidth().testTag("personal-dock"),shape=RoundedCornerShape(24.dp),color=Card){
    Column(Modifier.padding(horizontal=4.dp).padding(top=4.dp)){
     vm.hermesReference?.let{MessageReferencePreview(it){vm.hermesReference=null}}
@@ -259,11 +259,11 @@ internal val LocalPersonalComposerFocus=compositionLocalOf<FocusRequester?>{null
  Row(Modifier.fillMaxWidth().padding(horizontal=5.dp).padding(top=5.dp,bottom=7.dp),verticalAlignment=Alignment.CenterVertically){
   listOf("hermes" to "聊天","sources" to "今天","activity" to "任务","memory" to "记忆","work" to "工作").forEach{(target,label)->
    val selected=page==target||target=="sources"&&page in listOf("calendar","finance","signals")
-   val background by animateColorAsState(if(selected)Track else Color.Transparent,tween(180),label="导航选中")
+   val background by animateColorAsState(if(selected)Accent else Color.Transparent,tween(180),label="导航选中")
    val foreground=if(selected)Ink else Faint
    Column(Modifier.weight(1f).heightIn(min=(54f+12f*(fontScale-1f).coerceAtLeast(0f)).dp)
     .testTag("nav-$target").semantics{contentDescription=label}.selectable(selected=selected,enabled=enabled,role=androidx.compose.ui.semantics.Role.Tab,onClick={navigate(target)}),horizontalAlignment=Alignment.CenterHorizontally){
-    Box(Modifier.widthIn(max=72.dp).fillMaxWidth(.54f).height(32.dp).background(background,Radii.Pill),contentAlignment=Alignment.Center){ComPrimaryIcon(target,null,22.dp,foreground)}
+    Box(Modifier.widthIn(max=72.dp).width(40.dp).height(40.dp).background(background,CircleShape),contentAlignment=Alignment.Center){ComPrimaryIcon(target,null,22.dp,foreground)}
     Spacer(Modifier.height(3.dp))
     Text(label,fontSize=12.sp,fontWeight=FontWeight.Normal,color=foreground,maxLines=1)
    }
@@ -276,8 +276,8 @@ internal val LocalPersonalComposerFocus=compositionLocalOf<FocusRequester?>{null
  // Mirror the personal dock's container so the bar keeps one width across tabs.
  // The old 440dp cap left 「工作」 roughly half the width of the dock pages on
  // wide/unfolded screens, which read as the bar shrinking when you switched tabs.
- else Box(Modifier.fillMaxWidth().padding(horizontal=6.dp,vertical=4.dp),contentAlignment=Alignment.Center){
-  Surface(Modifier.widthIn(max=858.dp).fillMaxWidth(),shape=RoundedCornerShape(24.dp),color=Card){ComNavigationItems(page,navigate,enabled)}
+ else Box(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp),contentAlignment=Alignment.Center){
+  Surface(Modifier.widthIn(max=858.dp).fillMaxWidth(),shape=Radii.Pill,color=Card,shadowElevation=4.dp){ComNavigationItems(page,navigate,enabled)}
  }
 }
 
@@ -517,7 +517,7 @@ private fun Modifier.homeReveal(fraction:Float):Modifier=this
    BasicTextField(editing,{editing=it;change(it.text)},Modifier.weight(1f).heightIn(min=42.dp,max=128.dp).messageSendComposerBounds(motion,background=true,backgroundColor=UserBubble).padding(vertical=10.dp,horizontal=5.dp).then(if(focus!=null)Modifier.focusRequester(focus)else Modifier).onFocusChanged{focused=it.isFocused}.testTag("work-composer").messageSendComposerBounds(motion),readOnly=readOnly,textStyle=style,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Send),keyboardActions=KeyboardActions(onSend={if(canSend)send()}),onTextLayout={motion?.updateComposerLayout(it,style,backgroundColor=UserBubble)},cursorBrush=SolidColor(Ink),decorationBox={inner->Box{if(text.isBlank())Text(placeholder,style=style.copy(color=Faint),maxLines=1);inner()}})
    if(text.isNotBlank()&&!readOnly)IconButton(onClick=newline,modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.KeyboardReturn,"插入换行",Modifier.size(19.dp),tint=Muted)}
    val (press,pressMod)=rememberPress(.97f)
-   if(canSend)IconButton(onClick={haptics(HapticCue.Commit);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ember),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=Color.White,modifier=Modifier.size(21.dp))}
+   if(canSend)IconButton(onClick={haptics(HapticCue.Commit);send()},modifier=Modifier.size(42.dp).then(pressMod).clip(CircleShape).background(Ember),interactionSource=press){Icon(Icons.Outlined.ArrowUpward,"发送",tint=AccentInk,modifier=Modifier.size(21.dp))}
    else if(running)IconButton(onClick={haptics(HapticCue.RecordingStop);stop()},enabled=enabled,modifier=Modifier.size(42.dp).then(pressMod).clip(RoundedCornerShape(12.dp)).background(EmberDeep),interactionSource=press){Icon(Icons.Outlined.Stop,"停止当前执行",tint=Paper,modifier=Modifier.size(20.dp))}
    else if(voice!=null)IconButton(onClick=voice,enabled=!readOnly,modifier=Modifier.size(42.dp).then(pressMod),interactionSource=press){Icon(Icons.Outlined.MicNone,"快速语音 · Hermes",Modifier.size(23.dp),tint=Muted)}
   }

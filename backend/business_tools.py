@@ -73,8 +73,12 @@ class BusinessTools:
         async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
             response = await client.request('GET' if body is None else 'POST', cfg['ezBookkeepingUrl'].rstrip('/') + route,
                 json=body, headers={'Authorization': 'Bearer ' + cfg['ezBookkeepingToken'], 'X-Timezone-Name': 'Asia/Shanghai', 'X-Timezone-Offset': '480'})
-        data = response.json()
-        if response.status_code != 200 or data.get('success') is False: raise RuntimeError('Accounting service operation failed')
+        try:
+            data = response.json()
+        except ValueError:
+            raise RuntimeError('accounting_invalid_response_http_' + str(response.status_code)) from None
+        if response.status_code != 200 or not isinstance(data, dict) or data.get('success') is False:
+            raise RuntimeError('accounting_operation_failed_http_' + str(response.status_code))
         return data.get('result')
 
     async def bookkeeping(self, args):

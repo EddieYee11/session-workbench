@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI,Request,HTTPException,WebSocket,WebSocketDisconnect
 from fastapi.responses import JSONResponse,StreamingResponse,FileResponse
 from artifacts import ArtifactAccess
+from attachments import AttachmentStore, attachment_router
 from history import History,text_content
 from runtime import Runtime
 from voice import voice_router
@@ -57,6 +58,7 @@ inspector=SignalInspector(signals,PiSignalReviewer(STATE) if MAIN_AGENT=='pi' el
 work_proposals=WorkProposalStore(STATE,HOME/'AI_Work_System')
 task_store=TaskStore(STATE)
 artifact_access=ArtifactAccess(task_store,HOME/"AI_Work_System",STATE)
+attachment_store=AttachmentStore(STATE)
 task_controller=TaskController(task_store,runtime,conversation)
 heartbeat=Heartbeat(STATE,HOME/"AI_Work_System",task_store,work_proposals)
 runtime.task_store=task_store
@@ -152,6 +154,7 @@ async def lifespan(app):
 
 app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 app.include_router(voice_router(STATE))
+app.include_router(attachment_router(attachment_store))
 app.include_router(rayneo.router)
 @app.middleware('http')
 async def auth(request,call_next):
@@ -176,7 +179,7 @@ def deployed_build_commit():
         return BUILD_COMMIT
 
 @app.get('/health')
-async def health():return {'service':'mini-sessions','version':'2.0.0','api_contract':2,'build_commit':deployed_build_commit(),'main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),'worker_operation_mode':OPERATION_MODE,'operation_policy_revision':POLICY_REVISION,'readonly_restrictions_revoked':True,'features':{'artifact_access_v1':True,'conversation_history_v1':True,'conversation_resume_v1':True,'heartbeat_shadow_v1':True,'reminder_cards_v1':True,'muse_task_kinds_v1':True,'supplement_new_item_v1':True,'capability_search_readonly_v1':True,'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'work_cards_v1':True,'task_events_sse_v1':True,'task_plan_v1':True,'task_context_revision_v1':True,'semantic_verification_v1':True,'main_steer_v1':True,'hermes_main':MAIN_AGENT=='hermes','hermes_runs_v1':True,'voice_bookkeeping_intent_v1':True,'markdown_hindsight_memory_v1':True,'direct_business_queries_v1':True,'work_chat_v1':True,'goal_proposals_v1':True,'goals_scheduler':goal_events.enabled()}}
+async def health():return {'service':'mini-sessions','version':'2.0.0','api_contract':2,'build_commit':deployed_build_commit(),'main_operation_mode':getattr(conversation.client,'operation_mode','legacy'),'worker_operation_mode':OPERATION_MODE,'operation_policy_revision':POLICY_REVISION,'readonly_restrictions_revoked':True,'features':{'ios_nodes_v1':True,'main_receipts_v1':True,'selected_attachments_v1':True,'artifact_access_v1':True,'conversation_history_v1':True,'conversation_resume_v1':True,'heartbeat_shadow_v1':True,'reminder_cards_v1':True,'muse_task_kinds_v1':True,'supplement_new_item_v1':True,'capability_search_readonly_v1':True,'message_references_v1':True,'stable_message_identity_v1':True,'pi_main':MAIN_AGENT=='pi','task_timeline_v1':True,'work_cards_v1':True,'task_events_sse_v1':True,'task_plan_v1':True,'task_context_revision_v1':True,'semantic_verification_v1':True,'main_steer_v1':True,'hermes_main':MAIN_AGENT=='hermes','hermes_runs_v1':True,'voice_bookkeeping_intent_v1':True,'markdown_hindsight_memory_v1':True,'direct_business_queries_v1':True,'work_chat_v1':True,'goal_proposals_v1':True,'goals_scheduler':goal_events.enabled()}}
 @app.post('/pair')
 async def pair(request:Request):
     ip=request.client.host;now=time.time();attempts=[x for x in rate.get(ip,[]) if now-x<300]
@@ -196,6 +199,11 @@ async def personal_conversation():
 @app.get('/personal/conversation/history')
 async def conversation_history(before:str='',around:str='',limit:int=60):
     return conversation.history(before,around,limit)
+@app.get('/personal/conversation/receipts/{request_id}')
+async def conversation_receipt(request_id:str):
+    receipt=conversation.receipt(request_id)
+    if receipt is None:raise HTTPException(404,'尚无发送记录')
+    return receipt
 @app.get('/personal/conversation/search')
 async def conversation_search(q:str='',date:str=''):
     return conversation.search(q,date)
@@ -256,7 +264,8 @@ async def personal_message(request:Request):
     data=await request.json()
     if not isinstance(data,dict) or not isinstance(data.get('request_id'),str) or not isinstance(data.get('text'),str):raise ValueError('消息格式无效')
     if legacy_voice.receipt(data['request_id']) or quick_voice.receipt(data['request_id']):raise ValueError('这条语音已有受理回执，不会重复交办。')
-    return conversation.submit(data['request_id'],data['text'],data.get('reference'),associated_matter=matter_context(data.get('matter_id')))
+    attachments=attachment_store.resolve(data.get('attachment_ids',[]))
+    return conversation.submit(data['request_id'],data['text'],data.get('reference'),associated_matter=matter_context(data.get('matter_id')),attachments=attachments)
 @app.post('/personal/quick-voice/messages')
 async def quick_voice_message(request:Request):
     data=await request.json()
@@ -758,16 +767,23 @@ async def internal_agent_tool(name:str,request:Request):
 @app.get('/personal/memory')
 async def memory_status():
     from memory import status
-    from memory_catalog import MemoryCatalog,CATEGORIES
-    return {**await asyncio.to_thread(status),'categories':CATEGORIES,'items':MemoryCatalog().list()}
+    from memory_catalog import MemoryCatalog,SharedKnowledgeCatalog,CATEGORIES
+    def catalog():
+        personal = MemoryCatalog().list()
+        shared = SharedKnowledgeCatalog().list()
+        return {'categories':CATEGORIES,'items':personal + shared,
+                'counts':{'personal':len(personal),'shared_knowledge':len(shared)}}
+    return {**await asyncio.to_thread(status),**await asyncio.to_thread(catalog)}
 
 @app.get('/personal/memory/{memory_id}')
 async def memory_detail(memory_id:str):
-    from memory_catalog import MemoryCatalog
-    return MemoryCatalog().get(memory_id)
+    from memory_catalog import MemoryCatalog,SharedKnowledgeCatalog
+    return SharedKnowledgeCatalog().get(memory_id) if memory_id.startswith('doc_') else MemoryCatalog().get(memory_id)
 
 @app.post('/personal/memory/{memory_id}')
 async def memory_edit(memory_id:str,request:Request):
+    if memory_id.startswith('doc_'):
+        raise HTTPException(status_code=403,detail='共享知识来自原始 Markdown，请在来源文件中修改；更新会自动同步。')
     from memory_catalog import MemoryCatalog
     data=await request.json();catalog=MemoryCatalog();old=catalog.get(memory_id)
     content=data.get('content',old['content'])

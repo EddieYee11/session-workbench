@@ -23,3 +23,13 @@ android/app/src/main/assets/bootstrap.json
 
 # Local device screenshots and acceptance logs may contain private sessions.
 verification/
+
+# Native iOS build products and local signing state.
+ios/.build/
+ios/DerivedData/
+ios/build/
+ios/**/xcuserdata/
+ios/.swiftpm/
+ios/Signing.xcconfig
+*.ipa
+ios/VoiceEffects/node_modules/

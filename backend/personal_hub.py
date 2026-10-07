@@ -148,9 +148,9 @@ class PersonalHub:
             return {'count':1,'coverage':data['date']}
         if name in ('phone_calendar','phone_health'):
             nodes=getattr(self,'device_nodes',None)
-            device=next((d for d in nodes.list() if d['online']),None) if nodes else None
-            if not device:raise RuntimeError('手机节点离线；启用常驻连接后同步')
             tool='health.summary' if name=='phone_health' else 'calendar.list'
+            device=next((d for d in nodes.list() if d['online'] and any(c['tool']==tool and c['permission'] and c.get('available',True) for c in d['capabilities'])),None) if nodes else None
+            if not device:raise RuntimeError('没有在线且已授权的手机来源；请打开 App 并检查权限与同步设置')
             args={'days':7} if name=='phone_health' else {'days':30}
             row=await nodes.call(device['id'],tool,args,'sync-'+name+'-'+str(int(time.time()*1000)))
             if row['status']!='succeeded':raise RuntimeError('手机数据不可读：'+row['status'])
@@ -187,7 +187,7 @@ class PersonalHub:
         else:
             for e in data.get('items',[]):
                 start=datetime.fromtimestamp(int(e['begin'])/1000,TZ).isoformat(timespec='minutes');end=datetime.fromtimestamp(int(e['end'])/1000,TZ).isoformat(timespec='minutes')
-                facts={**e,'start':start,'end':end,'source':'手机 CalendarProvider','node':row['node']}
+                facts={**e,'start':start,'end':end,'source':e.get('source') or data.get('source') or '手机 CalendarProvider','node':row['node']}
                 self.matter(name,row['node']+':'+str(e['event_id'])+':'+start,e.get('title','手机日程'),facts,deadline_type='calendar_event',deadline=start)
         return {'count':1 if name=='phone_health' else len(data.get('items',[])),'coverage':str(data.get('start',''))+' 至 '+str(data.get('end','')),'node':row['node']}
     def imap_sync(self):

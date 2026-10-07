@@ -49,36 +49,32 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
-// 深色 Muse（2026-10-06 方向稿落地）：纯黑画布 + 深灰分层卡片，层级只靠明度；
-// 白色文字，iOS 蓝 #0A84FF 只给行动与用户气泡。变量名沿用旧体系，调用点零改动。
-val Ink=Color(0xFFFFFFFF);val Paper=Color(0xFF000000);val SidebarBg=Color(0xFF1B1B1D)
-val Card=Color(0xFF1B1B1D);val Muted=Color(0xFF97979D);val Faint=Color(0xFF6D6D72)
-val Line=Color(0x14FFFFFF);val Track=Color(0xFF2B2B2E);val ChipBg=Color(0xFF2B2B2E)
-val UserBubble=Color(0xFF1B1B1D);val ToolSurface=Color(0xFF2B2B2E)
-val HermesUserBubble=Color(0xFF0A84FF);val HermesAssistantBubble=Color(0xFF1B1B1D)
-val Accent=Color(0xFF0A84FF);val AccentSoft=Color(0x2E0A84FF);val AccentInk=Color(0xFFFFFFFF)
+// 2026-10-07：Folk 奶油白／暖灰，搭配发现页的青柠绿交互焦点。
+// 业务页面共享语义色；黑色重点内容、白色卡片与温暖的对话表面。
+val Ink=Color(0xFF1C1D19);val Paper=Color(0xFFF6F4EE);val SidebarBg=Color(0xFFF0EDE5)
+val Card=Color(0xFFFFFFFF);val Muted=Color(0xFF74756E);val Faint=Color(0xFF93958C)
+val Line=Color(0x101C1D19);val Track=Color(0xFFE8E4DA);val ChipBg=Color(0xFFEEEAE2)
+val UserBubble=Card;val ToolSurface=Color(0xFFF0EDE5)
+val HermesUserBubble=Card;val HermesAssistantBubble=Color(0xFFECE8DF)
+val Accent=Color(0xFFD1F263);val AccentSoft=Color(0xFFEAF4CC);val AccentInk=Ink
 val CompanionCoral=Color(0xFFC57665);val CompanionBlue=Color(0xFF5F8794)
-val CompanionGlow=Color(0xFF1E2A2B);val CompanionBlush=Color(0xFF2A1F1C)
-val PiGreen=Color(0xFF32D158);val PiSoft=Color(0x2632D158)
-val AmberBg=Color(0xFF2A2210);val AmberLine=Color(0xFF4A3A18);val AmberText=Color(0xFFFFB840)
+val CompanionGlow=Color(0xFFE8EAD9);val CompanionBlush=Color(0xFFF4E5DD)
+val PiGreen=Color(0xFF4A7149);val PiSoft=Color(0xFFE6EDDF)
+val AmberBg=Color(0xFFF7EEDF);val AmberLine=Color(0xFFE9D8B7);val AmberText=Color(0xFF85662A)
 val ApprovalBg=AmberBg
-val Danger=Color(0xFFFF453A);val Success=PiGreen
-
-// 整页无渐变：深黑章节只靠表面明度分层。
+val Danger=Color(0xFFBD493E);val Success=PiGreen
 val WashTop=Paper;val WashMid=Paper;val WashBottom=Paper
-// 蓝：主操作按钮 / 思考点 / 进行中状态
-val Ember=Color(0xFF0A84FF);val EmberDeep=Color(0xFFFFFFFF);val EmberSoft=Color(0x2E0A84FF)
-// 点缀金：状态徽标与高光（深色下压低明度）
-val Gold=Color(0xFFC99A3C);val GoldSoft=Color(0xFF33290F)
+val Ember=Accent;val EmberDeep=Ink;val EmberSoft=AccentSoft
+val Gold=Color(0xFF9B7835);val GoldSoft=Color(0xFFF2ECD8)
 
 val Palette=lightColorScheme(
- primary=Ember,onPrimary=Color.White,primaryContainer=AccentSoft,onPrimaryContainer=Ink,
+ primary=Ink,onPrimary=Color.White,primaryContainer=Accent,onPrimaryContainer=Ink,
  secondary=Muted,secondaryContainer=ChipBg,onSecondaryContainer=Ink,
- tertiary=Ember,onTertiary=Color.White,tertiaryContainer=EmberSoft,onTertiaryContainer=EmberDeep,
+ tertiary=Ink,onTertiary=Color.White,tertiaryContainer=EmberSoft,onTertiaryContainer=Ink,
  background=Paper,onBackground=Ink,surface=Card,onSurface=Ink,
  surfaceVariant=ToolSurface,onSurfaceVariant=Muted,outline=Line,outlineVariant=Line,
- surfaceTint=Ember,surfaceContainer=Card,surfaceContainerHighest=ToolSurface,
- surfaceContainerHigh=ToolSurface,surfaceContainerLow=Color(0xFF161618),surfaceContainerLowest=Card)
+ surfaceTint=Ink,surfaceContainer=Card,surfaceContainerHighest=ToolSurface,
+ surfaceContainerHigh=ToolSurface,surfaceContainerLow=SidebarBg,surfaceContainerLowest=Card)
 
 val ComShapes=androidx.compose.material3.Shapes(
  extraSmall=RoundedCornerShape(8.dp),small=RoundedCornerShape(12.dp),medium=RoundedCornerShape(18.dp),
@@ -97,7 +93,7 @@ object Elev{
 }
 // 字阶：Muse 方向稿大字阶（消息 26 视觉换算后取 19 可调；标题整体上调）
 object Type{
- val SheetTitle=28.sp;val AppTitle=28.sp;val Section=22.sp
+ val SheetTitle=26.sp;val AppTitle=28.sp;val Section=20.sp
  val Body=17.sp;val BodySm=15.sp;val Caption=13.sp;val Micro=11.sp;val Tiny=11.sp
 }
 val ComTypography=Typography(

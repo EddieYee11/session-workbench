@@ -98,16 +98,20 @@ class HermesRuntime(HermesClient):
         yield 'input.accepted', {'request_id': request_id}
         yield 'input.delivered', {'request_id': request_id, 'run_id': self.run_id}
         self.emit({'type': 'agent_start', 'data': {}, 'turn_id': request_id})
+        execution_started = False
         try:
             async for event, data in self._events(self.run_id):
                 if event.startswith('tool.'):
+                    execution_started = True
                     self.emit({'type': 'tool_execution_' + ('start' if event == 'tool.started' else 'end'),
                         'data': {'toolName': data.get('tool_name', data.get('tool')), 'toolCallId': data.get('tool_call_id'),
                                  'args': data.get('args', {}), 'result': data.get('result', {}), 'isError': event == 'tool.failed'}, 'turn_id': request_id})
                     yield event, {**data, 'tool_name': data.get('tool_name', data.get('tool'))}
                 elif event == 'message.delta':
+                    execution_started = True
                     yield 'assistant.delta', data
                 elif event in ('assistant.delta', 'assistant.completed'):
+                    execution_started = True
                     yield event, data
                 elif event in ('run.completed', 'run.failed', 'run.cancelled', 'error', 'done'):
                     break
@@ -133,7 +137,20 @@ class HermesRuntime(HermesClient):
             yield 'assistant.completed', {'content': output}
             yield 'run.completed', {'run_id': self.run_id}
         else:
-            yield 'error', {'run_id': self.run_id, 'status': status, 'uncertain': reason != 'aborted'}
+            # Provider resolution/authentication happens before any model/tool
+            # execution. This is a confirmed failure, not an uncertain action.
+            error = str(result.get('error', ''))
+            # A disabled gateway route rejects the model before execution. Do not
+            # treat later failures after tool/output events as safe to replay.
+            with sqlite3.connect(self.path) as db:
+                prior_execution = db.execute("SELECT 1 FROM run_events WHERE run_id=? AND (event LIKE 'tool.%' OR event IN ('message.delta','assistant.delta','assistant.completed')) LIMIT 1", (self.run_id,)).fetchone()
+            provider_disabled = 'is switched off in Magpie' in error
+            provider_quota = '429' in error and any(marker in error for marker in ('本周额度已用完', 'weekly quota', 'weekly limit'))
+            provider_failed = status == 'failed' and not execution_started and not prior_execution and not output and (error.startswith('⚠️ Provider authentication failed:') or provider_disabled or provider_quota)
+            yield 'error', {'run_id': self.run_id, 'status': status, 'uncertain': reason != 'aborted' and not provider_failed,
+                            'failure_code': 'provider_unavailable' if provider_failed else '',
+                            'provider_disabled': provider_failed and provider_disabled,
+                            'provider_quota': provider_failed and provider_quota}
         yield 'done', {}
 
     async def stream_chat(self, session_id, text):

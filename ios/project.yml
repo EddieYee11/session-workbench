@@ -1,0 +1,91 @@
+name: Com
+options:
+  bundleIdPrefix: work.eddie
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26.3"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  Textual:
+    url: https://github.com/gonzalezreal/textual
+    exactVersion: 0.5.0
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.20.0
+targets:
+  ComCore:
+    type: framework
+    platform: iOS
+    sources: [Com/Core]
+    settings:
+      TARGETED_DEVICE_FAMILY: "1"
+      PRODUCT_BUNDLE_IDENTIFIER: work.eddie.com.core
+      GENERATE_INFOPLIST_FILE: YES
+  Com:
+    type: application
+    platform: iOS
+    sources:
+      - path: Com
+        excludes: [Core]
+      - path: Shared
+    dependencies:
+      - target: ComCore
+      - package: Textual
+      - package: SwiftTerm
+      - target: ComShare
+        embed: true
+    settings:
+      TARGETED_DEVICE_FAMILY: "1"
+      PRODUCT_BUNDLE_IDENTIFIER: work.eddie.com
+      SUPPORTS_MACCATALYST: NO
+      SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+      SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+      INFOPLIST_FILE: Com/Info.plist
+      CODE_SIGN_ENTITLEMENTS: Com/Com.entitlements
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  ComShare:
+    type: app-extension
+    platform: iOS
+    sources: [ComShare, Shared]
+    settings:
+      TARGETED_DEVICE_FAMILY: "1"
+      PRODUCT_BUNDLE_IDENTIFIER: work.eddie.com.share
+      INFOPLIST_FILE: ComShare/Info.plist
+      CODE_SIGN_ENTITLEMENTS: ComShare/ComShare.entitlements
+      APPLICATION_EXTENSION_API_ONLY: YES
+  ComCoreTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests/Core]
+    dependencies:
+      - target: ComCore
+    settings:
+      TARGETED_DEVICE_FAMILY: "1"
+      GENERATE_INFOPLIST_FILE: YES
+  ComUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests/UI]
+    dependencies:
+      - target: Com
+    settings:
+      TARGETED_DEVICE_FAMILY: "1"
+      GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Com:
+    build:
+      targets:
+        Com: all
+    test:
+      targets: [ComCoreTests, ComUITests]

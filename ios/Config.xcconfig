@@ -1,0 +1,2 @@
+// Keep the developer team local while regenerating the Xcode project.
+#include? "Signing.xcconfig"

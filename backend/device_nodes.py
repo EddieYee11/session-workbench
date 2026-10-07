@@ -1,7 +1,7 @@
 """Authenticated phone nodes with durable invocation receipts and no replay after ACK."""
 import asyncio,hashlib,json,re,sqlite3,time,uuid
 from pathlib import Path
-TOOLS={'calendar.list','calendar.create','calendar.update','calendar.delete','contacts.search','contacts.create','contacts.update','contacts.delete','apps.list','apps.usage','apps.launch','notifications.list','notifications.dismiss','health.summary','alarm.set','alarm.show','location.last','media.list','device.status','device.vibrate','device.torch','device.volume'}
+TOOLS={'calendar.list','calendar.create','calendar.update','calendar.delete','reminders.list','reminders.create','reminders.update','reminders.delete','contacts.search','contacts.create','contacts.update','contacts.delete','apps.list','apps.usage','apps.launch','notifications.list','notifications.dismiss','health.summary','alarm.set','alarm.show','location.last','media.list','device.status','device.vibrate','device.torch','device.volume'}
 class DeviceNodes:
     def __init__(self,state):
         self.path=Path(state)/'devices.sqlite';self.sockets={};self.waiters={}
@@ -13,7 +13,12 @@ class DeviceNodes:
         if not re.fullmatch(r'node_[0-9a-f]{32}',ident):raise ValueError('Invalid node ID')
         caps=data.get('capabilities',[])
         if not isinstance(caps,list) or len(caps)>64 or any(c.get('tool') not in TOOLS or not isinstance(c.get('permission'),bool) for c in caps):raise ValueError('Unregistered phone capability')
-        row={'id':ident,'name':str(data.get('name','手机'))[:120],'capabilities':caps,'registered_at':time.time(),'last_seen':time.time(),'platform':'android'}
+        platform=data.get('platform','android')
+        if platform not in ('android','ios'):raise ValueError('Invalid phone platform')
+        with self.db() as d:
+            old=d.execute('SELECT data FROM devices WHERE id=?',(ident,)).fetchone()
+        registered=json.loads(old[0]).get('registered_at',time.time()) if old else time.time()
+        row={'id':ident,'name':str(data.get('name','手机'))[:120],'capabilities':caps,'registered_at':registered,'last_seen':time.time(),'platform':platform,'os_version':str(data.get('os_version',''))[:60]}
         with self.db() as d:d.execute('INSERT OR REPLACE INTO devices VALUES(?,?)',(ident,json.dumps(row,ensure_ascii=False)))
         return row
     def list(self):

@@ -137,6 +137,7 @@ private fun sourceBadge(key:String):Pair<ImageVector,Color> = when(key){
 @Composable fun AgentMemoryPage(vm:WorkbenchModel){
  var data by remember{mutableStateOf(JSONObject())};var selected by remember{mutableStateOf("全部")};var editing by remember{mutableStateOf<JSONObject?>(null)};var text by remember{mutableStateOf("")};var note by remember{mutableStateOf("")};val scope=rememberCoroutineScope()
  var sourcesOpen by remember{mutableStateOf(false)}
+ var reading by remember{mutableStateOf<JSONObject?>(null)}
  suspend fun refresh(){try{data=vm.store.request("/personal/memory")}catch(e:Exception){note=e.message.orEmpty()}}
  LaunchedEffect(Unit){refresh()}
  val items=data.array("items")
@@ -166,18 +167,25 @@ private fun sourceBadge(key:String):Pair<ImageVector,Color> = when(key){
     }
    }
    Text(if(selected=="全部")"全部 · ${visible.size} 条" else "$selected · ${visible.size} 条",Modifier.padding(top=10.dp,start=4.dp),fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Muted)
-   visible.forEach{r->SoftCard(Modifier.fillMaxWidth(),radius=Radii.Xxl,padding=PaddingValues(18.dp)){
-    Text(r.optString("content"),fontSize=Type.Body,color=Ink,lineHeight=24.sp)
-    Text("${if(r.optString("kind")=="inference")"推断"else"事实"} · 版本 ${r.optInt("version")} · ${relTime(r.optDouble("updated_at"))}",Modifier.padding(top=10.dp),fontSize=Type.Caption,color=Muted)
+   visible.forEach{r->SoftCard(Modifier.fillMaxWidth(),radius=Radii.Xxl,padding=PaddingValues(18.dp),onClick={reading=r}){
+    if(r.optString("title").isNotBlank())Text(r.optString("title"),fontSize=Type.Section,fontWeight=FontWeight.SemiBold,color=Ink,modifier=Modifier.padding(bottom=8.dp))
+    Text(r.optString("summary").ifBlank{r.optString("content")},fontSize=Type.Body,color=Ink,lineHeight=24.sp,maxLines=6,overflow=TextOverflow.Ellipsis)
+    Text(if(r.optBoolean("read_only"))"共享知识 · ${relTime(r.optDouble("updated_at"))}" else "${if(r.optString("kind")=="inference")"推断"else"事实"} · 版本 ${r.optInt("version")} · ${relTime(r.optDouble("updated_at"))}",Modifier.padding(top=10.dp),fontSize=Type.Caption,color=Muted)
     val quote=r.optJSONObject("source")?.optString("quote").orEmpty()
     if(quote.isNotBlank())Text("来源：$quote",Modifier.padding(top=4.dp),fontSize=Type.Caption,color=Faint,maxLines=2,overflow=TextOverflow.Ellipsis)
-    Row{TextButton(onClick={editing=r;text=r.optString("content")}){Text("纠正")};TextButton(onClick={scope.launch{try{vm.store.request("/personal/memory/${r.optString("id")}",JSONObject().put("request_id",UUID.randomUUID().toString()).put("expected_version",r.optInt("version")).put("archived",true));refresh()}catch(e:Exception){note=e.message.orEmpty()}}}){Text("归档")}}
+    if(!r.optBoolean("read_only"))Row{TextButton(onClick={editing=r;text=r.optString("content")}){Text("纠正")};TextButton(onClick={scope.launch{try{vm.store.request("/personal/memory/${r.optString("id")}",JSONObject().put("request_id",UUID.randomUUID().toString()).put("expected_version",r.optInt("version")).put("archived",true));refresh()}catch(e:Exception){note=e.message.orEmpty()}}}){Text("归档")}}
    }}
    if(items.isEmpty())Text("还没有自动形成的分类记忆。现有 Markdown 资料仍可被召回。",color=Muted)
    Spacer(Modifier.height(12.dp))
   }
   AgentSharedComposer(vm)
  }
+ reading?.let{r->AlertDialog(onDismissRequest={reading=null},title={Text(r.optString("title").ifBlank{r.optString("category")})},text={Column(Modifier.heightIn(max=500.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){
+  Text(r.optString("content"),color=Ink)
+  val source=r.optJSONObject("source")
+  Text("来源："+(source?.optString("path")?.takeIf{it.isNotBlank()}?:source?.optString("quote").orEmpty()),color=Muted,fontSize=Type.Caption)
+  if(r.optBoolean("read_only"))Text("来源文件更新后会自动同步。",color=Muted,fontSize=Type.Caption)
+ }},confirmButton={TextButton(onClick={reading=null}){Text("完成")}})}
  editing?.let{r->AlertDialog(onDismissRequest={editing=null},title={Text("纠正记忆")},text={Column{OutlinedTextField(text,{text=it},label={Text("当前事实或偏好")});Text("来源和旧版本会保留，旧内容退出召回。",fontSize=Type.Caption)}},confirmButton={TextButton(onClick={scope.launch{try{vm.store.request("/personal/memory/${r.optString("id")}",JSONObject().put("request_id",UUID.randomUUID().toString()).put("expected_version",r.optInt("version")).put("content",text));editing=null;refresh()}catch(e:Exception){note=e.message.orEmpty()}}}){Text("保存")}},dismissButton={TextButton(onClick={editing=null}){Text("取消")}})}
  if(sourcesOpen)AlertDialog(onDismissRequest={sourcesOpen=false},title={Text("记忆来源")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
   Text("当前显示 ${items.size} 条分类记忆。",color=Ink)
@@ -217,7 +225,7 @@ private fun memoryBadge(category:String):Pair<ImageVector,Color> = when(category
    val rows=grouped[category]?:emptyList()
    HorizontalDivider(Modifier.padding(top=18.dp,bottom=14.dp),color=Line)
    Text(category,fontSize=Type.Section,fontWeight=FontWeight.SemiBold,color=Ink)
-   Text(rows.take(3).joinToString("\n"){it.optString("content")}.let{if(rows.size>3)it+" …" else it},
+   Text(rows.take(3).joinToString("\n"){it.optString("summary").ifBlank{it.optString("content").take(350)}}.let{if(rows.size>3)it+" …" else it},
     Modifier.padding(top=8.dp),fontSize=Type.Body,color=Muted,lineHeight=26.sp)
   }
  }
@@ -240,7 +248,7 @@ private fun memoryBadge(category:String):Pair<ImageVector,Color> = when(category
    }
    Column(Modifier.width(150.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
-     StatTile(Icons.Outlined.BookmarkBorder,"$facts 条事实",tint,Modifier.weight(1f))
+     StatTile(Icons.Outlined.BookmarkBorder,"$facts 份资料",tint,Modifier.weight(1f))
      StatTile(Icons.Outlined.Lightbulb,"$inferences 条推断",Gold,Modifier.weight(1f))
     }
     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){

@@ -440,7 +440,7 @@ private fun hermesToolLabel(name:String):String=when{
     Text("%d:%02d".format(vm.hermesVoiceSeconds/60,vm.hermesVoiceSeconds%60),Modifier.padding(end=6.dp),fontSize=Type.BodySm,fontWeight=FontWeight.SemiBold,color=Ink)
     IconButton(onClick={if(voice=="recording"){haptics(HapticCue.RecordingStop);vm.finishHermesVoice()}else haptics(HapticCue.Commit)},enabled=voice=="recording",modifier=Modifier.size(43.dp).background(if(voice=="recording")Danger else ChipBg,CircleShape)){
      if(voice=="transcribing")CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp,color=Muted)
-     else ComIcon(R.drawable.com_icon_send_v1,"结束录音并发送给 Hermes",Modifier.size(22.dp),tint=Color.White)
+     else ComIcon(R.drawable.com_icon_send_v1,"结束录音并发送给 Hermes",Modifier.size(22.dp),tint=AccentInk)
     }
    }else{
    var shortcuts by remember{mutableStateOf(false)}
@@ -461,7 +461,7 @@ private fun hermesToolLabel(name:String):String=when{
     },enabled=voiceEnabled,modifier=Modifier.size(43.dp)){ComIcon(R.drawable.com_icon_mic_v1,"录音发送给 Hermes",Modifier.size(24.dp),tint=Muted)}
    }else IconButton(onClick={haptics(HapticCue.Commit);send()},enabled=enabled,modifier=Modifier.size(43.dp).background(if(enabled)Ember else ChipBg,CircleShape)){
     if(vm.hermesSending)CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp,color=Muted)
-    else ComIcon(R.drawable.com_icon_send_v1,"发送给 Hermes",Modifier.size(22.dp),alpha=if(enabled)1f else .45f,tint=if(enabled)Color.White else Muted)
+    else ComIcon(R.drawable.com_icon_send_v1,"发送给 Hermes",Modifier.size(22.dp),alpha=if(enabled)1f else .45f,tint=if(enabled)AccentInk else Muted)
    }
    }
   }
