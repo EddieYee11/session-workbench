@@ -47,6 +47,40 @@ enum SectionTab: String, CaseIterable, Identifiable {
     private var lifecycle = 0
     private var started = false
     private var issuing: Set<String> = []
+    #if DEBUG
+    private var connectionStages: [[String: JSON]] = []
+    #endif
+
+    // Debug-only, device-readable diagnostics. Never record message text or credentials.
+    private func diagnose(_ stage: String, error: Error? = nil) {
+        #if DEBUG
+        guard !isUITesting else { return }
+        var entry: [String: JSON] = ["stage": .string(stage), "at": .number(Date().timeIntervalSince1970)]
+        if let error {
+            let ns = error as NSError
+            entry["error_code"] = .number(Double((error as? APIError)?.status ?? ns.code))
+            entry["error_domain"] = .string(ns.domain)
+            if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+                entry["underlying_code"] = .number(Double(underlying.code))
+                entry["underlying_domain"] = .string(underlying.domain)
+                for key in ["_kCFStreamErrorCodeKey", "_kCFStreamErrorDomainKey"] {
+                    if let number = underlying.userInfo[key] as? NSNumber { entry[key] = .number(number.doubleValue) }
+                }
+            }
+        }
+        connectionStages.append(entry)
+        connectionStages = Array(connectionStages.suffix(80))
+        let data = JSON.object([
+            "active": .bool(active), "paired": .bool(isPaired), "streaming": .bool(streaming),
+            "messages": .number(Double(conversation.messages.count)),
+            "outbox": .array(pending.map { .object(["id": .string($0.id), "state": .string($0.state.rawValue)]) }),
+            "stages": .array(connectionStages.map(JSON.object))
+        ])
+        if let encoded = try? JSONEncoder().encode(data) {
+            try? encoded.write(to: SecureVault.directory.appendingPathComponent("connection-diagnostics.json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
+        #endif
+    }
 
     // UI test data never reads credentials, calls the server, or persists to the user's cache.
     var isUITesting: Bool {
@@ -77,6 +111,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
             }
         } catch { banner = "本地恢复失败：" + error.localizedDescription }
         devices = DeviceBridge(model: self)
+        diagnose("initialized")
     }
     var client: APIClient? { api }
     var activeRuns: [JSON] { conversation.runs.filter { ["queued", "sending", "running"].contains($0["status"].string) } }
@@ -105,6 +140,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if isUITesting { active = value; return }
         lifecycle += 1; let currentLifecycle = lifecycle
         active = value; streaming = false
+        diagnose(value ? "foreground" : "background")
         streamTask?.cancel(); streamTask = nil
         pollTask?.cancel(); pollTask = nil
         devices.stop()
@@ -116,11 +152,14 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if UserDefaults.standard.bool(forKey: "openVoiceIntent") { UserDefaults.standard.set(false, forKey: "openVoiceIntent"); openVoice(quick: true) }
         guard isPaired else { return }
         await refreshAll()
+        diagnose("refresh-all-finished")
         guard active, currentLifecycle == lifecycle else { return }
         await recoverOutbox()
+        diagnose("outbox-recovered")
         guard active, currentLifecycle == lifecycle else { return }
         startStream()
         await devices.connect()
+        diagnose("device-connected")
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
@@ -131,11 +170,15 @@ enum SectionTab: String, CaseIterable, Identifiable {
     }
     func load(_ path: String) async -> JSON? {
         guard let api else { return nil }
+        let route = String(path.split(separator: "?", maxSplits: 1)[0])
+        diagnose("load-start:" + route)
         do {
             let data = try await api.request(path)
             datasets[path] = data; fetchedAt[path] = Date(); errors[path] = nil; persistSoon()
+            diagnose("load-finished:" + route)
             return data
         } catch {
+            diagnose("load-failed:" + route, error: error)
             if !(error is CancellationError) { errors[path] = error.localizedDescription }
             return nil
         }
@@ -191,6 +234,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
             if fresh { Haptics.success() }
         }
         streaming = true; errors["/personal/conversation"] = nil; fetchedAt["/personal/conversation"] = Date()
+        diagnose("stream:" + event.name)
         persistSoon()
     }
     func loadHistory() async {
@@ -240,6 +284,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
     func deliver(_ id: String) async {
         guard !issuing.contains(id), let api, let index = pending.firstIndex(where: { $0.id == id }), pending[index].state != .delivered else { return }
         issuing.insert(id); sending = true
+        diagnose("deliver-start:" + id)
         defer { issuing.remove(id); sending = !issuing.isEmpty; persistNow() }
         let entry = pending[index]
         do {
@@ -257,6 +302,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
             pending[index].state = .checking; pending[index].note = "正在发送"
             try SecureVault.save(pending, name: "outbox")
             let receipt = try await api.request(entry.path, body: entry.body)
+            diagnose("deliver-receipt:" + receipt["status"].string)
             if receipt["status"].string == "unknown" {
                 pending[index].state = .uncertain; pending[index].note = "送达待核实"
             } else if receipt["status"].string == "rejected" {
@@ -266,6 +312,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
             }
             await refresh(.chat)
         } catch {
+            diagnose("deliver-failed:" + id, error: error)
             if let e = error as? APIError, (400..<500).contains(e.status), e.status != 408, e.status != 429 {
                 pending[index].state = .rejected
             } else { pending[index].state = .uncertain }
