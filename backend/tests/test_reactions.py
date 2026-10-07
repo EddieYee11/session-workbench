@@ -178,4 +178,4 @@ def test_model_facing_tool_requires_capability_and_restricted_emoji():
     tool = next(tool for tool in tools if tool.name == "react_to_user_message")
     assert set(tool.inputSchema["required"]) == {"message_id", "reaction_token", "emoji"}
     assert set(tool.inputSchema["properties"]["emoji"]["enum"]) == set(REACTION_EMOJIS)
-    assert "Optional" in tool.description
+    assert "按需" in tool.description

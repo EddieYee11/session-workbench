@@ -99,6 +99,11 @@ struct ProposalCard: View {
                 if prompt.count > 60 {
                     Button(expanded ? "收起" : "展开") { expanded.toggle() }.buttonStyle(.quiet)
                 }
+                ApprovalScopeView(action: proposal["actual_action"])
+                if proposal["expires_at"].double > 0 {
+                    Text("请在 " + Date(timeIntervalSince1970: proposal["expires_at"].double).formatted(date: .omitted, time: .shortened) + " 前确认；过期不会执行。")
+                        .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                }
                 HStack(spacing: Space.md) {
                     Button("批准这项工作") { Task { await model.action("/personal/work/proposals/" + proposal.id.pathEncoded + "/approve", fields: ["explicit_authorization": .bool(true)], refresh: .tasks) } }.buttonStyle(.primaryAction)
                     Button("拒绝") { Task { await model.action("/personal/work/proposals/" + proposal.id.pathEncoded + "/reject", refresh: .tasks) } }.buttonStyle(.secondaryAction)
@@ -217,6 +222,7 @@ struct TaskDetailView: View {
                                     Circle().fill(index == visibleEvents.count - 1 ? Palette.accentText : Palette.textTertiary).frame(width: 8, height: 8).padding(.top, 6)
                                     VStack(alignment: .leading, spacing: Space.xxs) {
                                         Text(eventLabel(event)).font(TypeScale.callout)
+                                        RawDetails(title: "查看原始记录", value: event)
                                         if event["at"].double > 0 { Text(Date(timeIntervalSince1970: event["at"].double).formatted(date: .omitted, time: .shortened)).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary) }
                                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, Space.md)
                                 }

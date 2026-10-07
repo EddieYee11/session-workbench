@@ -1,6 +1,7 @@
 name: com-metrics
-version: "1.0.0"
-description: "Local counts and timings for Com model requests. Never stores prompt text, tool arguments or credentials."
+version: "1.1.0"
+description: "Local request metrics and session-bound Com tool sources. No prompt, tool argument or credential logging."
 provides_hooks:
   - pre_api_request
   - post_api_request
+  - pre_tool_call

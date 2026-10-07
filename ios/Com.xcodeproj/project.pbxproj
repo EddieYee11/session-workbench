@@ -57,6 +57,8 @@
 		EC75DFBF6253C22925EDF5C8 /* SecureVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD701A1D9C8010A312EDBAA0 /* SecureVault.swift */; };
 		EE9DECDB9C4E077B6D747A64 /* ComCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B77E8C2C95C01B5561165726 /* ComCore.framework */; };
 		EEBADA6156CA0B18C89ABFF5 /* MemoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33572A00E788D17257F98CFA /* MemoryView.swift */; };
+		F217A9A6D1542032701C49B9 /* AgentStageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC642CB1F86A6E654DBC9F62 /* AgentStageView.swift */; };
+		F58AD998EFE3F30617501345 /* AgentStageState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C64DC3DF802E376DBAD715B /* AgentStageState.swift */; };
 		FB6D04D23D6E1155B9411313 /* ComUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD70FB106536EB61E8647C65 /* ComUITests.swift */; };
 		FB77AF03F30D80A6F5CF5ACB /* ComShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 32B17AC38263805E1E207D27 /* ComShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		FDC8B2CFDE3208F960F3684F /* VoiceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F3B505991E493E1D75DF50 /* VoiceViews.swift */; };
@@ -139,6 +141,7 @@
 
 /* Begin PBXFileReference section */
 		0027E45C459F7817D2DB0E71 /* HealthReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthReader.swift; sourceTree = "<group>"; };
+		0C64DC3DF802E376DBAD715B /* AgentStageState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageState.swift; sourceTree = "<group>"; };
 		112109304BACF7CD33F59248 /* Com.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Com.entitlements; sourceTree = "<group>"; };
 		1D0BAAED9867FADA001EE9EC /* ComApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComApp.swift; sourceTree = "<group>"; };
 		27ADF1E9E7135D8158DED532 /* ComControls.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ComControls.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -192,8 +195,9 @@
 		E213EFA5C31A69835AF9BFAC /* UtilityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UtilityViews.swift; sourceTree = "<group>"; };
 		EC9EEA16311E67CA232A8EF8 /* AgencyViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgencyViews.swift; sourceTree = "<group>"; };
 		F5905E5E7870C25A835B2A77 /* FinanceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinanceViews.swift; sourceTree = "<group>"; };
+		FC642CB1F86A6E654DBC9F62 /* AgentStageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageView.swift; sourceTree = "<group>"; };
 		FDDB7C77B7EAB250E94DEFC6 /* ComUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ComUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		"TEMP_EEB9C63A-47F2-43A9-B2A9-2DE5FF10E3A5" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		"TEMP_568984B9-7ACE-4238-8FBF-2CB1ADF59C0B" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -245,6 +249,7 @@
 			isa = PBXGroup;
 			children = (
 				EC9EEA16311E67CA232A8EF8 /* AgencyViews.swift */,
+				FC642CB1F86A6E654DBC9F62 /* AgentStageView.swift */,
 				ABC19D47D6245D85B1C1DC84 /* ChatMotion.swift */,
 				5FFE0DAB1403070690833136 /* ChatView.swift */,
 				96B7B594AFDF5566F0807669 /* DesignSystem.swift */,
@@ -334,6 +339,7 @@
 		AF2737972E74E34D1B4EAC43 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				0C64DC3DF802E376DBAD715B /* AgentStageState.swift */,
 				3C83DD995EE7E078F527BC73 /* APIClient.swift */,
 				97904BD5D703965F324E2615 /* ChatTimeline.swift */,
 				9EC10A9618B910953C4BB6B5 /* ConversationState.swift */,
@@ -383,10 +389,10 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		"TEMP_04D1A47E-F383-4AF9-94A5-EB7E642CE2DA" /* ios */ = {
+		"TEMP_EDEEF7EF-34C1-478A-89B2-6B348203B0E8" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_EEB9C63A-47F2-43A9-B2A9-2DE5FF10E3A5" /* Config.xcconfig */,
+				"TEMP_568984B9-7ACE-4238-8FBF-2CB1ADF59C0B" /* Config.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -588,6 +594,7 @@
 			files = (
 				519DFD50E452B5757B49C65C /* AgencyModel.swift in Sources */,
 				14FED8F5DA80AF043C2E84DC /* AgencyViews.swift in Sources */,
+				F217A9A6D1542032701C49B9 /* AgentStageView.swift in Sources */,
 				AD9ED6D493EC9106142F621F /* AppModel.swift in Sources */,
 				932E50DA4B2E1B154A922806 /* ChatMotion.swift in Sources */,
 				35B97609DD142D1A95B57481 /* ChatView.swift in Sources */,
@@ -640,6 +647,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BA7EBFBF4845F53BEA2B6F5D /* APIClient.swift in Sources */,
+				F58AD998EFE3F30617501345 /* AgentStageState.swift in Sources */,
 				D9623439C0FED165B166AB23 /* ChatTimeline.swift in Sources */,
 				92844A44DDBC7B6A1E5022F7 /* ConversationState.swift in Sources */,
 				AE3A6D2C4E9E6E44453D6E86 /* JSON.swift in Sources */,
@@ -735,7 +743,7 @@
 		};
 		3090500630AD48E73BFDF9C7 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_EEB9C63A-47F2-43A9-B2A9-2DE5FF10E3A5" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_568984B9-7ACE-4238-8FBF-2CB1ADF59C0B" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -771,7 +779,7 @@
 				COM_APNS_ENVIRONMENT = "";
 				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2026100706;
+				CURRENT_PROJECT_VERSION = 2026100801;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -878,7 +886,7 @@
 		};
 		77A0C5116CC8A0F0C01DCC13 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_EEB9C63A-47F2-43A9-B2A9-2DE5FF10E3A5" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_568984B9-7ACE-4238-8FBF-2CB1ADF59C0B" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -914,7 +922,7 @@
 				COM_APNS_ENVIRONMENT = "";
 				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2026100706;
+				CURRENT_PROJECT_VERSION = 2026100801;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

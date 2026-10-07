@@ -9,58 +9,6 @@ import httpx
 from conversation import HermesClient
 
 
-# 这些块每轮都注入，所以按条数与字符数封顶；完整原文留在 Markdown 里按 source 回读。
-MEMORY_FACT_ITEMS = 12
-MEMORY_FACT_CHARS = 500
-MEMORY_RECALL_ITEMS = 5
-MEMORY_RECALL_CHARS = 300
-
-
-def _clip(value, limit: int):
-    if not isinstance(value, str):
-        return value
-    text = " ".join(value.split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + '…'
-
-
-def slim_facts(items) -> list[dict]:
-    """当前有效事实：留身份、正文和最小来源，去掉旧版本与被取代来源的全文。"""
-    slim = []
-    for item in (items or [])[:MEMORY_FACT_ITEMS]:
-        if not isinstance(item, dict):
-            continue
-        entry = {key: item[key] for key in ('id', 'category', 'kind') if key in item}
-        entry['content'] = _clip(item.get('content'), MEMORY_FACT_CHARS)
-        source = item.get('source')
-        if isinstance(source, dict):
-            entry['source'] = {key: _clip(source[key], 120) for key in ('message_id', 'quote') if source.get(key)}
-        elif source:
-            entry['source'] = _clip(str(source), 140)
-        slim.append(entry)
-    return slim
-
-
-def slim_memories(items) -> list[dict]:
-    """召回片段：只留正文与来源路径，完整原文按 source 回读。"""
-    slim = []
-    for item in (items or [])[:MEMORY_RECALL_ITEMS]:
-        if not isinstance(item, dict):
-            continue
-        entry = {}
-        body = item.get('text') or item.get('content')
-        if body:
-            entry['text'] = _clip(body, MEMORY_RECALL_CHARS)
-        source = item.get('source')
-        if isinstance(source, dict):
-            entry['source'] = _clip(source.get('path') or source.get('file') or json.dumps(source, ensure_ascii=False), 140)
-        elif source:
-            entry['source'] = _clip(str(source), 140)
-        if item.get('relevance') is not None:
-            entry['relevance'] = item['relevance']
-        slim.append(entry)
-    return slim
-
-
 class HermesRuntime(HermesClient):
     runtime_name = 'hermes'
     session_key = 'hermes_v2_session_id'
@@ -82,10 +30,12 @@ class HermesRuntime(HermesClient):
         self.delivered, self.failed_inputs = set(), set()
         self.path = self.state / 'hermes-runs.sqlite'
         with sqlite3.connect(self.path) as db:
+            db.execute('PRAGMA journal_mode=WAL')
             db.execute('CREATE TABLE IF NOT EXISTS runs(request_id TEXT PRIMARY KEY,fingerprint TEXT,run_id TEXT,session_id TEXT,status TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS run_events(run_id TEXT,event_hash TEXT,event TEXT,data TEXT,PRIMARY KEY(run_id,event_hash))')
             db.execute('CREATE TABLE IF NOT EXISTS steering(request_id TEXT PRIMARY KEY,run_id TEXT,text TEXT,state TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS context_requests(request_id TEXT PRIMARY KEY,source_hash TEXT NOT NULL,body TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS tool_sources(request_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,context TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS context_metrics(request_id TEXT PRIMARY KEY,data TEXT NOT NULL)')
         self.path.chmod(0o600)
 
@@ -165,6 +115,14 @@ class HermesRuntime(HermesClient):
         context = context or self.context
         request_id = request_id or context.get('origin_request_id')
         if not request_id: raise ValueError('A durable request ID is required')
+        # Persist the trusted caller binding before native admission; workers/background
+        # events retain their own authorized source instead of borrowing the main turn.
+        source={k:context[k] for k in ('origin_session_id','origin_message_id','origin_request_id') if context.get(k)}
+        encoded=json.dumps(source,sort_keys=True)
+        with sqlite3.connect(self.path) as db:
+            previous=db.execute('SELECT session_id,context FROM tool_sources WHERE request_id=?',(request_id,)).fetchone()
+            if previous and previous!=(self.session_id,encoded):raise ValueError('Tool source conflicts with original request')
+            db.execute('INSERT OR IGNORE INTO tool_sources VALUES(?,?,?)',(request_id,self.session_id,encoded))
         self.run_id = await self.submit_run(text, request_id)
         self.delivered.add(request_id)
         yield 'run.started', {'run_id': self.run_id}

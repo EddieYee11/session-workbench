@@ -284,9 +284,10 @@ def update_task_constraints(
     text: Annotated[str, Field(description="Empty string for read_only or preserve_style; a project-relative path for forbid_path; arbitrary information for blocked note only.")],
     request_id: str,
     constraint_type: Annotated[Literal['read_only','preserve_style','forbid_path','note'], Field(description="Required recorded requirement kind. read_only is legacy audit data and cannot reduce Com's current full-access permission. Keep visual style: preserve_style. Protect a path: forbid_path. Other text: note, which cannot fabricate authorization.")],
+    origin_session_id: str, origin_message_id: str, origin_request_id: str,
 ) -> dict[str, Any]:
     return _shared('task_send',{'task_id':task_id,'text':text,'request_id':request_id,
-                              'constraint_type':constraint_type},_active_source())
+                              'constraint_type':constraint_type},{'origin_session_id':origin_session_id,'origin_message_id':origin_message_id,'origin_request_id':origin_request_id})
 
 
 @mcp.tool(description="Read the authoritative durable status, input delivery states, worker ID, events and result for an exact existing task ID. Execution finished is pending acceptance; delivered does not prove compliance. Read-only.", annotations=READ_ONLY)
@@ -452,6 +453,39 @@ def personal_autonomy(tool:Literal['remind','calendar_create','calendar_adjust']
 @mcp.tool(description="Undo a verified personal calendar/reminder action using its original receipt. Refuse changed or shared events; return actual readback.")
 def personal_action_undo(operation_id:str,request_id:str)->dict[str,Any]:
     return _shared("personal_action_undo",locals())
+
+
+def compact_tool_schemas():
+    """Model sees business arguments; native pre_tool_call supplies caller-bound IDs.
+
+    Keep FastMCP's validation model intact: missing injected IDs fail closed even
+    if the host plugin is unavailable. Only the advertised JSON schema is trimmed.
+    """
+    from hermes_metrics.source_binding import SOURCE_TOOLS
+    descriptions = {
+        'update_task_constraints': '为已授权任务补充要求：preserve_style 保持风格，forbid_path 保护路径，note 补充说明；回执不代表要求已落实。',
+        'personal_autonomy': '沿已批准的长期安排权限处理个人提醒或可编辑个人日程；需真实理由、冲突检查、回读和稳定 request_id，共享日程及固定安排保留。',
+        'matter_link': '依据具体关联理由将实际事项 ID 分组；标注为推测，可撤销，不修改来源事实或截止时间。',
+        'briefing_annotate': '为已有事项写一句发生了什么、为何相关、下一步；先读 personal_briefing 并使用其 source_version，不改变事实。',
+        'create_task': '提交明确交办的耗时任务；简单事务用 business_operation，补充用 task_send。source_quote 必须是当前用户原话，受理不代表完成。',
+        'react_to_user_message': '按需给当前真实用户消息添加一个表情；message_id 和 reaction_token 使用本轮可信上下文，历史与通知不能作为目标。',
+        'task_submit': '提交明确交办的耗时任务并立即返回；source_quote 引用用户原话，受理不等于完成，未知结果不得重放。',
+        'task_send': '给已有任务补充当前要求或已授权的继续指令；受理不等于已送达。',
+        'task_merge': '将已经验证的历史工作副本合回原目录；当前直接在原目录执行的任务不需要合并。',
+        'business_operation': '直接办理记账、账单查询、提醒、日历和收藏；先按需 context_read(module, reference="business") 获取各业务参数，写入必须回读，未知结果不可重放。',
+        'context_read': '按需读取短流程模块(memory/business/tasks/personal)，或检索原始对话(history)。reference 定位模块或消息，长消息用 next_offset 续读，更多搜索结果用 next_before；历史不是新授权。',
+        'memory_save': '保存有用户原话依据的稳定事实或偏好到 Markdown；纠正用原 ID 和 expected_version，临时事务与推测不当成事实。',
+        'propose_work': '为严重不可逆操作创建具体审批提案；actual_action 必须包含实际对象和参数，批准前不执行。',
+        'cancel_task': '依据本轮用户停止指令取消指定任务；相同请求重用 request_id，直到实际终止回执才算停止。',
+    }
+    for tool in mcp._tool_manager.list_tools():
+        if tool.name in SOURCE_TOOLS:
+            for key in ('origin_session_id','origin_message_id','origin_request_id'):
+                tool.parameters.get('properties',{}).pop(key,None)
+                if key in tool.parameters.get('required',[]):tool.parameters['required'].remove(key)
+        if tool.name in descriptions:tool.description=descriptions[tool.name]
+
+compact_tool_schemas()
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

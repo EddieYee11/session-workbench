@@ -29,6 +29,7 @@ struct ChatView: View {
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
+            AgentStageView()
             ZStack(alignment: .bottomTrailing) {
             ScrollView {
                 VStack(spacing: Space.xl) {
@@ -311,7 +312,10 @@ struct MessageView: View, Equatable {
                         ForEach(Array(message["work_events"].array.suffix(12).enumerated()), id: \.offset) { _, event in
                             HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                                 StatusDot(tone: .neutral, size: 4)
-                                Text(eventLabel(event)).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity, alignment: .leading)
+                                VStack(alignment: .leading, spacing: Space.xxs) {
+                                    Text(eventLabel(event)).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity, alignment: .leading)
+                                    RawDetails(title: "查看原始记录", value: event)
+                                }
                             }.padding(.vertical, Space.xxs)
                         }
                     }.padding(.top, Space.sm)

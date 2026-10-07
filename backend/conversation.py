@@ -139,6 +139,10 @@ class HermesClient:
 class PersonalConversation:
     def __init__(self, state: Path, client: HermesClient | None = None):
         self.path = state / "personal-conversation.sqlite"
+        # Readers (SSE/MCP) must not hold up the durable writer. Private local DB only.
+        setup = sqlite3.connect(self.path, timeout=20)
+        try: setup.execute('PRAGMA journal_mode=WAL')
+        finally: setup.close()
         self.client = client or HermesClient(state)
         self.reactions = ReactionStore(state)
         self.wake = asyncio.Event()

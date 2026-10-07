@@ -22,7 +22,7 @@ def main():
         for name in ('config.yaml','.env','auth.json'):
             if (profile/name).exists():shutil.copy2(profile/name,backup/name);(backup/name).chmod(0o600)
         base=yaml.safe_load((home/'.hermes/config.yaml').read_text());cfg=yaml.safe_load((profile/'config.yaml').read_text())
-        cfg['model']={'default':'deepseek-v4-flash','provider':'deepseek'}
+        cfg.setdefault('model',{'default':'deepseek-v4-flash','provider':'deepseek'})
         cfg['platform_toolsets']={'api_server':['hermes-cli','com_workbench'],'cron':['hermes-cli','com_workbench']}
         cfg['terminal']={**base.get('terminal',{}),'backend':'local','cwd':str(home/'AI_Work_System')}
         cfg['skills']={**base.get('skills',{}),'external_dirs':[str(home/'.pi-gateway/skills'),str(home/'AI_Work_System/.agents/skills')], 'write_approval':False}
@@ -36,7 +36,13 @@ def main():
         cfg['timezone']='Asia/Shanghai'
         from hermes_prompt import SYSTEM_PROMPT
         prompt=SYSTEM_PROMPT
-        cfg.setdefault('agent',{})['system_prompt']=prompt
+        cfg.setdefault('agent',{})['system_prompt']=''  # Com supplies its contract once per run.
+        plugins=cfg.setdefault('plugins',{})
+        plugins['enabled']=list(dict.fromkeys([*plugins.get('enabled',[]),'com-metrics']))
+        plugins['disabled']=[x for x in plugins.get('disabled',[]) if x!='com-metrics']
+        target=profile/'plugins/com-metrics'
+        if target.exists():shutil.copytree(target,backup/'com-metrics')
+        shutil.copytree(Path(__file__).with_name('hermes_metrics'),target,dirs_exist_ok=True)
         (profile/'config.yaml').write_text(yaml.safe_dump(cfg,allow_unicode=True,sort_keys=False));(profile/'config.yaml').chmod(0o600)
         env={}
         for line in (profile/'.env').read_text().splitlines():
@@ -47,7 +53,7 @@ def main():
                 if k.startswith('DEEPSEEK_'):env[k]=v
         env['HERMES_YOLO_MODE']='1'
         (profile/'.env').write_text('\n'.join(k+'='+v for k,v in env.items())+'\n');(profile/'.env').chmod(0o600)
-        print(json.dumps({'profile':str(profile),'backup':str(backup),'mode':'full-access','model':'deepseek-v4-flash','prepared':True}));return
+        print(json.dumps({'profile':str(profile),'backup':str(backup),'mode':'full-access','model':cfg.get('model'),'prepared':True}));return
     dbpath=state/'personal-conversation.sqlite'
     with sqlite3.connect(dbpath) as db:
         if db.execute("SELECT COUNT(*) FROM messages WHERE role='user' AND status IN ('queued','sending','running')").fetchone()[0]:raise RuntimeError('Wait for current main inputs to settle')

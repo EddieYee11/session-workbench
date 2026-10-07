@@ -14,6 +14,17 @@ final class ComUITests: XCTestCase {
         add(attachment)
     }
 
+    @MainActor func testAgentStageCanExpandWithoutObscuringComposer() throws {
+        let app = app()
+        let stage = app.buttons["agent-stage-toggle"]
+        XCTAssertTrue(stage.waitForExistence(timeout: 15))
+        stage.tap()
+        XCTAssertTrue(app.staticTexts["工作台"].waitForExistence(timeout: 3))
+        capture("agent-stage-expanded", app: app)
+        stage.tap()
+        XCTAssertFalse(app.staticTexts["工作台"].exists)
+    }
+
     @MainActor func testFinanceDrilldownAndProjectEvidence() throws {
         let app = app()
         XCTAssertTrue(app.buttons["tab-今天"].waitForExistence(timeout: 15))

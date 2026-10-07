@@ -51,6 +51,7 @@ struct WorkApprovalCard: View {
                         }
                     }
                 }
+                ApprovalScopeView(action: params)
                 RawDetails(title: "操作范围与完整参数", value: params)
             }
         }
@@ -64,6 +65,37 @@ struct WorkApprovalCard: View {
             defer { submitting = false }
             do { _ = try await model.mutate("/approvals/" + approval.id.pathEncoded, fields: fields); await onComplete() }
             catch { model.banner = error.localizedDescription }
+        }
+    }
+}
+
+/// The actual recipients/objects/amounts remain visible before any decision.
+struct ApprovalScopeView: View {
+    let action: JSON
+    private var fields: [(String, String)] {
+        let args = action["args"].isNull ? action : action["args"]
+        let labels = [("to", "收件人"), ("recipient", "接收方"), ("recipients", "接收方"),
+                      ("cc", "抄送"), ("bcc", "密送"), ("amount", "金额"), ("currency", "币种"),
+                      ("path", "路径"), ("paths", "路径"), ("id", "对象编号"), ("ids", "对象编号"),
+                      ("target", "操作对象"), ("subject", "主题"), ("summary", "事项"),
+                      ("body", "正文"), ("content", "内容"), ("command", "具体命令")]
+        return labels.compactMap { key, label in
+            guard !args[key].isNull else { return nil }
+            let value = args[key].string.isEmpty ? args[key].pretty : args[key].string
+            return value.isEmpty ? nil : (label, value)
+        }
+    }
+    var body: some View {
+        if !action.isNull && !action.object.isEmpty {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                ForEach(Array(fields.enumerated()), id: \.offset) { _, field in
+                    VStack(alignment: .leading, spacing: Space.xxs) {
+                        Text(field.0).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                        Text(field.1).font(TypeScale.callout).textSelection(.enabled)
+                    }
+                }
+                RawDetails(title: "查看全部操作参数", value: action)
+            }
         }
     }
 }

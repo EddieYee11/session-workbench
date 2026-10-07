@@ -97,7 +97,7 @@ fun agentWorkEvents(message:JSONObject):List<AgentWorkEvent> = message.array("wo
   status in setOf("done","completed","execution_finished")||rawKind.endsWith(".completed")->"done"
   else->rawKind
  }
- if(text.isBlank())null else AgentWorkEvent(kind,agentEventDisplayText(text,status),event.optString("id"),event.optDouble("at",0.0))
+ if(text.isBlank())null else AgentWorkEvent(kind,event.optString("display_text").ifBlank{agentEventDisplayText(text,status)},event.optString("id"),event.optDouble("at",0.0))
 }.distinctBy{it.id.ifBlank{"${it.kind}:${it.at}:${it.text}"}}
 
 private fun agentToolEvent(tool:String):AgentWorkEvent?{

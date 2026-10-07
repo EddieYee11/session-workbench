@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-PROPOSAL_TTL_SECONDS = 24 * 60 * 60
+PROPOSAL_TTL_SECONDS = 30 * 60
 VALID_AGENTS = {"pi", "codex", "claude", "hermes"}
 VALID_CODEX_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
 
@@ -193,7 +193,8 @@ class WorkProposalStore:
                 "ORDER BY CASE WHEN status='proposed' AND expires_at>? THEN 0 ELSE 1 END,"
                 "created_at DESC LIMIT ?", (time.time(), limit),
             ).fetchall()
-            return [self._row(row) for row in rows]
+            now=time.time()
+            return [{**self._row(row), **({'status':'expired'} if row['status']=='proposed' and row['expires_at']<=now else {})} for row in rows]
 
     def claim_approval(
         self, proposal_id: str, approval_request_id: str, *, now: float | None = None

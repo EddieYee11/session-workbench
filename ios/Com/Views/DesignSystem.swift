@@ -748,10 +748,8 @@ func displayStatus(_ value: String) -> String {
      "execution_finished": "待验收", "completed": "已完成", "cancel_requested": "正在停止", "cancelled": "已取消", "failed": "失败",
      "paused": "已暂停", "accepted": "已受理", "stopped": "已停止", "idle": "空闲", "ended": "已结束"][value] ?? value
 }
-func eventLabel(_ event: JSON) -> String {
-    for key in ["summary", "text", "title", "type", "kind"] { if !event[key].string.isEmpty { return event[key].string } }
-    return "执行记录"
-}
+func eventLabel(_ event: JSON) -> String { AgentCopy.event(event) }
+
 func agentName(_ value: String) -> String { ["hermes": "Hermes", "pi": "Pi", "claude": "Claude", "codex": "Codex"][value] ?? value }
 func textContent(_ value: JSON) -> String {
     if case .string = value { return value.string }
@@ -878,7 +876,7 @@ struct Companion: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var drag = CGSize.zero
     @State private var touched = false
-    private var moving: Bool { model.active && scenePhase == .active && !reduce }
+    private var moving: Bool { model.active && model.busy && scenePhase == .active && !reduce && !ProcessInfo.processInfo.isLowPowerModeEnabled }
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !moving)) { timeline in
             PixelCrab(state: CrabState(state), compact: compact, moving: moving, time: moving ? timeline.date.timeIntervalSinceReferenceDate : 0)
@@ -900,7 +898,7 @@ struct CompanionPortrait: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.scenePhase) private var scenePhase
-    private var moving: Bool { model.active && scenePhase == .active && !reduce }
+    private var moving: Bool { model.active && model.busy && scenePhase == .active && !reduce && !ProcessInfo.processInfo.isLowPowerModeEnabled }
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 15, paused: !moving)) { timeline in
             PixelCrab(state: CrabState(model.roleState == "陪伴" && !model.streaming ? "offline" : model.roleState), compact: true, moving: moving, time: moving ? timeline.date.timeIntervalSinceReferenceDate : 0)

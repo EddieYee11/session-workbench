@@ -101,6 +101,10 @@ def worker_error(events, run_id=None):
 class TaskStore:
     def __init__(self, state: Path):
         self.path = state / 'tasks.sqlite'
+        # Readers (SSE/MCP) must not hold up the durable writer. Private local DB only.
+        setup = sqlite3.connect(self.path, timeout=20)
+        try: setup.execute('PRAGMA journal_mode=WAL')
+        finally: setup.close()
         with self.db() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, data TEXT NOT NULL);

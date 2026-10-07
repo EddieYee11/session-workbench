@@ -21,7 +21,7 @@ def test_constraint_tool_requires_explicit_enum_without_authorizing_notes():
     kind=schema['properties']['constraint_type']
     assert set(kind['enum'])=={'read_only','preserve_style','forbid_path','note'}
     assert 'default' not in kind
-    assert "text=''" in tool.description and 'blocked' in tool.description
+    assert 'note' in tool.description and '回执不代表' in tool.description
 
 
 def test_delegation_schema_defaults_to_full_access_but_keeps_real_source_required():
@@ -33,8 +33,12 @@ def test_delegation_schema_defaults_to_full_access_but_keeps_real_source_require
         schema=tool.inputSchema
         assert schema['properties']['sandbox']['default']=='danger-full-access'
         assert 'sandbox' not in schema['required']
-        assert {'source_quote','origin_message_id','origin_request_id','origin_session_id'}<=set(schema['required'])
-        assert 'audit' in tool.description and 'danger-full-access' in tool.description
+        assert 'source_quote' in schema['required']
+        assert not {'origin_message_id','origin_request_id','origin_session_id'} & set(schema['properties'])
+        # Wire validation remains stricter than the advertised model schema.
+        fields=hermes_mcp.mcp._tool_manager.get_tool(name).fn_metadata.arg_model.model_fields
+        assert all(fields[k].is_required() for k in ('origin_message_id','origin_request_id','origin_session_id'))
+        assert '受理不' in tool.description
         assert tool.annotations.readOnlyHint is False
     merge=next(t for t in tools if t.name=='task_merge')
-    assert 'historical workspace_copy' in merge.description and 'need no merge' in merge.description
+    assert '历史工作副本' in merge.description and '不需要合并' in merge.description

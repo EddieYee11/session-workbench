@@ -5,7 +5,7 @@ h=Path.home();state=h/'.session-workbench';state.mkdir(exist_ok=True);state.chmo
 root=Path(__file__).resolve().parent
 python=str(state/'venv/bin/python')
 subprocess.run([python,'-m','pip','install','-q','-r',str(root/'requirements.txt')],check=True)
-plist={'Label':'work.eddie.sessions','ProgramArguments':[python,'-m','uvicorn','app:app','--host','127.0.0.1','--port','8650','--no-access-log'],'WorkingDirectory':str(root),'EnvironmentVariables':{'PATH':'/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin','WORKBENCH_STATE':str(state)},'RunAtLoad':True,'KeepAlive':True,'StandardOutPath':str(state/'stdout.log'),'StandardErrorPath':str(state/'stderr.log')}
+plist={'Label':'work.eddie.sessions','ProgramArguments':[python,'-m','uvicorn','app:app','--host','127.0.0.1','--port','8650','--no-access-log'],'WorkingDirectory':str(root),'EnvironmentVariables':{'PATH':'/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin','WORKBENCH_STATE':str(state)},'RunAtLoad':True,'KeepAlive':True,'ThrottleInterval':30,'StandardOutPath':str(state/'stdout.log'),'StandardErrorPath':str(state/'stderr.log')}
 p=h/'Library/LaunchAgents/work.eddie.sessions.plist'
 if p.exists():
  subprocess.run(['launchctl','bootout',f'gui/{os.getuid()}',str(p)],capture_output=True)

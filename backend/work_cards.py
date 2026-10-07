@@ -1,5 +1,6 @@
 """Present recorded work without turning an agent's answer into acceptance proof."""
 import json
+from event_copy import display_event
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -58,9 +59,11 @@ def event_rows(task):
     for event in task.get('events', [])[-40:]:
         kind = event['kind']
         text = event.get('text', '')
+        tool = ''
         if kind.startswith('tool.'):
             try:
                 payload = json.loads(text)
+                tool = payload.get('tool') or payload.get('tool_name') or ''
                 text = f"{payload.get('tool') or '工具'}：" + {
                     'tool.started': '开始调用', 'tool.completed': '调用结束',
                     'tool.failed': '调用失败',
@@ -70,7 +73,8 @@ def event_rows(task):
         elif not text:
             text = LABELS.get(kind, kind)
         rows.append({'id': f"{task['id']}:{event['seq']}", 'kind': kind,
-                     'text': str(text)[:1000], 'at': event['at']})
+                     'text': str(text)[:1000], 'at': event['at'],
+                     'display_text': display_event({**event,'tool':tool})})
     return rows
 
 
@@ -143,8 +147,11 @@ def project_work(message):
     message['tasks'] = tools + message['linked_tasks']
     message['work_events'] = [
         {'id': t['id'], 'kind': t.get('kind', 'tool'), 'text': t['title'],
-         'at': t.get('started_at', message['created_at']), 'status': t.get('status')}
+         'at': t.get('started_at', message['created_at']), 'status': t.get('status'),
+         'display_text': display_event(t)}
         for t in tools
     ] + card.get('work_events', [])
+    for event in message['work_events']:
+        event.setdefault('display_text', display_event(event))
     message['summary'] = summarize(message, tools, card) if message['role'] == 'user' else None
     return message

@@ -1,16 +1,10 @@
 # Com
 
-## 最新开发版本 · 2026-10-07
+## 最新开发版本 · 2026-10-08
 
-仓库新增原生 iOS 工程 `ios/`（iOS 26+，版本 1.0.0 / build 1），与 Android 共用 Com! 服务协议。iPhone 17 Pro 的签名构建、安装与正常启动已确认；键盘跟随、聊天发送动效、回执交接和历史阅读位置通过模拟器检查。设备手持体验仍待日常使用确认。实现与边界见 [iOS 工程说明](ios/README.md) 和 [验收记录](ios/Docs/VERIFICATION.md)。
+当前主线是 Mac mini 上的 Hermes，Android/iOS 共用已有 Com 服务。iOS 构建 **2026100801** 加入真实工作状态区和统一工作文案，保留稳定滚动、平滑回到最新及语音自动发送。后端工具来源参数由运行时补齐，记忆与详细流程按需读取，增加分项开销与缓存计量，并启用核心 SQLite 库 WAL。
 
-本次源码包含此前完成的共享知识同步、Hermes 回复状态、Android 语音光效以及 iOS 聊天连续性交互。Android 版本号仍为 2.0.5；此次只更新 GitHub 开发分支，没有创建 Android APK Release 或应用商店包。
-
-当前版本 **Com! 1.9.1 / Android versionCode 22 / 后端 1.9.0、API 契约 2**。新增跟手顶栏、消息滑动键盘手势、默认折叠操作详情和更具体的形象状态；搜索只保留左上入口，回到最新改为小圆形箭头。1.9.0 已修复今天计数与缓存语义、阅读遮挡、重复工作顶栏和导航标签，新增成果登记／鉴权下载／预览分享、主线历史分页与搜索、文字分享接入、任务双栏和连接诊断。Pi 主线与 Claude／Codex 工作入口继续保留。
-
-新协作 Agent 先阅读 [1.9.1 交互更新与验证](docs/COM_1.9.1_INTERACTION.md)，再阅读 [1.9.0 升级范围与验证](docs/COM_1.9_UPGRADE.md)，再按需查 [逐页功能与协作开发说明](docs/COM_APP_CURRENT_STATE.md)。后者保留较早版本的详细基线，当前交互以 1.9.1 说明为准，其他功能和未实现提案参照 1.9.0。
-
-Com! 是 Android 应用（`work.eddie.sessions`）与 Mac mini 会话服务，沿用原包名、签名、配对和历史。当前优化包已覆盖安装到实体手机，后端已部署；下载与 PDF 读取有真机证据，完整手持预览、实际外部分享、折叠和语音路径仍保留单独验收。当前安装包与设备日志位于本机 `verification/com-1.9.1/`（1.9.0 的取用成果证据保留在原目录），未发布新的 GitHub Release。
+此次更新的实际采纳范围、测试、部署依赖和未实现规划见 [两份报告更新说明](docs/COM_REPORT_UPDATE_20261008.md)。iOS Release 源码与安装资产见 [GitHub Releases](https://github.com/EddieYee11/session-workbench/releases)；公开 IPA 为无签名包，需要自行签名，不能直接当作通用安装包。下方历次记录保留其当时状态。
 
 ## 历史实现背景
 

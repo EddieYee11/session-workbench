@@ -44,7 +44,8 @@ def test_context_is_system_side_and_optional_state_is_bounded(tmp_path):
     working=build(tmp_path,MARKER+json.dumps(state)+'\n用户消息：\n'+raw)
     assert working.user==raw
     assert working.sizes['context_chars']<2000
-    assert 'origin_request_id' in working.instructions and 'huge' not in working.instructions
+    assert 'origin_request_id' not in working.instructions and 'huge' not in working.instructions
+    assert json.loads(working.source)['source']['origin_request_id']=='r1'
     assert all('origin_request_id' not in t['content'] for t in working.history)
 
 
@@ -70,7 +71,10 @@ def test_native_request_contains_raw_user_and_ephemeral_context_without_memory(t
     asyncio.run(run())
     body=posted[0]
     assert body['input']=='你好'
-    assert 'origin_message_id' in body['instructions']
+    assert 'origin_message_id' not in body['instructions']
+    with sqlite3.connect(tmp_path/'hermes-runs.sqlite') as db:
+        source=json.loads(db.execute('SELECT context FROM tool_sources WHERE request_id=?',('r1',)).fetchone()[0])
+    assert source=={'origin_message_id':'m1','origin_request_id':'r1'}
     assert body['model_options']['reasoning']['effort']=='none'
     assert len(body['instructions'])<1700
 

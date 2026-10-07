@@ -104,3 +104,15 @@ def test_recover_inflight_marks_unknown_without_resending(tmp_path: Path):
     repeat = store.claim_approval(first["id"], "approval-00001", now=1004.0)
     assert repeat["claimed_now"] is False
     assert repeat["status"] == "unknown"
+
+
+def test_new_approval_expires_after_thirty_minutes_without_claim(tmp_path, monkeypatch):
+    import work_dispatch
+    workspace=tmp_path/'workspace';workspace.mkdir()
+    store=WorkProposalStore(tmp_path/'state',workspace)
+    first=proposal(store)
+    assert first['expires_at']==2800
+    monkeypatch.setattr(work_dispatch.time,'time',lambda:2801)
+    assert store.list()[0]['status']=='expired'
+    with pytest.raises(ValueError,match='expired'):
+        store.claim_approval(first['id'],'approval-after-expiry')

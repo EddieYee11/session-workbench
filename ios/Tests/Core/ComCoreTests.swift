@@ -23,4 +23,14 @@ final class ComCoreTests: XCTestCase {
         XCTAssertNotEqual(rows[0].id, rows[1].id)
         XCTAssertTrue(rows.contains { $0.pending?.state == .uncertain })
     }
+    func testAgentStageHonorsConnectionAndReviewInsteadOfInventingCompletion() {
+        let done: JSON = .object(["role": .string("assistant"), "status": .string("completed")])
+        XCTAssertEqual(AgentStageState.resolve(runs: [], tasks: [], messages: [done], connected: false), .offline)
+        let review: JSON = .object(["status": .string("awaiting_review")])
+        XCTAssertEqual(AgentStageState.resolve(runs: [], tasks: [review], messages: [done], connected: true), .review)
+        let run: JSON = .object(["status": .string("running"), "phase": .string("executing")])
+        XCTAssertEqual(AgentStageState.resolve(runs: [run], tasks: [], messages: [done], connected: true), .working)
+        let raw: JSON = .object(["kind": .string("tool.completed"), "text": .string("secret_internal_tool")])
+        XCTAssertEqual(AgentCopy.event(raw), "这一步已结束，可查看记录")
+    }
 }
