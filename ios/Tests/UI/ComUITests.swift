@@ -13,6 +13,73 @@ final class ComUITests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+
+    @MainActor func testFinanceDrilldownAndProjectEvidence() throws {
+        let app = app()
+        XCTAssertTrue(app.buttons["tab-今天"].waitForExistence(timeout: 15))
+        app.buttons["tab-今天"].tap()
+        XCTAssertTrue(app.buttons["今日花销"].waitForExistence(timeout: 5))
+        capture("today-money-and-actions", app: app)
+        app.buttons["本月花销"].tap()
+        XCTAssertTrue(app.navigationBars["支出明细"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["expense-category-food"].waitForExistence(timeout: 5))
+        capture("expense-ranking", app: app)
+        app.buttons["expense-category-food"].tap()
+        XCTAssertTrue(app.staticTexts["午饭 · 一碗面"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["2026-10-07"].exists)
+        capture("expense-category-transactions", app: app)
+        app.buttons["完成"].firstMatch.tap()
+        app.buttons["完成"].firstMatch.tap()
+        app.buttons["tab-工作"].tap()
+        XCTAssertTrue(app.buttons["project-card-preview-project"].waitForExistence(timeout: 5))
+        capture("work-project-board", app: app)
+        app.buttons["project-card-preview-project"].tap()
+        XCTAssertTrue(app.buttons["project-item-preview-board-item"].waitForExistence(timeout: 5))
+        capture("project-progress", app: app)
+        app.buttons["project-item-preview-board-item"].tap()
+        XCTAssertTrue(app.navigationBars["进展依据"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["会话中的依据"].exists)
+        capture("project-source-evidence", app: app)
+    }
+
+    @MainActor func testAgencyPreparePostponeGoalAndSettings() throws {
+        let app = app()
+        XCTAssertTrue(app.buttons["tab-今天"].waitForExistence(timeout: 15))
+        app.buttons["tab-今天"].tap()
+        capture("agency-today", app: app)
+        if !app.buttons["看下一步"].firstMatch.isHittable { app.swipeUp() }
+        app.buttons["看下一步"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["agency-prepare"].waitForExistence(timeout: 5))
+        app.buttons["agency-prepare"].tap()
+        XCTAssertTrue(app.staticTexts["资料已整理"].waitForExistence(timeout: 5))
+        capture("agency-prepared", app: app)
+        app.buttons["完成"].tap()
+        app.buttons["晚点"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["agency-action-result"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["给今天留一段专注时间"].exists)
+        capture("agency-postponed", app: app)
+        if !app.buttons["主动性设置"].isHittable { app.swipeDown(); app.swipeDown() }
+        app.buttons["主动性设置"].tap()
+        XCTAssertTrue(app.navigationBars["主动性"].waitForExistence(timeout: 5))
+        app.switches["暂停主动消息"].tap()
+        XCTAssertTrue(app.staticTexts["先安静一会儿。"].exists)
+        capture("agency-settings", app: app)
+        app.swipeUp()
+        app.buttons["保存安排"].tap()
+        XCTAssertTrue(app.staticTexts["主动整理已暂停"].waitForExistence(timeout: 5))
+        app.buttons["tab-任务"].tap()
+        app.buttons["目标"].tap()
+        app.buttons["添加目标"].tap()
+        for (id, text) in [("goal-title", "Finish a film"), ("goal-outcome", "A finished video"), ("goal-next", "Choose the footage")] {
+            let field = app.descendants(matching: .any)[id].firstMatch
+            XCTAssertTrue(field.waitForExistence(timeout: 5)); field.tap(); field.typeText(text)
+        }
+        app.swipeUp()
+        app.buttons["开始跟进"].tap()
+        XCTAssertTrue(app.staticTexts["Finish a film"].waitForExistence(timeout: 5))
+        capture("agency-goal-created", app: app)
+    }
+
     @MainActor func testRichReplyAndConnectionActions() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-rich-reply", "-appearance", "light"]
@@ -57,8 +124,9 @@ final class ComUITests: XCTestCase {
         let app = app()
         XCTAssertTrue(app.buttons["tab-今天"].waitForExistence(timeout: 15))
         app.buttons["tab-今天"].tap()
+        if !app.buttons.containing(.staticText, identifier: "给今天留一段专注时间").firstMatch.isHittable { app.swipeUp() }
         app.buttons.containing(.staticText, identifier: "给今天留一段专注时间").firstMatch.tap()
-        XCTAssertTrue(app.navigationBars["事项"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["下一步"].waitForExistence(timeout: 5))
         app.buttons["完成"].tap()
         app.buttons["tab-任务"].tap()
         app.buttons["待决定"].tap()

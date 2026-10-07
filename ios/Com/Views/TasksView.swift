@@ -26,7 +26,9 @@ struct TaskSummary: View {
 struct TasksView: View {
     @Environment(AppModel.self) private var model
     @State private var filter = "全部"
-    @State private var timed = false
+    @State private var section = "执行中"
+    @State private var addingGoal = false
+    private var timed: Bool { section == "定时" }
     private var tasks: [JSON] { model.datasets["/personal/tasks"]?["items"].array ?? [] }
     private var filtered: [JSON] {
         tasks.filter { task in
@@ -46,8 +48,13 @@ struct TasksView: View {
     }
     var body: some View {
         ScreenScaffold(title: "任务", freshness: timed ? "/personal/automations" : "/personal/tasks") {
-            Picker("任务或定时工作", selection: $timed) { Text("任务").tag(false); Text("定时").tag(true) }.pickerStyle(.segmented)
-            if timed {
+            Picker("任务分类", selection: $section) { Text("目标").tag("目标"); Text("执行中").tag("执行中"); Text("定时").tag("定时") }.pickerStyle(.segmented)
+            if section == "目标" {
+                GoalsContent(adding: $addingGoal)
+            } else if timed {
+                NavigationLink { AgencySettings() } label: {
+                    ListRow(symbol: "sun.max", title: "晨报与主动安排", subtitle: "调整晨晚报、每周复盘和提醒强度")
+                }.buttonStyle(.row).background(Palette.surface, in: .rect(cornerRadius: Radius.lg))
                 let jobs = model.datasets["/personal/automations"]?["jobs"].array ?? []
                 if jobs.isEmpty { EmptyState(title: "当前没有读取到定时工作", description: "已安排的工作由 Mac mini 执行。", symbol: "clock") }
                 VStack(spacing: Space.md) {
@@ -74,6 +81,7 @@ struct TasksView: View {
                 }
             }
         }.refreshable { await model.refresh(.tasks) }
+        .sheet(isPresented: $addingGoal) { GoalEditor() }
     }
 }
 

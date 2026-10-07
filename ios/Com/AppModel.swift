@@ -10,7 +10,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
 }
 
 @MainActor @Observable final class AppModel {
-    var tab: SectionTab = .chat
+    var tab: SectionTab = .today
     var base = UserDefaults.standard.string(forKey: "base") ?? "https://pi.eddiegao.work:8443/sessions"
     var isPaired = false
     var conversation = ConversationState()
@@ -146,7 +146,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         devices.stop()
         if !value {
             if voice.phase == .recording { voice.finishRecording() }
-            persistNow(); return
+            persistNow(); ComNotifications.schedule(); return
         }
         showShareInbox = !ShareInbox.all().isEmpty
         if UserDefaults.standard.bool(forKey: "openVoiceIntent") { UserDefaults.standard.set(false, forKey: "openVoiceIntent"); openVoice(quick: true) }
@@ -169,6 +169,9 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
     }
     func load(_ path: String) async -> JSON? {
+        #if DEBUG
+        if isUITesting { return datasets[path] }
+        #endif
         guard let api else { return nil }
         let route = String(path.split(separator: "?", maxSplits: 1)[0])
         diagnose("load-start:" + route)
@@ -193,14 +196,14 @@ enum SectionTab: String, CaseIterable, Identifiable {
     func refresh(_ tab: SectionTab) async {
         switch tab {
         case .chat:
-            if let data = await load("/personal/conversation") { conversation.apply(data, snapshot: true) }
+            if let data = await load("/personal/conversation") { conversation.apply(data, snapshot: true); ComNotifications.observe(conversation.messages) }
         case .today:
-            _ = await load("/personal/briefing"); _ = await load("/personal/overview")
+            _ = await load("/personal/agency"); _ = await load("/personal/finance"); _ = await load("/personal/briefing"); _ = await load("/personal/overview")
         case .tasks:
-            _ = await load("/personal/tasks"); _ = await load("/personal/work/proposals?limit=20")
+            _ = await load("/personal/agency"); _ = await load("/personal/tasks"); _ = await load("/personal/work/proposals?limit=20")
             _ = await load("/personal/automations")
         case .memory: _ = await load("/personal/memory")
-        case .work: _ = await load("/sessions")
+        case .work: _ = await load("/personal/projects"); _ = await load("/sessions")
         }
     }
     private func startStream() {
@@ -229,6 +232,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         let before = Set(conversation.messages.filter { $0["status"].string == "completed" }.map(\.id))
         let previousRevision = conversation.revision
         conversation.apply(value, snapshot: event.name == "snapshot")
+        ComNotifications.observe(conversation.messages)
         if streaming && event.name == "update" && previousRevision > 0 {
             let fresh = value["messages"].array.contains { $0["role"].string == "assistant" && $0["status"].string == "completed" && !before.contains($0.id) }
             if fresh { Haptics.success() }
@@ -362,6 +366,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
     }
     func disconnect() async {
+        if let api { await ComPush.disable(using: api) }
         await setActive(false)
         SecureVault.deleteSecret("token"); api = nil; isPaired = false; streaming = false
     }
@@ -443,6 +448,7 @@ extension AppModel {
         conversation.revision += 1
     }
     private func seedUIPreview() {
+        tab = .chat
         active = true
         isPaired = true
         moreHistory = false
@@ -494,6 +500,16 @@ extension AppModel {
         datasets["/personal/tasks"] = .object(["items": fixture["tasks"]])
         datasets["/personal/memory"] = .object(["items": fixture["memories"], "categories": .array([.string("工作"), .string("兴趣"), .string("关于我")])])
         datasets["/sessions"] = .object(["sessions": fixture["sessions"]])
+        datasets["/personal/agency"] = .object([
+            "cards": .array(fixture["cards"].array.map { card in
+                var value = card; value["kind"] = .string("meeting"); value["source_label"] = .string("日历"); value["version"] = .string("preview-1")
+                value["facts"] = .object(["安排": .string("确认今天的内容重点"), "来源": .string("界面验收资料")]); return value
+            }),
+            "goals": .array([]), "sources": .array([]), "working": .array(Array(fixture["tasks"].array.prefix(1))), "reports": .array([]),
+            "settings": .object(["paused": .bool(false), "intensity": .string("balanced"), "items": .array([
+                .object(["id": .string("morning-briefing"), "at": .string("09:00"), "enabled": .bool(true)]),
+                .object(["id": .string("evening-review"), "at": .string("21:00"), "enabled": .bool(true)])])])])
+        seedDashboardPreview()
         for path in datasets.keys { fetchedAt[path] = Date() }
     }
 }

@@ -6,37 +6,10 @@ struct TodayView: View {
     private var briefing: JSON { model.datasets["/personal/briefing"] ?? .null }
     private var overview: JSON { model.datasets["/personal/overview"] ?? .null }
     var body: some View {
-        ScreenScaffold(title: "今天", subtitle: Date().formatted(.dateTime.month(.wide).day().weekday(.wide)), freshness: "/personal/briefing") {
-            // 1 · Focus: the one hero element of the screen.
-            if let focus = briefing["cards"].array.first {
-                Button { model.selectedMatter = focus } label: { TodayFocusCard(matter: focus) }.buttonStyle(MessagePressStyle()).detailSource("matter-" + focus.id)
-            } else {
-                Card(padding: Space.xl) {
-                    VStack(alignment: .leading, spacing: Space.lg) {
-                        HStack(alignment: .center, spacing: Space.md) {
-                            CompanionPortrait(size: 44)
-                            Text("你好，小野").font(TypeScale.title)
-                        }
-                        Text(model.errors["/personal/briefing"] == nil ? "这里会整理你的日程、消息与值得留意的变化。当前没有待看的事项，我们随时可以聊。" : "暂时没有连上简报来源。你可以下拉重试，或先继续聊天。")
-                            .font(TypeScale.callout).foregroundStyle(Palette.textSecondary).lineSpacing(4)
-                        Button("聊一聊", systemImage: "bubble.left") { model.tab = .chat }.buttonStyle(.primaryAction)
-                    }
-                }
-            }
-            // 2 · Worth noticing
-            if briefing["cards"].array.count > 1 {
-                GroupSection("值得留意") {
-                    GroupedCard(dividerInset: Layout.rowInset) {
-                        ForEach(briefing["cards"].array.dropFirst().map(RemoteRow.init)) { row in
-                            let summary = row.value["why"].string.isEmpty ? row.value["next_step"].string : row.value["why"].string
-                            Button { model.selectedMatter = row.value } label: {
-                                ListRow(symbol: sourceSymbol(row.value["source"].string), title: row.value["title"].string,
-                                        subtitle: summary, subtitleLines: 3, meta: sourceName(row.value["source"].string))
-                            }.buttonStyle(.row).detailSource("matter-" + row.id)
-                        }
-                    }
-                }
-            }
+        ScreenScaffold(title: "今天", compact: true) {
+            AgencyHome()
+            DisclosureGroup("日历、账务与身体数据") {
+                VStack(alignment: .leading, spacing: Space.xl) {
             // 3 · Calendar
             if overview["calendar"]["available"].bool {
                 GroupSection("日程", footer: overview["calendar"]["source"].string + " · 未来 14 天") {
@@ -53,23 +26,6 @@ struct TodayView: View {
                                 }
                                 Spacer(minLength: 0)
                             }.rowPadding()
-                        }
-                    }
-                }
-            }
-            // 4 · Money
-            if overview["finance"]["available"].bool {
-                GroupSection("账务") {
-                    ForEach(overview["finance"]["totals"].object.keys.sorted(), id: \.self) { currency in
-                        let totals = overview["finance"]["totals"][currency]
-                        Card {
-                            VStack(alignment: .leading, spacing: Space.md) {
-                                Text("今日支出 · \(currency)").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
-                                Text(money(totals["today_expense_minor"], currency: currency)).font(TypeScale.largeTitle.weight(.semibold)).monospacedDigit().contentTransition(.numericText())
-                                Rectangle().fill(Palette.separator).frame(height: 0.5)
-                                HStack { Text("本月支出"); Spacer(); Text(money(totals["expense_minor"], currency: currency)).monospacedDigit() }.font(TypeScale.callout)
-                                Text("原账本 · \(overview["finance"]["month"].string)\(overview["finance"]["stale"].bool ? " · 缓存数据" : "")").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-                            }
                         }
                     }
                 }
@@ -123,6 +79,8 @@ struct TodayView: View {
             } trailing: {
                 NavigationLink("管理连接") { ConnectionsView() }.buttonStyle(.quiet)
             }
+                }
+            }.font(TypeScale.callout).tint(Palette.textSecondary)
         }.refreshable { await model.refresh(.today) }
     }
     private func healthValue(_ title: String, key: String, unit: String) -> some View {

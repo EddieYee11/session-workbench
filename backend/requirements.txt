@@ -7,7 +7,7 @@ fastapi==0.142.1
 h11==0.16.0
 httpcore==1.0.9
 httptools==0.8.0
-httpx==0.28.1
+httpx[http2]==0.28.1
 idna==3.20
 iniconfig==2.3.0
 opentelemetry-api==1.45.0
@@ -33,3 +33,6 @@ mcp>=1.23,<2
 # Reuse the separately authorized Google Calendar account.
 google-auth==2.59.1
 requests==2.34.2
+
+# APNs uses ES256 provider tokens.
+PyJWT[crypto]>=2.10,<3

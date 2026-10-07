@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+<key>ComAPNSEnvironment</key><string>$(COM_APNS_ENVIRONMENT)</string>
 <key>CFBundleDisplayName</key><string>Com!</string>
 <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
 <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
@@ -20,4 +21,6 @@
 <key>NSPhotoLibraryUsageDescription</key><string>选择你希望分享或保存的照片。</string>
 <key>LSSupportsOpeningDocumentsInPlace</key><true/>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>work.eddie.com</string><key>CFBundleURLSchemes</key><array><string>com-eddie</string></array></dict></array>
+<key>UIBackgroundModes</key><array><string>fetch</string></array>
+<key>BGTaskSchedulerPermittedIdentifiers</key><array><string>work.eddie.com.messages</string></array>
 </dict></plist>

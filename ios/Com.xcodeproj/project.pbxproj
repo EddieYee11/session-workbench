@@ -9,7 +9,9 @@
 /* Begin PBXBuildFile section */
 		013BB7C747D5BEB55DCBA267 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = 46D9B1636C148AFFB2DABDE9 /* Textual */; };
 		0206D3C6F0793F07C28EDC50 /* VoiceGlow-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 8C1947E5F409889B53E4A09D /* VoiceGlow-LICENSE.txt */; };
+		0D80BC041BBE961C60F59B77 /* OpenComVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EAB4EF8FD18CCF187B6EB33 /* OpenComVoice.swift */; };
 		11B24F7A353D3C31A7CB43CF /* ComCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8F5EB8CB9136CA16067C014 /* ComCoreTests.swift */; };
+		14FED8F5DA80AF043C2E84DC /* AgencyViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC9EEA16311E67CA232A8EF8 /* AgencyViews.swift */; };
 		181E029276B49CDD6329CAB0 /* UtilityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E213EFA5C31A69835AF9BFAC /* UtilityViews.swift */; };
 		188347577E80FC07C6A18B39 /* ShareInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C2039B683709B1EEA1D6ED8 /* ShareInboxView.swift */; };
 		1CE4FAA66468C7B322B9A6C2 /* ComCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B77E8C2C95C01B5561165726 /* ComCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -20,16 +22,22 @@
 		43FECD8E2C58269F42D9BF77 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FC842A5EB15D97730233C15 /* ShareViewController.swift */; };
 		458824657E9A9C1DD79259B0 /* ShareInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0121DE058ACD97A7EF0FCC8 /* ShareInbox.swift */; };
 		50B8944B2C65F5AFBCEC7210 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2908A9917B0EB8EA6F649930 /* RootView.swift */; };
+		519DFD50E452B5757B49C65C /* AgencyModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7558CEC3E0DC8802B9E006C9 /* AgencyModel.swift */; };
 		542A8AEBF0A1D91E6D13085A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 86EE9A2030D82F3CC38D01D9 /* Assets.xcassets */; };
 		584B57748C2AE16E429F03BF /* HealthReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0027E45C459F7817D2DB0E71 /* HealthReader.swift */; };
+		5997035B70F8DE666CA4AE90 /* ProjectBoardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D94119968D27D2EE60CC408A /* ProjectBoardViews.swift */; };
 		694A61EFC068177D9E01BC0D /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AD3223F0994D6557A61E2E5 /* TerminalScreen.swift */; };
 		6BE3DB4F6927700AA0B40BD1 /* VoiceRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E9957214BC9E301255D4BD8 /* VoiceRecorder.swift */; };
 		6BEA66A25AA3F950398D6FA0 /* ShareInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0121DE058ACD97A7EF0FCC8 /* ShareInbox.swift */; };
+		70E91355865EB48229D28517 /* DashboardPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4092C5F7FCA611875623CF5 /* DashboardPreview.swift */; };
+		76119F2EF60F37D313BB7AE6 /* ComVoiceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8649038D882EDBC4307C24 /* ComVoiceControl.swift */; };
 		7BF37EFE24C1B04B02C9AB43 /* ComCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B77E8C2C95C01B5561165726 /* ComCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		848BB3C81AED479ACCA06199 /* WorkApprovalCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF8322946A23E93B2C652BB /* WorkApprovalCard.swift */; };
 		92844A44DDBC7B6A1E5022F7 /* ConversationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EC10A9618B910953C4BB6B5 /* ConversationState.swift */; };
 		932E50DA4B2E1B154A922806 /* ChatMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC19D47D6245D85B1C1DC84 /* ChatMotion.swift */; };
 		95114DC0914BB6CA003E3648 /* VoiceGlow-ThirdParty-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 947F6661953F6A5A925B1B35 /* VoiceGlow-ThirdParty-LICENSE.txt */; };
+		9CA3236D5A68D05EB8FBDBDC /* ComControls.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 27ADF1E9E7135D8158DED532 /* ComControls.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A0997E60BD5611353997F043 /* OpenComVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EAB4EF8FD18CCF187B6EB33 /* OpenComVoice.swift */; };
 		A15210E390BDC59740352461 /* ComCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B77E8C2C95C01B5561165726 /* ComCore.framework */; };
 		A2090BAB4E297DED5F205C2C /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = E9CB9B1B49898ECF3C58B9FE /* SwiftTerm */; };
 		AD9ED6D493EC9106142F621F /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B567AF2CA7D46CD6A550BC /* AppModel.swift */; };
@@ -43,6 +51,8 @@
 		D865B386A77B1905C4107CE6 /* SSE.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC742E28CD20224B25A3B2D9 /* SSE.swift */; };
 		D9623439C0FED165B166AB23 /* ChatTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97904BD5D703965F324E2615 /* ChatTimeline.swift */; };
 		E1FC31AAA2C4AE73371683D9 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48418D83FEB7029E45E291AC /* TasksView.swift */; };
+		E3FC7D90EB76CC366AEAFB94 /* ComPush.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BC71BEDC33C0638436CFBDC /* ComPush.swift */; };
+		EA4356D2091D0C1EDC241BF7 /* FinanceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5905E5E7870C25A835B2A77 /* FinanceViews.swift */; };
 		EC75DFBF6253C22925EDF5C8 /* SecureVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD701A1D9C8010A312EDBAA0 /* SecureVault.swift */; };
 		EE9DECDB9C4E077B6D747A64 /* ComCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B77E8C2C95C01B5561165726 /* ComCore.framework */; };
 		EEBADA6156CA0B18C89ABFF5 /* MemoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33572A00E788D17257F98CFA /* MemoryView.swift */; };
@@ -58,6 +68,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 2F743C93AF5855D78C1BA617;
 			remoteInfo = ComCore;
+		};
+		16181F04AA76739D2F5A3C69 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7596E008BBD251783CCEF6DB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 54B1D609820DF1279B9FE8B3;
+			remoteInfo = ComControls;
 		};
 		6E36F5D87294695D2D28D9E3 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -112,6 +129,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				FB77AF03F30D80A6F5CF5ACB /* ComShare.appex in Embed Foundation Extensions */,
+				9CA3236D5A68D05EB8FBDBDC /* ComControls.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -122,20 +140,26 @@
 		0027E45C459F7817D2DB0E71 /* HealthReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthReader.swift; sourceTree = "<group>"; };
 		112109304BACF7CD33F59248 /* Com.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Com.entitlements; sourceTree = "<group>"; };
 		1D0BAAED9867FADA001EE9EC /* ComApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComApp.swift; sourceTree = "<group>"; };
+		27ADF1E9E7135D8158DED532 /* ComControls.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ComControls.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		2908A9917B0EB8EA6F649930 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		32B17AC38263805E1E207D27 /* ComShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ComShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		33572A00E788D17257F98CFA /* MemoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryView.swift; sourceTree = "<group>"; };
+		341EB9E4B58181E09DB93F60 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		34B9191AB956E73D298A835A /* DeviceReceiptsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceReceiptsView.swift; sourceTree = "<group>"; };
 		3AD3223F0994D6557A61E2E5 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
+		3BC71BEDC33C0638436CFBDC /* ComPush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComPush.swift; sourceTree = "<group>"; };
 		3C83DD995EE7E078F527BC73 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		3E5C680E8821CA9882015CB4 /* ComCoreTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ComCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		48418D83FEB7029E45E291AC /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
+		4EAB4EF8FD18CCF187B6EB33 /* OpenComVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenComVoice.swift; sourceTree = "<group>"; };
+		5A8649038D882EDBC4307C24 /* ComVoiceControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComVoiceControl.swift; sourceTree = "<group>"; };
 		5FFE0DAB1403070690833136 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		61A365C115402C51199EB618 /* Com.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Com.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		670F9F26FA1CD31E5B51EC75 /* DeviceBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceBridge.swift; sourceTree = "<group>"; };
 		6C2039B683709B1EEA1D6ED8 /* ShareInboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareInboxView.swift; sourceTree = "<group>"; };
 		6E9957214BC9E301255D4BD8 /* VoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecorder.swift; sourceTree = "<group>"; };
 		6EC1160E2848EF111BB78CDA /* Checks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Checks.swift; sourceTree = "<group>"; };
+		7558CEC3E0DC8802B9E006C9 /* AgencyModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgencyModel.swift; sourceTree = "<group>"; };
 		831A14BE8E8D3B0D93746FE7 /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		86EE9A2030D82F3CC38D01D9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8C1947E5F409889B53E4A09D /* VoiceGlow-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "VoiceGlow-LICENSE.txt"; sourceTree = "<group>"; };
@@ -148,21 +172,26 @@
 		ABC19D47D6245D85B1C1DC84 /* ChatMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMotion.swift; sourceTree = "<group>"; };
 		B07F3FA8D95114BE71FD5942 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B0F26F4E559C0A95B77B21E7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B4092C5F7FCA611875623CF5 /* DashboardPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardPreview.swift; sourceTree = "<group>"; };
 		B77E8C2C95C01B5561165726 /* ComCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ComCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0B567AF2CA7D46CD6A550BC /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		C18D502E9AD18A7A2145BD4F /* ComPush.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ComPush.entitlements; sourceTree = "<group>"; };
 		C1F3B505991E493E1D75DF50 /* VoiceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceViews.swift; sourceTree = "<group>"; };
 		C8F5EB8CB9136CA16067C014 /* ComCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComCoreTests.swift; sourceTree = "<group>"; };
 		CB9CA9086F93E10CFBEFD1A5 /* ComShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ComShare.entitlements; sourceTree = "<group>"; };
 		CD701A1D9C8010A312EDBAA0 /* SecureVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureVault.swift; sourceTree = "<group>"; };
 		CD70FB106536EB61E8647C65 /* ComUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComUITests.swift; sourceTree = "<group>"; };
 		CFF8322946A23E93B2C652BB /* WorkApprovalCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkApprovalCard.swift; sourceTree = "<group>"; };
+		D94119968D27D2EE60CC408A /* ProjectBoardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectBoardViews.swift; sourceTree = "<group>"; };
 		DC742E28CD20224B25A3B2D9 /* SSE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSE.swift; sourceTree = "<group>"; };
 		DEA3EDED0706D4C2FAF05AD7 /* WorkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkView.swift; sourceTree = "<group>"; };
 		DFFBCBB09926160F6BBD7C01 /* VoiceBeam.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = VoiceBeam.html; sourceTree = "<group>"; };
 		E0121DE058ACD97A7EF0FCC8 /* ShareInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareInbox.swift; sourceTree = "<group>"; };
 		E213EFA5C31A69835AF9BFAC /* UtilityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UtilityViews.swift; sourceTree = "<group>"; };
+		EC9EEA16311E67CA232A8EF8 /* AgencyViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgencyViews.swift; sourceTree = "<group>"; };
+		F5905E5E7870C25A835B2A77 /* FinanceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinanceViews.swift; sourceTree = "<group>"; };
 		FDDB7C77B7EAB250E94DEFC6 /* ComUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ComUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		"TEMP_FC6FB982-5F96-42A2-B381-97BC382B0E18" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		"TEMP_22B73058-A442-4763-AAA4-19230E2E469A" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -191,9 +220,11 @@
 			isa = PBXGroup;
 			children = (
 				BDB0E4E240E052437A5B4C82 /* Com */,
+				9958DC3EF79C79DA3ECEE3A3 /* ComControls */,
 				555BACB1D53CB82CB0B9A7AA /* ComShare */,
 				7B2223986E5E745399B4C3C3 /* Shared */,
 				AB0309C636838722D5FCEE82 /* Tests */,
+				B87CB4A831212B1D779D50FD /* VoiceIntents */,
 				C516EDD7D372FFF0F24D83D6 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -211,11 +242,14 @@
 		2C1754A67B737995F34BD30D /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				EC9EEA16311E67CA232A8EF8 /* AgencyViews.swift */,
 				ABC19D47D6245D85B1C1DC84 /* ChatMotion.swift */,
 				5FFE0DAB1403070690833136 /* ChatView.swift */,
 				96B7B594AFDF5566F0807669 /* DesignSystem.swift */,
 				34B9191AB956E73D298A835A /* DeviceReceiptsView.swift */,
+				F5905E5E7870C25A835B2A77 /* FinanceViews.swift */,
 				33572A00E788D17257F98CFA /* MemoryView.swift */,
+				D94119968D27D2EE60CC408A /* ProjectBoardViews.swift */,
 				2908A9917B0EB8EA6F649930 /* RootView.swift */,
 				6C2039B683709B1EEA1D6ED8 /* ShareInboxView.swift */,
 				48418D83FEB7029E45E291AC /* TasksView.swift */,
@@ -241,6 +275,7 @@
 		35895FE2C1C6EFBCC822018D /* Platform */ = {
 			isa = PBXGroup;
 			children = (
+				3BC71BEDC33C0638436CFBDC /* ComPush.swift */,
 				670F9F26FA1CD31E5B51EC75 /* DeviceBridge.swift */,
 				0027E45C459F7817D2DB0E71 /* HealthReader.swift */,
 				CD701A1D9C8010A312EDBAA0 /* SecureVault.swift */,
@@ -265,6 +300,15 @@
 				E0121DE058ACD97A7EF0FCC8 /* ShareInbox.swift */,
 			);
 			path = Shared;
+			sourceTree = "<group>";
+		};
+		9958DC3EF79C79DA3ECEE3A3 /* ComControls */ = {
+			isa = PBXGroup;
+			children = (
+				5A8649038D882EDBC4307C24 /* ComVoiceControl.swift */,
+				341EB9E4B58181E09DB93F60 /* Info.plist */,
+			);
+			path = ComControls;
 			sourceTree = "<group>";
 		};
 		9D73CDA4D48FB104A77B1089 /* UI */ = {
@@ -296,13 +340,24 @@
 			path = Core;
 			sourceTree = "<group>";
 		};
+		B87CB4A831212B1D779D50FD /* VoiceIntents */ = {
+			isa = PBXGroup;
+			children = (
+				4EAB4EF8FD18CCF187B6EB33 /* OpenComVoice.swift */,
+			);
+			path = VoiceIntents;
+			sourceTree = "<group>";
+		};
 		BDB0E4E240E052437A5B4C82 /* Com */ = {
 			isa = PBXGroup;
 			children = (
+				7558CEC3E0DC8802B9E006C9 /* AgencyModel.swift */,
 				C0B567AF2CA7D46CD6A550BC /* AppModel.swift */,
 				86EE9A2030D82F3CC38D01D9 /* Assets.xcassets */,
 				112109304BACF7CD33F59248 /* Com.entitlements */,
 				1D0BAAED9867FADA001EE9EC /* ComApp.swift */,
+				C18D502E9AD18A7A2145BD4F /* ComPush.entitlements */,
+				B4092C5F7FCA611875623CF5 /* DashboardPreview.swift */,
 				B0F26F4E559C0A95B77B21E7 /* Info.plist */,
 				AF2737972E74E34D1B4EAC43 /* Core */,
 				35895FE2C1C6EFBCC822018D /* Platform */,
@@ -316,6 +371,7 @@
 			isa = PBXGroup;
 			children = (
 				61A365C115402C51199EB618 /* Com.app */,
+				27ADF1E9E7135D8158DED532 /* ComControls.appex */,
 				B77E8C2C95C01B5561165726 /* ComCore.framework */,
 				3E5C680E8821CA9882015CB4 /* ComCoreTests.xctest */,
 				32B17AC38263805E1E207D27 /* ComShare.appex */,
@@ -324,10 +380,10 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		"TEMP_539968A8-7059-4E8E-B7EC-F51E101957DD" /* ios */ = {
+		"TEMP_24CBAC5C-374D-4D51-B6D0-CACE4404356E" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_FC6FB982-5F96-42A2-B381-97BC382B0E18" /* Config.xcconfig */,
+				"TEMP_22B73058-A442-4763-AAA4-19230E2E469A" /* Config.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -387,6 +443,7 @@
 			dependencies = (
 				19B87FC703BE79FB987160E0 /* PBXTargetDependency */,
 				3ECA09A79215C0A649D3DEA8 /* PBXTargetDependency */,
+				D8063CAB8AEE9A8C8F4A26F7 /* PBXTargetDependency */,
 			);
 			name = Com;
 			packageProductDependencies = (
@@ -396,6 +453,23 @@
 			productName = Com;
 			productReference = 61A365C115402C51199EB618 /* Com.app */;
 			productType = "com.apple.product-type.application";
+		};
+		54B1D609820DF1279B9FE8B3 /* ComControls */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 791EEF82FCBB1DE44610F7B0 /* Build configuration list for PBXNativeTarget "ComControls" */;
+			buildPhases = (
+				E2ACFEE10E4C1D06A9F19488 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ComControls;
+			packageProductDependencies = (
+			);
+			productName = ComControls;
+			productReference = 27ADF1E9E7135D8158DED532 /* ComControls.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		A705E0A78D922197DACB55EE /* ComUITests */ = {
 			isa = PBXNativeTarget;
@@ -450,6 +524,9 @@
 					47137249E74029CF3756FA6E = {
 						ProvisioningStyle = Automatic;
 					};
+					54B1D609820DF1279B9FE8B3 = {
+						ProvisioningStyle = Automatic;
+					};
 					A705E0A78D922197DACB55EE = {
 						ProvisioningStyle = Automatic;
 						TestTargetID = 47137249E74029CF3756FA6E;
@@ -480,6 +557,7 @@
 				2F743C93AF5855D78C1BA617 /* ComCore */,
 				47137249E74029CF3756FA6E /* Com */,
 				F0410B891B9F53BCD673D8D5 /* ComShare */,
+				54B1D609820DF1279B9FE8B3 /* ComControls */,
 				12E4069C9D603A9536DB5CC7 /* ComCoreTests */,
 				A705E0A78D922197DACB55EE /* ComUITests */,
 			);
@@ -505,15 +583,22 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				519DFD50E452B5757B49C65C /* AgencyModel.swift in Sources */,
+				14FED8F5DA80AF043C2E84DC /* AgencyViews.swift in Sources */,
 				AD9ED6D493EC9106142F621F /* AppModel.swift in Sources */,
 				932E50DA4B2E1B154A922806 /* ChatMotion.swift in Sources */,
 				35B97609DD142D1A95B57481 /* ChatView.swift in Sources */,
 				B57595B357ECC6A7D5B8B129 /* ComApp.swift in Sources */,
+				E3FC7D90EB76CC366AEAFB94 /* ComPush.swift in Sources */,
+				70E91355865EB48229D28517 /* DashboardPreview.swift in Sources */,
 				AEF84FF6F638F8210011DA3E /* DesignSystem.swift in Sources */,
 				2A32050EAFAD2FD1DA8E7769 /* DeviceBridge.swift in Sources */,
 				B4A285AE15D3B2682377CFDE /* DeviceReceiptsView.swift in Sources */,
+				EA4356D2091D0C1EDC241BF7 /* FinanceViews.swift in Sources */,
 				584B57748C2AE16E429F03BF /* HealthReader.swift in Sources */,
 				EEBADA6156CA0B18C89ABFF5 /* MemoryView.swift in Sources */,
+				A0997E60BD5611353997F043 /* OpenComVoice.swift in Sources */,
+				5997035B70F8DE666CA4AE90 /* ProjectBoardViews.swift in Sources */,
 				50B8944B2C65F5AFBCEC7210 /* RootView.swift in Sources */,
 				EC75DFBF6253C22925EDF5C8 /* SecureVault.swift in Sources */,
 				6BEA66A25AA3F950398D6FA0 /* ShareInbox.swift in Sources */,
@@ -567,6 +652,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E2ACFEE10E4C1D06A9F19488 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				76119F2EF60F37D313BB7AE6 /* ComVoiceControl.swift in Sources */,
+				0D80BC041BBE961C60F59B77 /* OpenComVoice.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -585,6 +679,11 @@
 			target = F0410B891B9F53BCD673D8D5 /* ComShare */;
 			targetProxy = 6E36F5D87294695D2D28D9E3 /* PBXContainerItemProxy */;
 		};
+		D8063CAB8AEE9A8C8F4A26F7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 54B1D609820DF1279B9FE8B3 /* ComControls */;
+			targetProxy = 16181F04AA76739D2F5A3C69 /* PBXContainerItemProxy */;
+		};
 		FC64F33E7EFADBCE3BED407A /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 47137249E74029CF3756FA6E /* Com */;
@@ -597,7 +696,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Com/Com.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(COM_ENTITLEMENTS_FILE)";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_FILE = Com/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -632,7 +731,7 @@
 		};
 		3090500630AD48E73BFDF9C7 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_FC6FB982-5F96-42A2-B381-97BC382B0E18" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_22B73058-A442-4763-AAA4-19230E2E469A" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -665,8 +764,10 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
+				COM_APNS_ENVIRONMENT = "";
+				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2026100701;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -715,6 +816,23 @@
 			};
 			name = Debug;
 		};
+		38B3E3DC954ECCDD9C4E37BC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				INFOPLIST_FILE = ComControls/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = work.eddie.com.controls;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
 		4BE79EEE29A6F0A33155A153 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -756,7 +874,7 @@
 		};
 		77A0C5116CC8A0F0C01DCC13 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_FC6FB982-5F96-42A2-B381-97BC382B0E18" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_22B73058-A442-4763-AAA4-19230E2E469A" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -789,8 +907,10 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
+				COM_APNS_ENVIRONMENT = "";
+				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2026100701;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -865,6 +985,23 @@
 			};
 			name = Release;
 		};
+		D4CC87244028BA7444F1B1C5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				INFOPLIST_FILE = ComControls/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = work.eddie.com.controls;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 		DD728674669DF9965C81D082 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -892,7 +1029,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Com/Com.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(COM_ENTITLEMENTS_FILE)";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_FILE = Com/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -934,6 +1071,15 @@
 			buildConfigurations = (
 				2B67C9106053D2A11A554544 /* Debug */,
 				8EF9F13CFDCDAC394144686D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		791EEF82FCBB1DE44610F7B0 /* Build configuration list for PBXNativeTarget "ComControls" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				38B3E3DC954ECCDD9C4E37BC /* Debug */,
+				D4CC87244028BA7444F1B1C5 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

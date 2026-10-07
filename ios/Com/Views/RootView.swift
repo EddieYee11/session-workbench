@@ -35,6 +35,10 @@ struct RootView: View {
         .sheet(item: Binding(get: { model.selectedMemory.map(RemoteRow.init) }, set: { model.selectedMemory = $0?.value })) { MemoryDetailView(memory: $0.value).presentationDragIndicator(.visible) }
         .sheet(item: Binding(get: { model.selectedMatter.map(RemoteRow.init) }, set: { model.selectedMatter = $0?.value })) { MatterDetailView(matter: $0.value).presentationDragIndicator(.visible) }
         .sheet(item: Binding(get: { model.selectedSession.map(RemoteRow.init) }, set: { model.selectedSession = $0?.value })) { WorkDetailView(session: $0.value) }
+        .onReceive(NotificationCenter.default.publisher(for: .comOpenMessage)) { event in
+            model.tab = .chat
+            if let id = event.object as? String { Task { await model.locateMessage(id) } }
+        }
         .alert("Com", isPresented: Binding(get: { !model.banner.isEmpty }, set: { if !$0 { model.banner = "" } })) {
             Button("知道了") { model.banner = "" }
         } message: { Text(model.banner) }

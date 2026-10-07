@@ -1,6 +1,14 @@
+# Com iOS 主动 Agent 升级 · 2026-10-07
+
+最新 iOS、双机项目看板、今天页记账与行动建议、通知边界和验收结果见 [本次交付报告](COM_PERSONAL_AGENT_DELIVERY_2026-10-07.md)。下方 Android 版本与早期增量保留为历史基线。
+
+---
+
 # Com! 当前版本：1.9.1 / versionCode 22
 
 2026-10-04。当前交互更新与验证见 [1.9.1 说明](COM_1.9.1_INTERACTION.md)；后端继续为 1.9.0 / API 契约 2，其他升级与未实现范围见 [1.9.0 说明](COM_1.9_UPGRADE.md)。下文保留 1.8.2 及更早版本的历史增量和详细基线；不要把旧版本、提案或未提交修改当作当前实现。
+
+主动消息（服务端按时间表写进主对话）见 [COM_PROACTIVE_MESSAGES.md](COM_PROACTIVE_MESSAGES.md)：2026-10-07 加入排期器与 `proactive` 事件，当时未实现手机通知；最新 iOS 后台刷新与 APNs 代码状态以本次交付报告为准。
 
 ---
 

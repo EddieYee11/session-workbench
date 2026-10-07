@@ -33,3 +33,6 @@ ios/.swiftpm/
 ios/Signing.xcconfig
 *.ipa
 ios/VoiceEffects/node_modules/
+
+# Alternate local control-extension build cache.
+ios/DerivedDataControls/

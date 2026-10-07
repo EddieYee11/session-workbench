@@ -63,7 +63,7 @@ class GoalEvents:
         return goal
 
     def update(self,ident,status,next_step='',evidence=None):
-        if status not in ('active','waiting_acceptance','blocked','completed','cancelled'):
+        if status not in ('active','waiting_acceptance','blocked','completed','cancelled','paused'):
             raise ValueError('Invalid goal status')
         if status=='completed' and not evidence:
             raise ValueError('目标完成需证据，不能仅凭自由文本')
@@ -119,9 +119,15 @@ class GoalEvents:
                              {'goal':goal,'authorization':goal['authorization']}))
         return count
 
-    def claim(self):
+    def claim(self, kinds=None, exclude=()):
         with self.db() as db:
-            row=db.execute("SELECT * FROM events WHERE state='queued' AND kind<>'user' ORDER BY priority,created,id LIMIT 1").fetchone()
+            query="SELECT * FROM events WHERE state='queued' AND kind<>'user'"
+            params=[]
+            if kinds:
+                query+=' AND kind IN ('+','.join('?' for _ in kinds)+')';params.extend(kinds)
+            if exclude:
+                query+=' AND kind NOT IN ('+','.join('?' for _ in exclude)+')';params.extend(exclude)
+            row=db.execute(query+' ORDER BY priority,created,id LIMIT 1',params).fetchone()
             if not row:
                 return None
             db.execute("UPDATE events SET state='sending' WHERE id=?",(row['id'],))

@@ -189,10 +189,11 @@ struct ScreenScaffold<Content: View, Accessory: View>: View {
     let title: String
     let subtitle: String
     let freshness: String?
+    let compact: Bool
     let content: Content
     let accessory: Accessory
-    init(title: String, subtitle: String = "", freshness: String? = nil, @ViewBuilder content: () -> Content, @ViewBuilder accessory: () -> Accessory) {
-        self.title = title; self.subtitle = subtitle; self.freshness = freshness
+    init(title: String, subtitle: String = "", freshness: String? = nil, compact: Bool = false, @ViewBuilder content: () -> Content, @ViewBuilder accessory: () -> Accessory) {
+        self.title = title; self.subtitle = subtitle; self.freshness = freshness; self.compact = compact
         self.content = content(); self.accessory = accessory()
     }
     private var hasHeader: Bool { !subtitle.isEmpty || freshness != nil || Accessory.self != EmptyView.self }
@@ -218,12 +219,12 @@ struct ScreenScaffold<Content: View, Accessory: View>: View {
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(compact ? .inline : .large)
     }
 }
 extension ScreenScaffold where Accessory == EmptyView {
-    init(title: String, subtitle: String = "", freshness: String? = nil, @ViewBuilder content: () -> Content) {
-        self.init(title: title, subtitle: subtitle, freshness: freshness, content: content, accessory: { EmptyView() })
+    init(title: String, subtitle: String = "", freshness: String? = nil, compact: Bool = false, @ViewBuilder content: () -> Content) {
+        self.init(title: title, subtitle: subtitle, freshness: freshness, compact: compact, content: content, accessory: { EmptyView() })
     }
 }
 
@@ -961,7 +962,7 @@ struct ComDock: View {
                         Image(systemName: tab.symbol).symbolVariant(selected ? .fill : .none)
                             .font(.system(size: 18, weight: selected ? .semibold : .regular))
                         if selected {
-                            Text(tab == .work ? "Com" : tab.rawValue).font(TypeScale.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
+                            Text(tab.rawValue).font(TypeScale.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
                         }
                     }
                     .padding(.horizontal, selected ? Space.lg : 0)
@@ -974,7 +975,7 @@ struct ComDock: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(selected ? Palette.onAccent : Palette.textSecondary)
-                .accessibilityLabel(tab == .work ? "Com" : tab.rawValue)
+                .accessibilityLabel(tab.rawValue)
                 .accessibilityIdentifier("tab-" + tab.id)
                 .accessibilityAddTraits(selected ? .isSelected : [])
                 .help(tab == .work ? "Com · 工作记录" : tab.rawValue)

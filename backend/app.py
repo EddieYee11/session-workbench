@@ -16,6 +16,7 @@ from pi_main import PiMainClient
 from hermes_runtime import HermesRuntime
 from capabilities import CapabilityRegistry
 from goals import GoalEvents
+from proactive import Proactive
 from goal_proposals import GoalProposals
 from background_events import BackgroundEvents
 from agent_tools import AgentTools
@@ -60,12 +61,13 @@ task_store=TaskStore(STATE)
 artifact_access=ArtifactAccess(task_store,HOME/"AI_Work_System",STATE)
 attachment_store=AttachmentStore(STATE)
 task_controller=TaskController(task_store,runtime,conversation)
-heartbeat=Heartbeat(STATE,HOME/"AI_Work_System",task_store,work_proposals)
+heartbeat=Heartbeat(STATE,HOME/"AI_Work_System",task_store,work_proposals,publish=conversation.task_receipt)
 runtime.task_store=task_store
 runtime.workers.copies.sync_check=sync_stable
 capability_registry=CapabilityRegistry(STATE)
 runtime.capabilities=capability_registry
 goal_events=GoalEvents(STATE)
+proactive=Proactive(STATE)
 goal_proposals=GoalProposals(STATE)
 background=BackgroundEvents(goal_events,conversation,task_store)
 conversation.process_background=background.process
@@ -73,6 +75,18 @@ agent_tools=AgentTools(STATE,conversation,work_proposals,task_store,task_control
 from personal_hub import PersonalHub
 personal_hub=PersonalHub(STATE,HOME)
 agent_tools.personal_hub=personal_hub
+from agency import Agency
+agency=Agency(STATE,personal_hub,goal_events,task_store,proactive,conversation)
+background.separate_proactive=True
+heartbeat.publish=agency.publish_observation
+heartbeat.context=agency.context
+from push_notifications import PushNotifications
+notifications=PushNotifications(STATE,conversation,proactive.settings)
+from finance_dashboard import FinanceDashboard
+finance_dashboard=FinanceDashboard(STATE,HOME)
+from project_board import ProjectBoard,collect as collect_project_sessions
+project_board=ProjectBoard(STATE)
+agency.project_board=project_board
 agent_tools.heartbeat=heartbeat
 agent_tools.inspector=inspector
 from device_nodes import DeviceNodes
@@ -121,8 +135,32 @@ async def lifespan(app):
     async def scheduler_loop():
         while True:
             if goal_events.tick():conversation.wake.set()
+            if proactive.tick(goal_events):conversation.wake.set()
             await asyncio.sleep(30)
     scheduler_task=asyncio.create_task(scheduler_loop())
+    async def agency_loop():
+        while True:
+            with contextlib.suppress(Exception):await agency.process()
+            await asyncio.sleep(5)
+    agency_task=asyncio.create_task(agency_loop())
+    async def notification_loop():
+        while True:
+            with contextlib.suppress(Exception):await notifications.process()
+            await asyncio.sleep(5)
+    notification_task=asyncio.create_task(notification_loop())
+    async def project_loop():
+        while True:
+            with contextlib.suppress(Exception):
+                snapshot=await asyncio.to_thread(collect_project_sessions,HOME,STATE,'mini',history)
+                project_board.ingest(snapshot)
+                if not proactive.settings()['paused']:
+                    await project_board.review(limit=12)
+                    actions=project_board.snapshot()['actions']
+                    for item in actions:
+                        if agency.publish_observation('project:'+item['id']+':'+item['version'],
+                            '「'+item['project']+'」下一步：'+item['next_step']+' 可在工作看板查看依据。'):break
+            await asyncio.sleep(900)
+    project_task=asyncio.create_task(project_loop())
     async def task_loop():
         while True:
             with contextlib.suppress(Exception):
@@ -143,6 +181,12 @@ async def lifespan(app):
     task.cancel()
     ledger_loop.cancel()
     scheduler_task.cancel()
+    agency_task.cancel()
+    project_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):await project_task
+    notification_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):await notification_task
+    with contextlib.suppress(asyncio.CancelledError):await agency_task
     heartbeat_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):await heartbeat_task
     with contextlib.suppress(asyncio.CancelledError):await ledger_loop
@@ -920,3 +964,39 @@ async def merge_task(task_id:str,request:Request):
 async def restore_archive(archive_id:str):
     async with runtime.action_lock:
         return agent_tools.archives.restore(archive_id)
+
+@app.get('/personal/agency')
+async def personal_agency():return {**agency.snapshot(),'notifications':notifications.status()}
+
+@app.post('/personal/agency/settings')
+async def agency_settings(request:Request):
+    data=await request.json()
+    data.pop('request_id',None)
+    result=proactive.configure(data)
+    return {'status':'completed','settings':result}
+
+@app.post('/personal/agency/actions/{ident}')
+async def agency_action(ident:str,request:Request):
+    return agency.action(ident,await request.json())
+
+@app.post('/personal/agency/goals')
+async def agency_goal(request:Request):
+    return {'status':'completed','goal':agency.create_goal(await request.json())}
+
+@app.get('/personal/notifications')
+async def notification_status():return notifications.status()
+
+@app.post('/personal/notifications/devices')
+async def notification_device(request:Request):return notifications.register(await request.json())
+
+@app.post('/personal/notifications/devices/{ident}/disable')
+async def notification_disable(ident:str):return notifications.disable(ident)
+
+@app.get('/personal/finance')
+async def finance_dashboard_get(month:str|None=None):return await finance_dashboard.snapshot(month)
+@app.get('/personal/projects')
+async def project_board_get():return project_board.snapshot()
+@app.get('/personal/projects/sources/{ident}')
+async def project_board_source(ident:str):return project_board.source(ident)
+@app.post('/personal/projects/actions/{ident}')
+async def project_board_action(ident:str,request:Request):return project_board.feedback(ident,await request.json())

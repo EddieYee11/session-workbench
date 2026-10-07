@@ -15,7 +15,9 @@ settings:
     TARGETED_DEVICE_FAMILY: "1"
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2026100701"
+    COM_ENTITLEMENTS_FILE: Com/Com.entitlements
+    COM_APNS_ENVIRONMENT: ""
 packages:
   Textual:
     url: https://github.com/gonzalezreal/textual
@@ -39,11 +41,14 @@ targets:
       - path: Com
         excludes: [Core]
       - path: Shared
+      - path: VoiceIntents
     dependencies:
       - target: ComCore
       - package: Textual
       - package: SwiftTerm
       - target: ComShare
+        embed: true
+      - target: ComControls
         embed: true
     settings:
       TARGETED_DEVICE_FAMILY: "1"
@@ -52,7 +57,7 @@ targets:
       SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
       SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
       INFOPLIST_FILE: Com/Info.plist
-      CODE_SIGN_ENTITLEMENTS: Com/Com.entitlements
+      CODE_SIGN_ENTITLEMENTS: $(COM_ENTITLEMENTS_FILE)
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   ComShare:
     type: app-extension
@@ -64,6 +69,16 @@ targets:
       INFOPLIST_FILE: ComShare/Info.plist
       CODE_SIGN_ENTITLEMENTS: ComShare/ComShare.entitlements
       APPLICATION_EXTENSION_API_ONLY: YES
+  ComControls:
+    type: app-extension
+    platform: iOS
+    sources: [ComControls, VoiceIntents]
+    settings:
+      TARGETED_DEVICE_FAMILY: "1"
+      PRODUCT_BUNDLE_IDENTIFIER: work.eddie.com.controls
+      INFOPLIST_FILE: ComControls/Info.plist
+      APPLICATION_EXTENSION_API_ONLY: YES
+      SKIP_INSTALL: YES
   ComCoreTests:
     type: bundle.unit-test
     platform: iOS

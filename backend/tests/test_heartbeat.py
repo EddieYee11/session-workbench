@@ -91,3 +91,19 @@ def test_enabled_observer_uses_configured_hermes_executor(tmp_path):
  asyncio.run(hb.tick(force=True));asyncio.run(hb.tick(force=True));now[0]+=86400
  hb.configure({'shadow':False});asyncio.run(hb.tick(force=True))
  assert hb.proposals.list()[0]['agent']=='hermes'
+
+
+def test_live_speak_publishes_once_but_shadow_stays_silent(tmp_path):
+ h,now=engine(tmp_path,action="speak")
+ published=[]
+ h.publish=lambda key,text:published.append((key,text))
+ asyncio.run(h.tick(force=True))
+ assert not published
+ asyncio.run(h.tick(force=True))
+ h.configure({'shadow':False})
+ now[0]+=22000
+ row=asyncio.run(h.tick(force=True))
+ assert row['effect']=='conversation'
+ assert len(published)==1
+ asyncio.run(h.tick(force=True))
+ assert len(published)==1

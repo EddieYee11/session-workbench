@@ -7,11 +7,19 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("appearance") private var appearance = "light"
     @State private var disconnecting = false
+    @State private var notificationNote = ""
     var body: some View {
         @Bindable var devices = model.devices!
         let unresolved = SecureVault.operationRecords().filter { $0["status"].string == "unknown" }
         NavigationStack {
             ScrollPage(spacing: Space.xxl) {
+                NavigationLink { AgencySettings() } label: { NavigationRowLabel(title: "主动性与晨晚报", symbol: "sun.max") }.buttonStyle(.row)
+                settingsGroup(title: "主动消息通知", footer: "晨报与主动消息写入主聊天。后台读取由 iOS 安排，可能延迟；08:00–23:00 通知，锁屏不显示对话正文。") {
+                    Button("开启新消息通知", systemImage: "bell.badge") {
+                        Task { notificationNote = await ComNotifications.enable() ? "通知已开启" : "未开启，请到系统设置允许通知" }
+                    }.buttonStyle(.quiet).rowPadding()
+                    if !notificationNote.isEmpty { Text(notificationNote).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).rowPadding() }
+                }
                 settingsGroup(title: "快捷语音", footer: "设置 → 操作按钮 → 快捷指令 → Com 语音。首次使用需解锁并允许麦克风；打开即录音，带音量光效，确认转写后发送。") {
                     Button { dismiss(); model.openVoice(quick: true) } label: { NavigationRowLabel(title: "打开光效语音小窗", symbol: "waveform") }.buttonStyle(.row)
                 }

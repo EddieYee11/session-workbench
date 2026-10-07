@@ -3,6 +3,7 @@ import ComCore
 
 struct WorkView: View {
     @Environment(AppModel.self) private var model
+    @State private var section = "项目看板"
     @State private var filter = ""
     @State private var query = ""
     @State private var creating = false
@@ -10,52 +11,33 @@ struct WorkView: View {
     private var sessions: [JSON] { model.datasets["/sessions"]?["sessions"].array ?? [] }
     private var filtered: [JSON] { sessions.filter { (filter.isEmpty || $0["agent"].string == filter) && (query.isEmpty || $0["display_title"].string.localizedCaseInsensitiveContains(query) || $0["cwd"].string.localizedCaseInsensitiveContains(query)) } }
     var body: some View {
-        ScreenScaffold(title: "工作台", freshness: "/sessions") {
-            Card {
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    Text("今天想一起完成什么？").font(TypeScale.title)
-                    Text("选择伙伴，开启一段工作对话。").font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary)
-                    HStack(alignment: .bottom, spacing: Space.sm) {
-                        TextField("描述你的工作…", text: $workDraft, axis: .vertical).lineLimit(1...5).font(TypeScale.callout)
-                        CircleActionButton(symbol: "arrow.up", label: "选择伙伴并开始工作", filled: true, size: 36) { creating = true }
-                            .disabled(workDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }.padding(Space.md).background(Palette.fill, in: .rect(cornerRadius: Radius.lg))
-                    HStack { ForEach(["codex", "claude", "pi"], id: \.self) { agent in
-                        Button { filter = agent; creating = true } label: { Label(agentName(agent), systemImage: agentSymbol(agent)) }.buttonStyle(.quiet)
-                    } }
-                }
+        ScreenScaffold(title: "工作", compact: true) {
+            HStack {
+                Picker("工作视图", selection: $section) { Text("项目看板").tag("项目看板"); Text("会话").tag("会话") }.pickerStyle(.segmented)
+                Button { creating = true } label: { Image(systemName: "plus").frame(width: 44, height: 44) }.buttonStyle(.quiet).accessibilityLabel("新建工作")
             }
-            VStack(alignment: .leading, spacing: Space.md) {
-                Picker("执行器", selection: $filter) { Text("全部").tag(""); Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
-                SearchField(text: $query, prompt: "搜索工作与项目")
-            }
-            if filtered.isEmpty { EmptyState(title: "从一个想法开始", description: "创建工作或回看 Mac mini 上的历史会话。", symbol: "terminal") }
-            let projects = Dictionary(grouping: filtered) { $0["cwd"].string }
-            ForEach(projects.keys.sorted(), id: \.self) { project in
-                GroupSection(URL(fileURLWithPath: project).lastPathComponent) {
-                    GroupedCard(dividerInset: Layout.rowInset) {
-                        ForEach((projects[project] ?? []).map(RemoteRow.init)) { row in
-                            let status = row.value["status"].string
-                            Button { model.selectedSession = row.value } label: {
-                                ListRow(symbol: agentSymbol(row.value["agent"].string), tone: statusTone(status),
-                                        title: row.value["display_title"].string.isEmpty ? row.value["title"].string : row.value["display_title"].string,
-                                        status: agentName(row.value["agent"].string) + " · " + displayStatus(status), statusTone: statusTone(status),
-                                        subtitle: row.value["snippet"].string, subtitleLines: 1) {
-                                    HStack(spacing: Space.sm) {
-                                        if status == "waiting" { StatusDot(tone: .warning).accessibilityLabel("等你回应") }
-                                        Chevron()
-                                    }
-                                }
-                            }.buttonStyle(.row)
-                        }
+            if section == "项目看板" { ProjectBoardHome() }
+            else {
+                HStack(alignment: .bottom, spacing: Space.sm) {
+                    TextField("描述你的工作…", text: $workDraft, axis: .vertical).lineLimit(1...5).font(TypeScale.callout)
+                    CircleActionButton(symbol: "arrow.up", label: "选择伙伴并开始工作", filled: true, size: 36) { creating = true }
+                        .disabled(workDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }.padding(Space.md).composerSurface()
+                Picker("执行器", selection: $filter) { Text("全部").tag(""); Text("Hermes").tag("hermes"); Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
+                SearchField(text: $query, prompt: "搜索会话与项目")
+                if filtered.isEmpty { EmptyState(title: "这里还没有会话", description: "跨设备进展在项目看板；这里可继续 Mac mini 上支持恢复的工作会话。", symbol: "bubble.left.and.bubble.right") }
+                GroupedCard {
+                    ForEach(filtered.prefix(80).map(RemoteRow.init)) { row in
+                        Button { model.selectedSession = row.value } label: {
+                            ListRow(symbol: agentSymbol(row.value["agent"].string), tone: statusTone(row.value["status"].string),
+                                title: row.value["display_title"].string.isEmpty ? row.value["title"].string : row.value["display_title"].string,
+                                status: agentName(row.value["agent"].string), subtitle: row.value["snippet"].string, subtitleLines: 1)
+                        }.buttonStyle(.row)
                     }
                 }
             }
-        } accessory: {
-            Button { creating = true } label: { Label("新建工作", systemImage: "plus") }.buttonStyle(.primaryCompact)
-        }
-        .refreshable { await model.refresh(.work) }
-        .sheet(isPresented: $creating) { NewWorkView(initialAgent: filter.isEmpty ? "codex" : filter, initialPrompt: workDraft) }
+        }.refreshable { await model.refresh(.work) }
+        .sheet(isPresented: $creating) { NewWorkView(initialAgent: filter.isEmpty ? "hermes" : filter, initialPrompt: workDraft) }
     }
 }
 
@@ -85,7 +67,7 @@ struct NewWorkView: View {
         NavigationStack {
             ScrollPage(spacing: Space.xxl) {
                 GroupSection("谁来一起做") {
-                    Picker("执行器", selection: $agent) { Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
+                    Picker("执行器", selection: $agent) { Text("Hermes").tag("hermes"); Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
                 }
                 GroupSection("这次想完成什么") {
                     TextField("工作要求", text: $prompt, axis: .vertical).lineLimit(4...10).font(TypeScale.callout)
