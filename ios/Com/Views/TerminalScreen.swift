@@ -10,7 +10,7 @@ struct TerminalScreen: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Text(terminal.note).font(.caption).foregroundStyle(.secondary).padding(10)
+                Text(terminal.note).font(TypeScale.footnote).foregroundStyle(.secondary).padding(Space.sm)
                 TerminalSurface(connection: terminal)
             }.navigationTitle("终端").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .topBarLeading) { Button("完成") { terminal.stop(); dismiss() } }; ToolbarItem(placement: .topBarTrailing) { Button("重连") { Task { await terminal.connect(model.client, sid: sessionID) } } } }

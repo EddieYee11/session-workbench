@@ -2,6 +2,8 @@ import SwiftUI
 import Textual
 import ComCore
 
+// MARK: - Detail transition plumbing (kept)
+
 private struct DetailSpaceKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }
 extension EnvironmentValues { var detailSpace: Namespace.ID? { get { self[DetailSpaceKey.self] } set { self[DetailSpaceKey.self] = newValue } } }
 struct DetailSource: ViewModifier {
@@ -11,6 +13,11 @@ struct DetailSource: ViewModifier {
 }
 extension View { func detailSource(_ id: String) -> some View { modifier(DetailSource(id: id)) } }
 
+// MARK: - Brand palette
+//
+// Cream canvas + white content + lime accent + coral companion.
+// Direction C keeps the brand; everything built on top is new.
+
 enum Palette {
     static let accent = Color(red: 0.82, green: 0.94, blue: 0.38)
     static let onAccent = Color(red: 0.09, green: 0.10, blue: 0.07)
@@ -18,49 +25,198 @@ enum Palette {
     static let violet = Color.primary
     static let coral = Color(red: 0.94, green: 0.43, blue: 0.34)
     static let ink = Color.primary
+    static let inkSecondary = Color.secondary
+    static let inkTertiary = Color(uiColor: .tertiaryLabel)
     static let surface = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : .white })
     static let raised = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.20, alpha: 1) : UIColor(red: 0.91, green: 0.89, blue: 0.85, alpha: 1) })
     static let canvas = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.06, alpha: 1) : UIColor(red: 0.965, green: 0.957, blue: 0.933, alpha: 1) })
-    static let landscape = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.14, alpha: 1) : UIColor(red: 0.89, green: 0.87, blue: 0.81, alpha: 1) })
     static let line = Color.primary.opacity(0.06)
-    static let spectrum = [accent, Color(red: 0.73, green: 0.83, blue: 0.65), coral]
 }
+
+// MARK: - Typography: 7 roles, all semantic text styles (Dynamic Type safe)
+//
+// Rule: max 4 roles per screen; a size step only counts when it differs by 4pt+.
+
+enum TypeScale {
+    static let display = Font.largeTitle.weight(.bold)       // 34 — 空状态主标题，慎用
+    static let pageTitle = Font.title.weight(.bold)           // 28 — 一级页标题
+    static let sectionTitle = Font.title2.weight(.semibold)  // 22 — 二级页标题 / 板块标题
+    static let groupTitle = Font.headline                    // 17 semibold — 卡片内分组标题
+    static let body = Font.body                              // 17 — 长阅读正文
+    static let chat = Font.callout                           // 16 — 聊天消息 / 列表主行
+    static let footnote = Font.footnote                      // 13 — 时间戳 / 次要说明
+    static let eyebrow = Font.caption.weight(.medium)        // 12 — 分组眉题（+ 全大写 + 宽字距）
+}
+
+// MARK: - Spacing & radius: 4 steps each, no exceptions
+
+enum Space {
+    static let xs: CGFloat = 4
+    static let sm: CGFloat = 8
+    static let md: CGFloat = 12
+    static let lg: CGFloat = 16
+    static let xl: CGFloat = 24
+}
+enum Radius {
+    static let small: CGFloat = 16
+    static let row: CGFloat = 22
+    static let card: CGFloat = 24
+    static let panel: CGFloat = 28
+}
+
+// MARK: - Glass: control layer only, never on content
+//
+// System chrome may glass. Content (chat text, lists, cards) stays opaque.
+
+extension View {
+    func controlGlass<S: Shape>(_ shape: S) -> some View {
+        glassEffect(.regular.interactive(), in: shape)
+    }
+    func limeControlGlass<S: Shape>(_ shape: S) -> some View {
+        glassEffect(.regular.tint(Palette.accent).interactive(), in: shape)
+    }
+}
+
+// MARK: - Page skeleton & cards
 
 struct PageCanvas<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
-        ScrollView { VStack(alignment: .leading, spacing: 16) { content }.padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 24) }
+        ScrollView { VStack(alignment: .leading, spacing: Space.lg) { content }.padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 24) }
             .background(Palette.canvas).scrollIndicators(.hidden).scrollDismissesKeyboard(.interactively)
     }
 }
+
 struct SurfaceCard<Content: View>: View {
-    var accent: Color = Palette.violet
     @ViewBuilder var content: Content
     var body: some View {
         content.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.surface, in: .rect(cornerRadius: 24))
+            .background(Palette.surface, in: .rect(cornerRadius: Radius.card))
     }
 }
+
+/// The one true list-row card. Replaces the four hand-written variants.
+struct RowCard<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        content.padding(Space.lg).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.surface, in: .rect(cornerRadius: Radius.row))
+    }
+}
+
+// MARK: - Type components
+
 struct Eyebrow: View {
     let text: String
-    var body: some View { Text(text).font(.caption.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary) }
+    var body: some View { Text(text.uppercased()).font(TypeScale.eyebrow).tracking(1.4).foregroundStyle(.secondary) }
 }
+
 struct PageHeading: View {
     let title: String
     let subtitle: String
-    var body: some View { VStack(alignment: .leading, spacing: 7) { Text(title).font(.system(size: 28, weight: .bold)); if !subtitle.isEmpty { Text(subtitle).font(.subheadline).foregroundStyle(.secondary) } } }
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Text(title).font(TypeScale.pageTitle)
+            if !subtitle.isEmpty { Text(subtitle).font(TypeScale.footnote).foregroundStyle(.secondary) }
+        }
+    }
 }
+
+struct SectionHeading: View {
+    let title: String
+    var body: some View { Text(title).font(TypeScale.sectionTitle).frame(maxWidth: .infinity, alignment: .leading) }
+}
+
 struct Pill: View {
     let text: String
     var color = Palette.violet
     var body: some View { Text(text).font(.caption.weight(.medium)).padding(.horizontal, 11).padding(.vertical, 6).foregroundStyle(.primary).background(Palette.accent.opacity(0.25), in: .capsule) }
 }
+
+// MARK: - Icon & action primitives (one size each)
+
+/// 44pt row-leading icon badge. The only spec.
+struct IconBadge: View {
+    let symbol: String
+    var tint: Color = Palette.raised
+    var body: some View {
+        Image(systemName: symbol).font(.title3).foregroundStyle(.primary)
+            .frame(width: 44, height: 44)
+            .background(tint.opacity(0.6), in: .rect(cornerRadius: 15))
+    }
+}
+
+/// 44pt circular action button. The only spec.
+struct CircleActionButton: View {
+    let symbol: String
+    let label: String
+    var filled = false
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 17, weight: .medium))
+                .foregroundStyle(filled ? Palette.onAccent : .primary)
+                .frame(width: 44, height: 44)
+                .background(filled ? Palette.accent : Palette.surface, in: .circle)
+                .shadow(color: .black.opacity(filled ? 0.10 : 0.05), radius: filled ? 10 : 8, y: 3)
+        }.buttonStyle(.plain).accessibilityLabel(label)
+    }
+}
+
+// MARK: - Button styles
+
+/// Primary decision button: lime capsule.
+struct LimeButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(TypeScale.chat.weight(.semibold))
+            .foregroundStyle(Palette.onAccent)
+            .padding(.horizontal, 20).padding(.vertical, 12)
+            .background(Palette.accent.opacity(enabled ? 1 : 0.4), in: .capsule)
+            .opacity(enabled ? 1 : 0.7)
+            .scaleEffect(reduce ? 1 : configuration.isPressed ? 0.96 : 1)
+            .animation(reduce ? nil : .spring(duration: 0.2, bounce: 0.15), value: configuration.isPressed)
+    }
+}
+extension ButtonStyle where Self == LimeButtonStyle { static var limeProminent: LimeButtonStyle { LimeButtonStyle() } }
+
+/// Quiet secondary action: plain secondary text.
+struct QuietButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(TypeScale.chat).foregroundStyle(.secondary)
+            .opacity(configuration.isPressed ? 0.6 : enabled ? 1 : 0.5)
+    }
+}
+extension ButtonStyle where Self == QuietButtonStyle { static var quiet: QuietButtonStyle { QuietButtonStyle() } }
+
+// MARK: - Detail page chrome (shared by all 4 detail views)
+//
+// Three-zone template: header (Pill + 22pt title + status) / decision zone /
+// disclosure zone. Sub-views compose inside; chrome stays identical.
+
+struct DetailPage<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            PageCanvas { content }
+                .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
+        }
+    }
+}
+
 struct EmptyState: View {
     let title: String
     let description: String
     let symbol: String
     var body: some View { ContentUnavailableView(title, systemImage: symbol, description: Text(description)).frame(maxWidth: .infinity).padding(.vertical, 20) }
 }
+
 struct Freshness: View {
     @Environment(AppModel.self) private var model
     let path: String
@@ -70,26 +226,30 @@ struct Freshness: View {
             if let error = model.errors[path] { Text(error).foregroundStyle(.secondary) }
             else if let date = model.fetchedAt[path] { Text("更新于 \(date.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary) }
             else { Text("尚未读取").foregroundStyle(.secondary) }
-        }.font(.caption).accessibilityElement(children: .combine)
+        }.font(TypeScale.footnote).accessibilityElement(children: .combine)
     }
 }
+
 struct RichText: View {
     let text: String
+    var font: Font = TypeScale.body
     var body: some View {
         StructuredText(markdown: text)
             .textual.structuredTextStyle(.gitHub)
             .textual.textSelection(.enabled)
-            .font(.body).frame(maxWidth: .infinity, alignment: .leading)
+            .font(font).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
 struct RawDetails: View {
     let title: String
     let value: JSON
     var body: some View {
-        DisclosureGroup(title) { Text(value.pretty).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
-            .font(.subheadline).tint(.primary)
+        DisclosureGroup(title) { Text(value.pretty).font(TypeScale.footnote.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
+            .font(TypeScale.chat).tint(.primary)
     }
 }
+
 func displayStatus(_ value: String) -> String {
     ["queued": "等待执行", "dispatching": "正在启动", "running": "执行中", "waiting": "等你回应", "unknown": "待核实",
      "execution_finished": "待验收", "completed": "已完成", "cancel_requested": "正在停止", "cancelled": "已取消", "failed": "失败",
@@ -106,29 +266,9 @@ func textContent(_ value: JSON) -> String {
     return value["text"].string
 }
 
-struct FlowGlow: View {
-    var level: Double = 0.15
-    var processing = false
-    var active = true
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    @Environment(\.accessibilityReduceTransparency) private var opaque
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !active || reduce)) { timeline in
-            let t = reduce ? 0 : timeline.date.timeIntervalSinceReferenceDate
-            Canvas { context, size in
-                let height = size.height * (0.08 + min(1, level) * 0.60)
-                for i in 0..<5 {
-                    let phase = t * (processing ? 1.7 : 0.65) + Double(i) * 1.4
-                    let x = size.width * (0.5 + sin(phase) * 0.34)
-                    let rect = CGRect(x: x - size.width * 0.24, y: size.height - height * (1 + Double(i % 2) * 0.3), width: size.width * 0.48, height: height * 1.6)
-                    var layer = context
-                    layer.addFilter(.blur(radius: opaque ? 0 : 14))
-                    layer.fill(Path(ellipseIn: rect), with: .color(Palette.spectrum[i % 3].opacity(opaque ? 0.35 : 0.6)))
-                }
-            }
-        }.allowsHitTesting(false).accessibilityHidden(true)
-    }
-}
+private extension String { var nonEmpty: String? { isEmpty ? nil : self } }
+
+// MARK: - Companion (kept: the coral crab identity)
 
 /// A sculpted coral crab keeps the existing Hermes identity while gaining fluid motion.
 struct Companion: View {
@@ -152,7 +292,7 @@ struct Companion: View {
                         Circle().stroke(Palette.violet.opacity(0.10), lineWidth: 1).frame(width: w * 0.92)
                         Circle().stroke(Palette.cyan.opacity(0.13), lineWidth: 1).frame(width: w * 0.73)
                         ForEach(0..<3) { i in
-                            Circle().fill(Palette.spectrum[i]).frame(width: 4 + CGFloat(i), height: 4 + CGFloat(i))
+                            Circle().fill([Palette.accent, Palette.coral, Palette.accent][i]).frame(width: 4 + CGFloat(i), height: 4 + CGFloat(i))
                                 .offset(x: cos(t * 0.4 + Double(i) * 2.1) * w * 0.4, y: sin(t * 0.4 + Double(i) * 2.1) * w * 0.4)
                         }
                     }
@@ -205,7 +345,6 @@ struct Companion: View {
     }
 }
 
-
 struct CompanionPortrait: View {
     var size: CGFloat = 76
     var body: some View {
@@ -224,30 +363,30 @@ struct CompanionHeader: View {
     }
     var body: some View {
         HStack(spacing: 10) {
-                Menu {
-                    Button("搜索聊天与成果", systemImage: "magnifyingglass") { model.showSearch = true }
-                    Button("工作记录", systemImage: "clock.arrow.circlepath") { model.tab = .work }
-                    Button("分享收件箱", systemImage: "tray") { model.showShareInbox = true }
-                    Button("设置与连接", systemImage: "slider.horizontal.3") { model.showSettings = true }
-                } label: { CompanionPortrait(size: 32).frame(width: 44, height: 44) }
-                .accessibilityLabel("主菜单")
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Com").font(.subheadline.weight(.semibold))
-                    Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                Button { model.showSearch = true } label: { Image(systemName: "magnifyingglass").font(.system(size: 17)).frame(width: 40, height: 40).background(Palette.surface, in: .circle) }.accessibilityLabel("搜索聊天与成果")
-                Button { model.showSettings = true } label: { Image(systemName: "slider.horizontal.3").font(.system(size: 17)).frame(width: 40, height: 40).background(Palette.surface, in: .circle) }
-                    .accessibilityLabel("设置与连接")
+            Menu {
+                Button("搜索聊天与成果", systemImage: "magnifyingglass") { model.showSearch = true }
+                Button("工作记录", systemImage: "clock.arrow.circlepath") { model.tab = .work }
+                Button("分享收件箱", systemImage: "tray") { model.showShareInbox = true }
+                Button("设置与连接", systemImage: "slider.horizontal.3") { model.showSettings = true }
+            } label: { CompanionPortrait(size: 32).frame(width: 44, height: 44) }
+            .accessibilityLabel("主菜单")
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Com").font(TypeScale.chat.weight(.semibold))
+                Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            CircleActionButton(symbol: "magnifyingglass", label: "搜索聊天与成果") { model.showSearch = true }
+            CircleActionButton(symbol: "slider.horizontal.3", label: "设置与连接") { model.showSettings = true }
         }.buttonStyle(.plain).foregroundStyle(.primary).padding(.horizontal, 16).padding(.bottom, 2)
             .background(Palette.canvas)
     }
 }
 
+// MARK: - Dock: floating glass capsule (control layer)
+
 struct ComDock: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @Environment(\.accessibilityReduceTransparency) private var opaque
     @Namespace private var selection
     var body: some View {
         HStack(spacing: 2) {
@@ -267,8 +406,8 @@ struct ComDock: View {
                     .help(tab == .work ? "Com · 工作记录" : tab.rawValue)
             }
         }.padding(7)
-            .background(Palette.surface.opacity(opaque ? 1 : 0.97), in: .capsule)
-            .shadow(color: .black.opacity(0.07), radius: 20, y: 5)
+            .controlGlass(.capsule)
+            .shadow(color: .black.opacity(0.08), radius: 18, y: 6)
             .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 5)
     }
 }
@@ -286,51 +425,29 @@ struct InlineSearch: View {
     }
 }
 
-private extension String { var nonEmpty: String? { isEmpty ? nil : self } }
-
-struct ChatCompanionStage: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dynamicTypeSize) private var typeSize
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            Canvas { context, size in
-                for i in 0..<2 {
-                    var ridge = Path(); ridge.move(to: CGPoint(x: 0, y: size.height))
-                    for j in 0...12 {
-                        let x = size.width * CGFloat(j) / 12
-                        let y = size.height * (0.60 + sin(Double(j) * 1.5 + Double(i)) * 0.13 + Double(i) * 0.17)
-                        ridge.addLine(to: CGPoint(x: x, y: y))
-                    }
-                    ridge.addLine(to: CGPoint(x: size.width, y: size.height)); ridge.closeSubpath()
-                    context.fill(ridge, with: .color(Palette.landscape.opacity(i == 0 ? 0.50 : 0.85)))
-                }
-            }.accessibilityHidden(true)
-            Companion(state: model.roleState, compact: true).frame(width: 104, height: 104).offset(y: -3)
-        }.frame(height: typeSize.isAccessibilitySize ? 70 : 105).clipped().background(Palette.canvas)
-    }
-}
+// MARK: - Today focus card (two-tone, refined type)
 
 struct TodayFocusCard: View {
     let matter: JSON
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 18) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("为你整理").font(.caption.weight(.semibold)).padding(.horizontal, 10).padding(.vertical, 5).background(Palette.accent, in: .capsule)
-                    Text("今日焦点").font(.system(size: 24, weight: .bold))
-                    Text(sourceName(matter["source"].string)).font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    Text("为你整理").font(TypeScale.eyebrow).padding(.horizontal, 10).padding(.vertical, 5).background(Palette.accent, in: .capsule)
+                    Text("今日焦点").font(TypeScale.sectionTitle)
+                    Text(sourceName(matter["source"].string)).font(TypeScale.footnote).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 CompanionPortrait(size: 85).rotationEffect(.degrees(-7))
             }.foregroundStyle(.primary).padding(20).frame(maxWidth: .infinity).background(Palette.raised.opacity(0.45))
             HStack(alignment: .center, spacing: 16) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(matter["title"].string).font(.headline).lineLimit(2)
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    Text(matter["title"].string).font(TypeScale.groupTitle).lineLimit(2)
                     let summary = matter["why"].string.isEmpty ? matter["next_step"].string : matter["why"].string
-                    if !summary.isEmpty { Text(summary).font(.subheadline).foregroundStyle(.white.opacity(0.65)).lineLimit(2) }
+                    if !summary.isEmpty { Text(summary).font(TypeScale.footnote).foregroundStyle(.white.opacity(0.65)).lineLimit(2) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: "arrow.up.right").font(.system(size: 19, weight: .medium)).foregroundStyle(Palette.onAccent).frame(width: 42, height: 42).background(Palette.accent, in: .circle)
+                Image(systemName: "arrow.up.right").font(.system(size: 19, weight: .medium)).foregroundStyle(Palette.onAccent).frame(width: 44, height: 44).background(Palette.accent, in: .circle)
             }.foregroundStyle(.white).padding(20).background(Color(red: 0.10, green: 0.11, blue: 0.09))
-        }.clipShape(.rect(cornerRadius: 24)).multilineTextAlignment(.leading)
+        }.clipShape(.rect(cornerRadius: Radius.card)).multilineTextAlignment(.leading)
     }
 }

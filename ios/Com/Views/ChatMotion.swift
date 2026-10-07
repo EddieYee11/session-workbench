@@ -25,9 +25,9 @@ struct OutgoingBubbleFlight: View {
     @State private var progress = 0.0
     var body: some View {
         if let destination = flight.destination {
-            Text(flight.text).font(.body).padding(.horizontal, 18).padding(.vertical, 14)
+            Text(flight.text).font(TypeScale.chat).padding(.horizontal, Space.lg).padding(.vertical, Space.md)
                 .frame(width: destination.width, height: destination.height, alignment: .leading)
-                .background(Palette.surface, in: .rect(cornerRadius: 22))
+                .background(Palette.surface, in: .rect(cornerRadius: Radius.row))
                 .modifier(FlightPath(origin: flight.origin, destination: destination, progress: progress))
                 .position(x: destination.midX, y: destination.midY)
                 .allowsHitTesting(false).accessibilityHidden(true)
@@ -38,7 +38,7 @@ struct OutgoingBubbleFlight: View {
                     landed()
                 }
         } else {
-            Text(flight.text).font(.body).padding(.horizontal, 18).padding(.vertical, 7)
+            Text(flight.text).font(TypeScale.chat).padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
                 .frame(width: flight.origin.width, height: flight.origin.height, alignment: .leading)
                 .position(x: flight.origin.midX, y: flight.origin.midY)
                 .allowsHitTesting(false).accessibilityHidden(true)

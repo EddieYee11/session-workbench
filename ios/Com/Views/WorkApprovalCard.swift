@@ -10,25 +10,30 @@ struct WorkApprovalCard: View {
     private var questions: [JSON] { approval["params"]["questions"].array }
     var body: some View {
         SurfaceCard {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: Space.md) {
                 Pill(text: "等待你的决定", color: Palette.coral)
                 let params = approval["params"]
-                if !params["reason"].string.isEmpty { Text(params["reason"].string) }
-                if !params["command"].string.isEmpty { Text(params["command"].string).font(.caption.monospaced()).textSelection(.enabled) }
+                if !params["reason"].string.isEmpty { Text(params["reason"].string).font(TypeScale.chat) }
+                if !params["command"].string.isEmpty { Text(params["command"].string).font(TypeScale.footnote.monospaced()).textSelection(.enabled) }
                 if !questions.isEmpty {
                     ForEach(questions.map(RemoteRow.init)) { row in
-                        Text(row.value["question"].string).font(.subheadline.weight(.semibold))
+                        Text(row.value["question"].string).font(TypeScale.groupTitle)
                         ForEach(Array(row.value["options"].array.enumerated()), id: \.offset) { _, option in
-                            Button { answers[row.id] = option["label"].string } label: { Label(option["label"].string, systemImage: answers[row.id] == option["label"].string ? "checkmark.circle.fill" : "circle") }.buttonStyle(.bordered)
-                            if !option["description"].string.isEmpty { Text(option["description"].string).font(.caption).foregroundStyle(.secondary) }
+                            Button { answers[row.id] = option["label"].string } label: { Label(option["label"].string, systemImage: answers[row.id] == option["label"].string ? "checkmark.circle.fill" : "circle") }.buttonStyle(.quiet)
+                            if !option["description"].string.isEmpty { Text(option["description"].string).font(TypeScale.footnote).foregroundStyle(.secondary) }
                         }
                         TextField("你的回答", text: Binding(get: { answers[row.id] ?? "" }, set: { answers[row.id] = $0 }), axis: .vertical).textFieldStyle(.roundedBorder)
                     }
-                    Button("提交这些回答") { submit(["answers": .object(answers.mapValues(JSON.string))]) }.buttonStyle(.borderedProminent).disabled(questions.contains { (answers[$0.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } || submitting)
+                    Button("提交这些回答") { submit(["answers": .object(answers.mapValues(JSON.string))]) }.buttonStyle(.limeProminent).disabled(questions.contains { (answers[$0.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } || submitting)
                 } else {
                     let decisions = params["availableDecisions"].array.isEmpty ? [JSON.string("accept"), .string("decline"), .string("cancel")] : params["availableDecisions"].array
                     ForEach(Array(decisions.enumerated()), id: \.offset) { _, choice in
-                        Button(decisionLabel(choice)) { submit(["decision": choice]) }.buttonStyle(.bordered).disabled(submitting)
+                        let label = decisionLabel(choice)
+                        if choice.string == "accept" || choice.string == "acceptForSession" {
+                            Button(label) { submit(["decision": choice]) }.buttonStyle(.limeProminent).disabled(submitting)
+                        } else {
+                            Button(label) { submit(["decision": choice]) }.buttonStyle(.quiet).disabled(submitting)
+                        }
                     }
                 }
                 RawDetails(title: "操作范围与完整参数", value: params)

@@ -7,15 +7,26 @@ struct DeviceReceiptsView: View {
     @State private var working = false
     @State private var note = ""
     var body: some View {
-        List {
-            if records.isEmpty { Text("暂无本机设备操作回执").foregroundStyle(.secondary) }
-            if !note.isEmpty { Text(note).font(.caption).foregroundStyle(Palette.coral) }
+        PageCanvas {
+            if records.isEmpty { Text("暂无本机设备操作回执").font(TypeScale.footnote).foregroundStyle(.secondary) }
+            if !note.isEmpty { Text(note).font(TypeScale.footnote).foregroundStyle(Palette.coral) }
             ForEach(records.map(RemoteRow.init)) { row in
-                Section {
-                    LabeledContent(row.value["tool"].string, value: displayStatus(row.value["status"].string))
-                    RawDetails(title: "回读与操作证据", value: row.value["result"])
-                    if row.value["status"].string == "succeeded" && row.value["result"]["verified"].bool && !row.value["result"]["undo"].isNull {
-                        Button(row.value["undo_requested"].bool ? "已申请撤销，请核对回执" : "撤销此操作") { Task { await undo(row.value) } }.disabled(working || row.value["undo_requested"].bool)
+                RowCard {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        HStack {
+                            Text(row.value["tool"].string).font(TypeScale.chat.weight(.semibold))
+                            Spacer()
+                            Text(displayStatus(row.value["status"].string)).font(TypeScale.footnote).foregroundStyle(.secondary)
+                        }
+                        RawDetails(title: "回读与操作证据", value: row.value["result"])
+                        if row.value["status"].string == "succeeded" && row.value["result"]["verified"].bool && !row.value["result"]["undo"].isNull {
+                            Button { Task { await undo(row.value) } } label: {
+                                Text(row.value["undo_requested"].bool ? "已申请撤销，请核对回执" : "撤销此操作").foregroundStyle(Palette.coral)
+                            }
+                            .buttonStyle(.quiet)
+                            .disabled(working || row.value["undo_requested"].bool)
+                            .opacity(working || row.value["undo_requested"].bool ? 0.5 : 1)
+                        }
                     }
                 }
             }

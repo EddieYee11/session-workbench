@@ -9,17 +9,25 @@ struct ShareInboxView: View {
     @State private var note = ""
     var body: some View {
         NavigationStack {
-            List {
-                Text("检查后放入聊天草稿。此处不会自动交办。").font(.caption).foregroundStyle(.secondary)
+            PageCanvas {
+                Text("检查后放入聊天草稿。此处不会自动交办。").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
                 ForEach(drafts) { draft in
-                    Section {
-                        if !draft.text.isEmpty { Text(draft.text).textSelection(.enabled) }
-                        ForEach(draft.attachments) { attachment in Label(attachment.name, systemImage: "paperclip") }
-                        Button("加入聊天草稿") { Task { await importDraft(draft) } }.disabled(loading || !model.isPaired)
-                        Button("丢弃这次分享", role: .destructive) { ShareInbox.remove(draft); drafts = ShareInbox.all() }.disabled(loading)
+                    RowCard {
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            if !draft.text.isEmpty { Text(draft.text).font(TypeScale.chat).textSelection(.enabled) }
+                            ForEach(draft.attachments) { attachment in
+                                Label(attachment.name, systemImage: "paperclip").font(TypeScale.footnote).foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: Space.md) {
+                                Button("加入聊天草稿") { Task { await importDraft(draft) } }.buttonStyle(.limeProminent).disabled(loading || !model.isPaired)
+                                Button { ShareInbox.remove(draft); drafts = ShareInbox.all() } label: {
+                                    Text("丢弃这次分享").foregroundStyle(Palette.coral)
+                                }.buttonStyle(.quiet).disabled(loading)
+                            }
+                        }
                     }
                 }
-                if !note.isEmpty { Text(note).font(.caption).foregroundStyle(Palette.coral) }
+                if !note.isEmpty { Text(note).font(TypeScale.footnote).foregroundStyle(Palette.coral) }
             }.navigationTitle("分享收件箱").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
         }

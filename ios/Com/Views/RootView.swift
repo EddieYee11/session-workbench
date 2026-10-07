@@ -83,10 +83,10 @@ struct PairingView: View {
                         } label: {
                             HStack { Text("开始连接"); Spacer(); if loading { ProgressView() } else { Image(systemName: "arrow.right") } }.padding(.vertical, 9)
                         }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).disabled(loading || code.isEmpty)
-                        if !error.isEmpty { Text(error).font(.caption).foregroundStyle(Palette.coral) }
+                        if !error.isEmpty { Text(error).font(TypeScale.footnote).foregroundStyle(Palette.coral) }
                     }
                 }
-                Text("配对码在 Mac mini 上生成。账号凭据留在这台 iPhone 的钥匙串中。").font(.caption).foregroundStyle(.secondary)
+                Text("配对码在 Mac mini 上生成。账号凭据留在这台 iPhone 的钥匙串中。").font(TypeScale.footnote).foregroundStyle(.secondary)
             }.tint(Palette.violet)
         }
     }

@@ -9,70 +9,130 @@ struct SettingsView: View {
     @State private var disconnecting = false
     var body: some View {
         @Bindable var devices = model.devices!
+        let unresolved = SecureVault.operationRecords().filter { $0["status"].string == "unknown" }
         NavigationStack {
-            Form {
-                Section("外观") {
-                    Picker("主题", selection: $appearance) { Text("跟随系统").tag("system"); Text("浅色").tag("light"); Text("深色").tag("dark") }
-                    Text("大字体、VoiceOver、减少动态效果和降低透明度跟随系统设置。").font(.caption).foregroundStyle(.secondary)
+            PageCanvas {
+                settingsGroup(title: "外观") {
+                    HStack {
+                        Text("主题").font(TypeScale.chat)
+                        Spacer()
+                        Picker("主题", selection: $appearance) { Text("跟随系统").tag("system"); Text("浅色").tag("light"); Text("深色").tag("dark") }
+                            .pickerStyle(.menu).tint(.primary)
+                    }
+                    Divider()
+                    Text("大字体、VoiceOver、减少动态效果和降低透明度跟随系统设置。").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
                 }
-                Section("连接") {
-                    LabeledContent("服务", value: model.base).font(.caption)
-                    LabeledContent("实时对话", value: model.streaming ? "已连接" : "缓存模式")
-                    LabeledContent("手机能力", value: devices.connected ? "已连接" : "未连接")
-                    Text(devices.note).font(.caption).foregroundStyle(.secondary)
-                    Button("刷新连接") { Task { await model.setActive(true) } }
-                    Text("手机退到后台后，任务继续在 mini 上执行。重新打开时会补取最新状态。").font(.caption).foregroundStyle(.secondary)
+                settingsGroup(title: "连接") {
+                    settingsRow(label: "服务", value: model.base)
+                    Divider()
+                    settingsRow(label: "实时对话", value: model.streaming ? "已连接" : "缓存模式")
+                    Divider()
+                    settingsRow(label: "手机能力", value: devices.connected ? "已连接" : "未连接")
+                    Divider()
+                    Text(devices.note).font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
+                    Divider()
+                    Button("刷新连接") { Task { await model.setActive(true) } }.buttonStyle(.quiet)
+                    Divider()
+                    Text("手机退到后台后，任务继续在 mini 上执行。重新打开时会补取最新状态。").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
                 }
-                Section("首次使用时授权") {
+                settingsGroup(title: "首次使用时授权") {
                     permission("健康 · 只读", "heart", "health")
+                    Divider()
                     permission("日历", "calendar", "calendar")
+                    Divider()
                     permission("提醒事项", "checklist", "reminders")
+                    Divider()
                     permission("联系人", "person.crop.circle", "contacts")
+                    Divider()
                     permission("使用期间的位置", "location", "location")
-                    Button("打开系统权限设置", systemImage: "gear") { if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) } }
+                    Divider()
+                    Button { if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) } } label: {
+                        HStack { Label("打开系统权限设置", systemImage: "gear"); Spacer(); Image(systemName: "chevron.right").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary) }
+                    }.buttonStyle(.plain).font(TypeScale.chat)
                 }
-                Section("设备结果同步") {
-                    Toggle("向 mini 提供健康摘要", isOn: $devices.healthSync)
-                    Toggle("向 mini 提供联系人查询结果", isOn: $devices.contactsSync)
-                    Text("开启后，已授权范围内的数据可供 mini 处理你的交办。健康包括步数、活动能量、心率、静息心率、睡眠和运动；联系人查询仅返回符合交办条件的结果。关闭会停止后续设备读取；已交办的结果可能已保存在服务端。").font(.caption).foregroundStyle(.secondary)
-                }.onChange(of: devices.healthSync) { _, _ in Task { await devices.updateSync() } }.onChange(of: devices.contactsSync) { _, _ in Task { await devices.updateSync() } }
-                Section { Button("分享收件箱", systemImage: "tray.and.arrow.down") { dismiss(); model.showShareInbox = true } }
-                Section("发送记录") {
-                    if model.pending.isEmpty { Text("还没有本机发送记录").foregroundStyle(.secondary) }
-                    ForEach(model.pending.reversed()) { entry in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(entry.text.isEmpty ? "恢复工作会话" : entry.text).lineLimit(3)
-                            Text(entry.note + " · " + entry.createdAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
-                            if entry.state == .uncertain || entry.state == .checking {
-                                Button("查询原请求回执") { Task { if entry.path.hasPrefix("/sessions") { _ = await model.deliverWork(entry.id) } else { await model.deliver(entry.id) } } }
-                            }
-                            if entry.state == .rejected {
-                                Button("恢复文字到聊天草稿") { model.draft = entry.text; model.tab = .chat; dismiss(); model.persistNow() }
-                            }
-                        }.padding(.vertical, 5)
+                settingsGroup(title: "设备结果同步") {
+                    Toggle("向 mini 提供健康摘要", isOn: $devices.healthSync).font(TypeScale.chat).tint(Palette.accent)
+                    Divider()
+                    Toggle("向 mini 提供联系人查询结果", isOn: $devices.contactsSync).font(TypeScale.chat).tint(Palette.accent)
+                    Divider()
+                    Text("开启后，已授权范围内的数据可供 mini 处理你的交办。健康包括步数、活动能量、心率、静息心率、睡眠和运动；联系人查询仅返回符合交办条件的结果。关闭会停止后续设备读取；已交办的结果可能已保存在服务端。").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
+                }
+                .onChange(of: devices.healthSync) { _, _ in Task { await devices.updateSync() } }
+                .onChange(of: devices.contactsSync) { _, _ in Task { await devices.updateSync() } }
+                SurfaceCard {
+                    Button { dismiss(); model.showShareInbox = true } label: {
+                        HStack { Label("分享收件箱", systemImage: "tray.and.arrow.down"); Spacer(); Image(systemName: "chevron.right").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary) }
+                    }.buttonStyle(.plain).font(TypeScale.chat)
+                }
+                settingsGroup(title: "发送记录") {
+                    if model.pending.isEmpty {
+                        Text("还没有本机发送记录").font(TypeScale.chat).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(model.pending.reversed().enumerated()), id: \.offset) { index, entry in
+                            if index > 0 { Divider() }
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                Text(entry.text.isEmpty ? "恢复工作会话" : entry.text).font(TypeScale.chat).lineLimit(3)
+                                Text(entry.note + " · " + entry.createdAt.formatted(date: .abbreviated, time: .shortened)).font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
+                                if entry.state == .uncertain || entry.state == .checking {
+                                    Button("查询原请求回执") { Task { if entry.path.hasPrefix("/sessions") { _ = await model.deliverWork(entry.id) } else { await model.deliver(entry.id) } } }.buttonStyle(.quiet)
+                                }
+                                if entry.state == .rejected {
+                                    Button("恢复文字到聊天草稿") { model.draft = entry.text; model.tab = .chat; dismiss(); model.persistNow() }.buttonStyle(.quiet)
+                                }
+                            }.padding(.vertical, Space.xs)
+                        }
                     }
                 }
-                let unresolved = SecureVault.operationRecords().filter { $0["status"].string == "unknown" }
                 if !unresolved.isEmpty {
-                    Section("送达待核实的操作") {
-                        Text("先更新任务、记忆或日程结果，核对后再决定下一步。这里不会自动重发操作。").font(.caption).foregroundStyle(.secondary)
+                    settingsGroup(title: "送达待核实的操作") {
+                        Text("先更新任务、记忆或日程结果，核对后再决定下一步。这里不会自动重发操作。").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
                         ForEach(Array(unresolved.enumerated()), id: \.offset) { _, record in RawDetails(title: "查看原请求与操作内容", value: record) }
-                        Button("更新服务端状态") { Task { await model.refreshAll() } }
+                        Button("更新服务端状态") { Task { await model.refreshAll() } }.buttonStyle(.quiet)
                     }
                 }
-                Section { NavigationLink("设备操作回执与撤销") { DeviceReceiptsView() } }
-                Section("平台能力") {
-                    Text("iOS 不支持读取其他 App 的全部通知、列出所有应用或任意操作其他 App。免费账号签名需要定期重新安装，首版没有锁屏实时远程推送。").font(.caption).foregroundStyle(.secondary)
-                    DisclosureGroup("能力与授权明细") { ForEach(Array(devices.capabilities.enumerated()), id: \.offset) { _, item in LabeledContent(item["tool"].string, value: !item["available"].bool ? "不支持" : item["permission"].bool ? "可用" : "未授权 / 同步关闭").font(.caption) } }
+                settingsGroup(title: "平台能力") {
+                    Text("iOS 不支持读取其他 App 的全部通知、列出所有应用或任意操作其他 App。免费账号签名需要定期重新安装，首版没有锁屏实时远程推送。").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary)
+                    DisclosureGroup("能力与授权明细") {
+                        ForEach(Array(devices.capabilities.enumerated()), id: \.offset) { _, item in
+                            HStack(alignment: .top) {
+                                Text(item["tool"].string).font(TypeScale.chat)
+                                Spacer()
+                                Text(!item["available"].bool ? "不支持" : item["permission"].bool ? "可用" : "未授权 / 同步关闭").font(TypeScale.chat).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                            }.padding(.vertical, Space.xs)
+                        }
+                    }.font(TypeScale.chat)
+                    Divider()
+                    NavigationLink { DeviceReceiptsView() } label: {
+                        HStack { Text("设备操作回执与撤销").font(TypeScale.chat); Spacer(); Image(systemName: "chevron.right").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary) }
+                    }.buttonStyle(.plain)
                 }
-                Section { Button("解除本机配对", role: .destructive) { disconnecting = true } }
+                SurfaceCard {
+                    Button(role: .destructive) { disconnecting = true } label: {
+                        Text("解除本机配对").font(TypeScale.chat).foregroundStyle(Palette.coral).frame(maxWidth: .infinity, alignment: .center)
+                    }.buttonStyle(.plain)
+                }
             }.navigationTitle("设置").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
                 .confirmationDialog("解除配对后本机保留草稿与缓存", isPresented: $disconnecting, titleVisibility: .visible) { Button("解除配对", role: .destructive) { Task { await model.disconnect(); dismiss() } } }
         }
     }
+    @ViewBuilder private func settingsGroup(title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Eyebrow(text: title)
+            SurfaceCard { VStack(alignment: .leading, spacing: Space.md) { content() } }
+        }
+    }
+    private func settingsRow(label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label).font(TypeScale.chat)
+            Spacer()
+            Text(value).font(TypeScale.chat).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+        }
+    }
     private func permission(_ title: String, _ symbol: String, _ domain: String) -> some View {
-        Button(title, systemImage: symbol) { Task { await model.devices.authorize(domain) } }
+        Button { Task { await model.devices.authorize(domain) } } label: {
+            HStack { Label(title, systemImage: symbol); Spacer(); Image(systemName: "chevron.right").font(TypeScale.footnote).foregroundStyle(Palette.inkTertiary) }
+        }.buttonStyle(.plain).font(TypeScale.chat)
     }
 }
 
@@ -84,10 +144,12 @@ struct SearchView: View {
     @State private var note = ""
     var body: some View {
         NavigationStack {
-            List {
-                if !note.isEmpty { Text(note).font(.caption).foregroundStyle(.secondary) }
+            PageCanvas {
+                InlineSearch(text: $query, prompt: "聊天、任务或成果名称")
+                if !note.isEmpty { Text(note).font(TypeScale.footnote).foregroundStyle(.secondary) }
                 if query.isEmpty {
-                    Section("成果") { ArtifactList(artifacts: model.datasets["/personal/artifacts"]?["items"].array ?? []) }
+                    Eyebrow(text: "成果")
+                    ArtifactList(artifacts: model.datasets["/personal/artifacts"]?["items"].array ?? [])
                 } else {
                     ForEach(results.map(RemoteRow.init)) { row in
                         if row.value["kind"].string == "artifact" { ArtifactList(artifacts: [row.value]) }
@@ -102,13 +164,17 @@ struct SearchView: View {
                                     } else { await model.locateMessage(item.id) }
                                 }
                             } label: {
-                                VStack(alignment: .leading, spacing: 7) { Text(row.value["text"].string).lineLimit(4); Text(row.value["source"].string + " · " + Date(timeIntervalSince1970: row.value["created_at"].double).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
+                                RowCard {
+                                    VStack(alignment: .leading, spacing: Space.xs) {
+                                        Text(row.value["text"].string).font(TypeScale.chat.weight(.semibold)).lineLimit(4)
+                                        Text(row.value["source"].string + " · " + Date(timeIntervalSince1970: row.value["created_at"].double).formatted(date: .abbreviated, time: .shortened)).font(TypeScale.footnote).foregroundStyle(.secondary)
+                                    }
+                                }
                             }.buttonStyle(.plain)
                         }
                     }
                 }
             }.navigationTitle("搜索与成果").navigationBarTitleDisplayMode(.inline)
-                .searchable(text: $query, prompt: "聊天、任务或成果名称")
                 .task { _ = await model.load("/personal/artifacts") }
                 .task(id: query) {
                     guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { results = []; return }
@@ -131,22 +197,24 @@ struct ArtifactList: View {
     @State private var loading: String?
     @State private var error = ""
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Space.sm) {
             ForEach(Array(artifacts.enumerated()), id: \.offset) { _, artifact in
                 Button {
                     Task { await open(artifact) }
                 } label: {
-                    HStack(spacing: 13) {
-                        Image(systemName: artifact["mime"].string.hasPrefix("image") ? "photo" : "doc.richtext").foregroundStyle(Palette.violet)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(artifact["name"].string.isEmpty ? URL(fileURLWithPath: artifact["path"].string).lastPathComponent : artifact["name"].string).font(.subheadline.weight(.medium))
-                            Text(artifact["availability"].string == "available" ? "预览与分享" : artifact["availability"].string == "missing" ? "文件已移动或不存在" : "核对登记后预览").font(.caption).foregroundStyle(.secondary)
+                    RowCard {
+                        HStack(spacing: Space.md) {
+                            Image(systemName: artifact["mime"].string.hasPrefix("image") ? "photo" : "doc.richtext").foregroundStyle(Palette.violet)
+                            VStack(alignment: .leading, spacing: Space.xs) {
+                                Text(artifact["name"].string.isEmpty ? URL(fileURLWithPath: artifact["path"].string).lastPathComponent : artifact["name"].string).font(TypeScale.chat.weight(.semibold))
+                                Text(artifact["availability"].string == "available" ? "预览与分享" : artifact["availability"].string == "missing" ? "文件已移动或不存在" : "核对登记后预览").font(TypeScale.footnote).foregroundStyle(.secondary)
+                            }
+                            Spacer(); if loading == artifact.id { ProgressView() } else { Image(systemName: "arrow.up.right").font(TypeScale.footnote) }
                         }
-                        Spacer(); if loading == artifact.id { ProgressView() } else { Image(systemName: "arrow.up.right").font(.caption) }
-                    }.padding(14).background(Palette.canvas, in: .rect(cornerRadius: 18))
+                    }
                 }.buttonStyle(.plain).disabled(loading != nil)
             }
-            if !error.isEmpty { Text(error).font(.caption).foregroundStyle(Palette.coral) }
+            if !error.isEmpty { Text(error).font(TypeScale.footnote).foregroundStyle(Palette.coral) }
         }
         .sheet(item: $preview) { file in NavigationStack { FilePreview(url: file.url).navigationTitle(file.url.lastPathComponent).navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .topBarLeading) { Button("完成") { preview = nil } }; ToolbarItem(placement: .topBarTrailing) { ShareLink(item: file.url) { Image(systemName: "square.and.arrow.up") } } } } }
     }
@@ -172,7 +240,7 @@ struct FilePreview: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(url) }
     func makeUIViewController(context: Context) -> QLPreviewController { let controller = QLPreviewController(); controller.dataSource = context.coordinator; return controller }
     func updateUIViewController(_ controller: QLPreviewController, context: Context) {}
-    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+    final class Coordinator: NSObject, @preconcurrency QLPreviewControllerDataSource {
         let url: URL
         init(_ url: URL) { self.url = url }
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
