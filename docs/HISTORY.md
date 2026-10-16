@@ -1,0 +1,79 @@
+# Com 更新历史（原 README 存档，2026-10-16 前）
+
+## 2026-10-13 · 微信每小时汇总
+
+微信数据只在 MBP（`~/wechat-decrypt`，不在 Syncthing 范围内），后端只在 mini，所以走 **MBP 采集 → SSH 推给 mini**：MBP 上的 launchd `com.eddie.wechat-digest` 每小时跑 `backend/probes/wechat_digest.py --push-mini`，mini 端同一脚本的 `--ingest` 把摘要写进 `personal_hub` 的 `wechat` 来源（连接器页自动出现，无需改 iOS 的信源清单）。
+
+收录口径：私聊全收 + 群里 @我 / @所有人 + 关键词命中；采集端只做确定性筛选，**不做 LLM 总结**，总结交给本来就每小时跑的 `next_steps.py`，因此「下一步」tab 里得到带微信原文依据的行动建议；「今天」tab 多一张 `TodayView` 的微信摘要卡（`/personal/today` 的 `wechat` 段），点开看每个聊天最后几句原文。内容不做过滤（`redact` 开关默认关）。
+
+配置 `~/.session-workbench/wechat-digest.json`（MBP 本地），日志 `~/.session-workbench/logs/wechat-digest{,-error}.log`。管线细节与筛选踩过的坑见《微信数据 - 本地解密与 MCP 读取》第五节。iOS 侧已编译通过，装机待设备连接。
+
+## iOS 最新版 · 2026-10-16
+
+iOS 构建 **2026101004**（iPhone 17 Pro 模拟器 · iOS 26.3，`--ui-testing` 演示夹具数据，非真实个人数据）。本轮含青柠 Liquid Glass 视觉、「今天」晨间驾驶舱（Garmin 身体数据、下一件表盘）、「下一步」建议页、工作页任意会话可发指令、Live Activity 与状态小组件。细节见 [今天页驾驶舱](docs/COM_IOS_TODAY_COCKPIT_20261015.md) 与 [Lime Glass](docs/COM_IOS_LIME_GLASS_20261010.md)。
+
+| 对话 | 下一步 | 今天 | 身体状态 |
+|---|---|---|---|
+| ![对话](docs/images/ios-20261016/01-chat.png) | ![下一步](docs/images/ios-20261016/02-next.png) | ![今天](docs/images/ios-20261016/03-today.png) | ![身体状态](docs/images/ios-20261016/04-body.png) |
+
+## 最新开发版本 · 2026-10-08
+
+当前主线是 Mac mini 上的 Hermes，Android/iOS 共用已有 Com 服务。iOS 构建 **2026100802** 补齐白蓝双角色工作舞台、真实事件驱动动画和数量小组件，保留稳定滚动、平滑回到最新及语音自动发送。后端工具来源参数由运行时补齐，记忆与详细流程按需读取，增加分项开销与缓存计量，并启用核心 SQLite 库 WAL。
+
+本次动画与报告遗漏项的实现、验证及剩余边界见 [802 补齐记录](docs/COM_REPORT_COMPLETION_20261008.md)；此前上下文优化见 [801 更新说明](docs/COM_REPORT_UPDATE_20261008.md)。iOS Release 源码与安装资产见 [GitHub Releases](https://github.com/EddieYee11/session-workbench/releases)；公开 IPA 为无签名包，需要自行签名，不能直接当作通用安装包。下方历次记录保留其当时状态。
+
+## 历史实现背景
+
+
+1.7.0 整合 Muse 工作过程卡、头像状态卡与总结卡，任务和真实步骤挂回原交办消息；状态卡紧贴形象下方，仅显示图标和状态，空闲时隐藏。手机逐条持久发送、主线原生补话、来源关联与工作说明保持连续；普通语音可直接按具体费用记账，中文金额沿真实原文核对。工作页 Codex／Claude Code 支持普通聊天，不要求每句话都改成交办句。独立计划节点按依赖推进，程序检查后可选择无工具 Judge 复核要求覆盖。执行结束、送达未知、验收通过和待合入分别呈现。[本轮说明与验收路径](docs/COM_1.7_UPGRADE.md)。
+
+主 Pi 可直接使用 Shell、读写文件和业务工具，自主决定直接执行或委派独立 Pi / Claude / Codex，不强制派活。“A + 地址”等选项续答沿真实上文继续。主页支持 Markdown，工作页简称 Claude，统一字体与布局；减少重复历史注入、JSON 复制和流式轮询开销。共同能力目录区分发现、加载与真实验证；任务显示真实工具步骤、送达状态、结果和验收。主聊天与快捷语音使用同一请求登记。明确授权范围内执行，严重不可逆动作显示具体审批卡。
+
+全部新工作任务直接在原授权目录执行，旧副本产物仍须按实际执行轮次验收与合入。主线普通文件编辑保留恢复副本，高风险删除/覆盖需要具体审批。目标与事件已落入 SQLite，09:30 目标调度沿当前设置关闭。仅 Com 的 Claude worker 使用 Flash，继承原第三方 endpoint/凭据，未改全局配置。
+
+今天页以待处理和今日时间轴为主；任务页将同一任务合并为一张卡，筛选区分待你决定、执行中、待验收、已完成和已结束。条目进入对应任务详情，返回保留来源页面，原文沿真实来源身份定位。通知巡检独立放入更多。[页面改版与实际范围](docs/COM_UX_RESTRUCTURE.md)。
+
+实现与真实验证见 [1.7.0 升级说明](docs/COM_1.7_UPGRADE.md) 与 [Pi 主线实施记录](docs/COM_PI_MAIN_IMPLEMENTATION.md)，当前决策见 [路线图](docs/COM_MUSE_ROADMAP.md) 与 [任务层契约](docs/TASK_LAYER_CONTRACT.md)。以前的版本说明和 Hermes 规划保留为历史资料。1.7.0 本地安装包保存在 `verification/com-1.7.0/`；上个公开安装包见 [Com! 1.6.1 Release](https://github.com/EddieYee11/session-workbench/releases/tag/v1.6.1)。
+
+- `backend/`：历史索引、持续主线、共同工具、能力目录、RPC/SDK 执行器、任务/目标/事件服务。
+- `android/`：Kotlin / Compose 原生应用、底部导航、语音、通知、离线缓存与历史。
+- `backend/probes/`：隔离真实运行时验收与显式切换/回滚脚本；不接生产账本。`wechat_digest.py` 是例外——它是生产管线（MBP 采集 → 推送 mini 的 personal_hub，见上节）。
+- `backend/tests/`、`android/app/src/{test,androidTest}/`：协议、授权、恢复和界面检查。
+
+本机虚拟环境、Android 构建产物、连接令牌和 `verification/` 中的设备截图不会提交到仓库。
+
+Android 工程位于 `android/`，可用 Android Studio 打开，或在配置好 JDK 17+ 与 Android SDK 后运行 `./gradlew assembleDebug`。Mac mini 端需要 Python 3.12+、Pi、Claude Code、Codex、tmux 和 Caddy；`backend/install-mini.py` 是针对当前 Mac mini 的部署脚本，运行前应先核对其中的 Caddy 路径和路由。服务状态与会话数据保存在 Mac mini 的 `~/.session-workbench/`，不属于此仓库。
+
+Mac mini 使用 `~/.session-workbench/agent-config.json` 选择主线、Com Claude 模型及执行主机。实际生产已设置 Pi；没有此文件的新环境仍保留 Hermes 兼容入口，不能据此宣称已切换。Pi RPC 是新增适配器，不复用旧 tmux 输入与微信会话。Claude 使用本地 Agent SDK，Codex 沿用 app-server。来源、具体动作与预算在执行处校验。切换前后不重放已投递或 uncertain 操作，回滚方法见实施记录。
+
+Android 1.1.0 使用已选定的「灵动伙伴」界面：暖白底色、圆角会话卡片和本地流体圆脸 Bot。首页卡片读取真实会话，点开历史仍是只读；对话、终端、搜索和新建入口保持原有结构。网页 `docs/ai-style-directions.html` 仍是使用模拟数据的风格对照页。
+
+Android 1.2.0 起系统显示名为 Com!。早期产品方向保存在 `docs/COM_PRODUCT_DIRECTION.md`；当前实现与设备验收情况以最新版本说明为准。
+
+Bot 直接复用用户指定的「Grok 灵动助手 v2」矢量动画与控制器，通过隔离的本地 WebView 播放，不加载远程资源。执行中显示思考，等待回应显示好奇，失败显示错误；只有本次观察到执行/等待转为完成才庆祝一次。初次读取已完成会话、离线缓存及只读历史不触发庆祝。首页支持点按互动，标题栏头像只展示状态；退到后台暂停播放，并遵循系统关闭动画的设置。来源与许可证见 `android/app/src/main/assets/grok-bot/NOTICE.md`。
+
+## Com! 1.3.1
+
+双伙伴（Pi 流体圆脸 / Codex 蓝色毛绒）、角色居中布局、连续场景过渡与背靠背旋转。系统快捷语音默认 Pi，检测到说话后静音约 0.5 秒发送，小窗内等待并显示回复，可继续录音或上滑展开同一会话。详见 [实现与验证](docs/com-1.3.1.md)。
+
+## Com! 1.3.2
+
+每次新呼出 Pi 快捷小窗都会直接开启录音，包括留有旧草稿或上一条仍在后台发送时；旧草稿保留到新录音成功为止。已提交的发送继续由 WorkManager 处理。首次使用需允许麦克风权限。
+
+## Com! 1.3.3–1.3.4
+
+1.3.3 调整原生输入、快捷小窗手势和关键操作触感；1.3.4 加入从 Mac mini 实时读取的 Pi / Codex 模型目录，以及输入框旁「＋」中的模型与推理水平选择。1.3.4 已覆盖安装在小米折叠屏；所选模型的真实消息回合尚待实机验收。详见 [1.3.3](docs/com-1.3.3.md) 和 [1.3.4](docs/com-1.3.4.md)。
+
+## Com! 1.4.0 · Personal Agent 开发中
+
+默认入口改为独立 Hermes 的一条持久主对话，回复通过 SSE 逐段显示服务端实际阶段；「今天」直接展示 Google「Pi」日历未来 14 天和 NAS ezBookkeeping 的只读概览，以及待我处理和在途工作。Mac mini 的 Google OAuth 已恢复，概览在本机与公网均可读取；Hermes 两轮连续对话、重启后历史读取和本机／公网真实流式增量已验证。Pi/Codex 仍在「工作」中，Hermes 提出的工作建议须经 Com! 审批，实际派发闭环尚未验收。
+
+通知采集需要用户在 Android 系统中手动开启特殊访问；选定来源的新通知才会入队，由隔离的 Hermes 分析成摘要、建议记录和回复草稿。**不会自动发送消息**。目前只通过合成通知验证了服务端分析；真实微信／短信通知、后台可靠性和新版 Android 整机交互仍待手机验收。新主导航四枚图标和 Hermes 形象采用同系 GPT 生成 PNG；旧工作区的部分控件仍使用原有 Material Icons。详情及当前边界见 [实施记录](docs/COM_PERSONAL_AGENT_PLAN.md#7-2026-10-01-实施记录)。
+
+## Com! 1.4.1 · 白灰聊天界面
+
+按 Muse 参考图统一为纯白背景、浅灰大圆角气泡和胶囊输入框，功能图标改为同一套黑灰矢量符号；保留 Hermes / Pi / Codex 的角色形象。对话页的数据卡片集中到「今天」，空会话使用轻量欢迎文字。
+
+手机与折叠屏展开都使用底部「对话、今天、活动、工作、更多」，不再切换到侧边功能栏。日历、账本、设置从「更多」底部弹层进入；工作历史也从底部展开。键盘打开时底部导航收起，为输入保留空间。既有对话、配对、审批与快捷语音逻辑沿用。
+
+本轮已通过 Android 编译和现有 24 项单元测试，优化安装包版本为 1.4.1（versionCode 10）。展开屏实机检查已完成；411dp 窄屏与 608dp 宽屏模拟器的导航、账本、工作历史和键盘检查均通过，新增设备检查见 `ComNavigationTest`。物理折叠/展开切换仍需用户手持体验。截图保存在本机 `verification/com-1.4.1/`，测试中的示例对话仅用于模拟器。
