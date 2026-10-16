@@ -15,16 +15,13 @@ settings:
     TARGETED_DEVICE_FAMILY: "1"
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "2026100801"
+    CURRENT_PROJECT_VERSION: "2026101004"
     COM_ENTITLEMENTS_FILE: Com/Com.entitlements
     COM_APNS_ENVIRONMENT: ""
 packages:
   Textual:
     url: https://github.com/gonzalezreal/textual
     exactVersion: 0.5.0
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    exactVersion: 1.20.0
 targets:
   ComCore:
     type: framework
@@ -45,7 +42,6 @@ targets:
     dependencies:
       - target: ComCore
       - package: Textual
-      - package: SwiftTerm
       - target: ComShare
         embed: true
       - target: ComControls
@@ -62,7 +58,10 @@ targets:
   ComShare:
     type: app-extension
     platform: iOS
-    sources: [ComShare, Shared]
+    sources:
+      - path: ComShare
+      - path: Shared
+        excludes: [ComActivity.swift]  # 灵动岛的 ActivityAttributes 只给主 App 和 ComControls
     settings:
       TARGETED_DEVICE_FAMILY: "1"
       PRODUCT_BUNDLE_IDENTIFIER: work.eddie.com.share
@@ -72,11 +71,12 @@ targets:
   ComControls:
     type: app-extension
     platform: iOS
-    sources: [ComControls, VoiceIntents]
+    sources: [ComControls, VoiceIntents, Shared/StatusWidgetSnapshot.swift, Shared/ComActivity.swift]
     settings:
       TARGETED_DEVICE_FAMILY: "1"
       PRODUCT_BUNDLE_IDENTIFIER: work.eddie.com.controls
       INFOPLIST_FILE: ComControls/Info.plist
+      CODE_SIGN_ENTITLEMENTS: ComControls/ComControls.entitlements
       APPLICATION_EXTENSION_API_ONLY: YES
       SKIP_INSTALL: YES
   ComCoreTests:

@@ -1,10 +1,26 @@
 # Com
 
+## 2026-10-13 · 微信每小时汇总
+
+微信数据只在 MBP（`~/wechat-decrypt`，不在 Syncthing 范围内），后端只在 mini，所以走 **MBP 采集 → SSH 推给 mini**：MBP 上的 launchd `com.eddie.wechat-digest` 每小时跑 `backend/probes/wechat_digest.py --push-mini`，mini 端同一脚本的 `--ingest` 把摘要写进 `personal_hub` 的 `wechat` 来源（连接器页自动出现，无需改 iOS 的信源清单）。
+
+收录口径：私聊全收 + 群里 @我 / @所有人 + 关键词命中；采集端只做确定性筛选，**不做 LLM 总结**，总结交给本来就每小时跑的 `next_steps.py`，因此「下一步」tab 里得到带微信原文依据的行动建议；「今天」tab 多一张 `TodayView` 的微信摘要卡（`/personal/today` 的 `wechat` 段），点开看每个聊天最后几句原文。内容不做过滤（`redact` 开关默认关）。
+
+配置 `~/.session-workbench/wechat-digest.json`（MBP 本地），日志 `~/.session-workbench/logs/wechat-digest{,-error}.log`。管线细节与筛选踩过的坑见《微信数据 - 本地解密与 MCP 读取》第五节。iOS 侧已编译通过，装机待设备连接。
+
+## iOS 最新版 · 2026-10-16
+
+iOS 构建 **2026101004**（iPhone 17 Pro 模拟器 · iOS 26.3，`--ui-testing` 演示夹具数据，非真实个人数据）。本轮含青柠 Liquid Glass 视觉、「今天」晨间驾驶舱（Garmin 身体数据、下一件表盘）、「下一步」建议页、工作页任意会话可发指令、Live Activity 与状态小组件。细节见 [今天页驾驶舱](docs/COM_IOS_TODAY_COCKPIT_20261015.md) 与 [Lime Glass](docs/COM_IOS_LIME_GLASS_20261010.md)。
+
+| 对话 | 下一步 | 今天 | 身体状态 |
+|---|---|---|---|
+| ![对话](docs/images/ios-20261016/01-chat.png) | ![下一步](docs/images/ios-20261016/02-next.png) | ![今天](docs/images/ios-20261016/03-today.png) | ![身体状态](docs/images/ios-20261016/04-body.png) |
+
 ## 最新开发版本 · 2026-10-08
 
-当前主线是 Mac mini 上的 Hermes，Android/iOS 共用已有 Com 服务。iOS 构建 **2026100801** 加入真实工作状态区和统一工作文案，保留稳定滚动、平滑回到最新及语音自动发送。后端工具来源参数由运行时补齐，记忆与详细流程按需读取，增加分项开销与缓存计量，并启用核心 SQLite 库 WAL。
+当前主线是 Mac mini 上的 Hermes，Android/iOS 共用已有 Com 服务。iOS 构建 **2026100802** 补齐白蓝双角色工作舞台、真实事件驱动动画和数量小组件，保留稳定滚动、平滑回到最新及语音自动发送。后端工具来源参数由运行时补齐，记忆与详细流程按需读取，增加分项开销与缓存计量，并启用核心 SQLite 库 WAL。
 
-此次更新的实际采纳范围、测试、部署依赖和未实现规划见 [两份报告更新说明](docs/COM_REPORT_UPDATE_20261008.md)。iOS Release 源码与安装资产见 [GitHub Releases](https://github.com/EddieYee11/session-workbench/releases)；公开 IPA 为无签名包，需要自行签名，不能直接当作通用安装包。下方历次记录保留其当时状态。
+本次动画与报告遗漏项的实现、验证及剩余边界见 [802 补齐记录](docs/COM_REPORT_COMPLETION_20261008.md)；此前上下文优化见 [801 更新说明](docs/COM_REPORT_UPDATE_20261008.md)。iOS Release 源码与安装资产见 [GitHub Releases](https://github.com/EddieYee11/session-workbench/releases)；公开 IPA 为无签名包，需要自行签名，不能直接当作通用安装包。下方历次记录保留其当时状态。
 
 ## 历史实现背景
 
@@ -21,7 +37,7 @@
 
 - `backend/`：历史索引、持续主线、共同工具、能力目录、RPC/SDK 执行器、任务/目标/事件服务。
 - `android/`：Kotlin / Compose 原生应用、底部导航、语音、通知、离线缓存与历史。
-- `backend/probes/`：隔离真实运行时验收与显式切换/回滚脚本；不接生产账本。
+- `backend/probes/`：隔离真实运行时验收与显式切换/回滚脚本；不接生产账本。`wechat_digest.py` 是例外——它是生产管线（MBP 采集 → 推送 mini 的 personal_hub，见上节）。
 - `backend/tests/`、`android/app/src/{test,androidTest}/`：协议、授权、恢复和界面检查。
 
 本机虚拟环境、Android 构建产物、连接令牌和 `verification/` 中的设备截图不会提交到仓库。

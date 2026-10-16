@@ -58,10 +58,10 @@ public struct APIClient: Sendable {
                            detail: detail.isEmpty ? "连接失败（\((response as? HTTPURLResponse)?.statusCode ?? 0)）" : detail)
         }
     }
-    public func transcribe(id: String, audio: Data) async throws -> JSON {
+    public func transcribe(id: String, audio: Data, mime: String = "audio/mp4") async throws -> JSON {
         var req = try makeRequest("/voice/transcribe/" + id.pathEncoded)
         req.httpMethod = "POST"; req.httpBody = audio
-        req.setValue("audio/mp4", forHTTPHeaderField: "Content-Type")
+        req.setValue(mime, forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 100
         let (data, response) = try await session.data(for: req); try check(response, data: data)
         return try JSON.decode(data)

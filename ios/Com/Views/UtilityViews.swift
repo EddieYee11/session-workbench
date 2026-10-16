@@ -41,6 +41,7 @@ struct SettingsView: View {
                 settingsGroup(title: "数据来源") {
                     NavigationLink { ConnectionsView() } label: { NavigationRowLabel(title: "管理数据连接", symbol: "link") }.buttonStyle(.row)
                 }
+                GroupSection("本机健康数据", footer: "读取留在本机；同步到 mini 在下面单独开启。") { HealthCard() }
                 settingsGroup(title: "首次使用时授权") {
                     permission("健康 · 只读", "heart", "health")
                     permission("日历", "calendar", "calendar")
@@ -103,7 +104,8 @@ struct SettingsView: View {
                         Text("解除本机配对").font(TypeScale.callout.weight(.medium)).foregroundStyle(Palette.danger).frame(maxWidth: .infinity, alignment: .center).rowPadding()
                     }.buttonStyle(.row)
                 }
-            }.navigationTitle("设置").navigationBarTitleDisplayMode(.inline)
+            }.navigationTitle("设置").navigationBarTitleDisplayMode(.large)
+                .toolbarBackground(Palette.background, for: .navigationBar)
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
                 .confirmationDialog("解除配对后本机保留草稿与缓存", isPresented: $disconnecting, titleVisibility: .visible) { Button("解除配对", role: .destructive) { Task { await model.disconnect(); dismiss() } } }
         }
@@ -131,8 +133,10 @@ struct SearchView: View {
                 SearchField(text: $query, prompt: "聊天、任务或成果名称")
                 if !note.isEmpty { InlineNotice(text: note, tone: .neutral) }
                 if query.isEmpty {
+                    let artifacts = model.datasets["/personal/artifacts"]?["items"].array ?? []
                     GroupSection("成果") {
-                        ArtifactList(artifacts: model.datasets["/personal/artifacts"]?["items"].array ?? [])
+                        if artifacts.isEmpty { EmptyState(title: "还没有成果", description: "Agent 交付的文件、图片和报告会收在这里；也可以直接搜聊天和任务。", symbol: "tray") }
+                        else { ArtifactList(artifacts: artifacts) }
                     }
                 } else {
                     VStack(spacing: Space.md) {
@@ -144,7 +148,7 @@ struct SearchView: View {
                                     dismiss()
                                     Task {
                                         if item["kind"].string == "task" {
-                                            await model.refresh(.tasks)
+                                            await model.refresh(.doing)
                                             model.selectedTask = model.datasets["/personal/tasks"]?["items"].array.first { $0.id == item.id }
                                         } else { await model.locateMessage(item.id) }
                                     }
@@ -157,7 +161,7 @@ struct SearchView: View {
                         }
                     }
                 }
-            }.navigationTitle("搜索与成果").navigationBarTitleDisplayMode(.inline)
+            }.navigationTitle("搜索与成果").navigationBarTitleDisplayMode(.large)
                 .task { _ = await model.load("/personal/artifacts") }
                 .task(id: query) {
                     guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { results = []; return }
@@ -254,7 +258,7 @@ struct ConnectionsView: View {
             Text("连接你的数据，让 Com 更了解你。").font(TypeScale.callout).foregroundStyle(Palette.textSecondary)
             ConnectionList()
             if let error = model.errors["/personal/connectors"] { InlineNotice(text: error) }
-        }.navigationTitle("数据连接").navigationBarTitleDisplayMode(.inline)
+        }.navigationTitle("数据连接").navigationBarTitleDisplayMode(.large)
             .task { _ = await model.load("/personal/connectors") }
             .refreshable { _ = await model.load("/personal/connectors") }
     }
@@ -266,6 +270,8 @@ struct ConnectionDetail: View {
     @State private var username = ""
     @State private var password = ""
     @State private var region = "garmin.cn"
+    @State private var protocolKind = "ews"
+    @State private var email = ""
     @State private var busy = false
     @State private var note = ""
     private var name: String { source["name"].string }
@@ -278,12 +284,19 @@ struct ConnectionDetail: View {
             if !connected && ["work_mail", "garmin"].contains(name) && current["status"].string != "disconnected" {
                 GroupSection("账号") {
                     GroupedCard {
-                        if name == "work_mail" { TextField("IMAP 服务器", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled().rowPadding() }
+                        if name == "work_mail" {
+                            Picker("邮箱类型", selection: $protocolKind) { Text("Exchange（OWA）").tag("ews"); Text("IMAP").tag("imap") }.pickerStyle(.segmented).rowPadding()
+                            TextField(protocolKind == "ews" ? "服务器，如 mail.sohu-inc.com" : "IMAP 服务器", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).rowPadding()
+                            if protocolKind == "ews" { TextField("邮箱地址，如 name@sohu-inc.com", text: $email).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.emailAddress).rowPadding() }
+                        }
                         else { Picker("地区", selection: $region) { Text("中国区").tag("garmin.cn"); Text("国际区").tag("garmin.com") }.rowPadding() }
-                        TextField("账号", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled().rowPadding()
-                        SecureField(name == "work_mail" ? "邮箱专用密码" : "密码", text: $password).rowPadding()
+                        TextField(name == "work_mail" && protocolKind == "ews" ? "域账号（登录 OWA 用的那个）" : "账号", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled().rowPadding()
+                        SecureField(name == "work_mail" ? (protocolKind == "ews" ? "邮箱密码" : "邮箱专用密码") : "密码", text: $password).rowPadding()
                     }
-                    Button("连接") { update(credentials: true) }.buttonStyle(.primaryFull).disabled(busy || username.isEmpty || password.isEmpty || (name == "work_mail" && host.isEmpty))
+                    if name == "work_mail" && protocolKind == "ews" {
+                        Text("搜狐邮箱不开 IMAP，走 Exchange 的 EWS 接口读收件箱邮件头，不改已读状态。密码直接发给 mini 保存，不进聊天记录。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    }
+                    Button("连接") { update(credentials: true) }.buttonStyle(.primaryFull).disabled(busy || username.isEmpty || password.isEmpty || (name == "work_mail" && (host.isEmpty || (protocolKind == "ews" && !email.contains("@")))))
                 }
             } else if !connected {
                 if name == "gmail" || name == "google_calendar" { Text("首次连接需在 Mac mini 完成 Google 授权，然后点击检查连接。").font(TypeScale.callout).foregroundStyle(Palette.textSecondary) }
@@ -296,6 +309,7 @@ struct ConnectionDetail: View {
             if busy { ProgressView("正在核验连接") }
             if !current["error"].string.isEmpty { DisclosureGroup("诊断详情") { Text(current["error"].string).font(TypeScale.footnote).textSelection(.enabled) } }
         }.navigationTitle(sourceName(name)).navigationBarTitleDisplayMode(.inline)
+            .onAppear { if name == "work_mail" && host.isEmpty { host = "mail.sohu-inc.com" } }
     }
     private func update(enabled: Bool = true, credentials: Bool) {
         busy = true
@@ -303,7 +317,11 @@ struct ConnectionDetail: View {
             defer { busy = false }
             do {
                 var fields: [String: JSON] = ["enabled": .bool(enabled)]
-                if credentials { fields["username"] = .string(username); fields["password"] = .string(password); if name == "work_mail" { fields["host"] = .string(host) } else { fields["domain"] = .string(region) } }
+                if credentials {
+                    fields["username"] = .string(username); fields["password"] = .string(password)
+                    if name == "work_mail" { fields["host"] = .string(host); fields["protocol"] = .string(protocolKind); if protocolKind == "ews" { fields["email"] = .string(email) } }
+                    else { fields["domain"] = .string(region) }
+                }
                 guard let api = model.client else { throw APIError(status: 0, detail: "请先连接服务") }
                 // Account secrets go directly over authenticated TLS, never into the local operation ledger.
                 _ = try await api.request("/personal/connectors/" + name.pathEncoded, body: .object(fields))
@@ -326,6 +344,10 @@ private func connectionSymbol(_ name: String) -> String {
     case "apple_calendar", "phone_calendar", "google_calendar": "calendar"
     case "accounting": "creditcard"
     case "garmin", "phone_health": "heart"
+    case "phone_reminders": "bell"
+    case "sms": "message"
+    case "plaud": "waveform"
+    case "weather": "cloud.sun"
     default: "link"
     }
 }

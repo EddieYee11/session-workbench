@@ -8,5 +8,10 @@
 	<array>
 		<string>group.work.eddie.com</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
+		<string>$(AppIdentifierPrefix)work.eddie.com.widget-status</string>
+	</array>
 </dict>
 </plist>

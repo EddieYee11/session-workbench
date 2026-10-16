@@ -11,10 +11,18 @@ import ComCore
     var body: some Scene {
         WindowGroup {
             RootView().environment(model)
-                .task { ComShortcuts.updateAppShortcutParameters(); ComNotifications.install(); await model.start(); if model.isPaired && !model.isUITesting { await ComNotifications.requestIfNeeded() } }
-                .onChange(of: scenePhase) { _, phase in Task { await model.setActive(phase == .active) } }
+                .task { ComShortcuts.updateAppShortcutParameters(); ComNotifications.install(); ComLiveActivity.shared.start(model); await model.start(); if model.isPaired && !model.isUITesting { await ComNotifications.requestIfNeeded() } }
+                .onChange(of: scenePhase) { _, phase in
+                    // 灵动岛常驻（轨道 r3-memory）：要在 setActive(false) 断开连接之前，把这一刻的状态推上去。
+                    ComLiveActivity.shared.scene(phase)
+                    // .inactive 只是短暂遮挡（控制中心、通知横幅、来电）。只有真正进后台或回到前台才重建连接。
+                    guard phase != .inactive else { return }
+                    Task { await model.setActive(phase == .active) }
+                }
                 .onOpenURL { url in
                     guard url.scheme == "com-eddie" else { return }
+                    if url.host == "today" { model.tab = .chat }
+                    if url.host == "tasks" { model.tab = .doing }
                     if url.host == "voice" { model.openVoice(quick: true) }
                     if url.host == "share", let text = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "text" })?.value {
                         model.tab = .chat; model.draft = model.draft.isEmpty ? text : model.draft + "\n\n" + text; model.persistNow()
@@ -64,6 +72,24 @@ struct ComShortcuts: AppShortcutsProvider {
         do { try BGTaskScheduler.shared.submit(request) }
         catch { UserDefaults.standard.set("后台刷新暂不可用：" + error.localizedDescription, forKey: "notificationRefreshStatus") }
     }
+    static func receiveLive(_ name: String, _ value: JSON, show: Bool) {
+        guard !ProcessInfo.processInfo.arguments.contains("--ui-testing") else { return }
+        let id = name == "agent.push" ? value["id"].string : "review:" + value["source_id"].string
+        guard !id.isEmpty, id != "review:" else { return }
+        let key = "liveNotificationIDs"
+        var seen = UserDefaults.standard.stringArray(forKey: key) ?? []
+        guard !seen.contains(id) else { return }
+        seen.append(id); UserDefaults.standard.set(Array(seen.suffix(200)), forKey: key)
+        guard show, UserDefaults.standard.bool(forKey: enabledKey) else { return }
+        Task {
+            let content = UNMutableNotificationContent()
+            content.title = name == "task.review" ? "Com · 这一步等你确认" : "Com · 有新的回复"
+            content.body = name == "task.review" ? "打开任务页，查看具体操作后决定。" : "已经整理好了，打开 Com 查看。"
+            content.sound = .default
+            content.userInfo = ["comMessageID": value["message_id"].string, "comSection": name == "task.review" ? "tasks" : "chat"]
+            try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+        }
+    }
     static func observe(_ messages: [JSON]) {
         guard !ProcessInfo.processInfo.arguments.contains("--ui-testing") else { return }
         let completed = messages.filter { $0["role"].string == "assistant" && $0["status"].string == "completed" }.map(\.id)
@@ -98,9 +124,13 @@ struct ComShortcuts: AppShortcutsProvider {
             UserDefaults.standard.set("已读取真实新消息", forKey: "notificationRefreshStatus")
         } catch { UserDefaults.standard.set("读取未完成，下次后台刷新再检查", forKey: "notificationRefreshStatus") }
     }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let id = response.notification.request.content.userInfo["comMessageID"] as? String
-        await MainActor.run { NotificationCenter.default.post(name: .comOpenMessage, object: id) }
+        let section = response.notification.request.content.userInfo["comSection"] as? String
+        await MainActor.run { NotificationCenter.default.post(name: .comOpenMessage, object: id, userInfo: ["section": section ?? "chat"]) }
     }
 }
 extension Notification.Name { static let comOpenMessage = Notification.Name("com.open.message") }

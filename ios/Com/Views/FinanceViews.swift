@@ -38,52 +38,6 @@ private struct ExpenseRing: View {
     }
 }
 
-struct FinanceHome: View {
-    @Environment(AppModel.self) private var model
-    @State private var currency = ""
-    @State private var detail: String?
-    private var data: JSON { model.datasets["/personal/finance"] ?? .null }
-    private var money: JSON { data["currencies"].array.first { $0.id == currency } ?? data["currencies"].array.first ?? .null }
-    var body: some View {
-        GroupSection("记账") {
-            Card {
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    if data["available"].bool {
-                        if data["currencies"].array.count > 1 {
-                            Picker("币种", selection: $currency) { ForEach(data["currencies"].array.map(RemoteRow.init)) { Text($0.id).tag($0.id) } }.pickerStyle(.segmented)
-                        }
-                        HStack(spacing: Space.lg) {
-                            Button { detail = "本月" } label: { ExpenseRing(categories: money["categories"].array) }.buttonStyle(.plain).accessibilityLabel("查看支出分类")
-                            VStack(alignment: .leading, spacing: Space.lg) {
-                                total("今日花销", amount: money["today_minor"], period: "今天")
-                                total("本月花销", amount: money["month_minor"], period: "本月")
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        let top = money["categories"].array.prefix(3)
-                        if !top.isEmpty {
-                            HStack(spacing: Space.md) { ForEach(top.map(RemoteRow.init)) { row in
-                                HStack(spacing: 5) { Circle().fill(expenseColor(row.value)).frame(width: 7, height: 7); Text(row.value["name"].string).lineLimit(1) }.font(TypeScale.caption).foregroundStyle(Palette.textSecondary)
-                            } }
-                        }
-                        if data["stale"].bool { Text("暂未更新 · 上次账本快照").font(TypeScale.caption).foregroundStyle(Palette.textSecondary) }
-                    } else {
-                        HStack { IconBadge(symbol: "chart.pie", tone: .accent); Text(data.isNull ? "正在读取账本…" : data["note"].string).font(TypeScale.callout) }
-                        Button("重试读取") { Task { _ = await model.load("/personal/finance") } }.buttonStyle(.quiet)
-                    }
-                }
-            }
-        } trailing: { Button("明细", systemImage: "arrow.up.right") { detail = "本月" }.buttonStyle(.quiet) }
-        .sheet(item: Binding(get: { detail.map { FinanceDestination(period: $0) } }, set: { detail = $0?.period })) { FinanceDetail(initialPeriod: $0.period, initialCurrency: money.id) }
-    }
-    private func total(_ title: String, amount: JSON, period: String) -> some View {
-        Button { detail = period } label: {
-            VStack(alignment: .leading, spacing: Space.xs) {
-                HStack { Text(title).font(TypeScale.footnote); Image(systemName: "chevron.right").font(.system(size: 10)) }.foregroundStyle(Palette.textSecondary)
-                Text(expenseMoney(amount.isNull ? .number(0) : amount, money.id)).font(TypeScale.title).monospacedDigit().contentTransition(.numericText()).minimumScaleFactor(0.65).lineLimit(1)
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }.buttonStyle(.plain).accessibilityLabel(title)
-    }
-}
 private struct FinanceDestination: Identifiable { var period: String; var id: String { period } }
 
 struct FinanceDetail: View {

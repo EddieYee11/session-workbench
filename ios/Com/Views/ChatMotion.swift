@@ -75,6 +75,12 @@ extension View {
         foregroundStyle(Palette.onInk).padding(.horizontal, Space.lg).padding(.vertical, Space.md)
             .background(Palette.ink, in: .rect(cornerRadius: Radius.md, style: .continuous))
     }
+
+    /// Agent message bubble: surface background for visual separation between consecutive messages.
+    func agentBubble() -> some View {
+        padding(.horizontal, Space.lg).padding(.vertical, Space.md)
+            .background(Palette.surface, in: .rect(cornerRadius: Radius.md, style: .continuous))
+    }
 }
 
 struct MessagePressStyle: ButtonStyle {

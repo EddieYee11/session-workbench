@@ -2,18 +2,15 @@ import SwiftUI
 import Textual
 import ComCore
 
-// Com! iOS design system · 方向 D「层级」
+// Com! iOS design system · 「层级」版（青柠 accent）+ iOS 26 Liquid Glass
 //
-// The single source of truth for colour, type, spacing, radius, elevation and
-// every shared component. Screens compose these pieces and never introduce
-// their own paddings, font sizes, colours or card shapes.
+// 颜色、字阶、间距、圆角、投影和所有共享组件的唯一真源。页面只组合这里的零件，
+// 不自己定 padding、字号、颜色或卡片形状。
 //
-// Layers, back to front:
-//   background  →  surface (cards, grouped lists)  →  elevated (composer, dock)
-//   Liquid Glass is reserved for floating controls: the dock, the
-//   scroll-to-latest pill and system toolbars. Content stays opaque.
+// 分层（由后到前）：background → surface（卡片、分组列表）→ elevated（输入区）→ glass（浮动控件）。
+// Liquid Glass 只给会浮在内容上面的东西：Dock、顶栏右侧按钮、回到最新、下拉舞台。内容本身保持不透明。
 
-// MARK: - Detail transition plumbing (kept)
+// MARK: - Detail transition plumbing
 
 private struct DetailSpaceKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }
 extension EnvironmentValues { var detailSpace: Namespace.ID? { get { self[DetailSpaceKey.self] } set { self[DetailSpaceKey.self] = newValue } } }
@@ -35,19 +32,18 @@ private func hex(_ value: UInt32, _ alpha: CGFloat = 1) -> UIColor {
 
 enum Palette {
     // Brand
-    /// Lime: the one primary-action colour. Fill only — never text on light surfaces.
+    /// 青柠：唯一的主操作色。只做填充，不在浅色面上当文字。
     static let accent = Color(red: 0.82, green: 0.94, blue: 0.38)
     static let onAccent = Color(red: 0.09, green: 0.10, blue: 0.07)
-    /// Lime that stays readable as text / icon tint on surfaces.
+    /// 能在面上当文字 / 图标用的青柠。
     static let accentText = dynamicColor(hex(0x4C6600), hex(0xD2F061))
-    /// Coral: the companion crab identity.
     static let coral = Color(red: 0.94, green: 0.43, blue: 0.34)
 
     // Surfaces, back to front
     static let background = dynamicColor(hex(0xF4F3EF), hex(0x000000))
     static let surface = dynamicColor(.white, hex(0x1C1C1E))
     static let elevated = dynamicColor(.white, hex(0x2C2C2E))
-    /// Inset fill inside a surface: inputs, chips, code, quoted text.
+    /// 面里的内嵌块：输入框、chip、代码、引用。
     static let fill = dynamicColor(hex(0xF0EEE9), hex(0x2C2C2E))
     static let separator = dynamicColor(hex(0x000000, 0.08), hex(0xFFFFFF, 0.12))
 
@@ -62,10 +58,11 @@ enum Palette {
     static let danger = dynamicColor(hex(0xD5452F), hex(0xFF6B5A))
     static let info = dynamicColor(hex(0x2F6BD8), hex(0x6AA6FF))
 
-    // Inverted focus surface: hero card and the user's own chat bubble.
+    // 反色焦点面：我的气泡、选中的 tab。
     static let ink = dynamicColor(hex(0x1B1C18), hex(0x2C2C2E))
     static let onInk = Color.white
     static let onInkSecondary = Color.white.opacity(0.68)
+    static let inkShadow = Color.black
 }
 
 /// Semantic tone for pills, icon badges, dots and highlighted cards.
@@ -95,30 +92,37 @@ enum Tone: Equatable {
 /// One mapping from backend status to tone, used by every pill and row.
 func statusTone(_ status: String) -> Tone {
     switch status {
-    case "waiting", "unknown", "approval_required", "paused", "execution_finished", "proposed", "pending": .warning
+    case "waiting", "unknown", "uncertain", "approval_required", "awaiting_review", "paused", "execution_finished", "proposed", "pending": .warning
     case "failed", "rejected": .danger
-    case "queued", "dispatching", "running", "sending", "cancel_requested": .info
-    case "completed", "accepted": .success
+    case "queued", "dispatching", "running", "sending", "cancel_requested", "executing": .info
+    case "completed", "accepted", "succeeded", "delivered": .success
     default: .neutral
     }
 }
 
-// MARK: - Typography: semantic text styles only (Dynamic Type safe)
-//
-// Hierarchy per screen: large title 34 → section 20 → card/row title 16–17 →
-// secondary 15 → meta 13. Never set point sizes in screens.
+// MARK: - Typography (Dynamic Type safe; 标题用圆体，正文系统字)
+
+/// 旧宋体入口保留名字，现在都是系统圆体。
+enum Serif {
+    static func bold(_ size: CGFloat, relativeTo style: Font.TextStyle) -> Font { .system(size: size, weight: .bold, design: .rounded) }
+    static func semibold(_ size: CGFloat, relativeTo style: Font.TextStyle) -> Font { .system(size: size, weight: .semibold, design: .rounded) }
+}
 
 enum TypeScale {
-    static let largeTitle = Font.largeTitle.weight(.bold)      // 34 · pairing hero, empty greeting
-    static let title = Font.title2.weight(.bold)               // 22 · detail title, focus card
-    static let section = Font.title3.weight(.semibold)         // 20 · section header
-    static let headline = Font.headline                        // 17 semibold · card heading
-    static let body = Font.body                                // 17 · long reading
-    static let callout = Font.callout                          // 16 · chat, inputs
-    static let rowTitle = Font.callout.weight(.semibold)       // 16 semibold · list row title
-    static let subheadline = Font.subheadline                  // 15 · row secondary, buttons in rows
-    static let footnote = Font.footnote                        // 13 · meta, timestamps
-    static let caption = Font.caption.weight(.medium)          // 12 · pills, eyebrows
+    static let largeTitle = Font.system(.largeTitle, design: .rounded, weight: .bold)   // 34 · 配对页问候
+    static let title = Font.system(.title2, design: .rounded, weight: .bold)            // 22 · 详情标题、页面焦点
+    static let section = Font.system(.title3, design: .rounded, weight: .semibold)      // 20 · 区块标题
+    static let headline = Font.headline                                                  // 17 semibold · 卡片标题
+    static let judgement = Font.headline
+    static let stamp = Font.caption.weight(.semibold)                                    // 12 · 状态
+    static let link = Font.subheadline.weight(.semibold)                                 // 15 · 看明细 / 去聊
+    static let draft = Font.callout                                                      // 16 · 草稿引用
+    static let body = Font.body                                                          // 17 · 长阅读
+    static let callout = Font.callout                                                    // 16 · 聊天、输入框
+    static let rowTitle = Font.callout.weight(.semibold)                                 // 16 semibold · 列表行标题
+    static let subheadline = Font.subheadline                                            // 15 · 行副标题、按钮
+    static let footnote = Font.footnote                                                  // 13 · 元信息
+    static let caption = Font.caption.weight(.medium)                                    // 12 · 徽标
     static let metric = Font.title3.weight(.semibold).monospacedDigit()
     static let code = Font.footnote.monospaced()
 }
@@ -136,19 +140,22 @@ enum Space {
     static let xxxl: CGFloat = 40
 }
 enum Radius {
-    static let xs: CGFloat = 8     // tiny chips inside rows
-    static let sm: CGFloat = 12    // inputs, code, quotes, icon badges
-    static let md: CGFloat = 18    // user bubble, small cards
-    static let lg: CGFloat = 22    // cards & grouped lists
-    static let xl: CGFloat = 28    // hero card, composer
+    static let xs: CGFloat = 8     // 行内小 chip
+    static let sm: CGFloat = 12    // 输入框、代码、引用、图标徽标
+    static let md: CGFloat = 18    // 我的气泡、小卡
+    static let note: CGFloat = 18  // 旧便签圆角，现在等于 md
+    static let lg: CGFloat = 22    // 卡片、分组列表
+    static let xl: CGFloat = 28    // 焦点卡、输入区
 }
 enum Layout {
-    static let margin: CGFloat = 20          // screen horizontal margin
-    static let sectionSpacing: CGFloat = 28  // between top-level sections
-    static let rowInset: CGFloat = 64        // divider inset when rows carry a 36pt badge
+    static let margin: CGFloat = 20          // 页面左右边距
+    static let sectionSpacing: CGFloat = 28  // 顶级区块间距
+    static let rowInset: CGFloat = 64        // 行带 36pt 徽标时分割线的缩进
+    static let topBar: CGFloat = 60          // 顶栏在安全区以下的高度
+    static let dock: CGFloat = 72            // 浮动 Dock 占的底部空间
 }
 
-// MARK: - Elevation
+// MARK: - Elevation & glass
 
 enum Elevation { case flat, raised, floating }
 private struct ElevationModifier: ViewModifier {
@@ -157,15 +164,18 @@ private struct ElevationModifier: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         switch level {
         case .flat: content
-        case .raised: content.shadow(color: .black.opacity(scheme == .dark ? 0 : 0.045), radius: 10, y: 2)
+        case .raised: content.shadow(color: .black.opacity(scheme == .dark ? 0 : 0.05), radius: 12, y: 3)
         case .floating: content.shadow(color: .black.opacity(scheme == .dark ? 0.45 : 0.10), radius: 22, y: 8)
         }
     }
 }
 extension View {
     func elevation(_ level: Elevation) -> some View { modifier(ElevationModifier(level: level)) }
-    /// Liquid Glass for floating controls only (dock, floating pills).
+    /// Liquid Glass：只给浮在内容上的控件（Dock、顶栏按钮、回到最新）。
     func floatingGlass<S: Shape>(_ shape: S) -> some View { glassEffect(.regular.interactive(), in: shape) }
+    /// 顶栏那种半透明条：内容从下面滑过。
+    func paperGlass() -> some View { background(Palette.background.opacity(0.72)).background(.ultraThinMaterial) }
+    func paperBackground() -> some View { background(Palette.background) }
     /// Standard inner padding for a row living inside a `GroupedCard`.
     func rowPadding() -> some View { padding(.horizontal, Space.lg).padding(.vertical, Space.md) }
     /// Inset text-field look used inside cards.
@@ -173,18 +183,25 @@ extension View {
         font(TypeScale.callout).padding(.horizontal, Space.md).padding(.vertical, Space.md - 1)
             .background(Palette.fill, in: .rect(cornerRadius: Radius.sm, style: .continuous))
     }
-    /// The shared floating input surface (chat composer, work composer).
+    /// 输入区：玻璃胶囊，浮在时间线上。
     func composerSurface() -> some View {
-        background(Palette.elevated, in: .rect(cornerRadius: Radius.xl, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous).strokeBorder(Palette.separator, lineWidth: 0.5))
-            .elevation(.floating)
+        glassEffect(.regular, in: .rect(cornerRadius: Radius.xl, style: .continuous))
     }
+    /// 普通卡面（旧便签入口保留名字；倾斜参数忽略）。
+    func noteSurface(tilt: Double = 0, fill: Color = Palette.surface) -> some View {
+        background(fill, in: .rect(cornerRadius: Radius.lg, style: .continuous)).elevation(.raised)
+    }
+}
+
+/// 细分割线（旧虚线入口保留名字）。
+struct DashedRule: View {
+    var color: Color = Palette.separator
+    var body: some View { Rectangle().fill(color).frame(height: 0.5).accessibilityHidden(true) }
 }
 
 // MARK: - Screen scaffolds
 
-/// Top-level tab screen: native large title (collapses on scroll) + one
-/// subtitle/status row + vertically stacked sections with a fixed rhythm.
+/// 顶级 tab 页：内容从共享顶栏下面滑过；区块间距固定。
 struct ScreenScaffold<Content: View, Accessory: View>: View {
     let title: String
     let subtitle: String
@@ -213,13 +230,13 @@ struct ScreenScaffold<Content: View, Accessory: View>: View {
                 }
                 content
             }
-            .padding(.horizontal, Layout.margin).padding(.top, Space.xs).padding(.bottom, Space.xxxl)
+            .padding(.horizontal, Layout.margin).padding(.top, Space.md).padding(.bottom, Space.xxl)
         }
         .background(Palette.background)
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(compact ? .inline : .large)
+        .toolbar(.hidden, for: .navigationBar)
     }
 }
 extension ScreenScaffold where Accessory == EmptyView {
@@ -254,12 +271,13 @@ struct DetailPage<Content: View>: View {
         NavigationStack {
             ScrollPage { content }
                 .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(Palette.background, for: .navigationBar)
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
         }
     }
 }
 
-/// Detail header zone: pills row, 22pt title, optional supporting line.
+/// Detail header zone: pills row, title, optional supporting line.
 struct DetailHeader<Badges: View>: View {
     let title: String
     let subtitle: String
@@ -322,7 +340,7 @@ struct Card<Content: View>: View {
     let style: CardStyle
     let padding: CGFloat
     let content: Content
-    init(_ style: CardStyle = .standard, padding: CGFloat = Space.lg, @ViewBuilder content: () -> Content) {
+    init(_ style: CardStyle = .standard, padding: CGFloat = Space.lg, tilt: Double = 0, @ViewBuilder content: () -> Content) {
         self.style = style; self.padding = padding; self.content = content()
     }
     private var fill: Color {
@@ -339,7 +357,7 @@ struct Card<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(fill, in: shape)
             .overlay {
-                if case .highlighted(let tone) = style { shape.strokeBorder(tone.color.opacity(0.45), lineWidth: 1) }
+                if case .highlighted(let tone) = style { shape.strokeBorder(tone == .accent ? Palette.accent : tone.color.opacity(0.45), lineWidth: tone == .accent ? 2 : 1) }
             }
             .elevation(style == .inset ? .flat : style == .ink ? .floating : .raised)
     }
@@ -476,21 +494,54 @@ struct IconBadge: View {
     }
 }
 
-struct StatusPill: View {
+/// 状态胶囊。文字与后端状态一一对应，没有图标猜测。（旧印章入口保留参数名。）
+struct Stamp: View {
     let text: String
     var tone: Tone = .neutral
+    var dashed = false
+    var angle: Double = 0
     var body: some View {
         Text(text).font(TypeScale.caption).lineLimit(1)
             .padding(.horizontal, Space.sm + 2).padding(.vertical, Space.xs + 1)
             .foregroundStyle(tone == .neutral ? Palette.textPrimary : tone.color)
             .background(tone.soft, in: .capsule)
+            .overlay { if dashed { Capsule().strokeBorder(tone.color.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [3, 2])) } }
+            .fixedSize()
     }
 }
+
+struct StatusPill: View {
+    let text: String
+    var tone: Tone = .neutral
+    var body: some View { Stamp(text: text, tone: tone, dashed: text == "结果未知" || text == "待核实") }
+}
+
+/// 状态词表：等待批准 / 执行中 / 已送达 / 结果未知 / 已完成（外加待验收、失败、已取消这些真实状态）。
+func stampLabel(_ status: String, accepted: Bool = false) -> String {
+    if accepted { return "已完成" }
+    return ["queued": "执行中", "dispatching": "执行中", "running": "执行中", "sending": "执行中", "cancel_requested": "执行中", "executing": "执行中",
+            "waiting": "等你回应", "approval_required": "等待批准", "awaiting_review": "等待批准", "proposed": "等待批准", "pending": "等待批准", "paused": "已暂停",
+            "unknown": "结果未知", "uncertain": "结果未知", "execution_finished": "待验收", "accepted": "已送达", "delivered": "已送达",
+            "completed": "已完成", "succeeded": "已完成", "failed": "失败", "rejected": "已拒绝", "expired": "已过期", "cancelled": "已取消", "stopped": "已停止", "idle": "空闲", "ended": "已结束"][status] ?? status
+}
+func stampTone(_ status: String, accepted: Bool = false) -> Tone { accepted ? .success : statusTone(status) }
 
 struct StatusDot: View {
     var tone: Tone = .success
     var size: CGFloat = 7
     var body: some View { Circle().fill(tone.color).frame(width: size, height: size) }
+}
+
+/// Count badge on a control (在办 3).
+struct CountBadge: View {
+    let count: Int
+    var body: some View {
+        if count > 0 {
+            Text("\(min(count, 99))").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.onAccent)
+                .frame(minWidth: 18, minHeight: 18).padding(.horizontal, 3)
+                .background(Palette.accent, in: .capsule).overlay(Capsule().strokeBorder(Palette.surface, lineWidth: 2))
+        }
+    }
 }
 
 /// English-only eyebrow (uppercase is meaningless for Chinese).
@@ -501,17 +552,19 @@ struct Eyebrow: View {
 
 // MARK: - Buttons
 
-/// Primary decision: lime capsule. At most one per screen region.
+/// Primary decision: 青柠胶囊。每个区域最多一个。
 struct PrimaryButtonStyle: ButtonStyle {
     var fullWidth = false
     var compact = false
+    var accent = true
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font((compact ? TypeScale.subheadline : TypeScale.callout).weight(.semibold))
             .foregroundStyle(Palette.onAccent)
-            .padding(.horizontal, compact ? Space.lg : Space.xl).padding(.vertical, compact ? Space.sm + 1 : Space.md + 2)
+            .padding(.horizontal, compact ? Space.lg : Space.xl)
+            .frame(height: compact ? 36 : 46)
             .frame(maxWidth: fullWidth ? CGFloat.infinity : nil)
             .background(Palette.accent.opacity(enabled ? 1 : 0.45), in: .capsule)
             .opacity(enabled ? 1 : 0.6)
@@ -523,21 +576,27 @@ extension ButtonStyle where Self == PrimaryButtonStyle {
     static var primaryAction: PrimaryButtonStyle { PrimaryButtonStyle() }
     static var primaryFull: PrimaryButtonStyle { PrimaryButtonStyle(fullWidth: true) }
     static var primaryCompact: PrimaryButtonStyle { PrimaryButtonStyle(compact: true) }
+    static var primaryAccent: PrimaryButtonStyle { PrimaryButtonStyle(fullWidth: true) }
 }
 
 /// Secondary: neutral filled capsule.
 struct SecondaryButtonStyle: ButtonStyle {
+    var compact = false
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(TypeScale.subheadline.weight(.medium))
             .foregroundStyle(configuration.role == .destructive ? Palette.danger : Palette.textPrimary)
-            .padding(.horizontal, Space.lg).padding(.vertical, Space.sm + 1)
+            .padding(.horizontal, compact ? Space.md + 2 : Space.lg)
+            .frame(height: compact ? 36 : 46)
             .background(Palette.fill, in: .capsule)
             .opacity(configuration.isPressed ? 0.6 : enabled ? 1 : 0.45)
     }
 }
-extension ButtonStyle where Self == SecondaryButtonStyle { static var secondaryAction: SecondaryButtonStyle { SecondaryButtonStyle() } }
+extension ButtonStyle where Self == SecondaryButtonStyle {
+    static var secondaryAction: SecondaryButtonStyle { SecondaryButtonStyle() }
+    static var secondaryCompact: SecondaryButtonStyle { SecondaryButtonStyle(compact: true) }
+}
 
 /// Quiet tertiary: tinted text only. Destructive role turns it red.
 struct QuietButtonStyle: ButtonStyle {
@@ -589,8 +648,8 @@ struct FilterChips: View {
                         Text(item).font(TypeScale.subheadline.weight(selected ? .semibold : .regular))
                             .padding(.horizontal, Space.md + 2).padding(.vertical, Space.sm)
                             .foregroundStyle(selected ? Palette.onAccent : Palette.textPrimary)
-                            .background(selected ? Palette.accent : Palette.surface, in: .capsule)
-                            .overlay(Capsule().strokeBorder(selected ? Color.clear : Palette.separator, lineWidth: 0.5))
+                            // 和 Dock、顶栏按钮同一种玻璃；选中项染青柠。
+                            .glassEffect(selected ? .regular.tint(Palette.accent).interactive() : .regular.interactive(), in: .capsule)
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(selected ? .isSelected : [])
@@ -646,6 +705,32 @@ struct CodeBlock: View {
     }
 }
 
+/// 它写好的草稿 / 引用：左侧一道青柠线的内嵌块。
+struct LinedText: View {
+    let text: String
+    var body: some View {
+        Text(text).font(TypeScale.draft).lineSpacing(4).foregroundStyle(Palette.textPrimary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Space.md).padding(.vertical, Space.md - 2)
+            .background(Palette.fill, in: .rect(cornerRadius: Radius.sm, style: .continuous))
+            .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 2).fill(Palette.accent).frame(width: 3).padding(.vertical, Space.sm).padding(.leading, 6) }
+    }
+}
+
+/// 进度条（只在有真实分母时使用）。
+struct DashedBar: View {
+    let fraction: Double
+    var tone: Tone = .neutral
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Palette.fill)
+                Capsule().fill(tone == .neutral ? Palette.accent : tone.color).frame(width: geometry.size.width * max(0, min(1, fraction)))
+            }
+        }.frame(height: 6).accessibilityHidden(true)
+    }
+}
+
 // MARK: - States
 
 struct EmptyState: View {
@@ -653,8 +738,16 @@ struct EmptyState: View {
     let description: String
     let symbol: String
     var body: some View {
-        ContentUnavailableView(title, systemImage: symbol, description: Text(description))
-            .frame(maxWidth: .infinity).padding(.vertical, Space.xl)
+        VStack(alignment: .leading, spacing: Space.md) {
+            IconBadge(symbol: symbol, tone: .neutral, size: 40)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text(title).font(TypeScale.headline)
+                if !description.isEmpty { Text(description).font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary).lineSpacing(3) }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(Space.lg)
+        .background(Palette.fill.opacity(0.6), in: .rect(cornerRadius: Radius.lg, style: .continuous))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -728,7 +821,7 @@ private func readableMarkdown(_ text: String) -> String {
 private struct ReplyHeadingStyle: StructuredText.HeadingStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(configuration.headingLevel <= 2 ? .title3 : .headline, weight: .bold))
+            .font(.system(configuration.headingLevel <= 2 ? .title3 : .headline, design: .rounded, weight: .bold))
             .textual.blockSpacing(.init(top: 16, bottom: 8))
     }
 }
@@ -743,246 +836,30 @@ struct RawDetails: View {
     }
 }
 
-func displayStatus(_ value: String) -> String {
-    ["queued": "等待执行", "dispatching": "正在启动", "running": "执行中", "waiting": "等你回应", "unknown": "待核实",
-     "execution_finished": "待验收", "completed": "已完成", "cancel_requested": "正在停止", "cancelled": "已取消", "failed": "失败",
-     "paused": "已暂停", "accepted": "已受理", "stopped": "已停止", "idle": "空闲", "ended": "已结束"][value] ?? value
-}
+func displayStatus(_ value: String) -> String { stampLabel(value) }
 func eventLabel(_ event: JSON) -> String { AgentCopy.event(event) }
 
-func agentName(_ value: String) -> String { ["hermes": "Hermes", "pi": "Pi", "claude": "Claude", "codex": "Codex"][value] ?? value }
+func agentName(_ value: String) -> String { ["hermes": "Hermes", "pi": "Pi", "claude": "Claude Code", "codex": "Codex"][value] ?? value }
+func hostName(_ value: String) -> String { ["mini": "Mac mini", "macbook": "MacBook", "mbp": "MacBook"][value.lowercased()] ?? (value.isEmpty ? "" : value) }
 func textContent(_ value: JSON) -> String {
     if case .string = value { return value.string }
     if case .array(let parts) = value { return parts.map { $0["text"].string }.joined(separator: "\n") }
     return value["text"].string
 }
-
-private extension String { var nonEmpty: String? { isEmpty ? nil : self } }
-
-// MARK: - Android-aligned Hermes pixel companion
-
-private enum CrabState: String {
-    case idle, listening, thinking, working, speaking, success, error, offline
-    init(_ raw: String) {
-        switch raw.lowercased() {
-        case "倾听", "listening": self = .listening
-        case "思考", "thinking": self = .thinking
-        case "转写", "发送", "running", "executing", "delivering", "working": self = .working
-        case "responding", "speaking": self = .speaking
-        case "task_completed", "verified_success", "success": self = .success
-        case "failed", "error": self = .error
-        case "offline": self = .offline
-        default: self = .idle
-        }
-    }
-    var period: Double {
-        switch self { case .working: 0.9; case .success: 0.85; case .listening: 1.4; case .offline: 4; default: 2.4 }
-    }
-    var tilt: Double {
-        switch self { case .listening: -4; case .thinking: -8; case .error: 7; case .working: 10; default: 0 }
-    }
+/// 「10月9日」「刚刚」「18 分钟前」这类口径。
+func relativeTime(_ seconds: Double) -> String {
+    guard seconds > 0 else { return "" }
+    let delta = Date().timeIntervalSince1970 - seconds
+    if delta < 60 { return "刚刚" }
+    if delta < 3600 { return "\(Int(delta / 60)) 分钟前" }
+    if delta < 86400 { return "\(Int(delta / 3600)) 小时前" }
+    if delta < 86400 * 2 { return "昨天" }
+    return Date(timeIntervalSince1970: seconds).formatted(.dateTime.month().day().locale(Locale(identifier: "zh_CN")))
 }
-
-/// Grid, colors, proportions and facial states ported from Android CrabAvatar.kt.
-private struct PixelCrab: View {
-    let state: CrabState
-    let compact: Bool
-    let moving: Bool
-    let time: Double
-    var body: some View {
-        Canvas { context, size in
-            let phase = moving ? time.truncatingRemainder(dividingBy: state.period) / state.period * .pi * 2 : 0
-            let blink = moving && (0.925...0.965).contains(time.truncatingRemainder(dividingBy: 4.2) / 4.2)
-            let px = min(size.width, size.height) / (compact ? 24 : 30)
-            let ox = (size.width - 22 * px) / 2
-            let oy = (size.height - (compact ? 20 : 30) * px) / 2 + (compact ? 0 : 6) * px
-            let offline = state == .offline
-            let body = offline ? Color(red: 154/255, green: 160/255, blue: 163/255) : Color(red: 221/255, green: 119/255, blue: 87/255)
-            let shade = offline ? Color(red: 126/255, green: 132/255, blue: 135/255) : Color(red: 192/255, green: 95/255, blue: 66/255)
-            let ink = Color(red: 26/255, green: 26/255, blue: 26/255)
-            let wave = Color(red: 232/255, green: 147/255, blue: 107/255)
-            let amplitude: Double = state == .success ? (compact ? 1 : 2) : state == .working ? 1.5 : offline ? 0.5 : 1
-            let bob = moving ? (sin(phase) * amplitude).rounded() * px : 0
-            if !offline {
-                context.fill(Path(CGRect(x: ox + 5 * px, y: oy + 19 * px, width: 12 * px, height: px)), with: .color(.black.opacity(0.1)))
-            }
-            var draw = context
-            draw.translateBy(x: ox + 11 * px, y: oy + 10 * px)
-            draw.rotate(by: .degrees(state.tilt))
-            draw.translateBy(x: -(ox + 11 * px), y: -(oy + 10 * px))
-            func rect(_ color: Color, _ x: Double, _ y: Double, _ w: Double, _ h: Double) {
-                draw.fill(Path(CGRect(x: ox + x * px, y: oy + y * px + bob, width: w * px, height: h * px)), with: .color(color))
-            }
-            func pixels(_ rows: [String], _ x: Double, _ y: Double, _ scale: Double, _ color: Color) {
-                for (row, line) in rows.enumerated() {
-                    for (col, character) in line.enumerated() where character == "X" {
-                        rect(color, x + Double(col) * scale, y + Double(row) * scale, scale, scale)
-                    }
-                }
-            }
-            let armY: Double = state == .success ? 3 : 8
-            rect(.white, 0, armY, 3, 5); rect(body, 1, armY + 1, 2, 3)
-            rect(.white, 19, armY, 3, 5); rect(body, 19, armY + 1, 2, 3)
-            rect(.white, 2, 1, 18, 14)
-            for x in [4.0, 10, 16] { rect(.white, x, 13, 4, 6) }
-            rect(body, 3, 2, 16, 12)
-            rect(shade, 3, 12, 16, 2); rect(shade, 17, 2, 2, 12)
-            for x in [4.0, 10, 16] { rect(body, x + 1, 14, 2, 4) }
-            let look: Double = state == .listening || state == .thinking ? 1 : 0
-            let eyeY: Double = state == .thinking ? 4 : 5
-            for x in [6.0, 14] { rect(ink, x + (offline ? 0 : look), eyeY + (offline ? 1 : 0), 2, offline || blink ? 1 : 2) }
-            switch state {
-            case .offline, .thinking: rect(ink, 10, 11, 4, 1)
-            case .speaking: rect(ink, 10, moving && sin(phase * 2) > 0 ? 10 : 11, 4, moving && sin(phase * 2) > 0 ? 3 : 1)
-            case .success: rect(ink, 9, 10, 6, 3)
-            case .error: rect(ink, 9, 11, 1, 1); rect(ink, 10, 10, 3, 1); rect(ink, 13, 11, 1, 1)
-            default: rect(ink, 9, 10, 1, 1); rect(ink, 10, 11, 4, 1); rect(ink, 14, 10, 1, 1)
-            }
-            if !compact {
-                let pulse = moving ? sin(phase) * 0.5 + 0.5 : 0.5
-                switch state {
-                case .listening:
-                    for i in 0..<3 {
-                        let h = 2 + Double(i) * 2 + (moving ? sin(phase * 2) * 0.5 + 0.5 : 0.5) * 1.5
-                        rect(wave, 19.5 + Double(i) * 1.2, 8 - h / 2, 1, h)
-                    }
-                case .thinking: rect(wave, 15, -pulse, 3, 2); rect(wave, 13, 2.5 - pulse * 0.5, 1, 1)
-                case .working:
-                    for i in 0..<3 { rect(wave.opacity(0.7), 0.5, 6 + Double(i) * 3, 3 + (sin(phase * 3 + Double(i) * 2) * 0.5 + 0.5) * 3, 1) }
-                case .speaking: pixels(["..XX", "..X.", "..X.", ".XX.", "XXX.", "XX.."], 20, 4 - pulse * 2, 1, wave)
-                case .success:
-                    for (i, spot) in [(1.0, 2.0), (20, 3), (3, 14), (18, 15)].enumerated() {
-                        if !moving || sin(phase * 2 + Double(i)) * 0.5 + 0.5 > 0.35 {
-                            pixels(["..X..", "..X..", "XXXXX", "..X..", "..X.."], spot.0, spot.1, 0.8, Color(red: 1, green: 214/255, blue: 107/255))
-                        }
-                    }
-                case .error: pixels([".XXX.", "X...X", "....X", "...X.", "..X..", ".....", "..X.."], 17, -4, 1.2, wave)
-                case .offline:
-                    let z = moving ? sin(phase * 0.8) * 0.5 + 0.5 : 0
-                    pixels(["XXXX", "...X", "..X.", ".X..", "XXXX"], 18, -3 - z * 2, 1, wave.opacity(0.8))
-                    pixels(["XXXX", "...X", "..X.", ".X..", "XXXX"], 20, -3.5 - z * 1.5, 0.7, wave.opacity(0.5))
-                default: break
-                }
-            }
-        }
-    }
+func clockTime(_ seconds: Double) -> String {
+    guard seconds > 0 else { return "" }
+    return Date(timeIntervalSince1970: seconds).formatted(date: .omitted, time: .shortened)
 }
-
-struct Companion: View {
-    var state = "陪伴"
-    var compact = false
-    @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var drag = CGSize.zero
-    @State private var touched = false
-    private var moving: Bool { model.active && model.busy && scenePhase == .active && !reduce && !ProcessInfo.processInfo.isLowPowerModeEnabled }
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !moving)) { timeline in
-            PixelCrab(state: CrabState(state), compact: compact, moving: moving, time: moving ? timeline.date.timeIntervalSinceReferenceDate : 0)
-        }
-        .scaleEffect(x: touched ? 1.06 : 1, y: touched ? 0.95 : 1)
-        .offset(x: drag.width * 0.15, y: drag.height * 0.12)
-        .contentShape(.rect)
-        .gesture(DragGesture(minimumDistance: 0).onChanged { value in drag = value.translation; touched = true }.onEnded { _ in
-            withAnimation(reduce ? .linear(duration: 0.12) : .spring(response: 0.45, dampingFraction: 0.63)) { drag = .zero; touched = false }
-            Haptics.selection()
-        })
-        .accessibilityElement(children: .ignore).accessibilityLabel("Hermes 像素螃蟹，\(state)")
-        .accessibilityAddTraits(.isButton).accessibilityAction { Haptics.selection() }
-    }
-}
-
-struct CompanionPortrait: View {
-    var size: CGFloat = 76
-    @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    @Environment(\.scenePhase) private var scenePhase
-    private var moving: Bool { model.active && model.busy && scenePhase == .active && !reduce && !ProcessInfo.processInfo.isLowPowerModeEnabled }
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 15, paused: !moving)) { timeline in
-            PixelCrab(state: CrabState(model.roleState == "陪伴" && !model.streaming ? "offline" : model.roleState), compact: true, moving: moving, time: moving ? timeline.date.timeIntervalSinceReferenceDate : 0)
-        }
-        .frame(width: size, height: size).accessibilityHidden(true)
-    }
-}
-
-// MARK: - App chrome: toolbar pieces shared by every tab
-
-/// Leading avatar menu, identical on every tab.
-struct MainMenu: View {
-    @Environment(AppModel.self) private var model
-    var body: some View {
-        Menu {
-            Button("搜索聊天与成果", systemImage: "magnifyingglass") { model.showSearch = true }
-            Button("工作记录", systemImage: "clock.arrow.circlepath") { model.tab = .work }
-            Button("分享收件箱", systemImage: "tray") { model.showShareInbox = true }
-            Button("设置与连接", systemImage: "slider.horizontal.3") { model.showSettings = true }
-        } label: { CompanionPortrait(size: 30) }
-        .accessibilityLabel("主菜单")
-    }
-}
-
-/// Chat tab principal: companion name + live status.
-struct CompanionTitle: View {
-    @Environment(AppModel.self) private var model
-    private var status: String {
-        if model.roleState != "陪伴" { return model.activeRuns.first?["phase"].string.nonEmpty ?? model.roleState }
-        return model.streaming ? "随时在这里" : "离线 · 已保存的内容"
-    }
-    private var tone: Tone { model.roleState != "陪伴" ? .info : model.streaming ? .success : .neutral }
-    var body: some View {
-        VStack(spacing: 1) {
-            Text("Com").font(TypeScale.headline)
-            HStack(spacing: Space.xs) {
-                StatusDot(tone: tone, size: 6)
-                Text(status).font(.caption2).foregroundStyle(Palette.textSecondary).lineLimit(1)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-// MARK: - Dock: floating Liquid Glass capsule
-
-struct ComDock: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    @Namespace private var selection
-    var body: some View {
-        HStack(spacing: Space.xs) {
-            ForEach(SectionTab.allCases) { tab in
-                let selected = model.tab == tab
-                Button {
-                    withAnimation(reduce ? nil : .spring(response: 0.32, dampingFraction: 0.86)) { model.tab = tab }
-                } label: {
-                    HStack(spacing: Space.xs + 2) {
-                        Image(systemName: tab.symbol).symbolVariant(selected ? .fill : .none)
-                            .font(.system(size: 18, weight: selected ? .semibold : .regular))
-                        if selected {
-                            Text(tab.rawValue).font(TypeScale.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
-                        }
-                    }
-                    .padding(.horizontal, selected ? Space.lg : 0)
-                    .frame(height: 46)
-                    .frame(maxWidth: selected ? nil : CGFloat.infinity)
-                    .background {
-                        if selected { Capsule().fill(Palette.accent).matchedGeometryEffect(id: "selected-tab", in: selection) }
-                    }
-                    .contentShape(.capsule)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(selected ? Palette.onAccent : Palette.textSecondary)
-                .accessibilityLabel(tab.rawValue)
-                .accessibilityIdentifier("tab-" + tab.id)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-                .help(tab == .work ? "Com · 工作记录" : tab.rawValue)
-            }
-        }
-        .padding(Space.xs + 2)
-        .floatingGlass(.capsule)
-        .elevation(.floating)
-        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
-        .padding(.horizontal, Space.xl).padding(.top, Space.sm).padding(.bottom, Space.xs)
-    }
+func dayLabel(_ date: Date = Date()) -> String {
+    let f = DateFormatter(); f.locale = Locale(identifier: "zh_CN"); f.dateFormat = "M月d日 EEE"; return f.string(from: date)
 }

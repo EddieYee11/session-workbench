@@ -277,10 +277,14 @@ import ComCore
                  "modified_at": .number(r.lastModifiedDate?.timeIntervalSince1970 ?? 0)])
     }
     private func reminderList(_ args: JSON) async throws -> JSON {
+        // EventKit 在后台队列回调：回调必须是 @Sendable（不继承 DeviceBridge 的 @MainActor），
+        // 否则 Swift 6 运行时做隔离检查会直接崩（10-15 装机后一打开就闪退的根因）。
+        let includeCompleted = args["include_completed"].bool
+        let predicate = events.predicateForReminders(in: nil)
         let rows: [JSON] = await withCheckedContinuation { continuation in
-            events.fetchReminders(matching: events.predicateForReminders(in: nil)) { reminders in
-                let rows = (reminders ?? []).filter { args["include_completed"].bool || !$0.isCompleted }.prefix(250).map(Self.reminderJSON)
-                continuation.resume(returning: rows)
+            events.fetchReminders(matching: predicate) { @Sendable reminders in
+                let rows = (reminders ?? []).filter { includeCompleted || !$0.isCompleted }.prefix(250).map(Self.reminderJSON)
+                continuation.resume(returning: Array(rows))
             }
         }
         return .object(["items": .array(rows), "source": .string("iPhone EventKit")])

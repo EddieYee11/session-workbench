@@ -3,7 +3,8 @@ import WidgetKit
 import AppIntents
 
 @main struct ComControls: WidgetBundle {
-    var body: some Widget { ComVoiceControl() }
+    // 轨道 r3-memory：灵动岛常驻挂在现有扩展里，不另建 target（免费团队每 7 天只能新建 10 个 App ID）。
+    var body: some Widget { ComVoiceControl(); ComStatusWidget(); ComLiveActivityWidget() }
 }
 
 struct ComVoiceControl: ControlWidget {
@@ -14,6 +15,6 @@ struct ComVoiceControl: ControlWidget {
             }
         }
         .displayName("Com 语音小窗")
-        .description("打开光效录音面板，转写后确认发送语音指令。")
+        .description("打开光效录音面板，转写为文字后自动发送。")
     }
 }

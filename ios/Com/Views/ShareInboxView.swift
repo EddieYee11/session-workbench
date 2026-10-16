@@ -11,6 +11,7 @@ struct ShareInboxView: View {
         NavigationStack {
             ScrollPage(spacing: Space.md) {
                 InlineNotice(text: "检查后放入聊天草稿。此处不会自动交办。", tone: .neutral).padding(.bottom, Space.xs)
+                if drafts.isEmpty { EmptyState(title: "收件箱是空的", description: "在别的 App 里点「分享 → Com」，文字、链接和文件会先停在这里，等你确认。", symbol: "tray.and.arrow.down") }
                 ForEach(drafts) { draft in
                     Card {
                         VStack(alignment: .leading, spacing: Space.md) {

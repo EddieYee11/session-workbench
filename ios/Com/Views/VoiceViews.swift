@@ -56,14 +56,15 @@ struct VoiceBeamSurface: UIViewRepresentable {
 /// wrapping and Dynamic Type retain their normal spacing and semantics.
 private struct RhythmicGlyphRenderer: TextRenderer {
     var elapsed: Double
+    var shown: Int
     var animatableData: Double { get { elapsed } set { elapsed = newValue } }
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         var index = 0
         for line in layout {
             for run in line {
                 for slice in run {
-                    let delay = Double(min(index, 60)) * 0.016
-                    let p = min(1, max(0, (elapsed - delay) / 0.48))
+                    let delay = Double(min(max(index - shown, 0), 60)) * 0.016
+                    let p = index < shown ? 1 : min(1, max(0, (elapsed - delay) / 0.48))
                     var layer = context
                     layer.opacity = 1 - pow(1 - p, 3)
                     layer.addFilter(.blur(radius: 4 * (1 - p)))
@@ -80,12 +81,25 @@ struct RhythmicText: View {
     let text: String
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var elapsed = 0.0
+    /// Glyphs carried over unchanged from the previous text; only what follows them
+    /// animates. A streamed transcript re-sends the whole sentence as it grows, so
+    /// without this every partial would re-blur the line and the settled result would
+    /// replay a second time.
+    @State private var shown = 0
+    @State private var previous = ""
     var body: some View {
-        Text(text).textRenderer(RhythmicGlyphRenderer(elapsed: reduce ? 10 : elapsed))
+        Text(text).textRenderer(RhythmicGlyphRenderer(elapsed: reduce ? 10 : elapsed, shown: shown))
             .task(id: text) {
+                // Service revisions drop filler words and re-punctuate mid-sentence, so a
+                // partial is not a pure append. Everything from the first difference on is
+                // re-said, which is what animates a correction instead of hard-cutting it —
+                // and those glyphs are at zero opacity when the reflow happens, so the
+                // shift underneath is never seen. Pure appends only reveal their new tail.
+                shown = zip(previous, text).prefix { $0 == $1 }.count
+                previous = text
                 elapsed = reduce ? 10 : 0
                 guard !reduce else { return }
-                let duration = Double(min(text.count, 60)) * 0.016 + 0.48
+                let duration = Double(min(max(text.count - shown, 0), 60)) * 0.016 + 0.48
                 // The clock is steady; each glyph uses its own damped spring
                 // curve, cubic opacity and blur-to-sharp reveal above.
                 withAnimation(.linear(duration: duration)) { elapsed = duration }
@@ -121,10 +135,10 @@ struct VoiceSessionPanel: View {
                     Text(String(format: "%d:%02d", model.voice.seconds / 60, model.voice.seconds % 60)).font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textSecondary)
                         .padding(.horizontal, Space.sm).padding(.vertical, Space.xxs).background(Palette.fill, in: .capsule)
                 }
-                RhythmicText(text: model.voice.phase == .ready ? model.voice.transcript : title)
-                    .font(model.voice.phase == .ready ? TypeScale.callout : TypeScale.title)
-                    .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("voice-rhythmic-text")
+                RhythmicText(text: model.voice.transcript.isEmpty ? title : model.voice.transcript)
+                    .font(model.voice.transcript.isEmpty ? TypeScale.title : TypeScale.callout)
+                .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("voice-rhythmic-text")
                 if model.voice.phase != .ready {
                     HStack(spacing: 3) {
                         ForEach(0..<40, id: \.self) { i in
@@ -161,7 +175,7 @@ struct VoiceSessionPanel: View {
         if model.voice.phase == .recording {
             model.voice.finishRecording()
         } else if model.voice.hasCapture { Task { await model.transcribeVoice() } }
-        else { Task { await model.voice.start() } }
+        else { Task { await model.voice.start(using: model.client) } }
     }
 }
 

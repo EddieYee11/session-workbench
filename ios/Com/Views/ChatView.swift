@@ -24,12 +24,15 @@ struct ChatView: View {
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     @State private var positioned = false
     @State private var viewport = ChatViewport()
+    /// r2-chat：点过的建议卡所在消息（点完立刻收起，不等服务端回执）。
+    @State private var usedSuggestions: String?
     private var rows: [ChatTimelineRow] { Array(timeline.suffix(historyWindow)) }
     private var assistants: Set<String> { Set(model.conversation.messages.filter { $0["role"].string == "assistant" }.map(\.id)) }
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
-            AgentStageView()
+            ZStack(alignment: .top) {
+            VStack(spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
             ScrollView {
                 VStack(spacing: Space.xl) {
@@ -53,14 +56,24 @@ struct ChatView: View {
                         }.buttonStyle(.secondaryAction).disabled(historyLoading)
                     }
                     if model.conversation.messages.isEmpty && rows.isEmpty {
-                        VStack(spacing: Space.md) {
-                            Companion().frame(width: 150, height: 150)
-                            Text("你好，小野").font(TypeScale.largeTitle)
-                            Text("说说今天，或者交给我一件事。").foregroundStyle(Palette.textSecondary).font(TypeScale.callout)
-                        }.frame(maxWidth: .infinity).padding(.vertical, Space.xxxl)
+                        VStack(alignment: .leading, spacing: Space.lg) {
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                Text("今天还没有要你管的事").font(TypeScale.title)
+                                Text("邮件、日历、群消息和两台电脑我都在看。有变化，我会先整理好放到这里。").font(TypeScale.callout).foregroundStyle(Palette.textSecondary).lineSpacing(4)
+                            }
+                            FlowLayout(spacing: Space.sm + 2) {
+                                ForEach(["明天要准备什么", "这个月花了多少", "Codex 跑完了吗"], id: \.self) { prompt in
+                                    Button(prompt) { Task { await model.send(textOverride: prompt) } }.buttonStyle(PromptChipStyle())
+                                }
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, Space.xxxl).padding(.horizontal, Space.xs)
                     }
-                    ForEach(rows) { row in
-                        MessageView(message: row.message, layoutID: row.id, flying: flights[row.id] != nil, pending: row.pending)
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                        let isAgent = row.message["role"].string == "assistant"
+                        let previousIsAgent = index > 0 ? rows[index - 1].message["role"].string == "assistant" : false
+                        let isConsecutiveAgent = isAgent && previousIsAgent
+
+                        MessageView(message: row.message, layoutID: row.id, flying: flights[row.id] != nil, pending: row.pending, isConsecutiveAgent: isConsecutiveAgent)
                             .equatable()
                             .id(row.id)
                             .transition(.asymmetric(
@@ -69,12 +82,26 @@ struct ChatView: View {
                             ))
 
                     }
-                    if model.busy {
-                        LoadingState(text: model.activeRuns.first?["phase"].string ?? "处理中")
+                    if let latest = suggestionHost, latest.id != usedSuggestions {
+                        let options = ReplyOptions.options(for: latest)
+                        if !options.isEmpty {
+                            SuggestionChips(messageID: latest.id, options: options) { option in
+                                // 先让被点的那张亮一下（≈0.2s），再收起其余卡片并把这句发出去。
+                                Task { @MainActor in
+                                    if !reduce { try? await Task.sleep(for: .milliseconds(200)) }
+                                    withAnimation(reduce ? nil : .smooth(duration: 0.28)) { usedSuggestions = latest.id }
+                                    await model.send(textOverride: option)
+                                }
+                            }
+                            .id(latest.id)  // r2-chat 验收修正：新回复换一组卡片时重建状态，重新播弹入
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .transition(.asymmetric(insertion: .identity, removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading))))
+                        }
                     }
                     Color.clear.frame(height: 1).id("latest")
-                }.scrollTargetLayout().padding(.horizontal, Layout.margin).padding(.top, Space.sm).padding(.bottom, Space.md)
+                }.scrollTargetLayout().padding(.horizontal, Layout.margin).padding(.top, Space.md).padding(.bottom, Space.md)
             }
+            .accessibilityIdentifier("chat-timeline-scroll")
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .alignment)
             .scrollPosition($scrollPosition)
@@ -200,22 +227,57 @@ struct ChatView: View {
                         HStack(spacing: Space.sm) { if !unread.isEmpty { Text("\(unread.count) 条新回复").font(TypeScale.footnote.weight(.semibold)) }; Image(systemName: "arrow.down").font(TypeScale.footnote.weight(.semibold)) }
                             .foregroundStyle(Palette.textPrimary)
                             .frame(minWidth: 44, minHeight: 44).padding(.horizontal, Space.sm)
-                            .background(.regularMaterial, in: Capsule())
+                            .floatingGlass(.capsule)
                             .contentShape(Rectangle())
                     }
                         .buttonStyle(.plain).zIndex(1).padding(Space.lg).accessibilityIdentifier("chat-jump-latest").accessibilityLabel(unread.isEmpty ? "回到最新消息" : "\(unread.count) 条新回复，回到最新消息")
                 }
             }
+            // agent 忙碌时显示中断按钮
+            if model.stage.state.isBusy {
+                HStack {
+                    Spacer()
+                    Button {
+                        Task { await model.interrupt() }
+                    } label: {
+                        HStack(spacing: Space.xs) {
+                            Image(systemName: "stop.circle.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("中断")
+                                .font(TypeScale.callout.weight(.semibold))
+                        }
+                        .foregroundStyle(Palette.coral)
+                        .padding(.horizontal, Space.md)
+                        .padding(.vertical, Space.sm)
+                        .background(Palette.coral.opacity(0.12), in: .capsule)
+                        .overlay(Capsule().strokeBorder(Palette.coral.opacity(0.3), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("中断当前操作")
+                    Spacer()
+                }
+                .padding(.horizontal, Space.lg)
+                .padding(.vertical, Space.xs)
+                .transition(.asymmetric(
+                    insertion: reduce ? .opacity : .scale(scale: 0.92).combined(with: .opacity),
+                    removal: .opacity
+                ))
+                .animation(reduce ? .linear(duration: 0.12) : .spring(response: 0.35, dampingFraction: 0.82), value: model.stage.state.isBusy)
+            }
+            // 输入区独占一整行；功能 Dock 在它下面（RootView 统一挂，打字时让位）。
             ComposerView(focusChanged: { focused in
-                composing = focused; followKeyboard = focused || atBottom
+                composing = focused
+                followKeyboard = focused || atBottom
                 if focused && atBottom { manuallyReading = false; followLatest = true }
-            }).padding(.horizontal, Space.md).padding(.top, Space.xs).padding(.bottom, Space.sm)
+            }).padding(.horizontal, Space.lg).padding(.top, Space.xs).padding(.bottom, Space.xs)
+            }
+            }
+            .clipped()
             }
         }
         .background(Palette.background)
-        .navigationTitle("聊天")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .principal) { CompanionTitle() } }
+        .navigationTitle("Com")
+        .toolbar(.hidden, for: .navigationBar)
         .coordinateSpace(name: "chat-stage")
         .onPreferenceChange(ChatFramePreference.self) { values in
             if frames != values { frames = values }
@@ -240,6 +302,12 @@ struct ChatView: View {
         }
         #endif
     }
+    /// 只有最后一条是已完成的助手回复时，才在它下面挂建议卡；历史消息不挂。
+    private var suggestionHost: JSON? {
+        guard let last = rows.last, last.pending == nil, last.message["role"].string == "assistant",
+              !["streaming", "running", "failed", "unknown"].contains(last.message["status"].string) else { return nil }
+        return last.message
+    }
     private func rebuildTimeline() {
         let next = ChatTimeline.rows(messages: model.conversation.messages, pending: model.pending)
         if next != timeline {
@@ -258,10 +326,46 @@ struct ChatView: View {
     let frames = ScrollFrameMonitor()
 }
 
+/// 空流里的三个提示：胶囊按钮。
+private struct PromptChipStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary)
+            .padding(.horizontal, Space.lg - 2).frame(height: 40)
+            .background(Palette.surface, in: .capsule)
+            .overlay(Capsule().strokeBorder(Palette.separator, lineWidth: 0.5))
+            .opacity(configuration.isPressed ? 0.6 : 1)
+    }
+}
+
+/// Wraps chips onto new lines.
+struct FlowLayout: SwiftUI.Layout {
+    var spacing: CGFloat = 8
+    func sizeThatFits(proposal: ProposedViewSize, subviews: LayoutSubviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 360
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x + size.width > width && x > 0 { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            x += size.width + spacing; rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: width, height: y + rowHeight)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: LayoutSubviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX && x > bounds.minX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
+            view.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            x += size.width + spacing; rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
 struct MessageView: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.message == rhs.message && lhs.sourceSession == rhs.sourceSession &&
-        lhs.layoutID == rhs.layoutID && lhs.flying == rhs.flying && lhs.pending == rhs.pending
+        lhs.layoutID == rhs.layoutID && lhs.flying == rhs.flying && lhs.pending == rhs.pending &&
+        lhs.isConsecutiveAgent == rhs.isConsecutiveAgent
     }
     @Environment(AppModel.self) private var model
     let message: JSON
@@ -269,9 +373,27 @@ struct MessageView: View, Equatable {
     var layoutID: String?
     var flying = false
     var pending: PendingMessage?
+    var isConsecutiveAgent = false
     var user: Bool { message["role"].string == "user" }
-    var text: String { textContent(message["text"].isNull ? message["content"] : message["text"]) }
+    var text: String {
+        let raw = textContent(message["text"].isNull ? message["content"] : message["text"])
+        // r2-chat：选项标记（完整或流式半截）不进正文。
+        return user ? raw : ReplyOptions.split(raw).0
+    }
+    /// 这条话之后它做了什么：在跑时实时一行，做完折成一行。显示在助手一侧。
+    private var process: WorkProcess? { WorkProcess.from(message) }
+    /// 后台派活的事件（主对话自己的工具调用已在 process 里，不重复）。
+    private var taskEvents: [JSON] { message["work_events"].array.filter { !$0.id.hasPrefix("tool-") && !["think", "reply"].contains($0.id) } }
     var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            column
+            if let process {
+                WorkProcessRow(process: process, extra: taskEvents).padding(.trailing, 20)
+                    .transition(.opacity)
+            }
+        }
+    }
+    private var column: some View {
         VStack(alignment: user ? .trailing : .leading, spacing: Space.sm) {
             if !message["reference"].isNull {
                 VStack(alignment: .leading, spacing: Space.xs) {
@@ -279,21 +401,19 @@ struct MessageView: View, Equatable {
                     Text(message["reference"]["text"].string).font(TypeScale.footnote).lineLimit(3).foregroundStyle(Palette.textSecondary)
                 }.padding(Space.md)
                     .background(Palette.fill, in: .rect(cornerRadius: Radius.sm, style: .continuous))
-                    .overlay(alignment: .leading) { Capsule().fill(Palette.accent).frame(width: 3).padding(.vertical, Space.sm) }
+                    .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 2).fill(Palette.accent).frame(width: 3).padding(.vertical, Space.sm).padding(.leading, 6) }
             }
             if user {
+                // 我的话：反色气泡。
                 Text(text).font(TypeScale.callout).textSelection(.enabled).userBubble()
                     .chatFrame(layoutID ?? message.id, enabled: flying).opacity(flying ? 0 : 1)
                     .accessibilityIdentifier("chat-bubble-" + message.id)
             } else {
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    Label("Com", systemImage: "sparkle").font(TypeScale.caption.weight(.semibold)).foregroundStyle(Palette.textSecondary)
-                    RichText(text: text, font: TypeScale.callout)
-                }
-                .padding(Space.lg)
-                .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: Radius.lg).stroke(Palette.separator, lineWidth: 0.5) }
-                .accessibilityIdentifier("agent-bubble-" + message.id)
+                // 它的回复：加浅色气泡区分连续消息，靠标题层级、粗体重点和段落呼吸分层。
+                ReplyText(text: text, motionID: message.id, createdAt: message["created_at"].double)
+                    .foregroundStyle(Palette.textPrimary)
+                    .agentBubble()
+                    .accessibilityIdentifier("agent-bubble-" + message.id)
             }
             if !message["attachments"].array.isEmpty {
                 ForEach(message["attachments"].array.map(RemoteRow.init)) { row in
@@ -306,22 +426,17 @@ struct MessageView: View, Equatable {
             ForEach(message["linked_tasks"].array.map(RemoteRow.init)) { row in
                 Button { model.selectedTask = row.value } label: { TaskSummary(task: row.value) }.buttonStyle(.plain).detailSource("task-" + row.id)
             }
-            if !message["work_events"].array.isEmpty {
-                DisclosureGroup("工作过程 · \(message["work_events"].array.count)") {
-                    VStack(alignment: .leading, spacing: Space.xs) {
-                        ForEach(Array(message["work_events"].array.suffix(12).enumerated()), id: \.offset) { _, event in
-                            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-                                StatusDot(tone: .neutral, size: 4)
-                                VStack(alignment: .leading, spacing: Space.xxs) {
-                                    Text(eventLabel(event)).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity, alignment: .leading)
-                                    RawDetails(title: "查看原始记录", value: event)
-                                }
-                            }.padding(.vertical, Space.xxs)
+            if process == nil && !taskEvents.isEmpty {
+                let events = Array(taskEvents.suffix(12))
+                DisclosureGroup("工作过程 · \(taskEvents.count)") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(events.enumerated()), id: \.offset) { index, event in
+                            StepRow(text: eventLabel(event), state: index < events.count - 1 ? .done : stepState(event), time: clockTime(event["at"].double))
                         }
                     }.padding(.top, Space.sm)
                 }.font(TypeScale.footnote.weight(.medium)).tint(Palette.textSecondary).foregroundStyle(Palette.textSecondary)
-                    .padding(.horizontal, Space.md).padding(.vertical, Space.sm + 2)
-                    .background(Palette.fill, in: .rect(cornerRadius: Radius.sm, style: .continuous))
+                    .padding(.horizontal, Space.lg).padding(.vertical, Space.md)
+                    .noteSurface()
             }
             if !message["artifacts"].array.isEmpty { ArtifactList(artifacts: message["artifacts"].array) }
         }
@@ -345,13 +460,48 @@ struct MessageView: View, Equatable {
                 if pending.state == .uncertain { Button("查回执") { Task { await model.deliver(pending.id) } }.buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold)) }
                 if pending.state == .rejected && model.draft.isEmpty && model.attachments.isEmpty { Button("回到草稿") { model.restoreRejected(pending.id) }.buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold)) }
             }
-        } else if !message["status"].string.isEmpty {
+        } else if !message["status"].string.isEmpty && !(process?.live == true && ["sending", "running"].contains(message["status"].string)) {
+            // 在跑时由下面的「工作过程」一行说明，不再重复「已送达 · 执行中」。
             let status = message["status"].string
-            Label(["queued": "已送达 · 排队中", "sending": "已送达 · 正在处理", "running": "已送达 · 执行中", "completed": "已送达", "failed": "本轮失败", "unknown": "执行结果待核实", "approval_required": "等待你确认", "cancelled": "已停止"][status] ?? "已送达", systemImage: status == "failed" || status == "unknown" ? "exclamationmark.circle" : "checkmark")
+            Label(["queued": "已送达 · 排队中", "sending": "已送达 · 正在处理", "running": "已送达 · 执行中", "completed": "已送达", "failed": "本轮失败", "unknown": "结果未知", "approval_required": "等待批准", "cancelled": "已停止"][status] ?? "已送达", systemImage: status == "failed" || status == "unknown" ? "exclamationmark.circle" : "checkmark")
                 .font(TypeScale.footnote).foregroundStyle(status == "failed" || status == "unknown" ? Palette.warning : Palette.textTertiary)
         }
     }
 
+}
+
+enum StepState { case done, current, pending, blocked }
+func stepState(_ event: JSON) -> StepState {
+    let kind = event["kind"].string.isEmpty ? event["type"].string : event["kind"].string
+    let status = event["status"].string
+    if kind.hasSuffix(".failed") || status == "failed" { return .blocked }
+    if ["approval_required", "awaiting_review", "task.review"].contains(kind) || ["approval_required", "awaiting_review"].contains(status) { return .blocked }
+    if kind.hasSuffix(".completed") || ["completed", "done", "execution_finished"].contains(status) { return .done }
+    return .current
+}
+
+/// 步骤行：做完的划线勾掉，正在做的实心方块，等你的朱砂框，没到的淡框。
+struct StepRow: View {
+    let text: String
+    let state: StepState
+    var time = ""
+    var body: some View {
+        HStack(alignment: .center, spacing: Space.md) {
+            ZStack {
+                switch state {
+                case .done: Circle().fill(Palette.success); Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
+                case .current: Circle().strokeBorder(Palette.accentText, lineWidth: 1.6); Circle().fill(Palette.accent).frame(width: 8, height: 8)
+                case .blocked: Circle().strokeBorder(Palette.warning, lineWidth: 1.6); Circle().fill(Palette.warning).frame(width: 6, height: 6)
+                case .pending: Circle().strokeBorder(Palette.separator, lineWidth: 1.6)
+                }
+            }.frame(width: 16, height: 16)
+            Text(text).font(state == .current ? TypeScale.rowTitle : TypeScale.body)
+                .foregroundStyle(state == .blocked ? Palette.warning : state == .done || state == .pending ? Palette.textTertiary : Palette.textPrimary)
+                .strikethrough(state == .done, color: Palette.textTertiary.opacity(0.6))
+                .frame(maxWidth: .infinity, alignment: .leading).lineLimit(2)
+            if !time.isEmpty { Text(time).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary) }
+        }.frame(minHeight: 30).accessibilityElement(children: .combine)
+    }
 }
 
 struct ComposerView: View {
@@ -378,7 +528,7 @@ struct ComposerView: View {
             }
             if let reference = model.reference {
                 HStack(alignment: .top) {
-                    Capsule().fill(Palette.accent).frame(width: 3)
+                    RoundedRectangle(cornerRadius: 2).fill(Palette.accent).frame(width: 3)
                     VStack(alignment: .leading, spacing: Space.xs) { Text("回复 \(reference["author"].string)").font(TypeScale.footnote.weight(.semibold)); Text(reference["text"].string).font(TypeScale.footnote).lineLimit(2).foregroundStyle(Palette.textSecondary) }
                     Spacer(); Button { model.reference = nil } label: { Image(systemName: "xmark").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary) }.accessibilityLabel("取消引用")
                 }.fixedSize(horizontal: false, vertical: true).padding(Space.md).composerSurface()
@@ -388,23 +538,24 @@ struct ComposerView: View {
                 if model.voice.phase != .idle && !model.showQuickVoice {
                     VoiceSessionPanel()
                 } else {
+                    // 输入区布局不动：左加号、中间文本、右麦克风。
                     HStack(alignment: .bottom, spacing: Space.sm) {
                         Menu {
                             Button("选择文件", systemImage: "doc") { importing = true }
                             PhotosPicker(selection: $photo, matching: .images) { Label("选择照片", systemImage: "photo") }
                             Button("查看成果", systemImage: "tray.full") { model.showSearch = true }
                         } label: {
-                            Image(systemName: uploading ? "hourglass" : "plus").font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.textPrimary)
-                                .frame(width: 36, height: 36).background(Palette.fill, in: .circle)
+                            Image(systemName: uploading ? "hourglass" : "plus").font(.system(size: 18, weight: .medium)).foregroundStyle(Palette.textPrimary)
+                                .frame(width: 44, height: 44).background(Palette.fill, in: .circle)
                         }.disabled(uploading).accessibilityLabel("附件与成果")
-                        TextField("发消息", text: $model.draft, axis: .vertical).font(TypeScale.callout).lineLimit(1...6).focused($focused).padding(.vertical, Space.sm).accessibilityIdentifier("message-input").chatFrame("composer")
+                        TextField("发消息", text: $model.draft, axis: .vertical).font(TypeScale.callout).lineLimit(1...6).focused($focused).padding(.vertical, Space.md).accessibilityIdentifier("message-input").chatFrame("composer")
                         if model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Button { focused = false; model.openVoice() } label: { Image(systemName: "mic").font(.system(size: 20, weight: .medium)).foregroundStyle(Palette.textSecondary).frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).contentShape(Rectangle()).accessibilityIdentifier("chat-voice-start").accessibilityLabel("开始语音")
+                            Button { focused = false; model.openVoice() } label: { Image(systemName: "mic").font(.system(size: 20, weight: .regular)).foregroundStyle(Palette.textPrimary).frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).contentShape(Rectangle()).accessibilityIdentifier("chat-voice-start").accessibilityLabel("开始语音")
                         } else {
-                            CircleActionButton(symbol: "arrow.up", label: "发送消息", filled: true, size: 36) {
+                            CircleActionButton(symbol: "arrow.up", label: "发送消息", filled: true, size: 40) {
                                 let fromVoice = model.voice.phase == .ready
                                 Task { await model.send(voiceMessage: fromVoice); if fromVoice && model.pending.last?.state == .delivered { model.voice.cancel() } }
-                            }.disabled(model.sending)
+                            }.disabled(model.sending).padding(.trailing, 2)
                         }
                     }.padding(.leading, Space.sm).padding(.trailing, Space.sm).padding(.vertical, Space.sm)
                 }

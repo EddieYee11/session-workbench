@@ -9,6 +9,9 @@ import UIKit
     private var intervals: [Double] = []
     private var requested = 60
     func start() {
+        #if !DEBUG
+        return
+        #else
         guard link == nil else { return }
         intervals = []; first = 0; previous = 0
         requested = UIScreen.main.maximumFramesPerSecond
@@ -17,6 +20,7 @@ import UIKit
         display.preferredFrameRateRange = CAFrameRateRange(minimum: min(80, maximum), maximum: maximum, preferred: maximum)
         display.add(to: .main, forMode: .common)
         link = display
+        #endif
     }
     @objc private func tick(_ display: CADisplayLink) {
         if first == 0 { first = display.timestamp }

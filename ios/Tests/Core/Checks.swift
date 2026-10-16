@@ -47,6 +47,22 @@ enum CoreChecks {
         do { _ = try api.makeRequest("//attacker.invalid"); throw Failure(description: "Off-origin path accepted") } catch is APIError { checks += 1 }
         let anonymous = try api.makeRequest("/pair", auth: false)
         try require(anonymous.value(forHTTPHeaderField: "Authorization") == nil, "Pairing leaked prior credentials")
-        return checks + 10
+        // Voice streaming: partials land while the user is still speaking, the final
+        // closes the utterance, and audio leaves as clamped 16 kHz little-endian PCM.
+        try require(VoiceStream.event(from: Data(#"{"type":"partial","text":"记账","definite":false}"#.utf8)) == .partial("记账"), "Partial transcript lost")
+        try require(VoiceStream.event(from: Data(#"{"type":"final","text":"记账，午饭35。","definite":true}"#.utf8)) == .final("记账，午饭35。"), "Final transcript lost")
+        try require(VoiceStream.event(from: Data(#"{"type":"error","message":"录音太短"}"#.utf8)) == .failure("录音太短"), "Error frame lost")
+        try require(VoiceStream.event(from: Data(#"{"type":"error"}"#.utf8)) == .failure("语音识别中断"), "Bare error frame lost its fallback text")
+        try require(VoiceStream.event(from: Data("not json".utf8)) == nil, "Garbage frame accepted")
+        try require(VoiceStream.event(from: Data(#"{"type":"partial"}"#.utf8)) == .partial(""), "Empty partial rejected")
+        try require(VoiceStream.event(from: Data(VoiceStream.end.utf8)) == nil, "End frame echoed back as a transcript")
+        let pcm = VoiceStream.pcm16([0, 0.5, -1, 1, 4, -4])
+        try require(pcm.count == 12, "PCM width wrong")
+        try require(Array(pcm[0..<2]) == [0x00, 0x00], "Silence encoded wrong")
+        try require(Array(pcm[2..<4]) == [0xFF, 0x3F], "0.5 encoded wrong")
+        try require(Array(pcm[4..<6]) == [0x01, 0x80], "-1 encoded wrong")
+        try require(Array(pcm[6..<8]) == [0xFF, 0x7F], "+1 encoded wrong")
+        try require(Array(pcm[8..<10]) == [0xFF, 0x7F] && Array(pcm[10..<12]) == [0x01, 0x80], "Out-of-range samples wrapped instead of clamping")
+        return checks + 12
     }
 }

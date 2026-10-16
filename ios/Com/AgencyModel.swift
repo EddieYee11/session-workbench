@@ -2,13 +2,21 @@ import SwiftUI
 import ComCore
 
 extension AppModel {
-    func agencyAction(_ card: JSON, action: String) async throws -> JSON {
+    func agencyAction(_ card: JSON, action: String, extra: [String: JSON] = [:]) async throws -> JSON {
         #if DEBUG
         if isUITesting {
             var value = datasets["/personal/agency"] ?? .null
             if action == "prepare" {
                 let pack: JSON = .object(["summary": .string("先确认今天的重点，再留出一段专注时间。"), "evidence": .array([.object(["label": .string("来源"), "value": .string("界面验收资料")])]), "limits": .string("这是界面验收数据。")])
+                value["cards"] = .array(value["cards"].array.map { row in guard row.id == card.id else { return row }; var copy = row; copy["preparation"] = pack; return copy })
+                datasets["/personal/agency"] = value; recomputeFlow()
                 return .object(["status": .string("completed"), "result": pack])
+            }
+            if action == "discuss" {
+                conversation.messages.append(.object(["id": .string("discuss-" + card.id), "role": .string("user"), "text": .string("继续处理「" + card["title"].string + "」"), "status": .string("completed"), "created_at": .number(Date().timeIntervalSince1970)]))
+                conversation.revision += 1
+                value["cards"] = .array(value["cards"].array.filter { $0.id != card.id }); datasets["/personal/agency"] = value; recomputeFlow()
+                return .object(["status": .string("completed")])
             }
             if ["later", "handled", "mute"].contains(action) { value["cards"] = .array(value["cards"].array.filter { $0.id != card.id }) }
             if ["pause", "resume", "complete"].contains(action) {
@@ -17,11 +25,11 @@ extension AppModel {
                     result["status"] = .string(action == "pause" ? "paused" : action == "complete" ? "completed" : "active"); return result
                 })
             }
-            datasets["/personal/agency"] = value
+            datasets["/personal/agency"] = value; recomputeFlow()
             return .object(["status": .string("completed")])
         }
         #endif
-        var fields: [String: JSON] = ["action": .string(action)]
+        var fields: [String: JSON] = ["action": .string(action)].merging(extra) { a, _ in a }
         if !card["version"].isNull { fields["version"] = card["version"] }
         else if !card["updated_at"].isNull { fields["version"] = card["updated_at"] }
         let result = try await mutate("/personal/agency/actions/" + card.id.pathEncoded, fields: fields)
@@ -35,7 +43,7 @@ extension AppModel {
         if isUITesting {
             var value = datasets["/personal/agency"] ?? .null
             let goal = JSON.object(fields.merging(["id": .string(UUID().uuidString), "status": .string("active")]) { _, b in b })
-            value["goals"] = .array(value["goals"].array + [goal]); datasets["/personal/agency"] = value
+            value["goals"] = .array(value["goals"].array + [goal]); datasets["/personal/agency"] = value; recomputeFlow()
             return .object(["status": .string("completed"), "goal": goal])
         }
         #endif
