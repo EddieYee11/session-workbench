@@ -122,13 +122,17 @@ class CalendarBridge:
         tz=ZoneInfo('Asia/Shanghai');epoch=978307200
         first=datetime.fromisoformat(start_date).replace(tzinfo=tz).timestamp()-epoch
         last=(datetime.fromisoformat(end_date).replace(tzinfo=tz)+timedelta(days=1)).timestamp()-epoch
-        with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
+        db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=2.0)
+        try:
             db.row_factory=sqlite3.Row
+            db.execute('PRAGMA busy_timeout=2000')
             rows=db.execute("""SELECT DISTINCT i.ROWID,i.UUID,i.summary,i.description,i.all_day,i.availability,i.has_attendees,i.has_recurrences,i.start_tz,c.title calendar,
                 COALESCE(o.occurrence_date,i.start_date) occurrence,COALESCE(o.occurrence_start_date,o.occurrence_date,i.start_date) start,COALESCE(o.occurrence_end_date,i.end_date) end,
                 (SELECT COUNT(*) FROM Participant p WHERE p.owner_id=i.ROWID) participants
                 FROM CalendarItem i JOIN Calendar c ON c.ROWID=i.calendar_id LEFT JOIN OccurrenceCache o ON o.event_id=i.ROWID
                 WHERE COALESCE(o.occurrence_start_date,o.occurrence_date,i.start_date)<? AND COALESCE(o.occurrence_end_date,i.end_date)>=? AND COALESCE(i.hidden,0)=0 AND COALESCE(i.status,0)!=2 ORDER BY start""",(last,first)).fetchall()
+        finally:
+            db.close()
         result=[]
         for r in rows:
             if not r['UUID']:continue
@@ -139,9 +143,9 @@ class CalendarBridge:
 
     async def read(self, start_date, end_date):
         try:
-            rows=await asyncio.to_thread(self.cached,start_date,end_date)
+            rows=await asyncio.wait_for(asyncio.to_thread(self.cached,start_date,end_date),timeout=8)
             if rows is not None:return rows
-        except (sqlite3.Error,OSError):pass
+        except (asyncio.TimeoutError,sqlite3.Error,OSError):pass
         first = datetime.fromisoformat(start_date).strftime('%Y-%m-%d')
         last = (datetime.fromisoformat(end_date) + timedelta(days=1)).strftime('%Y-%m-%d')
         return self.parse(await self.queue(['read', first, last]))

@@ -1,56 +1,5 @@
 import SwiftUI
-import WebKit
 import ComCore
-
-/// The upstream MIT voice-glow renderer, bundled offline. It receives only
-/// the native meter envelope; no audio, transcript or credentials enter it.
-struct VoiceBeamSurface: UIViewRepresentable {
-    let level: Double
-    let processing: Bool
-    let active: Bool
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    @Environment(\.accessibilityReduceTransparency) private var opaque
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        let view = WKWebView(frame: .zero, configuration: config)
-        view.isOpaque = false; view.backgroundColor = .clear
-        view.scrollView.backgroundColor = .clear; view.scrollView.isScrollEnabled = false
-        view.isUserInteractionEnabled = false; view.isAccessibilityElement = false
-        view.accessibilityElementsHidden = true
-        view.navigationDelegate = context.coordinator
-        if let url = Bundle.main.url(forResource: "VoiceBeam", withExtension: "html") {
-            view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-        }
-        return view
-    }
-    func updateUIView(_ view: WKWebView, context: Context) {
-        let state: [String: Any] = ["level": min(1, max(0, level)), "processing": processing,
-                                   "active": active, "paused": reduce || !active,
-                                   "theme": scheme == .dark ? "dark" : "light"]
-        guard let data = try? JSONSerialization.data(withJSONObject: state), let json = String(data: data, encoding: .utf8) else { return }
-        context.coordinator.update = "window.comVoiceUpdate?.(" + json + ")"
-        if context.coordinator.ready { view.evaluateJavaScript(context.coordinator.update, completionHandler: nil) }
-        view.alpha = opaque ? 0.65 : 1
-    }
-    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
-        view.evaluateJavaScript("window.comVoiceUpdate?.({active:false,paused:true})", completionHandler: nil)
-        view.stopLoading(); view.navigationDelegate = nil
-    }
-    @MainActor final class Coordinator: NSObject, @preconcurrency WKNavigationDelegate {
-        var ready = false
-        var update = ""
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            ready = true; webView.evaluateJavaScript(update, completionHandler: nil)
-        }
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            let scheme = navigationAction.request.url?.scheme
-            decisionHandler(scheme == "file" || scheme == "about" ? .allow : .cancel)
-        }
-    }
-}
 
 /// Draw real glyphs in the native text layout: no HStack splitting, so CJK,
 /// wrapping and Dynamic Type retain their normal spacing and semantics.
@@ -124,21 +73,42 @@ struct VoiceSessionPanel: View {
     var body: some View {
         @Bindable var model = model
         ZStack(alignment: .bottom) {
-            VoiceBeamSurface(level: model.voice.level, processing: model.voice.phase == .transcribing,
-                             active: model.active && [.recording, .transcribing].contains(model.voice.phase))
-                .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: Space.lg) {
                 HStack(spacing: Space.sm) {
                     StatusDot(tone: model.voice.phase == .recording ? .danger : .accent)
                     Text(model.voice.phase == .recording ? "正在录音" : model.voice.phase == .transcribing ? "正在转写" : "Com 语音").font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.textSecondary)
                     Spacer()
+                    Button { model.voice.autoSend.toggle(); Haptics.selection() } label: {
+                        HStack(spacing: Space.xxs) {
+                            Image(systemName: model.voice.autoSend ? "pause.circle.fill" : "pause.circle")
+                            Text("停顿即发")
+                        }
+                        .font(TypeScale.footnote.weight(.medium))
+                        .foregroundStyle(model.voice.autoSend ? Palette.onAccent : Palette.textSecondary)
+                        .padding(.horizontal, Space.sm).padding(.vertical, Space.xxs)
+                        .background(model.voice.autoSend ? Palette.accent : Palette.fill, in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("停顿 0.7 秒自动发送")
+                    .accessibilityValue(model.voice.autoSend ? "开" : "关")
+                    .accessibilityIdentifier("voice-auto-send")
                     Text(String(format: "%d:%02d", model.voice.seconds / 60, model.voice.seconds % 60)).font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textSecondary)
                         .padding(.horizontal, Space.sm).padding(.vertical, Space.xxs).background(Palette.fill, in: .capsule)
                 }
-                RhythmicText(text: model.voice.transcript.isEmpty ? title : model.voice.transcript)
-                    .font(model.voice.transcript.isEmpty ? TypeScale.title : TypeScale.callout)
-                .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityIdentifier("voice-rhythmic-text")
+                // Long dictation scrolls with the newest words instead of clipping at line 3;
+                // the top edge fades so earlier lines read as history, not as cut-off text.
+                ScrollView(.vertical) {
+                    RhythmicText(text: model.voice.transcript.isEmpty ? title : model.voice.transcript)
+                        .font(model.voice.transcript.isEmpty ? TypeScale.title : TypeScale.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("voice-rhythmic-text")
+                }
+                .scrollIndicators(.hidden)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.18),
+                                             .init(color: .black, location: 1)], startPoint: .top, endPoint: .bottom))
+                .frame(maxHeight: .infinity)
                 if model.voice.phase != .ready {
                     HStack(spacing: 3) {
                         ForEach(0..<40, id: \.self) { i in
@@ -166,7 +136,9 @@ struct VoiceSessionPanel: View {
                     .disabled(model.voice.phase == .ready || model.voice.phase == .transcribing || (model.voice.phase == .ready && model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }.buttonStyle(.plain)
             }.padding(Space.lg)
-        }.frame(height: 220).clipShape(.rect(cornerRadius: Radius.xl, style: .continuous))
+        }.frame(height: model.voice.transcript.count > 36 ? 280 : 220)
+        .animation(.smooth(duration: 0.35), value: model.voice.transcript.count > 36)
+        .clipShape(.rect(cornerRadius: Radius.xl, style: .continuous))
         .onChange(of: model.voice.phase) { old, phase in
             if old == .recording && phase == .recorded { Task { await model.transcribeVoice() } }
         }
@@ -195,8 +167,54 @@ struct QuickVoiceView: View {
                 }
             }.padding(.horizontal, Layout.margin).padding(.top, Space.xl)
             VoiceSessionPanel(quick: true).background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous)).elevation(.raised).padding(.horizontal, Space.md)
-            Text("完成录音后转为文字，自动发送。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            Text(model.voice.autoSend ? "停顿 0.7 秒自动转文字并发送。" : "完成录音后转为文字，自动发送。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
             Spacer(minLength: 0)
         }
+    }
+}
+
+/// Siri-style screen-edge glow while Com is listening. Lives above the whole app,
+/// takes no touches, and stays dim enough that the transcript remains the focus.
+struct ScreenEdgeGlow: View {
+    let level: Double
+    let processing: Bool
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var smoothed = 0.0
+    private var colors: [Color] {
+        // 青柠为主，带一点暖珊瑚与冷青，和 Palette 同源，不引入新的品牌色。
+        let lime = Palette.accent
+        return [lime, Color(red: 0.55, green: 0.86, blue: 0.62), Color(red: 0.98, green: 0.80, blue: 0.42),
+                Palette.coral.opacity(0.85), lime.opacity(0.9), Color(red: 0.45, green: 0.80, blue: 0.78), lime]
+    }
+    var body: some View {
+        TimelineView(.animation(paused: reduce)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            let energy = processing ? 0.35 + 0.15 * sin(t * 2.4) : smoothed
+            let spin = Angle.degrees(reduce ? 0 : (t * (processing ? 70 : 28)).truncatingRemainder(dividingBy: 360))
+            let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            let gradient = AngularGradient(colors: colors, center: .center, angle: spin)
+            let base = scheme == .dark ? 0.55 : 0.5
+            ZStack {
+                shape.strokeBorder(gradient, lineWidth: 10 + 22 * energy).blur(radius: 18 + 14 * energy)
+                    .opacity(base + 0.35 * energy)
+                shape.strokeBorder(gradient, lineWidth: 2 + 3 * energy).blur(radius: 3)
+                    .opacity(0.35 + 0.4 * energy)
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onAppear { smoothed = min(1, max(0, level)) }
+        .onChange(of: level) { _, value in
+            // Fast attack, slow release: the edge breathes with the voice instead of flickering.
+            smoothed += (min(1, max(0, value)) - smoothed) * (value > smoothed ? 0.5 : 0.12)
+        }
+    }
+    /// Approximate display corner radius; the private API value is not available to apps.
+    static var cornerRadius: CGFloat {
+        let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+        let insets = scene?.windows.first?.safeAreaInsets ?? .zero
+        return insets.bottom > 0 ? 55 : 0
     }
 }

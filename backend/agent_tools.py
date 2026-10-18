@@ -8,8 +8,10 @@ import re
 import time
 from pathlib import Path
 
-from policy import assignment, deletion_risk, source, READ_ACTIONS,recoverable_remove,CONTINUATION,readonly_shell,readonly_restriction,action_is_readonly,bookkeeping_details
+from policy import assignment, deletion_risk, source, READ_ACTIONS,recoverable_remove,readonly_shell,readonly_restriction,action_is_readonly,bookkeeping_details
 from task_tools import authorized_assignment, record_constraint
+
+REMOVAL = re.compile(r'删|去掉|移除|撤销|撤回|取消|作废|清掉|清除|不要了|重记|重新记|改成|换成|改为|改到|挪到')
 
 
 class AgentTools:
@@ -50,7 +52,8 @@ class AgentTools:
                    str(reference.get('id','')).startswith('task-result:'+task['id']))
         if (candidates and not any(t['id']==ident for t in candidates)) or (len(candidates)>1 and not exact):
             raise ValueError('有多个事项或引用指向其他任务，无法唯一定位；请关联具体任务')
-        if not linked(task) and not named(task) and (strict or len(active)!=1 or active[0]['id']!=ident):
+        # Eddie 2026-10-10 授予最高权限：补充/恢复/停止按模型点名的任务放行；验收与合入仍要求消息明确关联。
+        if strict and not linked(task) and not named(task):
             raise ValueError('用户消息未关联该任务；请引用原交办、结果卡片或明确任务名称')
         return task
 
@@ -69,6 +72,14 @@ class AgentTools:
             for tool in args.get('tools',[]):
                 self.capabilities.observe(tool,state='loaded')
             return {'status':'loaded'}
+        if name=='case_progress':
+            cases=getattr(self,'cases',None)
+            if not cases:raise ValueError('案例服务未启用')
+            return cases.progress(context.get('task_id'),args)
+        if name=='turn_plan':
+            cases=getattr(self,'cases',None)
+            if not cases:raise ValueError('案例服务未启用')
+            return cases.turn_plan(args)
         if name=='memory_recall':
             from memory import recall_on_demand
             return await recall_on_demand(args.get('query', ''), args.get('banks'))
@@ -86,7 +97,11 @@ class AgentTools:
         if name=='briefing_refresh':
             return await self.personal_hub.sync(args.get('group','all'),force=args.get('force',False))
         if name=='personal_briefing':
-            return self.personal_hub.briefing()
+            # 身体数据跟着简报一起给：7 天逐日数字，曲线只留给手机画图，不进上下文。
+            health=self.personal_hub.health(7)
+            for d in health['days']:d.pop('body_battery_curve',None)
+            if health.get('today'):health['today']={k:v for k,v in health['today'].items() if k!='body_battery_curve'}
+            return {**self.personal_hub.briefing(),'health':health}
         if name=='briefing_annotate':
             return self.personal_hub.annotate(args['matter_id'],args['source_version'],args['what'],args['why'],args['next_step'])
         if name=='matter_link':
@@ -181,7 +196,13 @@ class AgentTools:
                     tasks={t['id']:t for t in self.store.list()}
                     if any(ident not in tasks or tasks[ident].get('goal_id')!=goal_id or ident==expected_id for ident in dependencies):
                         raise ValueError('依赖必须引用同一目标已有任务，不能自依赖或越过目标')
+            cases=getattr(self,'cases',None)
+            if cases and draft['agent']=='pi':
+                from cases import CASE_RULES
+                draft['prompt']=draft['prompt'][:6000-len(CASE_RULES)]+CASE_RULES  # 对话里派给 Pi 的也是案例，汇报步骤
             task=self.store.create_authorized(draft,authorization,request_id)
+            if cases:
+                cases.register(task,'chat',draft.get('origin_message_id',''))
             if goal_id:
                 self.goals.link(goal_id,task['id'],node_id,dependencies)
             return {'task_id':task['id'],'status':task['status'],'work_started':False,'owner_conversation_id':'personal-main'}
@@ -237,11 +258,8 @@ class AgentTools:
                 self.store.change(task['id'],'merged:'+task['id']+':'+str(task.get('run_id')),'workspace.merged',json.dumps(result),merge_result=result,merged_run_id=task.get('run_id'))
             return result
         if name=='task_send':
-            target=self.task_target(args['task_id'],dict(row))
-            continuation=bool(CONTINUATION.fullmatch(row['raw_text']) and target.get('authorization'))
-            if not assignment(row['text'],row['text']) and not continuation and not any(w in row['text'] for w in ('不要','保持','限制')):
-                raise ValueError('这不是对任务的明确补充')
-            if args.get('constraint_type','note')=='note' and args.get('text') in row['raw_text'] and (assignment(row['text'],row['text']) or continuation):
+            self.task_target(args['task_id'],dict(row))
+            if args.get('constraint_type','note')=='note' and args.get('text') in row['raw_text']:
                 task=next((t for t in self.store.list() if t['id']==args['task_id']),None)
                 if not task or task.get('owner_conversation_id','personal-main')!='personal-main' or not task.get('authorization'):
                     raise ValueError('原任务没有同一负责人的授权关联')
@@ -250,15 +268,13 @@ class AgentTools:
             return record_constraint(self.store,args['task_id'],args.get('text',''),args['request_id'],args.get('constraint_type','note'),source_context=row)
         if name=='task_resume':
             self.task_target(args['task_id'],row)
-            if not CONTINUATION.fullmatch(row['raw_text']) and not re.search(r'继续|恢复|接着做',row['raw_text']):
-                raise ValueError('用户没有要求恢复这个任务')
             if any(w in row['raw_text'] for w in ('不要继续','别继续','不要恢复','别恢复')):
                 raise ValueError('用户没有要求恢复这个任务')
             async with self.controller.runtime.action_lock:
                 return await self.controller.resume(args['task_id'],args['request_id'])
         if name=='task_cancel':
             self.task_target(args['task_id'],dict(row))
-            if not assignment(row['text'],row['text']) or not any(w in row['text'] for w in ('停止','取消','暂停','先别管','停下')) or any(w in row['text'] for w in ('别取消','不要取消','别停止','不要停止')):
+            if any(w in row['text'] for w in ('别取消','不要取消','别停止','不要停止')):
                 raise ValueError('用户没有明确要求停止')
             async with self.controller.runtime.action_lock:
                 return await self.controller.command(args['task_id'],'',args['request_id'],cancel=True)
@@ -296,7 +312,11 @@ class AgentTools:
         if task_id:
             if not task or not task.get('authorization') or task['status'] not in ('dispatching','running','waiting'):
                 raise ValueError('工作器没有活动授权')
-            actual=source(self.conversation,context)
+            # 「交给 Com」按钮建的案例没有聊天消息：授权来源就是任务里记下的那次点按（cases.py create_task）。
+            if task['authorization'].get('entry')=='case_button' and context.get('origin_message_id')==task['authorization'].get('source_message_id'):
+                actual={'id':task['authorization']['source_message_id']}
+            else:
+                actual=source(self.conversation,context)
             if actual['id'] not in (task.get('source_message_ids') or [task['authorization'].get('source_message_id')]):
                 raise ValueError('工作器来源与任务真实用户消息不匹配')
             actual_sources=task.get('source_links') or task.get('authorization',{}).get('source_links',[])
@@ -320,8 +340,7 @@ class AgentTools:
                     not quote_free(row['raw_text']).strip() or
                     (QUOTE.search(row['raw_text']) and not assignment(quote_free(row['raw_text']),quote_free(row['raw_text'])))):
                 raise ValueError('这条续答或引用没有关联真实用户操作来源')
-            if tool=='remind' and params.get('action')=='add' and not re.search(r'提醒我|叫我|定提醒|设.{0,8}提醒|新增|添加|提醒一下|到期.{0,15}提醒',row['text']):
-                raise ValueError('没有明确新增提醒意图')
+            # 不再按措辞判断「是不是要加提醒」：Eddie 2026-10-10「10-16 20:00加提醒」被这条正则连拒三次，已授权最高权限。
         if tool=='bookkeeping' and params.get('action')=='add':
             clarification = row.get('bookkeeping_clarification') if not task_id else None
             if clarification:
@@ -344,7 +363,9 @@ class AgentTools:
             approved=task.get('authorization',{}).get('actual_action') if task else None
             exact=approved and approved.get('tool')==tool and approved.get('args')==params
             recovered = tool.lower() in ('write','edit') and self.backup_main_write(path, context,task.get('cwd') if task else None)
-            if not exact and not recovered and not recoverable_remove(tool,params,copy) and not (copy and tool in ('write','edit','Write','Edit') and path and
+            # Eddie 本条消息亲口要删/改的账目、提醒、日程直接执行（r01「用户明确说删除」例外）；模型自作主张的删除仍走审批卡。
+            asked = not task_id and tool in ('bookkeeping','calendar_event','remind','collect') and bool(REMOVAL.search(row['raw_text']))
+            if not exact and not recovered and not asked and not recoverable_remove(tool,params,copy) and not (copy and tool in ('write','edit','Write','Edit') and path and
                     (Path(copy)/path).resolve().is_relative_to(Path(copy).resolve())):
                 raise ValueError('实际动作有不可逆删除/覆盖风险，请提交具体批准；未执行')
         mutating=not action_is_readonly(tool,params)

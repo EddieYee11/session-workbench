@@ -297,6 +297,54 @@ class Runtime:
         await self.tm('paste-buffer','-d','-p','-b',request_id,'-t',m['tmux'])
         await asyncio.sleep(.08);await self.tm('send-keys','-t',m['tmux'],'Enter')
         return request_id
+    # ---- 工作页「任何会话都能发」：找出电脑上正在跑的那个进程（不是 Com 托管的），能打字就打进去 ----
+    async def live_agents(self,agent):
+        """本机正在跑的 agent CLI（Com 自己托管的、Codex App 的 app-server 不算）：pid、cwd、所在的用户 tmux 窗格。"""
+        rows=[]
+        for line in (await self.cmd('/bin/ps','-axo','pid=,ppid=,args=',check=False)).splitlines():
+            parts=line.split(None,2)
+            if len(parts)<3:continue
+            tokens=parts[2].split()
+            exe=os.path.basename(tokens[0])
+            if exe=='node' and len(tokens)>1:exe=os.path.basename(tokens[1])
+            rows.append((int(parts[0]),int(parts[1]),exe,parts[2]))
+        parent={pid:ppid for pid,ppid,_,_ in rows}
+        com={int(p) for p in (await self.tm('list-panes','-a','-F','#{pane_pid}',check=False)).split() if p.isdigit()}
+        panes={}
+        for line in (await self.cmd(self.tmux,'list-panes','-a','-F','#{pane_id} #{pane_pid}',check=False)).splitlines():
+            pane,_,pid=line.partition(' ')
+            if pid.isdigit():panes[int(pid)]=pane
+        out=[]
+        for pid,_,exe,args in rows:
+            if exe!=agent or 'app-server' in args:continue
+            chain,cur=set(),pid
+            while cur and cur not in chain:chain.add(cur);cur=parent.get(cur)
+            if chain&com:continue
+            cwd=next((l[1:] for l in (await self.cmd('/usr/sbin/lsof','-a','-p',str(pid),'-d','cwd','-Fn',check=False)).splitlines() if l.startswith('n')),'')
+            out.append({'pid':pid,'args':args,'cwd':cwd,'pane':next((panes[c] for c in chain if c in panes),'')})
+        return out
+    async def find_pane(self,s):
+        """这段会话此刻在不在电脑上跑：返回 (是否在跑, 唯一能打字的窗格)。命令行带会话 id 的优先；否则同目录唯一一个才算。"""
+        procs=[p for p in await self.live_agents(s['agent']) if p['cwd']==s['cwd']]
+        if not procs:return False,''
+        named=[p for p in procs if s.get('native_id') and s['native_id'] in p['args']]
+        pick=named if named else procs
+        return True,(pick[0]['pane'] if len(pick)==1 and pick[0]['pane'] else '')
+    async def inject(self,pane,text,request_id):
+        """打进用户自己的 tmux 窗格：bracketed paste 原样送字，再回车。"""
+        buf='com-'+request_id
+        await self.cmd(self.tmux,'load-buffer','-b',buf,'-',input=text.encode())
+        await self.cmd(self.tmux,'paste-buffer','-d','-p','-b',buf,'-t',pane)
+        await asyncio.sleep(.08);await self.cmd(self.tmux,'send-keys','-t',pane,'Enter')
+    async def adopt_claude(self,s):
+        """电脑上没在跑的 Claude Code 会话：交给 Com 的 Claude 工作器用 SDK resume 原会话接着说。"""
+        if s['agent']!='claude' or not s.get('native_id'):raise ValueError('只有 Claude Code 会话能这样接上')
+        task_id='manual_'+uuid.uuid4().hex
+        saved=self.state/'claude-runtime'/(task_id+'.json')
+        saved.parent.mkdir(parents=True,exist_ok=True)
+        saved.write_text(json.dumps({'native_session':s['native_id'],'task_id':task_id}));saved.chmod(0o600)
+        return await self.workers.create({'id':task_id,'agent':'claude','cwd':s['cwd'],'sandbox':'danger-full-access','automatic':False,
+                                          'title':(s.get('display_title') or s.get('title') or 'Claude Code 工作会话')[:60]})
     def stable_input(self,sid):
         m=self.h.managed().get(sid)
         if m and m.get('transport'):return sid in self.workers.workers

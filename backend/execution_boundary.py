@@ -8,10 +8,24 @@ import sys
 from pathlib import Path
 
 
+def host_names():
+    """本机名字：hostname 会被 DHCP/反向解析改成 IP（2026-10-17 mini 变成 192.168.5.215，拦下全部后台任务），
+    所以同时认 macOS 稳定的 LocalHostName（及其 .local 形式）。"""
+    names={socket.gethostname()}
+    if sys.platform=='darwin':
+        import subprocess
+        try:
+            local=subprocess.run(['/usr/sbin/scutil','--get','LocalHostName'],capture_output=True,text=True,timeout=3).stdout.strip()
+        except Exception:
+            local=''
+        if local:names|={local,local+'.local'}
+    return names
+
+
 def require_host(state):
     config=Path(state)/'agent-config.json'
     expected=json.loads(config.read_text()).get('execution_host') if config.exists() else None
-    if expected and socket.gethostname()!=expected:
+    if expected and expected not in host_names():
         raise ValueError('受管写操作仅在已配置的 mini 执行；当前主机不匹配')
 
 

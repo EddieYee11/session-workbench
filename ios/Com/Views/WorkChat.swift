@@ -19,6 +19,17 @@ struct WorkChat: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Space.xl) {
                 WorkChatHeader()
+                // 10-18 会话↔案例互通：这段是某个案例的执行会话，一键回到案例看步骤和结论
+                if let owner = (model.datasets["/sessions"]?["sessions"].array ?? []).first(where: { $0.id == work.sessionID }), !owner["case_id"].string.isEmpty {
+                    Button { model.openThreadNode(.object(["kind": .string("case"), "id": owner["case_id"]])) } label: {
+                        Label("案例「" + owner["case_title"].string + "」的执行会话 · 看案例", systemImage: "rectangle.stack")
+                            .font(TypeScale.footnote.weight(.medium)).lineLimit(1)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(Palette.surface, in: .capsule)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Palette.accentText)
+                    .accessibilityIdentifier("work-case-banner")
+                }
                 if !work.note.isEmpty { InlineNotice(text: work.note) }
                 if rows.isEmpty && work.loaded {
                     Text(work.mode == .snapshot ? "这段还没有可看的摘录。" : "会话已打开。回看历史不会启动执行器。")

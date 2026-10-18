@@ -63,6 +63,14 @@ private final class VoiceCapture: @unchecked Sendable {
     private var interruption: NSObjectProtocol?
     private var starting = false
     private var tapped = false
+    /// Stop on its own after a pause, so a quick 记账/日程 sentence needs no second tap.
+    var autoSend = UserDefaults.standard.object(forKey: "voice.autoSend") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoSend, forKey: "voice.autoSend") }
+    }
+    static let pauseToSend: TimeInterval = 0.9
+    /// Ambient loudness, tracked low so a fan or street noise does not count as speech.
+    private var noiseFloor = 0.02
+    private var lastVoiced = Date.distantFuture
 
     init() {
         if let saved = try? SecureVault.load(JSON.self, name: "voice-capture"), !saved["id"].string.isEmpty {
@@ -119,6 +127,7 @@ private final class VoiceCapture: @unchecked Sendable {
             try engine.start()
             if let api { listen(api: api, pcm: pcm) }
             phase = .recording; seconds = 0; levels = []; error = ""; transcript = ""; Haptics.sent()
+            noiseFloor = 0.02; lastVoiced = .distantFuture
             saveCapture()
             let started = Date()
             timer = Task { [weak self] in
@@ -241,6 +250,13 @@ private final class VoiceCapture: @unchecked Sendable {
     private func meter(_ value: Double) {
         level += (value - level) * (value > level ? 0.6 : 0.15)
         levels.append(level); if levels.count > 48 { levels.removeFirst() }
+        // Floor falls fast and rises slowly, so speech never drags it up to itself.
+        noiseFloor += (value - noiseFloor) * (value < noiseFloor ? 0.3 : 0.004)
+        if value > max(0.06, noiseFloor * 2.5) { lastVoiced = Date() }
+        // Only after the service has heard words: a silent start must not send nothing.
+        guard autoSend, phase == .recording, !transcript.isEmpty,
+              Date().timeIntervalSince(lastVoiced) >= Self.pauseToSend else { return }
+        finishRecording()
     }
 
     private func saveCapture() {

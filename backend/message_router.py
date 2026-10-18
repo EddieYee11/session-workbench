@@ -5,7 +5,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from fast_bookkeeping import parse
+from fast_bookkeeping import parse, parse_candidate
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,11 @@ def classify(text, now=None):
     # Third-person reports need semantic interpretation even with a bookkeeping word.
     plan = None if re.search(r"我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)",text) else parse(text)
     if plan: return Route('L0','ledger','记账中','bookkeeping',{'action':'add',**plan})
+    if not re.search(r"我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)",text):
+        candidate = parse_candidate(text)
+        if candidate:
+            return Route('L0','ledger','待确认记账','bookkeeping',
+                         {'action':'confirm','plan':candidate})
     clean = text.rstrip('。？！?!')
     # Full sentence matches deliberately leave mixed requests, quotes, negation and dates to Hermes.
     if re.fullmatch(r'(?:帮我|请)?(?:查一下|查看|查|看看)?(?:最近|最新)(?:的)?(?:账单|账目|消费|记账)(?:记录)?', clean):
@@ -47,6 +52,9 @@ def classify(text, now=None):
         if parts.hostname and not parts.username and not collect[1].endswith(('。','！','？')):
             return Route('L0','collect','收藏链接','collect',{'action':'add','url':collect[1],'title':'收藏链接','bucket':'AI与科技','tags':['收藏']})
     if re.fullmatch(r'你好|嗨|hi|hello|早上好|早安|晚上好|晚安|谢谢|谢谢你',clean,re.I):
+        return Route('L1','chat','回复中')
+    # 「嗯」「好的」「不用了」这类极短应答没有可执行内容，不值得让模型先推理再查工具。
+    if len(clean)<=4 and not re.search(r'[0-9A-Za-z]|查|看|记|提醒|删|改|发|找|定',clean):
         return Route('L1','chat','回复中')
     if re.search(r'交给(?:Pi|Claude|Codex)|(?:修复|开发|构建|部署|修改).{0,30}(?:代码|项目|后端|APP|App|应用)',clean,re.I):
         return Route('L3','tasks','处理交办')
@@ -80,6 +88,10 @@ class MessageRouter:
 
 
 def receipt(route,result):
+    # 模糊候选不由 route.execute 写入， receipts 需要单独转成确认卡。
+    if route.tool == 'bookkeeping' and route.args.get('action') == 'confirm':
+        from fast_bookkeeping import confirm_card
+        return {'text': confirm_card(route.args['plan']), 'suggestions': ['是', '改一下', '不记']}
     if route.tool=='bookkeeping' and route.args.get('action')=='add':
         from fast_bookkeeping import receipt as booked
         return booked(result)

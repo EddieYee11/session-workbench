@@ -16,6 +16,13 @@ struct RootView: View {
         }
         .environment(\.detailSpace, details)
         .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
+        .overlay {
+            if [.recording, .transcribing].contains(model.voice.phase) {
+                ScreenEdgeGlow(level: model.voice.level, processing: model.voice.phase == .transcribing)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.45), value: [.recording, .transcribing].contains(model.voice.phase))
         .modifier(RootSheets())
         .modifier(RootEvents(keyboardVisible: $keyboardVisible))
         .tint(Palette.textPrimary)
@@ -112,7 +119,7 @@ struct RootView: View {
     }
     @ViewBuilder private func page(_ tab: SectionTab) -> some View {
         Group {
-            switch tab { case .chat: ChatView(); case .next: NextView(); case .doing: TodayView(); case .work: WorkView() }
+            switch tab { case .chat: ChatView(); case .next: NextView(); case .doing: TodayView(); case .health: HealthView(); case .work: WorkView() }
         }
         // 顶栏在 RootView 最上层只有一条（r3-work）：这里只给它让出高度，内容从它下面滑过。
         .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: Layout.topBar) }
@@ -146,6 +153,10 @@ private struct RootItemSheets: ViewModifier {
             .sheet(item: Binding(get: { model.selectedConnector.map(RemoteRow.init) }, set: { model.selectedConnector = $0?.value })) { ConnectorSheet(source: $0.value) }
             .sheet(item: Binding(get: { model.selectedTask.map(RemoteRow.init) }, set: { model.selectedTask = $0?.value })) { TaskDetailView(task: $0.value).presentationDragIndicator(.visible) }
             .sheet(item: Binding(get: { model.selectedMatter.map(RemoteRow.init) }, set: { model.selectedMatter = $0?.value })) { MatterDetailView(matter: $0.value).presentationDragIndicator(.visible) }
+            // 10-17 案例：聊天里的案例卡、今天页、推送深链都从这里打开
+            .sheet(item: Binding(get: { model.presentedCase.map { RemoteRow(.object(["id": .string($0)])) } }, set: { model.presentedCase = $0?.id })) { CaseSheet(id: $0.id) }
+            .sheet(isPresented: Binding(get: { model.showCases }, set: { model.showCases = $0 })) { CasesSheet() }
+            .sheet(isPresented: Binding(get: { model.showWaiting }, set: { model.showWaiting = $0 })) { WaitingSheet() }
     }
 }
 

@@ -58,8 +58,13 @@ class HermesRuntime(HermesClient):
         from hermes_prompt import SYSTEM_PROMPT
         await self.create_session()
         body = {'input': text, 'session_id': self.session_id, 'instructions': self.turn_instructions or self.instructions or SYSTEM_PROMPT}
-        if self.turn_route and self.turn_route.get('level') == 'L1':
+        level = (self.turn_route or {}).get('level')
+        if level == 'L1':
             body['model_options'] = {'reasoning': {'effort': 'none'}}
+        elif level == 'L2':
+            # 手机上的日常对话以快为先：一般问题用低推理，每一步工具调用前都少想一轮。
+            # 只有交办编程（L3）保留网关默认推理档。
+            body['model_options'] = {'reasoning': {'effort': 'low'}}
         if self.turn_history is not None:
             body['conversation_history'] = self.turn_history
             # Freeze the admitted working set. A retry must not acquire newer history
@@ -90,6 +95,26 @@ class HermesRuntime(HermesClient):
         with sqlite3.connect(self.path) as db:
             db.execute('UPDATE runs SET run_id=?,status=? WHERE request_id=?', (run_id, 'running', request_id))
         return run_id
+
+    async def reconcile_superseded_runs(self, request_id):
+        """Close runs a dead worker left 'admitting'/'running' for this same session.
+
+        Hermes keeps executing after a Com worker is killed, so a local row can outlive
+        its run. Left alone, that stale row keeps its durable tool source looking like a
+        competing current turn on every later tool call.
+        """
+        with sqlite3.connect(self.path) as db:
+            rows=db.execute("SELECT request_id,run_id FROM runs WHERE session_id=? AND request_id!=? AND status IN ('admitting','running')",
+                (self.session_id,request_id)).fetchall()
+        for other,run_id in rows:
+            if not run_id: continue
+            try:
+                status=(await self.request('GET','/v1/runs/'+run_id)).get('status')
+            except (RuntimeError,httpx.HTTPError):
+                continue
+            if status in ('completed','failed','cancelled','interrupted','unknown'):
+                with sqlite3.connect(self.path) as db:
+                    db.execute('UPDATE runs SET status=? WHERE request_id=?',(status,other))
 
     async def _events(self, run_id):
         async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10), trust_env=False) as client:
@@ -123,6 +148,7 @@ class HermesRuntime(HermesClient):
             previous=db.execute('SELECT session_id,context FROM tool_sources WHERE request_id=?',(request_id,)).fetchone()
             if previous and previous!=(self.session_id,encoded):raise ValueError('Tool source conflicts with original request')
             db.execute('INSERT OR IGNORE INTO tool_sources VALUES(?,?,?)',(request_id,self.session_id,encoded))
+        await self.reconcile_superseded_runs(request_id)
         self.run_id = await self.submit_run(text, request_id)
         self.delivered.add(request_id)
         yield 'run.started', {'run_id': self.run_id}

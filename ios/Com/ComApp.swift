@@ -23,6 +23,9 @@ import ComCore
                     guard url.scheme == "com-eddie" else { return }
                     if url.host == "today" { model.tab = .chat }
                     if url.host == "tasks" { model.tab = .doing }
+                    if url.host == "cases" { model.tab = .next; model.showCases = true }  // 10-17：案例回执/等你批准
+                    if url.host == "plan" { model.tab = .next }
+                    if url.host == "waiting" { model.showWaiting = true }  // 明天建议卡在下一步页顶上
                     if url.host == "voice" { model.openVoice(quick: true) }
                     if url.host == "share", let text = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "text" })?.value {
                         model.tab = .chat; model.draft = model.draft.isEmpty ? text : model.draft + "\n\n" + text; model.persistNow()

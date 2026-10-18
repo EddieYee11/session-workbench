@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Com!</title>
+<meta name="description" content="Com! 个人 Agent 的网页版：对话、下一步、今天、工作，和手机端同一套后端与逻辑。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23D1F061'/%3E%3Cpath d='M9 20q7 6 14 0' stroke='%231B1C18' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='11.5' cy='13' r='2' fill='%231B1C18'/%3E%3Ccircle cx='20.5' cy='13' r='2' fill='%231B1C18'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#F4F3EF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<section id="pair" class="pair hidden">
+  <form class="pair-card" id="pairForm">
+    <canvas id="pairFig" class="pair-fig" aria-hidden="true"></canvas>
+    <small class="eyebrow">YOUR PERSONAL AGENT</small>
+    <h1>随时，<br>与你一起。</h1>
+    <p class="sub">连接你的 Mac mini，让邮件、日历、账本和两台电脑上的工作在这里汇合。</p>
+    <input id="pairCode" placeholder="一次性配对码" autocomplete="off" spellcheck="false" aria-label="一次性配对码">
+    <button class="btn primary full" id="pairBtn" type="submit">开始连接 →</button>
+    <p class="err" id="pairErr"></p>
+    <small class="faint">配对码在 Mac mini 上运行 <code>python3 backend/pair.py</code> 生成，10 分钟内有效。凭据只存在这个浏览器里。</small>
+  </form>
+</section>
+
+<div id="app" class="app hidden">
+  <header id="topbar" class="topbar">
+    <button class="glass-btn tb-side" data-act="top-sidebar" aria-label="历史对话" title="历史对话"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
+    <div class="tb-center">
+      <button class="tb-titlebox" data-act="title-menu">
+        <span class="tb-line"><b class="tb-title"></b><svg class="ic tb-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+        <span class="tb-sub"><small class="tb-cap"></small><span class="tb-bubble"><span></span></span></span>
+      </button>
+      <button class="tb-figure" data-act="figure-menu" aria-label="点开菜单，或按住往下拉出工作台"><canvas id="figure"></canvas></button>
+    </div>
+    <button class="glass-btn tb-trail" aria-label=""></button>
+    <div id="menu" class="menu-pop menu hidden" role="menu"></div>
+  </header>
+
+  <div id="stage" class="stage" aria-hidden="true">
+    <div class="stage-scrim" data-act="stage-close"></div>
+    <div class="stage-panel">
+      <div class="stage-title"><b>Com 的工作台</b><small class="stage-cap"></small></div>
+      <canvas id="stageCanvas"></canvas>
+      <div class="stage-stats"></div>
+      <i class="handle"></i>
+    </div>
+  </div>
+
+  <main class="pages">
+    <section id="page-chat" class="page-host"></section>
+    <section id="page-next" class="page-host scroll"></section>
+    <section id="page-today" class="page-host scroll"></section>
+    <section id="page-work" class="page-host"></section>
+  </main>
+
+  <nav id="dock" class="dock" aria-label="页面"></nav>
+  <div id="undoToast" class="undo-toast"></div>
+</div>
+
+<div id="sheet" class="sheet"></div>
+<div id="confirm" class="confirm"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div class="drop-hint">松手上传附件</div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

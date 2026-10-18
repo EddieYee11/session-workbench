@@ -106,6 +106,22 @@ extension AppModel {
 
     /// 今天页顶上那句简报：「下一步」整理时顺手写的（结合身体、日程和最要紧的事）。
     var todayHeadline: String { nextData["headline"].string }
+    /// 简报展开后的 3–5 条要点（10-17）：身体 / 日程 / 事 / 资讯，资讯带原文链接。
+    var todayBrief: [JSON] { nextData["brief"].array.filter { !$0["text"].string.isEmpty } }
+
+    /// 资讯反馈：点开记「想看」；左滑记「不感兴趣」并先在本地收起那条。
+    func newsFeedback(_ id: String, _ action: String) async {
+        guard !id.isEmpty else { return }
+        if action == "dismiss" {
+            var value = nextData
+            value["brief"] = .array(value["brief"].array.filter { $0["news_id"].string != id })
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { datasets["/personal/next"] = value }
+        }
+        #if DEBUG
+        if isUITesting { return }
+        #endif
+        _ = try? await mutate("/personal/news/" + id.pathEncoded, fields: ["action": .string(action)])
+    }
 
     /// 待办前面的圆点（轨道 r3-pages）：先在手机上划掉，列表立刻收起；行动台待办同时写回 vault（状态 → 已完成）。
     /// 提醒在 pi-gateway 那边没有「撤销完成」，所以先不写，撤销窗口过了再确认（settleTodayCheck）。
@@ -273,51 +289,23 @@ struct TodayView: View {
             let next = events.first { $0.start > now } ?? timed.first { $0.start > now && !$0.done }
             let todos = entries.filter { ($0.kind == .reminder || $0.kind == .todo) && !$0.done }
                 .sorted { ($0.overdue ? 0 : 1, $0.start == 0 ? .greatestFiniteMagnitude : $0.start) < ($1.overdue ? 0 : 1, $1.start == 0 ? .greatestFiniteMagnitude : $1.start) }
-            let decisions = entries.filter { $0.kind == .decision }
             ScreenScaffold(title: "今天") {
-                TodayHeader(summary: model.todaySummary, upcoming: events.filter { $0.start > now }, shown: shown)
-                // 10-15 收拢：深色提示条和四个数字跟大标题、简报说的是同一件事，去掉；建议回到「下一步」页。
+                // 10-17 收拢成三张：简报（可展开）→ 下一件 + 身体横幅（各自点开表盘 / 身体详情）→ 待办 / 时间线分段卡。
+                // 微信、拍板、一句话交代和任务入口拿掉：微信和拍板已在「下一步」，交代用全局语音，任务入口缩成标题旁的小按钮。
+                TodayHeader(summary: model.todaySummary, shown: shown)
                 TodayBrief()
                     .modifier(EnterRise(on: shown, delay: 0.08))
-                NextUpCard(next: next, timed: events, now: now, shown: shown)
-                    .modifier(EnterRise(on: shown, delay: 0.12))
-                BodyCard(shown: shown)
-                    .modifier(EnterRise(on: shown, delay: 0.16))
-                HStack(alignment: .top, spacing: Space.md) {
-                    TodoCard(todos: todos, shown: shown, complete: complete, postpone: { entry in Task { await model.postponeTodayEntry(entry) } })
-                    DecisionCard(decisions: decisions, shown: shown)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .modifier(EnterRise(on: shown, delay: 0.2))
-                QuickAddBar()
-                    .modifier(EnterRise(on: shown, delay: 0.24))
-                if !model.todayData["wechat"].isNull {
-                    WeChatCard(card: model.todayData["wechat"])
-                        .modifier(EnterRise(on: shown, delay: 0.28))
-                }
-                TodayTimeline(entries: timed, allDay: entries.filter { $0.kind == .event && $0.start == 0 }, now: now, shown: shown)
-                    .modifier(EnterRise(on: shown, delay: 0.3))
-                let errors = model.todayData["errors"].object
+                NowBanner(next: next, timed: events, now: now, shown: shown)
+                    .modifier(EnterRise(on: shown, delay: 0.14))
+                TodayCasesStrip()  // 10-17：进行中的案例串到今天页，点开看到哪一步
+                    .modifier(EnterRise(on: shown, delay: 0.17))
+                TodayDeck(todos: todos, timed: timed, allDay: entries.filter { $0.kind == .event && $0.start == 0 }, now: now, shown: shown,
+                          complete: complete, postpone: { entry in Task { await model.postponeTodayEntry(entry) } })
+                    .modifier(EnterRise(on: shown, delay: 0.2))
+                let errors = model.todayData["errors"].object.filter { $0.key != "wechat" }
                 if !errors.isEmpty {
-                    InlineNotice(text: "有来源没读到：" + errors.keys.sorted().map { ["events": "日程", "reminders": "提醒", "todos": "行动台", "wechat": "微信"][$0] ?? $0 }.joined(separator: "、"), tone: .neutral)
+                    InlineNotice(text: "有来源没读到：" + errors.keys.sorted().map { ["events": "日程", "reminders": "提醒", "todos": "行动台"][$0] ?? $0 }.joined(separator: "、"), tone: .neutral)
                 }
-                NavigationLink { TaskHubView() } label: {
-                    HStack(spacing: Space.md) {
-                        Image(systemName: "square.stack").font(.system(size: 15, weight: .medium)).foregroundStyle(Palette.textSecondary).frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("任务与目标").font(TypeScale.rowTitle).foregroundStyle(Palette.textPrimary)
-                            Text(["在跑 \(model.runningTasks.count)", "等你 \(model.decisionCount)", model.staleItems.isEmpty ? "" : "旧任务 \(model.staleItems.count)"].filter { !$0.isEmpty }.joined(separator: " · "))
-                                .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-                        }
-                        Spacer(minLength: 0)
-                        Chevron()
-                    }
-                    .padding(.horizontal, Space.lg).padding(.vertical, Space.md)
-                    .background(Palette.fill.opacity(0.7), in: .rect(cornerRadius: Radius.md, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("today-task-hub")
-                .modifier(EnterRise(on: shown, delay: 0.34))
             }
             .animation(reduce ? nil : .spring(response: 0.38, dampingFraction: 0.86), value: entries.map(\.id))
         }
@@ -369,94 +357,353 @@ struct TodayView: View {
 private struct TodayBrief: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @AppStorage("today.brief.open") private var open = true
     var body: some View {
         let running = model.nextData["running"].bool
         let headline = model.todayHeadline
-        HStack(alignment: .top, spacing: Space.md) {
-            Image(systemName: "sparkles").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.onAccent)
-                .frame(width: 30, height: 30).background(Palette.accent, in: .circle)
-            VStack(alignment: .leading, spacing: 4) {
-                // 简报换新：旧句模糊淡出、新句从下面模糊上浮（和「下一步」的 blurLift 同一套语法）。
-                Text(headline.isEmpty ? (running ? "正在看今天…" : "今天还没整理") : headline)
-                    .font(TypeScale.callout.weight(.medium)).foregroundStyle(Palette.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .id(headline)
-                    .transition(reduce ? .opacity : .blurLift)
-                    .accessibilityIdentifier("today-headline")
-                    .opacity(running && !reduce ? 0.55 : 1)
-                Text(running ? "重新整理中" : model.nextData["updated_at"].double > 0 ? "整理于 " + relativeTime(model.nextData["updated_at"].double) : "从日程、身体、邮件和微信里看")
+        let points = model.todayBrief
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: Space.md) {
+                Image(systemName: "sparkles").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.onAccent)
+                    .frame(width: 30, height: 30).background(Palette.accent, in: .circle)
+                VStack(alignment: .leading, spacing: 4) {
+                    // 简报换新：旧句模糊淡出、新句从下面模糊上浮（和「下一步」的 blurLift 同一套语法）。
+                    Text(headline.isEmpty ? (running ? "正在看今天…" : "今天还没整理") : headline)
+                        .font(TypeScale.callout.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .id(headline)
+                        .transition(reduce ? .opacity : .blurLift)
+                        .accessibilityIdentifier("today-headline")
+                        .opacity(running && !reduce ? 0.55 : 1)
+                    HStack(spacing: 4) {
+                        Text(running ? "重新整理中" : model.nextData["updated_at"].double > 0 ? "整理于 " + relativeTime(model.nextData["updated_at"].double) : "从日程、身体、行动台和资讯里看")
+                        if !points.isEmpty {
+                            Text("· \(points.count) 条要点")
+                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                                .rotationEffect(.degrees(open ? 180 : 0))
+                        }
+                    }
                     .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                }
+                Spacer(minLength: 0)
+                Button { Task { await model.refreshNext() } } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.textSecondary)
+                        .symbolEffect(.rotate.byLayer, options: .repeating, isActive: running && !reduce)
+                        .frame(width: 30, height: 30).background(Palette.fill, in: .circle)
+                }
+                .buttonStyle(.plain).disabled(running)
+                .accessibilityLabel("重新整理今天").accessibilityIdentifier("today-brief-refresh")
             }
-            Spacer(minLength: 0)
-            Button { Task { await model.refreshNext() } } label: {
-                Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.textSecondary)
-                    .symbolEffect(.rotate.byLayer, options: .repeating, isActive: running && !reduce)
-                    .frame(width: 30, height: 30).background(Palette.fill, in: .circle)
+            .contentShape(.rect)
+            .onTapGesture {
+                guard !points.isEmpty else { return }
+                Haptics.selection()
+                withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.86)) { open.toggle() }
             }
-            .buttonStyle(.plain).disabled(running)
-            .accessibilityLabel("重新整理今天").accessibilityIdentifier("today-brief-refresh")
+            // 先自成一个容器再挂标识，不然标识会盖掉里面「today-headline」这些子元素的。
+            .accessibilityElement(children: .contain)
+            .accessibilityHint(points.isEmpty ? "" : open ? "点一下收起要点" : "点一下展开要点")
+            .accessibilityIdentifier("today-brief-toggle")
+            if open && !points.isEmpty {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    ForEach(Array(points.sorted { BriefPoint.order($0["kind"].string) < BriefPoint.order($1["kind"].string) }.enumerated()), id: \.element["text"].string) { index, point in
+                        BriefPoint(point: point, index: index)
+                    }
+                }
+                .padding(.top, Space.md)
+                .transition(.opacity)
+            }
         }
         .padding(Space.lg)
         .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+        .clipShape(.rect(cornerRadius: Radius.lg, style: .continuous))
         .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: headline)
+        .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: points.map { $0["text"].string })
         .animation(.smooth(duration: 0.3), value: running)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("today-brief")
     }
 }
 
-/// 一句话交代：记个待办、约个提醒、让 Com 去办——发给主对话，由它按规则落行动台或派活。留在今天页，不跳走。
-private struct QuickAddBar: View {
+/// 简报的一条要点：前面一个小色点标类型（身体 / 日程 / 事 / 资讯）。
+/// 资讯那条点开跳原文（顺手记一笔「想看」），左滑过 90pt 记「不感兴趣」并收起——下回挑资讯时避开同类。
+/// 进场：一条条错峰 0.05s 模糊上浮（和「下一步」的 blurLift 同语法）；左滑跟手，松手不够远就弹回。
+private struct BriefPoint: View {
+    let point: JSON
+    let index: Int
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityReduceMotion) private var reduce
-    /// 发出去那一下：输入条轻轻一沉再弹回，像把纸条投进去。
-    @State private var pulse = false
-    @State private var text = ""
-    @State private var sent = ""
-    @FocusState private var focused: Bool
-    var body: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            HStack(spacing: Space.sm) {
-                Image(systemName: "plus").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.textSecondary).frame(width: 24)
-                TextField("记一件事，或让 Com 去办…", text: $text, axis: .vertical)
-                    .font(TypeScale.callout).lineLimit(1...4).focused($focused).submitLabel(.send)
-                    .onSubmit(send)
-                    .accessibilityIdentifier("today-quick-add")
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button(action: send) {
-                        Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).foregroundStyle(Palette.onInk)
-                            .frame(width: 30, height: 30).background(Palette.ink, in: .circle)
-                    }
-                    .buttonStyle(.plain).accessibilityLabel("交给 Com").accessibilityIdentifier("today-quick-send")
-                    .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .padding(.horizontal, Space.md).padding(.vertical, Space.sm + 2)
-            .background(Palette.surface, in: .rect(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous).strokeBorder(Palette.accent, lineWidth: focused ? 1.5 : 0))
-            .scaleEffect(pulse && !reduce ? 0.97 : 1)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: text.isEmpty)
-            .animation(.smooth(duration: 0.2), value: focused)
-            .animation(.spring(response: 0.28, dampingFraction: 0.55), value: pulse)
-            if !sent.isEmpty {
-                Label("已交给 Com：" + sent, systemImage: "checkmark.circle.fill").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).lineLimit(1)
-                    .labelStyle(.titleAndIcon)
-                    .padding(.horizontal, Space.sm)
-                    .transition(reduce ? .opacity : .blurLift)
-                    .accessibilityElement(children: .ignore).accessibilityLabel("已交给 Com：" + sent).accessibilityIdentifier("today-quick-sent")
-            }
+    @State private var drag: CGFloat = 0
+    @State private var shown = false
+    private var news: Bool { point["kind"].string == "news" }
+    private var style: (String, String, TodayHue) {
+        switch point["kind"].string {
+        case "health": ("heart.fill", "身体", .pink)
+        case "event": ("calendar", "日程", .sky)
+        case "news": ("newspaper.fill", "资讯", .butter)
+        default: ("flag.fill", "要事", .mint)
         }
     }
-    private func send() {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
-        text = ""; focused = false; Haptics.selection()
-        pulse = true
-        Task { try? await Task.sleep(for: .milliseconds(140)); pulse = false }
-        withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.86)) { sent = value }
-        Task {
-            await model.send(textOverride: value)
-            try? await Task.sleep(for: .seconds(5))
-            withAnimation { if sent == value { sent = "" } }
+    /// 简报要点的类目顺序：身体 → 日程 → 要事 → 资讯。
+    static func order(_ kind: String) -> Int { ["health": 0, "event": 1, "note": 2, "news": 3][kind] ?? 2 }
+    var body: some View {
+        let (symbol, label, hue) = style
+        // 10-17 二版：每条一块浅色小卡，左上角标类目，卡与卡之间留缝——不再是一串粘在一起的字。
+        HStack(alignment: .top, spacing: Space.md) {
+            Image(systemName: symbol).font(.system(size: 11, weight: .bold)).foregroundStyle(hue.ink)
+                .frame(width: 28, height: 28).background(Palette.surface, in: .circle)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(label).font(.caption.weight(.bold)).foregroundStyle(hue.ink)
+                    if news { Text("左滑不感兴趣").font(.caption2).foregroundStyle(Palette.textTertiary) }
+                }
+                Text(point["text"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                if news {
+                    HStack(spacing: 4) {
+                        Text(point["site"].string.isEmpty ? "原文" : point["site"].string)
+                        Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold))
+                    }
+                    .font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.accentText)
+                }
+            }
+            Spacer(minLength: 0)
         }
+        .padding(Space.md)
+        .background(hue.fill.opacity(0.55), in: .rect(cornerRadius: Radius.md, style: .continuous))
+        .contentShape(.rect)
+        .offset(x: drag)
+        .background(alignment: .trailing) {
+            if news && drag < 0 {
+                Label("不感兴趣", systemImage: "hand.thumbsdown.fill").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary)
+                    .opacity(min(1, Double(-drag) / 90))
+            }
+        }
+        .onTapGesture {
+            guard news, let url = URL(string: point["url"].string) else { return }
+            Task { await model.newsFeedback(point["news_id"].string, "open") }
+            openURL(url)
+        }
+        .simultaneousGesture(news ? swipe : nil)
+        .opacity(shown ? 1 : 0)
+        .blur(radius: shown || reduce ? 0 : 6)
+        .offset(y: shown || reduce ? 0 : 10)
+        .onAppear { withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 0.86).delay(0.04 + Double(index) * 0.05)) { shown = true } }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(news ? .isLink : [])
+        .accessibilityAction(named: "不感兴趣") { if news { dismiss() } }
+        .accessibilityIdentifier("today-brief-point-\(index)")
+    }
+    private var swipe: some Gesture {
+        DragGesture(minimumDistance: 14)
+            .onChanged { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                drag = min(0, value.translation.width)
+            }
+            .onEnded { value in
+                if value.translation.width < -90 && abs(value.translation.width) > abs(value.translation.height) { dismiss() }
+                else { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { drag = 0 } }
+            }
+    }
+    private func dismiss() {
+        Haptics.selection()
+        withAnimation(reduce ? .easeOut(duration: 0.2) : .easeIn(duration: 0.2)) { drag = -420 }
+        Task {
+            try? await Task.sleep(for: .milliseconds(180))
+            await model.newsFeedback(point["news_id"].string, "dismiss")
+        }
+    }
+}
+
+// MARK: 下一件 + 身体（一条横幅，两半各自点开）
+
+/// 左半：下一件的时刻、标题、倒计时，点开在横幅里展开半圈表盘；右半：身体电量小环 + 睡眠 / HRV，点开展开身体卡。
+/// 同一时刻只展开一边，展开哪边记住（today.now.open）。展开收起走同一条 spring（0.42 / 0.86），箭头跟着转。
+private struct NowBanner: View {
+    let next: TodayEntry?
+    let timed: [TodayEntry]
+    let now: Double
+    let shown: Bool
+    @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @AppStorage("today.now.open") private var openRaw = ""
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: Space.md) {
+                Button { toggle("dial") } label: { nextSide }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("today-next-toggle")
+                Rectangle().fill(Palette.separator).frame(width: 0.5).padding(.vertical, Space.xs)
+                Button { toggle("body") } label: { bodySide }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("today-body-toggle")
+            }
+            .padding(Space.lg)
+            if openRaw == "dial" {
+                NextUpCard(next: next, timed: timed, now: now, shown: shown, embedded: true)
+                    .padding([.horizontal, .bottom], Space.lg)
+                    .transition(.opacity.combined(with: .offset(y: -8)))
+            } else if openRaw == "body" {
+                BodyCard(shown: shown, embedded: true)
+                    .padding([.horizontal, .bottom], Space.lg)
+                    .transition(.opacity.combined(with: .offset(y: -8)))
+            }
+        }
+        .background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
+        .clipShape(.rect(cornerRadius: Radius.xl, style: .continuous))
+        .elevation(.raised)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("today-now-banner")
+    }
+    private func toggle(_ side: String) {
+        Haptics.selection()
+        withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.86)) { openRaw = openRaw == side ? "" : side }
+    }
+    private func caret(_ side: String) -> some View {
+        Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.textTertiary)
+            .rotationEffect(.degrees(openRaw == side ? 180 : 0))
+    }
+    private var nextSide: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text(next == nil ? "现在" : "下一件").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
+                caret("dial")
+            }
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                Text(clockTime(next?.start ?? now))
+                    .font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(Palette.textPrimary)
+                    .contentTransition(.numericText())
+                if let next {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(countdown(next.start - context.date.timeIntervalSince1970 - TodayClock.offset))
+                            .font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.accentText)
+                    }
+                }
+            }
+            Text(next?.title ?? "今天之后没有日程了").font(TypeScale.subheadline.weight(.medium))
+                .foregroundStyle(next == nil ? Palette.textSecondary : Palette.textPrimary).lineLimit(1)
+                .accessibilityIdentifier("today-next-title")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
+    }
+    private var bodySide: some View {
+        let health = model.health
+        let m = health["today"]["measurements"]
+        let phone = health["phone"]
+        let battery: Double? = m["body_battery"].isNull ? nil : m["body_battery"].double
+        let sleep = !m["sleep_seconds"].isNull ? m["sleep_seconds"].double / 3600 : phone["sleep_hours"].isNull ? nil : phone["sleep_hours"].double
+        let third: String? = !m["hrv_last_night"].isNull ? "HRV \(m["hrv_last_night"].int)" : !phone["steps"].isNull ? "\(phone["steps"].int) 步" : nil
+        return HStack(spacing: Space.sm) {
+            MiniRing(value: battery, shown: shown)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text("身体").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
+                    caret("body")
+                }
+                Text(sleep.map { "睡 " + $0.formatted(.number.precision(.fractionLength(1))) + "h" } ?? "未同步")
+                    .font(TypeScale.footnote.weight(.semibold).monospacedDigit()).foregroundStyle(Palette.textPrimary)
+                if let third { Text(third).font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textSecondary) }
+            }
+        }
+        .fixedSize()
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("today-body-summary")
+    }
+    private func countdown(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds))
+        return s >= 3600 ? "\(s / 3600) 小时 \(s % 3600 / 60) 分后" : String(format: "%02d:%02d 后", s / 60, s % 60)
+    }
+}
+
+/// 横幅里的小电量环：和身体卡的大环同一个配色和生长（0.9s ease-out）。
+private struct MiniRing: View {
+    let value: Double?
+    let shown: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    var body: some View {
+        let v = value ?? 0
+        ZStack {
+            Circle().stroke(Palette.fill, lineWidth: 5)
+            Circle().trim(from: 0, to: shown || reduce ? v / 100 : 0)
+                .stroke(batteryColor(v), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(reduce ? nil : .easeOut(duration: 0.9).delay(0.2), value: shown)
+            Text(value.map { "\(Int($0))" } ?? "—").font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit()).foregroundStyle(Palette.textPrimary)
+        }
+        .frame(width: 46, height: 46)
+        .accessibilityLabel("身体电量 " + (value.map { String(Int($0)) } ?? "未知"))
+    }
+}
+
+// MARK: 待办 / 时间线（一张卡，分段切换）
+
+/// 两段：待办（能打勾）和时间线（横向时间轴）。青柠胶囊滑到选中那段（matchedGeometry，和表盘窗口切换同一组 spring），
+/// 内容按方向横移 + 淡入：往右切从右边进，往左切从左边进。选哪段记住；默认有待办先看待办。
+private struct TodayDeck: View {
+    let todos: [TodayEntry]
+    let timed: [TodayEntry]
+    let allDay: [TodayEntry]
+    let now: Double
+    let shown: Bool
+    let complete: (TodayEntry) -> Void
+    let postpone: (TodayEntry) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @AppStorage("today.deck") private var pageRaw = "todo"
+    @Namespace private var space
+    var body: some View {
+        let timeline = pageRaw == "timeline"
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack(spacing: 4) {
+                segment("todo", "待办", todos.count)
+                segment("timeline", "时间线", timed.count + allDay.count)
+            }
+            .padding(3)
+            .background(Palette.fill, in: .capsule)
+            ZStack(alignment: .topLeading) {
+                if timeline {
+                    TodayTimeline(entries: timed, allDay: allDay, now: now, shown: shown, embedded: true)
+                        .transition(slide(from: .trailing))
+                } else {
+                    TodoCard(todos: todos, shown: shown, complete: complete, postpone: postpone, embedded: true)
+                        .transition(slide(from: .leading))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .padding(Space.lg)
+        .background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
+        .clipShape(.rect(cornerRadius: Radius.xl, style: .continuous))
+        .elevation(.raised)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("today-deck")
+    }
+    private func slide(from edge: HorizontalEdge) -> AnyTransition {
+        reduce ? .opacity : .opacity.combined(with: .offset(x: edge == .leading ? -28 : 28))
+    }
+    private func segment(_ id: String, _ title: String, _ count: Int) -> some View {
+        let on = pageRaw == id
+        return Button {
+            guard !on else { return }
+            Haptics.selection()
+            withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.84)) { pageRaw = id }
+        } label: {
+            HStack(spacing: 5) {
+                Text(title).font(TypeScale.footnote.weight(.semibold))
+                Text("\(count)").font(TypeScale.footnote.weight(.semibold).monospacedDigit()).contentTransition(.numericText())
+                    .opacity(0.6)
+            }
+            .foregroundStyle(on ? Palette.onAccent : Palette.textSecondary)
+            .padding(.horizontal, Space.md).padding(.vertical, 6)
+            .background { if on { Capsule().fill(Palette.accent).matchedGeometryEffect(id: "deck", in: space) } }
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(on ? .isSelected : [])
+        .accessibilityIdentifier("today-deck-" + id)
     }
 }
 
@@ -544,52 +791,43 @@ private struct CountUp: View, @MainActor Animatable {
 // MARK: 大日期
 
 private struct TodayHeader: View {
+    @Environment(AppModel.self) private var model
     let summary: String
-    let upcoming: [TodayEntry]
     let shown: Bool
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(Date().formatted(.dateTime.month().day().locale(Locale(identifier: "zh_CN"))))
-                        .font(.system(size: 38, weight: .bold, design: .rounded)).foregroundStyle(Palette.textPrimary)
-                        .modifier(BeamReveal(on: shown, delay: 0))
-                    Text(summary)
-                        .font(.system(size: 30, weight: .bold, design: .rounded)).foregroundStyle(Palette.textTertiary)
-                        .lineLimit(1).minimumScaleFactor(0.6)
-                        .contentTransition(.numericText())
-                        .modifier(BeamReveal(on: shown, delay: 0.06))
-                        .accessibilityIdentifier("today-summary")
-                }
-                Spacer(minLength: Space.sm)
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(Date().formatted(.dateTime.month().day().locale(Locale(identifier: "zh_CN"))))
+                    .font(.system(size: 38, weight: .bold, design: .rounded)).foregroundStyle(Palette.textPrimary)
+                    .modifier(BeamReveal(on: shown, delay: 0))
+                Text(summary)
+                    .font(.system(size: 30, weight: .bold, design: .rounded)).foregroundStyle(Palette.textTertiary)
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                    .contentTransition(.numericText())
+                    .modifier(BeamReveal(on: shown, delay: 0.06))
+                    .accessibilityIdentifier("today-summary")
+            }
+            Spacer(minLength: Space.sm)
+            HStack(spacing: Space.sm) {
                 Text(Date().formatted(.dateTime.weekday(.wide).locale(Locale(identifier: "zh_CN"))))
                     .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary)
                     .padding(.horizontal, Space.md).padding(.vertical, 6)
                     .background(Palette.surface, in: .capsule)
-                    .padding(.top, 10)
-            }
-            if !upcoming.isEmpty {
-                // 接下来的几件事，一件一个彩色圆（Ai OS 的事项图标），点进详情。r3-pages：原来 -6 间距叠成一摞，现在一个个分开。
-                HStack(spacing: Space.sm) {
-                    ForEach(Array(upcoming.prefix(5).enumerated()), id: \.element.id) { index, entry in
-                        NavigationLink { TodayDetail(entry: entry) } label: {
-                            Image(systemName: entry.glyph).font(.system(size: 17, weight: .semibold)).foregroundStyle(entry.hue.ink)
-                                .frame(width: 44, height: 44)
-                                .background(entry.hue.fill, in: .circle)
-                                .overlay(Circle().strokeBorder(Palette.background, lineWidth: 3))
+                // 任务与目标：不常用，缩成一颗小按钮；有等你拍板的才挂个数。
+                NavigationLink { TaskHubView() } label: {
+                    Image(systemName: "square.stack").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.textSecondary)
+                        .frame(width: 30, height: 30).background(Palette.surface, in: .circle)
+                        .overlay(alignment: .topTrailing) {
+                            if model.decisionCount > 0 {
+                                Text("\(model.decisionCount)").font(.system(size: 10, weight: .bold).monospacedDigit()).foregroundStyle(Palette.onAccent)
+                                    .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16).background(Palette.accent, in: .capsule).offset(x: 5, y: -5)
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(clockTime(entry.start) + " " + entry.title)
-                        .accessibilityIdentifier("today-upcoming-" + entry.id)
-                        .modifier(StampIn(on: shown, delay: 0.1 + Double(index) * 0.066))
-                    }
-                    if upcoming.count > 5 {
-                        Text("+\(upcoming.count - 5)").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary)
-                            .frame(width: 44, height: 44).background(Palette.surface, in: .circle)
-                            .overlay(Circle().strokeBorder(Palette.background, lineWidth: 3))
-                    }
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("任务与目标").accessibilityIdentifier("today-task-hub")
             }
+            .padding(.top, 10)
         }
     }
 }
@@ -602,6 +840,8 @@ private struct NextUpCard: View {
     let timed: [TodayEntry]
     let now: Double
     let shown: Bool
+    /// 嵌在横幅里展开时：不再自带底色、内边距和阴影（10-17）。
+    var embedded = false
     @Environment(\.accessibilityReduceMotion) private var reduce
     /// 点开的那一摞（存 id，分钟刷新重排之后照样认得）。
     @State private var opened: [String] = []
@@ -647,9 +887,9 @@ private struct NextUpCard: View {
                 .accessibilityIdentifier("today-next-row")
             }
         }
-        .padding(Space.lg)
-        .background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
-        .elevation(.raised)
+        .padding(embedded ? 0 : Space.lg)
+        .background(embedded ? .clear : Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
+        .elevation(embedded ? .flat : .raised)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("today-next-card")
     }
@@ -1085,39 +1325,44 @@ private struct TodoCard: View {
     let shown: Bool
     let complete: (TodayEntry) -> Void
     var postpone: (TodayEntry) -> Void = { _ in }
+    /// 嵌在分段卡里：标题和数字由分段胶囊给，卡片底色和最小高度也交给外面（10-17）。
+    var embedded = false
+    private var limit: Int { embedded ? 5 : 4 }
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("待办").font(TypeScale.headline).foregroundStyle(Palette.textPrimary)
-                Spacer(minLength: 0)
-                Text("\(todos.count)").font(TypeScale.footnote.weight(.semibold).monospacedDigit()).foregroundStyle(Palette.textTertiary)
-                    .contentTransition(.numericText())
+            if !embedded {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("待办").font(TypeScale.headline).foregroundStyle(Palette.textPrimary)
+                    Spacer(minLength: 0)
+                    Text("\(todos.count)").font(TypeScale.footnote.weight(.semibold).monospacedDigit()).foregroundStyle(Palette.textTertiary)
+                        .contentTransition(.numericText())
+                }
             }
             if todos.isEmpty {
                 Text("没有要办的").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
             }
             // 每行 44pt 高、行间不留缝：圆点的热区上下挨着但不重叠；收起时整行高度收成 0，下面的行顺着补上。
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(todos.prefix(4).enumerated()), id: \.element.id) { index, entry in
+                ForEach(Array(todos.prefix(limit).enumerated()), id: \.element.id) { index, entry in
                     TodoRow(entry: entry, complete: { complete(entry) }, postpone: { postpone(entry) })
                         .modifier(BeamReveal(on: shown, delay: 0.3 + Double(index) * 0.066, distance: 18))
                         .transition(.modifier(active: RowCollapse(progress: 0), identity: RowCollapse(progress: 1)))
                 }
             }
-            .padding(.top, -Space.sm)
-            Spacer(minLength: 0)
-            if todos.count > 4 {
+            .padding(.top, embedded ? -Space.xs : -Space.sm)
+            if !embedded { Spacer(minLength: 0) }
+            if todos.count > limit {
                 NavigationLink { TodayList(title: "今天的待办", entries: todos) } label: {
                     Text("全部 \(todos.count) 件").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.accentText)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(Space.lg)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .frame(minHeight: 196)
-        .background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
-        .elevation(.raised)
+        .padding(embedded ? 0 : Space.lg)
+        .frame(maxWidth: .infinity, maxHeight: embedded ? nil : .infinity, alignment: .topLeading)
+        .frame(minHeight: embedded ? 0 : 196)
+        .background(embedded ? .clear : Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
+        .elevation(embedded ? .flat : .raised)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("today-todo-card")
     }
@@ -1132,6 +1377,7 @@ private struct TodoRow: View {
     let entry: TodayEntry
     let complete: () -> Void
     var postpone: () -> Void = {}
+    @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var checked = false
     private var tint: Color { entry.overdue ? Palette.warning : entry.hue.ink }
@@ -1182,6 +1428,12 @@ private struct TodoRow: View {
             if !checked {
                 Button(entry.kind == .todo ? "改到明天" : "晚 1 小时", systemImage: "arrow.uturn.forward") { postpone() }
                 Button("完成", systemImage: "checkmark.circle") { check() }
+                // 10-17：待办也能交给 Com，走同一套案例，跑完自动打勾。
+                if entry.kind == .todo && !entry.value["path"].string.isEmpty {
+                    Button("交给 Com", systemImage: "paperplane") {
+                        Task { if let id = await model.delegateTodo(entry.value["path"].string) { model.presentedCase = id } }
+                    }
+                }
             }
         }
     }
@@ -1232,135 +1484,6 @@ private struct VerticalClip: Shape {
     func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: -40, dy: 0)) }
 }
 
-/// 黄色大卡：等你拍板的事，大数字 + 第一件的标题；点进第一件，多于一件时底部再给「全部」。
-private struct DecisionCard: View {
-    let decisions: [TodayEntry]
-    let shown: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    var body: some View {
-        let hue: TodayHue = decisions.isEmpty ? .mint : .butter
-        Group {
-            if let first = decisions.first {
-                NavigationLink { TodayDetail(entry: first) } label: { content(hue: hue, first: first) }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("today-" + first.id)
-            } else {
-                NavigationLink { TaskHubView() } label: { content(hue: hue, first: nil) }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("today-decision-empty")
-            }
-        }
-    }
-    private func content(hue: TodayHue, first: TodayEntry?) -> some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(spacing: Space.sm) {
-                Image(systemName: first == nil ? "checkmark" : "hand.raised.fill").font(.system(size: 12, weight: .bold)).foregroundStyle(hue.ink)
-                    .frame(width: 28, height: 28).background(.white.opacity(0.55), in: .circle)
-                Text(first == nil ? "都拍板了" : "等你决定").font(TypeScale.headline).foregroundStyle(hue.ink)
-            }
-            Spacer(minLength: Space.sm)
-            CountUp(value: shown || reduce ? Double(decisions.count) : 0)
-                .font(.system(size: 52, weight: .bold, design: .rounded)).foregroundStyle(hue.ink)
-                .animation(reduce ? nil : .easeOut(duration: 0.7).delay(0.4), value: shown)
-            Text(first?.title ?? "没有要你拍板的事").font(.system(size: 14, weight: .semibold)).foregroundStyle(hue.ink).lineLimit(2)
-                .multilineTextAlignment(.leading)
-            if decisions.count > 1 {
-                Text("还有 \(decisions.count - 1) 件 · 在任务与目标里").font(.system(size: 11)).foregroundStyle(hue.ink.opacity(0.75))
-            }
-        }
-        .padding(Space.lg)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .frame(minHeight: 196)
-        .background(hue.fill, in: .rect(cornerRadius: Radius.xl, style: .continuous))
-        .contentShape(.rect)
-    }
-}
-
-/// 微信卡：今天谁在等你。最多露三行，点开看每个聊天的原文。
-/// 数据来自 /personal/today 的 wechat 段（MBP 每小时采集、经 SSH 推进 mini 的 personal_hub），不参与「待办」计数。
-private struct WeChatCard: View {
-    let card: JSON
-    var body: some View {
-        let chats = card["chats"].array
-        NavigationLink { TodayWeChat(card: card) } label: {
-            VStack(alignment: .leading, spacing: Space.sm) {
-                HStack(spacing: Space.sm) {
-                    Image(systemName: "bubble.left.and.bubble.right.fill").font(.system(size: 12, weight: .bold)).foregroundStyle(TodayHue.mint.ink)
-                        .frame(width: 28, height: 28).background(.white.opacity(0.55), in: .circle)
-                    Text("微信").font(TypeScale.headline).foregroundStyle(TodayHue.mint.ink)
-                    Spacer(minLength: Space.sm)
-                    Text(card["subtitle"].string).font(TypeScale.footnote).foregroundStyle(TodayHue.mint.ink.opacity(0.8)).lineLimit(1)
-                }
-                ForEach(Array(chats.prefix(3).enumerated()), id: \.offset) { _, chat in
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: Space.xs) {
-                            if chat["mention"].bool {
-                                Text("@我").font(.system(size: 10, weight: .bold)).foregroundStyle(TodayHue.mint.ink)
-                                    .padding(.horizontal, 5).padding(.vertical, 1).background(.white.opacity(0.6), in: .capsule)
-                            }
-                            Text(chat["name"].string).font(TypeScale.subheadline.weight(.semibold)).foregroundStyle(TodayHue.mint.ink).lineLimit(1)
-                            Spacer(minLength: Space.xs)
-                            Text(chat["sender"].string).font(TypeScale.footnote).foregroundStyle(TodayHue.mint.ink.opacity(0.7)).lineLimit(1)
-                        }
-                        Text(chat["summary"].string).font(TypeScale.footnote).foregroundStyle(TodayHue.mint.ink.opacity(0.85)).lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                    }
-                }
-                if chats.count > 3 {
-                    Text("还有 \(chats.count - 3) 个聊天").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(TodayHue.mint.ink.opacity(0.85))
-                }
-            }
-            .padding(Space.lg)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(TodayHue.mint.fill, in: .rect(cornerRadius: Radius.xl, style: .continuous))
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("today-wechat-card")
-    }
-}
-
-/// 点开微信卡：今天每个聊天的最后几句原文。只看不写，回话还是回微信。
-private struct TodayWeChat: View {
-    let card: JSON
-    var body: some View {
-        ScrollPage {
-            VStack(alignment: .leading, spacing: Space.lg) {
-                ForEach(Array(card["chats"].array.enumerated()), id: \.offset) { _, chat in
-                    VStack(alignment: .leading, spacing: Space.sm) {
-                        HStack(spacing: Space.xs) {
-                            Text(chat["is_group"].bool ? (chat["mention"].bool ? "@我" : "群聊") : "私聊")
-                                .font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.textSecondary)
-                                .padding(.horizontal, 6).padding(.vertical, 2).background(Palette.fill, in: .capsule)
-                            Text(chat["name"].string).font(TypeScale.rowTitle).foregroundStyle(Palette.textPrimary).lineLimit(2)
-                            Spacer(minLength: 0)
-                        }
-                        let hits = chat["keywords"].array.map(\.string).filter { !$0.isEmpty }
-                        if !hits.isEmpty {
-                            Text(hits.joined(separator: " · ")).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-                        }
-                        GroupedCard(dividerInset: 0) {
-                            ForEach(Array(chat["messages"].array.enumerated()), id: \.offset) { _, m in
-                                HStack(alignment: .top, spacing: Space.sm) {
-                                    Text(m["sender"].string).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
-                                        .frame(width: 62, alignment: .leading).lineLimit(1)
-                                    Text(m["text"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    Text(clockTime(m["at"].double)).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-                                }
-                                .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: ComDock.height) }
-        .navigationTitle(card["title"].string).navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(Palette.background, for: .navigationBar)
-    }
-}
-
 /// 待办超过 4 件时的完整清单。
 private struct TodayList: View {
     let title: String
@@ -1391,6 +1514,8 @@ private struct TodayTimeline: View {
     let allDay: [TodayEntry]
     let now: Double
     let shown: Bool
+    /// 嵌在分段卡里：「时间线」标题由分段胶囊给，这里不再重复（10-17）；打开时自己滚到「现在」。
+    var embedded = false
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var position = ScrollPosition(edge: .leading)
     @State private var viewport: CGFloat = 0
@@ -1445,7 +1570,7 @@ private struct TodayTimeline: View {
         let height = Self.ruler + CGFloat(lanes) * (cardHeight + Self.gap)
         let nowX = x(now)
         VStack(alignment: .leading, spacing: Space.md) {
-            HStack(alignment: .firstTextBaseline) {
+            if !embedded { HStack(alignment: .firstTextBaseline) {
                 Text("时间线").font(TypeScale.section).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
                 Button { scrollToNow(animated: true) } label: {
@@ -1453,7 +1578,7 @@ private struct TodayTimeline: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("today-timeline-now")
-            }
+            } }
             if !allDay.isEmpty { allDayRow }
             ScrollView(.horizontal) {
                 ZStack(alignment: .topLeading) {
@@ -1632,7 +1757,7 @@ struct TodayDetail: View {
             switch entry.kind {
             case .event: event
             case .reminder: reminder
-            case .todo: todo
+            case .todo: ThreadStrip(key: "todo:" + v["path"].string); todo  // 10-18 线索
             case .decision:
                 if let item = entry.pending, let current = model.pendingItems.first(where: { $0.id == item.id }) {
                     PendingNote(item: current) { _ in }

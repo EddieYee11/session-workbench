@@ -42,6 +42,8 @@ func batteryWord(_ v: Double) -> String { v >= 76 ? "精力充沛" : v >= 51 ? "
 struct BodyCard: View {
     @Environment(AppModel.self) private var model
     let shown: Bool
+    /// 嵌在今天页横幅里展开时：底色和内边距交给横幅（10-17）。
+    var embedded = false
     var body: some View {
         let health = model.health
         let today = health["today"]["measurements"]
@@ -100,8 +102,8 @@ struct BodyCard: View {
                 }
             }
         }
-        .padding(Space.lg)
-        .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+        .padding(embedded ? 0 : Space.lg)
+        .background(embedded ? .clear : Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
         .contentShape(.rect)
     }
 
@@ -123,8 +125,8 @@ struct BodyCard: View {
             }
             Text("今天还没有 Garmin 数据，先看手机健康。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
         }
-        .padding(Space.lg)
-        .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+        .padding(embedded ? 0 : Space.lg)
+        .background(embedded ? .clear : Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
         .accessibilityIdentifier("today-body-phone")
     }
 }
@@ -155,8 +157,8 @@ private struct BatteryRing: View {
 
 func batteryColor(_ v: Double) -> Color { v >= 51 ? TodayHue.mint.ink : v >= 26 ? TodayHue.butter.ink : Palette.danger }
 
-/// 今天的身体电量曲线（15 分钟一点）。
-private struct BatteryCurve: View {
+/// 今天的身体电量曲线（15 分钟一点）。今天页身体卡和健康页共用。
+struct BatteryCurve: View {
     let points: [JSON]
     var body: some View {
         Chart(Array(points.enumerated()), id: \.offset) { _, p in
@@ -267,7 +269,7 @@ private struct RollingNumber: View, @MainActor Animatable {
 }
 
 /// 从左往右画出来：曲线、迷你线用遮罩露出（Chart 没法 trim）。
-private struct DrawIn: ViewModifier {
+struct DrawIn: ViewModifier {
     let on: Bool
     let delay: Double
     let duration: Double

@@ -306,7 +306,7 @@ def cancel_task(task_id: str, request_id: str, origin_message_id: str,
 
 
 def _shared(name:str,args:dict[str,Any],context:dict[str,Any]|None=None)->dict[str,Any]:
-    if name not in {'context_read','capability_search','task_submit','task_status','task_send','task_cancel','task_resume','task_verify','task_merge','propose_work','artifact_register','memory_recall','business_call','memory_save','briefing_refresh','personal_briefing','briefing_annotate','matter_link','matter_unlink','personal_observation','personal_autonomy','personal_action_undo','device_call','calendar_read','calendar_adjust'}:
+    if name not in {'turn_plan','context_read','capability_search','task_submit','task_status','task_send','task_cancel','task_resume','task_verify','task_merge','propose_work','artifact_register','memory_recall','business_call','memory_save','briefing_refresh','personal_briefing','briefing_annotate','matter_link','matter_unlink','personal_observation','personal_autonomy','personal_action_undo','device_call','calendar_read','calendar_adjust'}:
         raise ValueError('Route is not allowed')
     with httpx.Client(timeout=180,trust_env=False,follow_redirects=False) as client:
         response=client.post(COM_BASE_URL+'/internal/agent/'+name,
@@ -320,6 +320,15 @@ def _shared(name:str,args:dict[str,Any],context:dict[str,Any]|None=None)->dict[s
 @mcp.tool(description='Search host-scoped discovered, loaded and verified capabilities. Read-only.',annotations=READ_ONLY)
 def capability_search(query:str='',runtime:str='')->dict[str,Any]:
     return _shared('capability_search',{'query':query,'runtime':runtime or None})
+
+
+@mcp.tool(description=(
+    '本轮的任务清单（他在手机上看到的「思考过程」就是它）。除了闲聊和一句话能答的问题，每轮开始先调用：'
+    'title 给这件事起个 12 字以内的名字；todos 列 2 到 7 步，每步 {content:祈使句, activeForm:进行时, status}，第一步 in_progress。'
+    '之后每完成一步用 updates=[{id,status}] 增量更新（id 是 1、2、3…），同一时刻只有一个 in_progress；做不下去标 blocked，决定不做标 skipped；'
+    '回复之前把最后一步标 completed。要改步骤就用 todos 整份重写。只写显示信息，不执行任何操作。'), annotations=READ_ONLY)
+def turn_plan(title:str='',todos:list[dict[str,str]]|None=None,updates:list[dict[str,str]]|None=None)->dict[str,Any]:
+    return _shared('turn_plan',{'title':title,'todos':todos or [],'updates':updates or []})
 
 
 @mcp.tool(description='Queue an explicit, source-bound assignment through the common Com service. Pi/Claude/Codex use danger-full-access; previous read-only constraints are audit-only. ACK is not execution. Do not replay unknown side effects.',annotations=PROPOSAL_ONLY)

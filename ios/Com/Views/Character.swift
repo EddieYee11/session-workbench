@@ -7,6 +7,10 @@ import ComCore
 /// 顶栏角色的 8 个状态。
 enum StripState: String, Equatable, Sendable { case idle, read, think, exec, send, ask, done, broken }
 
+/// 每个 tab 她的造型（10-17）：和上面的状态各管各的——状态管手上的活，造型管头上戴的和左手拿的。
+/// Com 戴耳机聊天、下一步是探险家（渔夫帽 + 举一面往前飘的小旗）、今天端咖啡、健康系运动发带 + 跳动的心、工作夹铅笔抱写字板。
+enum CharacterOutfit: String, Equatable, Sendable { case none, chat, next, today, health, work }
+
 // MARK: - SVG path data → Path
 
 enum SVGPath {
@@ -105,6 +109,14 @@ struct CharacterPainter {
     var danger: Color = Palette.danger
     /// 旁边有对话气泡时，不再画思考点（气泡本身就是她在想的事）。
     var quiet = false
+    var outfit: CharacterOutfit = .none
+    /// 刚换了 tab：从哪套造型换过来、进行到哪（0…1，已缓动）。
+    var outfitBlend: (from: CharacterOutfit, amount: Double)?
+    /// 换装时跳不跳（减少动态效果时只交叉淡入）。
+    var hops = true
+    /// 换 tab 时背靠背转一圈（10-17 二版）：theta 是绕竖轴转过的角度，转到背面（≥180°）那一刻换上新造型。
+    struct Spin { var from: CharacterOutfit; var theta: Double; var velocity: Double; var lift: Double; var squash: Double }
+    var spin: Spin?
     private var time: Double { moving ? t : 0 }
     /// 身体上下起伏（角色坐标），气泡跟着同一条曲线走。
     var bob: Double { state == .read ? even([0, -4, 0], dur: 0.6, t: time) : state == .ask ? even([0, -3, 0], dur: 1.2, t: time) : even([0, 3, 0], dur: 3.6, t: time) }
@@ -131,10 +143,20 @@ struct CharacterPainter {
     /// 整个角色（身体 + 头 + 当前状态的手持物）。调用方已设置 translate/scale。
     /// 带 blend 时只有变了的部分动：头的角度和起伏插值；表情、手上的东西交叉淡入；身体和头发只画一遍（叠两遍半透明会发虚）。
     func figure(_ c: inout GraphicsContext, blend: PoseBlend? = nil) {
+        if let spin {
+            turned(&c, spin: spin, blend: blend)
+            return
+        }
         let a = blend?.amount ?? 1
         let previous = blend.map { CharacterPainter(state: $0.from, t: t, moving: moving, ink: ink, paper: paper, red: red, sign: $0.fromSign, danger: danger, quiet: quiet) }
         func mix(_ from: Double?, _ to: Double) -> Double { from.map { $0 + (to - $0) * a } ?? to }
         var ctx = c
+        // 换 tab 时轻轻跳一下：抛物线 10pt，起跳时身子往前倾 4°，落地摆正（绕脚底转，脚不打滑）。
+        if hops, let o = outfitBlend, o.amount < 1 {
+            let lift = sin(.pi * o.amount)
+            ctx.translateBy(x: 60, y: 132); ctx.rotate(by: .degrees(-4 * lift)); ctx.translateBy(x: -60, y: -132)
+            ctx.translateBy(x: 0, y: -10 * lift)
+        }
         ctx.translateBy(x: 0, y: mix(previous?.bob, bob))
         fill(&ctx, "M28 132 Q32 106 60 104 Q88 106 92 132 Z", ink, stroke: 2)
         // 头：绕 (60,100) 轻轻点头 / 歪头
@@ -162,6 +184,11 @@ struct CharacterPainter {
         let was = previous.map { $0.state == .broken } ?? (state == .broken), now = state == .broken
         let drop: Double = was && now ? 1 : was ? 1 - a : now ? a : 0
         if drop > 0 { var layer = head; layer.opacity *= drop; stroke(&layer, "M98 40 Q94 47 98 50 Q102 47 98 40", 2.4) }
+        // 造型：旧的淡出，新的从 0.6 倍摁上来（和牌子同一套盖章语法）。
+        if let o = outfitBlend, o.amount < 1, o.from != outfit {
+            wear(o.from, head: &head, body: &ctx, opacity: 1 - o.amount, entrance: nil)
+            wear(outfit, head: &head, body: &ctx, opacity: o.amount, entrance: o.amount)
+        } else { wear(outfit, head: &head, body: &ctx, opacity: 1, entrance: nil) }
         // 手持物：换了的话旧的淡出、新的进场（牌子像盖章：动效库 03-badge-stamp）。
         if let previous, previous.state != state || previous.sign != sign {
             previous.props(&ctx, opacity: 1 - a, entrance: nil)
@@ -247,6 +274,120 @@ struct CharacterPainter {
         }
     }
 
+    /// 转身：绕脚底中线做水平缩放（cos θ）模拟绕竖轴转，背面时画后脑勺。
+    /// 动态模糊：按角速度在身后留 3 道越来越淡的残影，再整体加一点高斯模糊；转得越快拖得越长。
+    /// 身子跟着角速度往转的方向倾（最多 7°），起跳时离地、落地压扁一下。
+    private func turned(_ c: inout GraphicsContext, spin: Spin, blend: PoseBlend?) {
+        var still = self; still.spin = nil; still.outfitBlend = nil
+        let speed = abs(spin.velocity)
+        let lean = max(-7, min(7, -spin.velocity * 0.006))
+        let blur = min(3.2, speed / 260)
+        func pass(_ theta: Double, opacity: Double, blur: Double) {
+            guard opacity > 0.01 else { return }
+            let sx = cos(theta * .pi / 180)
+            var ctx = c
+            ctx.opacity *= opacity
+            if blur > 0.15 { ctx.addFilter(.blur(radius: blur)) }
+            ctx.translateBy(x: 60, y: 132 - spin.lift)
+            ctx.rotate(by: .degrees(lean))
+            ctx.scaleBy(x: sx >= 0 ? max(0.03, sx) : min(-0.03, sx), y: spin.squash)
+            ctx.translateBy(x: -60, y: -132)
+            var painter = still
+            painter.outfit = theta >= 180 ? outfit : spin.from
+            if sx < 0 { painter.back(&ctx) } else { painter.figure(&ctx, blend: blend) }
+        }
+        if speed > 150 {
+            for k in [3.0, 2.0, 1.0] { pass(spin.theta - spin.velocity * k / 140, opacity: 0.16 * (4 - k) / 3, blur: blur * 1.6) }
+        }
+        pass(spin.theta, opacity: 1, blur: blur)
+    }
+
+    /// 背面：身子 + 一整片后脑勺的头发（几道浅色发丝），戴的东西只露帽子 / 发带 / 耳机梁。
+    private func back(_ c: inout GraphicsContext) {
+        var ctx = c
+        ctx.translateBy(x: 0, y: bob)
+        fill(&ctx, "M28 132 Q32 106 60 104 Q88 106 92 132 Z", ink, stroke: 2)
+        var head = ctx
+        stroke(&head, "M30 30 Q10 62 6 112 M27 40 Q14 76 12 120 M33 34 Q18 70 18 118 M31 50 Q22 86 22 124 M24 30 Q4 58 2 96 M90 30 Q110 62 114 112 M93 40 Q106 76 108 120 M87 34 Q102 70 102 118 M89 50 Q98 86 98 124 M96 30 Q116 58 118 96", 3.8)
+        fill(&head, "M24 54 Q20 8 60 7 Q100 8 96 54 Q98 98 60 104 Q22 98 24 54 Z", ink, stroke: 2)
+        stroke(&head, "M42 18 Q36 60 44 98 M60 12 Q57 58 60 100 M78 18 Q84 60 76 98", 2, color: paper.opacity(0.28))
+        switch outfit {
+        case .chat: stroke(&head, "M24 54 Q20 0 60 -1 Q100 0 96 54", 4.4, color: red)
+        case .health: fill(&head, "M28 46 Q60 33 92 46 L91 56 Q60 44 29 56 Z", red, stroke: 2.4)
+        case .next:
+            fill(&head, "M30 38 Q32 10 60 8 Q88 10 90 38 Q60 30 30 38 Z", paper, stroke: 2.6)
+            fill(&head, "M16 40 Q60 26 104 40 Q106 47 97 47 Q60 37 23 47 Q14 47 16 40 Z", paper, stroke: 2.6)
+        default: break
+        }
+    }
+
+    /// 一套造型：头上的画在 head（跟着点头 / 歪头），手里的画在 body。entrance 非空 = 正在进场。
+    private func wear(_ outfit: CharacterOutfit, head: inout GraphicsContext, body: inout GraphicsContext, opacity: Double, entrance: Double?) {
+        guard opacity > 0.001, outfit != .none else { return }
+        func stamp(_ base: GraphicsContext, at pivot: CGPoint) -> GraphicsContext {
+            var ctx = base; ctx.opacity *= opacity
+            if let e = entrance {
+                let scale = 0.6 + 0.4 * e
+                ctx.translateBy(x: pivot.x, y: pivot.y); ctx.scaleBy(x: scale, y: scale); ctx.translateBy(x: -pivot.x, y: -pivot.y)
+            }
+            return ctx
+        }
+        var hat = stamp(head, at: CGPoint(x: 60, y: 40))
+        var hand = stamp(body, at: CGPoint(x: 16, y: 108))
+        switch outfit {
+        case .none: break
+        case .chat:
+            // 头戴耳机 + 麦克风杆；说话时麦克风头一闪一闪。
+            stroke(&hat, "M24 54 Q20 0 60 -1 Q100 0 96 54", 4.4)
+            fill(&hat, "M18 48 q0 -6 6 -6 h4 q4 0 4 4 v20 q0 4 -4 4 h-4 q-6 0 -6 -6 z", red, stroke: 2.6)
+            fill(&hat, "M102 48 q0 -6 -6 -6 h-4 q-4 0 -4 4 v20 q0 4 4 4 h4 q6 0 6 -6 z", red, stroke: 2.6)
+            stroke(&hat, "M24 68 Q28 86 42 88", 2.6)
+            hat.fill(Path(ellipseIn: CGRect(x: 40, y: 84, width: 8, height: 8)), with: .color(ink.opacity(moving ? even([1, 0.45, 1], dur: 1.4, t: time) : 1)))
+        case .next:
+            // 探险家：渔夫帽（青柠帽带）+ 左手举一面小旗，旗面像被风吹着一样往前（右）飘。
+            fill(&hat, "M30 38 Q32 10 60 8 Q88 10 90 38 Q60 30 30 38 Z", paper, stroke: 2.6)
+            stroke(&hat, "M32 33 Q60 25 88 33", 4.6, color: red)
+            fill(&hat, "M16 40 Q60 26 104 40 Q106 47 97 47 Q60 37 23 47 Q14 47 16 40 Z", paper, stroke: 2.6)
+            stroke(&hand, "M34 124 Q22 116 12 106", 3.6)
+            stroke(&hand, "M10 126 L10 62", 3)
+            let wave = moving ? even([0, 1, 0], dur: 1.1, t: time) : 0.5
+            fill(&hand, "M10 62 Q\(20 + wave * 3) \(60 + wave * 3) 32 64 L\(27 + wave * 2) 71 L32 78 Q\(20 - wave * 3) \(74 + wave * 3) 10 78 Z", red, stroke: 2.4)
+        case .today:
+            // 左手端一杯咖啡，杯口的热气一缕缕往上飘。
+            stroke(&hand, "M34 124 Q28 116 24 110", 3.6)
+            fill(&hand, "M2 86 h26 v20 q0 8 -8 8 h-10 q-8 0 -8 -8 z", paper, stroke: 2.6)
+            stroke(&hand, "M28 90 q9 0 9 7 q0 7 -9 7", 2.4)
+            stroke(&hand, "M3 95 h24", 3.4, color: red)
+            for (i, x) in [10.0, 20.0].enumerated() {
+                let begin = Double(i) * 0.9
+                let alpha = moving ? keyframe([0, 0.9, 0], [0, 0.35, 1], dur: 1.8, t: time, begin: begin) : 0.6
+                let rise = moving ? even([0, 1], dur: 1.8, t: time, begin: begin) * 6 : 2
+                var steam = hand; steam.opacity *= alpha; steam.translateBy(x: 0, y: -rise)
+                stroke(&steam, "M\(x) 82 q-3 -4 0 -8 q3 -4 0 -8", 2.2)
+            }
+        case .health:
+            // 运动发带 + 左边一颗跟着心跳缩放的心（约 72 次 / 分）。
+            fill(&hat, "M31 46 Q60 33 89 46 L88 56 Q60 44 32 56 Z", red, stroke: 2.4)
+            stroke(&hat, "M89 49 L98 58 M88 53 L95 63", 2.4)
+            let beat = moving ? keyframe([1, 1.18, 1, 1.1, 1], [0, 0.12, 0.28, 0.4, 1], dur: 0.84, t: time) : 1
+            var heart = hand
+            heart.translateBy(x: 14, y: 96); heart.scaleBy(x: beat, y: beat); heart.translateBy(x: -14, y: -96)
+            fill(&heart, "M14 104 C2 95 3 84 10 84 C13 84 14 86 14 88 C14 86 15 84 18 84 C25 84 26 95 14 104 Z", danger, stroke: 2.2)
+        case .work:
+            // 左耳夹一支铅笔，左手抱写字板；铅笔隔一会儿点一下。
+            var pencil = hat
+            let tap = moving ? keyframe([0, 0, -8, 0, 0], [0, 0.7, 0.78, 0.86, 1], dur: 3, t: time) : 0
+            pencil.translateBy(x: 30, y: 44); pencil.rotate(by: .degrees(tap)); pencil.translateBy(x: -30, y: -44)
+            stroke(&pencil, "M32 46 L12 22", 4.4)
+            stroke(&pencil, "M12 22 L9 17", 2)
+            stroke(&pencil, "M34 48 L30 43", 5, color: red)
+            stroke(&hand, "M34 124 Q28 118 24 116", 3.6)
+            fill(&hand, "M-2 86 h30 v32 h-30z", paper, stroke: 2.6)
+            fill(&hand, "M7 82 h12 v7 h-12z", red, stroke: 2)
+            stroke(&hand, "M4 98 h18 M4 106 h13", 2.2)
+        }
+    }
+
     /// 纸飞机：在调用方坐标系内从 origin 起飞。reach = 飞多远（顶栏里收短，不飞进右边的按钮）。
     func plane(_ c: inout GraphicsContext, origin: CGPoint, scale: CGFloat, reach: Double = 90) {
         var ctx = c
@@ -276,10 +417,35 @@ struct StripFigure: View {
     var quiet = false
     /// 往下拉工作台时她从顶栏跳到桌前；进度 0 = 待在顶栏。
     var hop: Hop?
+    /// 当前 tab 的造型；换了就跳一下换装（outfitDuration）。
+    var outfit: CharacterOutfit = .none
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.scenePhase) private var scene
     @State private var pose: Pose
     @State private var blending = false
+    @State private var dress: Dress
+    private struct Dress: Equatable { var from: CharacterOutfit; var to: CharacterOutfit; var at: Date }
+    /// 换装时长：前摇 0.13s + 弹簧转身到基本落定（约 0.9s）。减少动态效果时只交叉淡入 0.3s。
+    static let outfitDuration = 1.4
+
+    /// 转身的物理：前摇（反向拧 35°、下蹲 9%）→ 欠阻尼弹簧转到 360°（ζ 0.55、1.1Hz，过冲约 48° 再回弹；1.55Hz 时转过背面只有 150ms，录屏都抓不到，放慢了）；
+    /// 前 0.42s 离地（抛物线 10），落地压扁 8% 再弹回。返回角度、离地高度、竖向缩放。
+    nonisolated static func spinCurve(_ t: Double) -> (theta: Double, lift: Double, squash: Double) {
+        let wind = 0.16
+        if t < wind {
+            let e = sin(t / wind * .pi / 2)
+            return (-35 * e, 0, 1 - 0.09 * e)
+        }
+        let tau = t - wind
+        let omega = 2 * Double.pi * 1.1, zeta = 0.55
+        let wd = omega * (1 - zeta * zeta).squareRoot()
+        let theta = 360 - 395 * exp(-zeta * omega * tau) * (cos(wd * tau) + zeta * omega / wd * sin(wd * tau))
+        let air = 0.42
+        let crouch = 1 - 0.09 * exp(-tau / 0.05)
+        if tau < air { return (theta, 10 * sin(.pi * tau / air), crouch * (1 + 0.04 * sin(.pi * tau / air))) }
+        let land = tau - air
+        return (theta, 0, land < 0.24 ? 1 - 0.08 * sin(.pi * land / 0.24) : 1)
+    }
     private struct Pose: Equatable { var from: StripState; var fromSign: String; var to: StripState; var toSign: String; var at: Date }
     private struct Key: Equatable { let state: StripState; let sign: String }
     /// 跳下去的路线（坐标都是顶栏坐标，原点在顶栏左上角；线稿原点 = 120×132 角色坐标的 0,0）。桌子的位置由进度现算（StagePanel.deskFigure）。
@@ -295,22 +461,39 @@ struct StripFigure: View {
         /// 画她的这块大画布：顶栏 + 工作台展开部分。
         var canvas: CGSize { CGSize(width: width, height: Layout.topBar + StagePanel.revealHeight) }
     }
-    init(state: StripState, sign: String = "", animated: Bool = true, quiet: Bool = false, hop: Hop? = nil) {
-        self.state = state; self.sign = sign; self.animated = animated; self.quiet = quiet; self.hop = hop
+    init(state: StripState, sign: String = "", animated: Bool = true, quiet: Bool = false, hop: Hop? = nil, outfit: CharacterOutfit = .none) {
+        self.state = state; self.sign = sign; self.animated = animated; self.quiet = quiet; self.hop = hop; self.outfit = outfit
         _pose = State(initialValue: Pose(from: state, fromSign: sign, to: state, toSign: sign, at: .distantPast))
+        _dress = State(initialValue: Dress(from: outfit, to: outfit, at: .distantPast))
     }
     private var moving: Bool { animated && !reduce && scene == .active && !ProcessInfo.processInfo.isLowPowerModeEnabled }
     var body: some View {
         // 画的永远是 pose（不是直接读 state）：onChange 之前那一帧还是旧姿态，不会先闪一下新姿态再从头淡入。
         let loops = moving && pose.to != .done
-        TimelineView(.animation(minimumInterval: 1.0 / (pose.to == .idle && !blending ? 12 : 30), paused: !loops && !blending)) { timeline in
+        // 转身那一秒跑满 60 帧（残影和弹簧回弹在 30 帧下会一顿一顿）；平时照旧 12 / 30 帧省电。
+        TimelineView(.animation(minimumInterval: 1.0 / (blending ? 60 : pose.to == .idle ? 12 : 30), paused: !loops && !blending)) { timeline in
             let raw = min(1, max(0, timeline.date.timeIntervalSince(pose.at) / Self.blendDuration))
             let blend: CharacterPainter.PoseBlend? = raw < 1 ? .init(from: pose.from, fromSign: pose.fromSign, amount: 1 - pow(1 - raw, 3)) : nil  // GSAP power3.out
-            let painter = CharacterPainter(state: pose.to, t: timeline.date.timeIntervalSinceReferenceDate, moving: moving, ink: Palette.ink, paper: Palette.surface, red: Palette.accent, sign: pose.toSign, quiet: quiet)
+            let elapsed = timeline.date.timeIntervalSince(dress.at)
+            let worn = min(1, max(0, elapsed / (reduce ? 0.3 : Self.outfitDuration)))
+            let curve = Self.spinCurve(elapsed), ahead = Self.spinCurve(elapsed + 1.0 / 120)
+            let spin: CharacterPainter.Spin? = !reduce && worn < 1 && dress.from != dress.to
+                ? .init(from: dress.from, theta: curve.theta, velocity: (ahead.theta - curve.theta) * 120, lift: curve.lift, squash: curve.squash) : nil
+            // 换装透明度走 power2.out；跳的那条抛物线自带起落。
+            let painter = CharacterPainter(state: pose.to, t: timeline.date.timeIntervalSinceReferenceDate, moving: moving, ink: Palette.ink, paper: Palette.surface, red: Palette.accent, sign: pose.toSign, quiet: quiet,
+                                           outfit: dress.to, outfitBlend: reduce && worn < 1 ? (dress.from, worn) : nil, hops: false, spin: spin)
             FigureLayer(progress: hop?.progress ?? 0, hop: hop, painter: painter, blend: blend,
                         plane: pose.to == .send ? (blend != nil && pose.from != .send ? blend?.amount ?? 1 : 1) : nil, reduce: reduce)
         }
         .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
+        .onChange(of: outfit) { _, next in
+            dress = Dress(from: dress.to, to: next, at: Date())
+            blending = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(Self.outfitDuration + 0.05))
+                if Date().timeIntervalSince(dress.at) >= Self.outfitDuration && Date().timeIntervalSince(pose.at) >= Self.blendDuration { blending = false }
+            }
+        }
         .onChange(of: Key(state: state, sign: sign)) { _, key in
             let now = Date()
             // 上一段还没过半就又换：从上一段的起点接着走，免得一帧跳回目标姿态。

@@ -53,8 +53,60 @@ extension AppModel {
             return copy
         })
         next["headline"] = .string("睡了 7.2 小时（81 分）、电量 47，下午排期评审前先回王总的排期邮件。")
+        next["brief"] = .array([
+            .object(["text": .string("睡了 7.2 小时，比周均多半小时；电量 47 偏低，下午别再加会。"), "kind": .string("health")]),
+            .object(["text": .string("11:00 周会、15:00 排期评审，中间 12:00–14:30 是今天唯一的整块空档。"), "kind": .string("event")]),
+            .object(["text": .string("王总要的 Q4 排期今天下班前给，评审前先回掉。"), "kind": .string("note")]),
+            .object(["text": .string("Claude 新版支持直接读手机屏幕，正好能做一期 AI 工具测评。"), "kind": .string("news"), "news_id": .string("n1"), "title": .string("Claude 新版发布"), "url": .string("https://www.anthropic.com/news"), "site": .string("Anthropic")])
+        ])
         datasets["/personal/next"] = next
         if ProcessInfo.processInfo.arguments.contains("--ui-r3-dense") { seedDenseToday() }
+        seedHealthPage()
+    }
+
+    /// 健康页验收数据（10-17）：在今天页那 7 天前面再补 7 天，今天带上新接的字段（呼吸、血氧、负荷、体能年龄、活动）和一份评估。
+    private func seedHealthPage() {
+        var source = todayData["health"]
+        guard !source.isNull else { return }
+        let first = source["days"].array
+        let earlier: [JSON] = first.enumerated().map { i, d in
+            var copy = d
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+            let date = f.date(from: d["date"].string).map { $0.addingTimeInterval(-7 * 86400) } ?? Date()
+            copy["date"] = .string(f.string(from: date))
+            var m = copy["measurements"]
+            m["hrv_last_night"] = .number(m["hrv_last_night"].double + Double(i % 3) * 2 - 2)
+            m["sleep_seconds"] = .number(m["sleep_seconds"].double - Double(i % 4) * 1800)
+            copy["measurements"] = m
+            copy["activities"] = i == 2 ? .array([.object(["name": .string("先锋攀"), "type": .string("rock_climbing"), "start": .string("19:30"), "minutes": .number(150), "calories": .number(820), "avg_hr": .number(112)])]) : .array([])
+            return copy
+        }
+        var days = earlier + first
+        var today = days[days.count - 1]
+        var m = today["measurements"]
+        for (k, v) in [("hrv_weekly", 42.0), ("sleep_need_minutes", 480), ("sleep_stress", 18), ("respiration_sleep", 15), ("spo2_7d", 96), ("load_acute", 34), ("load_chronic", 219),
+                       ("load_ratio", 0.6), ("fitness_age", 26), ("age", 29), ("body_battery_at_wake", 71)] { m[k] = .number(v) }
+        m["hrv_baseline"] = .array([.number(40), .number(60)]); m["hrv_status"] = .string("BALANCED"); m["training_status"] = .string("RECOVERY_1")
+        today["measurements"] = m
+        today["activities"] = .array([.object(["name": .string("抱石"), "type": .string("bouldering"), "start": .string("08:10"), "minutes": .number(75), "calories": .number(410), "avg_hr": .number(108)])])
+        days[days.count - 1] = today
+        source["days"] = .array(days); source["today"] = today
+        datasets["/personal/health?days=30"] = source
+        datasets["/personal/health/insight"] = .object([
+            "score": .number(81), "level": .string("high"), "source": .string("model"), "running": .bool(false), "updated_at": .number(Date().timeIntervalSince1970 - 900),
+            "headline": .string("恢复不错，下午可以上强度"),
+            "summary": .string("昨晚睡了 7.2 小时，比两周均值多 20 分钟；HRV 44 在基线 40–60 里，静息心率 58 持平。急性负荷只有 34，身体在恢复期，今天适合安排一次有质量的训练。"),
+            "dimensions": .array([
+                .object(["key": .string("sleep"), "level": .string("good"), "note": .string("7.2h，深睡 1h57m")]),
+                .object(["key": .string("recovery"), "level": .string("good"), "note": .string("HRV 44 在基线内")]),
+                .object(["key": .string("load"), "level": .string("low"), "note": .string("负荷比 0.6，可以加量")]),
+                .object(["key": .string("stress"), "level": .string("ok"), "note": .string("平均压力 26")])]),
+            "actions": .array([
+                .object(["title": .string("晚上抱石 90 分钟"), "detail": .string("恢复分 81，可以试两条极限线路，组间休息 3 分钟。"), "when": .string("19:00 后"), "kind": .string("train")]),
+                .object(["title": .string("会间起来走 10 分钟"), "detail": .string("今天步数才 2851，补到 6000。"), "when": .string("15:00 评审后"), "kind": .string("move")]),
+                .object(["title": .string("训练后补蛋白"), "detail": .string("一掌半的鸡蛋或瘦肉，帮恢复。"), "when": .string("21:00"), "kind": .string("eat")]),
+                .object(["title": .string("今晚 23:30 前睡"), "detail": .string("睡够 8 小时，明早电量才能回到 70 以上。"), "when": .string("今晚"), "kind": .string("sleep")])])
+        ])
     }
 
     /// 身体卡验收数据：照 mini 上真实 Garmin 回包的字段，7 天，今天带一条身体电量曲线。

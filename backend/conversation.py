@@ -7,6 +7,7 @@ import sqlite3
 import stat
 import time
 import uuid
+import contextlib
 from contextlib import contextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -16,6 +17,7 @@ import capabilities
 from reactions import ReactionStore, install_schema, project_message
 from message_references import canonical_reference, reference_identity, referenced_input
 from work_cards import accepted, linked_card, project_work
+from reply_options import split_options, strip_partial
 
 
 # 主对话每轮都注入任务上下文，所以只给身份、路由和短摘要；
@@ -175,6 +177,7 @@ class PersonalConversation:
                 ("work_card", "TEXT"),
                 ("new_item", "TEXT"),
                 ("artifacts", "TEXT NOT NULL DEFAULT '[]'"),
+                ("suggestions", "TEXT"),  # r2-chat：回复末尾的下一步选项（JSON 数组）
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
@@ -303,7 +306,7 @@ class PersonalConversation:
             "SELECT id,request_id,parent_id,supplement_to_message_id,role,text,status,phase,active_tool,tasks,work_card,artifacts,"
             "(SELECT state FROM user_events WHERE user_events.message_id=messages.id) AS delivery_state,"
             "(SELECT value FROM meta WHERE key='attachments:' || messages.id) AS attachments,"
-            "received_at,revision,created_at,updated_at,run_id,error,reaction,reference FROM messages " + where
+            "received_at,revision,created_at,updated_at,run_id,error,reaction,reference,suggestions FROM messages " + where
         )
 
     @staticmethod
@@ -313,6 +316,17 @@ class PersonalConversation:
         message["tasks"] = json.loads(message["tasks"]) if message["tasks"] else []
         message["artifacts"]=json.loads(message.get("artifacts") or "[]")
         message['attachments']=[{k:v for k,v in a.items() if k not in ('path','authority')} for a in json.loads(message.get('attachments') or '[]')]
+        # r2-chat：选项标记不进正文；流式中途的半截标记也不下发。
+        # r2-chat 落库 suggestions 是 JSON 数组；原文字段保证 snapshot/api 一致。
+        raw_suggestions = message.get("suggestions")
+        suggestions = json.loads(raw_suggestions) if isinstance(raw_suggestions, str) else (raw_suggestions or [])
+        if message["role"] == "assistant" and isinstance(message["text"], str):
+            if message["status"] == "streaming":
+                message["text"] = strip_partial(message["text"])
+            else:
+                message["text"], parsed = split_options(message["text"])
+                suggestions = suggestions or parsed
+        message["suggestions"] = suggestions
         return project_work(message)
 
     def attach_artifact(self, message_id, artifact):
@@ -516,14 +530,115 @@ class PersonalConversation:
         return f"正在使用 {name[:46]}"
 
     def _record_tasks(self, mid: str, tasks: list) -> None:
-        """持久化某条用户消息的工作任务清单并通知订阅者。"""
+        """持久化某条用户消息的工作任务清单并通知订阅者。turn_plan 写的 todo 清单（kind=plan）保留不被工具事件覆盖。"""
         with self.db() as db:
+            row = db.execute("SELECT tasks FROM messages WHERE id=?", (mid,)).fetchone()
+            try:
+                kept = [t for t in json.loads(row["tasks"] or "[]") if isinstance(t, dict) and t.get("kind") == "plan"] if row else []
+            except (json.JSONDecodeError, TypeError):
+                kept = []
+            tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("kind") == "plan")] + kept
             revision = self._bump(db)
             db.execute(
                 "UPDATE messages SET tasks=?,revision=?,updated_at=? WHERE id=?",
                 (json.dumps(tasks, ensure_ascii=False), revision, time.time(), mid),
             )
         self._notify()
+
+    def set_plan(self, mid: str, plan: dict) -> None:
+        """2026-10-17：这一轮的 todo 清单（像 Claude Code 的 todo-card），手机上替代工具日志当「思考过程」。"""
+        with self.db() as db:
+            row = db.execute("SELECT tasks,role FROM messages WHERE id=?", (mid,)).fetchone()
+            if not row or row["role"] != "user":
+                raise ValueError("找不到这一轮的用户消息")
+            try:
+                tasks = [t for t in json.loads(row["tasks"] or "[]") if not (isinstance(t, dict) and t.get("kind") == "plan")]
+            except (json.JSONDecodeError, TypeError):
+                tasks = []
+            tasks.append({"id": "plan", "kind": "plan", **plan})
+            revision = self._bump(db)
+            db.execute("UPDATE messages SET tasks=?,revision=?,updated_at=? WHERE id=?",
+                       (json.dumps(tasks, ensure_ascii=False), revision, time.time(), mid))
+        self._notify()
+
+    # ---- 2026-10-17 每轮 todo 清单（turn_planner.py）：服务端生成，工具事件推进，收尾勾完 ----
+    def _start_plan(self, mid: str, text: str) -> None:
+        planner = getattr(self, 'turn_planner', None)
+        if not planner:
+            return
+
+        async def run():
+            from turn_planner import advance, clean_plan, finish
+            try:
+                plan = clean_plan(await planner(text))
+            except Exception:
+                return
+            if not plan or self.plan_of(mid):  # 闲聊不出清单；Hermes 自己写了 turn_plan 就以它为准
+                return
+            with self.db() as db:
+                row = db.execute("SELECT status,tasks FROM messages WHERE id=?", (mid,)).fetchone()
+            if not row:
+                return
+            try:
+                done_tools = [t.get('tool') for t in json.loads(row["tasks"] or "[]") if isinstance(t, dict) and t.get('kind') == 'tool']
+            except (json.JSONDecodeError, TypeError):
+                done_tools = []
+            for tool in done_tools:  # 拆解回来之前已经跑过的工具补推进
+                advance(plan, tool)
+            if row["status"] not in ('queued', 'sending', 'running'):
+                finish(plan, row["status"] == 'completed')
+            self.set_plan(mid, plan)
+            hook = getattr(self, 'on_turn_plan', None)
+            if hook:
+                with contextlib.suppress(Exception):
+                    hook(mid, plan)
+        try:
+            asyncio.get_running_loop().create_task(run())
+        except RuntimeError:
+            pass
+
+    def _step_plan(self, mid: str, fn, *args) -> None:
+        plan = self.plan_of(mid)
+        if plan and fn(plan, *args):
+            self.set_plan(mid, {k: v for k, v in plan.items() if k not in ('id', 'kind')})
+
+    def _finish_plan(self, db: sqlite3.Connection, mid: str, ok: bool) -> None:
+        from turn_planner import finish
+        row = db.execute("SELECT tasks FROM messages WHERE id=?", (mid,)).fetchone()
+        try:
+            tasks = json.loads(row["tasks"] or "[]") if row else []
+        except (json.JSONDecodeError, TypeError):
+            return
+        plan = next((t for t in tasks if isinstance(t, dict) and t.get("kind") == "plan"), None)
+        if plan and not plan.get('finished') and finish(plan, ok):
+            db.execute("UPDATE messages SET tasks=? WHERE id=?", (json.dumps(tasks, ensure_ascii=False), mid))
+
+    def active_user_message(self) -> str | None:
+        """正在进行的那一轮（主对话一次只跑一轮）：turn_plan 不信模型给的 ID，挂到这条上。"""
+        with self.db() as db:
+            row = db.execute("SELECT id FROM messages WHERE role='user' AND status IN ('queued','sending','running') "
+                             "ORDER BY created_at DESC LIMIT 1").fetchone()
+        return row["id"] if row else None
+
+    def turn_record(self, mid: str) -> dict | None:
+        """一轮对话的状态和最终回复（案例列表回看用）。"""
+        with self.db() as db:
+            user = db.execute("SELECT id,text,status,created_at,updated_at FROM messages WHERE id=?", (mid,)).fetchone()
+            if not user:
+                return None
+            reply = db.execute("SELECT text,status,updated_at FROM messages WHERE parent_id=? AND role='assistant' "
+                               "ORDER BY created_at DESC LIMIT 1", (mid,)).fetchone()
+        return {"id": mid, "text": user["text"], "status": user["status"], "created_at": user["created_at"],
+                "updated_at": max(user["updated_at"], reply["updated_at"] if reply else 0),
+                "reply": strip_partial(reply["text"]) if reply and reply["text"] else "", "reply_status": reply["status"] if reply else ""}
+
+    def plan_of(self, mid: str) -> dict | None:
+        with self.db() as db:
+            row = db.execute("SELECT tasks FROM messages WHERE id=?", (mid,)).fetchone()
+        try:
+            return next((t for t in json.loads(row["tasks"] or "[]") if isinstance(t, dict) and t.get("kind") == "plan"), None) if row else None
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     @staticmethod
     def _finish_running_tasks(tasks: list, status: str) -> None:
@@ -563,15 +678,19 @@ class PersonalConversation:
             now = time.time()
             if existing:
                 content = existing["text"] + text if append else text
+                content, options = (content, None) if append else split_options(content)
                 db.execute(
-                    "UPDATE messages SET text=?,status=?,phase=?,revision=?,updated_at=? WHERE id=?",
-                    (content, status, phase, revision, now, existing["id"]),
+                    "UPDATE messages SET text=?,status=?,phase=?,revision=?,updated_at=?,"
+                    "suggestions=COALESCE(?,suggestions) WHERE id=?",
+                    (content, status, phase, revision, now, json.dumps(options, ensure_ascii=False) if options else None, existing["id"]),
                 )
             else:
+                text, options = split_options(text)
                 db.execute(
-                    "INSERT INTO messages(id,parent_id,role,text,status,phase,revision,created_at,updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)",
-                    (uuid.uuid4().hex, mid, "assistant", text, status, phase, revision, now, now),
+                    "INSERT INTO messages(id,parent_id,role,text,status,phase,revision,created_at,updated_at,suggestions)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (uuid.uuid4().hex, mid, "assistant", text, status, phase, revision, now, now,
+                     json.dumps(options, ensure_ascii=False) if options else None),
                 )
             db.execute(
                 "UPDATE messages SET status='running',phase=?,active_tool=NULL,"
@@ -620,7 +739,18 @@ class PersonalConversation:
                 db.execute("INSERT OR IGNORE INTO meta VALUES ('pi_cutover_boundary',?)",(str(boundary),))
         return self._session_id() or sid
 
-    def _finish(self, mid: str, status: str, output: str = "", error: str | None = None):
+    def _finish(self, mid: str, status: str, output: str | dict = "", error: str | None = None):
+        # 快通道候选卡需要携带下一步选项；dict 输出走结构化字段，普通文本沿用原逻辑。
+        if isinstance(output, dict):
+            # 结构化候选卡转成表单正文和独立 suggestions；推荐写账本、或调整金额。
+            encoded_options = json.dumps(list(output.get("suggestions", [])), ensure_ascii=False) if output.get("suggestions") else None
+            options = list(output.get("suggestions", []))
+            output = str(output.get("text",""))
+            suggestions_json = output
+        else:
+            output, options = split_options(output)
+            suggestions_json = output
+            encoded_options = json.dumps(options, ensure_ascii=False) if options else None
         with self.db() as db:
             existing = db.execute(
                 "SELECT id FROM messages WHERE parent_id=? AND role='assistant'", (mid,)
@@ -634,18 +764,29 @@ class PersonalConversation:
             )
             if status == "completed":
                 self._finalize_tasks(db, mid)
+            self._finish_plan(db, mid, status == "completed")
             db.execute("UPDATE user_events SET state=CASE WHEN state='delivered' THEN state ELSE ? END WHERE message_id=?",(status,mid))
             if existing:
                 db.execute(
                     "UPDATE messages SET text=CASE WHEN ?<>'' THEN ? ELSE text END,"
-                    "status=?,phase=?,revision=?,updated_at=? WHERE id=?",
-                    (output, output, status, status, revision, now, existing["id"]),
+                    "suggestions=COALESCE(?,suggestions),status=?,phase=?,revision=?,updated_at=? WHERE id=?",
+                    (suggestions_json, suggestions_json, encoded_options, status, status, revision, now, existing["id"]),
                 )
+                if options:
+                    # 结构化 confirm 卡覆盖部分流正文，清掉误入的选项标记或旧建议。
+                    db.execute("UPDATE messages SET text=?,suggestions=? WHERE id=?", (output, encoded_options, existing["id"]))
+                if not output:
+                    # 流式拼出来的正文没有 completed 全文覆盖时，收尾也要把标记剥掉。
+                    row = db.execute("SELECT text FROM messages WHERE id=?", (existing["id"],)).fetchone()
+                    body, parsed = split_options(row["text"])
+                    if parsed:
+                        db.execute("UPDATE messages SET text=?,suggestions=? WHERE id=?",
+                                   (body, json.dumps(parsed, ensure_ascii=False), existing["id"]))
             elif output:
                 db.execute(
-                    "INSERT INTO messages(id,parent_id,role,text,status,phase,revision,created_at,updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)",
-                    (uuid.uuid4().hex, mid, "assistant", output, status, status, revision, now, now),
+                    "INSERT INTO messages(id,parent_id,role,text,status,phase,revision,created_at,updated_at,suggestions)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (uuid.uuid4().hex, mid, "assistant", output, status, status, revision, now, now, encoded_options),
                 )
         self._notify()
 
@@ -760,15 +901,24 @@ class PersonalConversation:
         from message_router import MessageRouter, receipt
         router=MessageRouter(self.path.parent)
         route=router.decide(row['request_id'],row['text'])
-        if route.level!='L0':return False
-        from business_tools import BusinessTools
+        if route.level != 'L0':
+            return False
+        from business_tools import BusinessTools as tools_class
         started=time.monotonic()
         self._set(mid, 'running', phase=route.label)
         try:
-            result=await router.execute(route,{'origin_request_id':row['request_id']},BusinessTools(self.path.parent))
-            if route.args.get('action')=='add' and not result.get('verified'):
+            if route.args.get('action')=='confirm':
+                # 候选只出卡，不调用业务写入；后续“是”由既有澄清绑定对原始消息授权。
+                self._finish(mid, 'completed', output=receipt(route, {}))
+            else:
+                result=await router.execute(route,{'origin_request_id':row['request_id']},tools_class(self.path.parent))
+            if route.args.get('action')=='confirm':
+                # 候选卡不写账本，直接出确认建议。
+                self._finish(mid, 'completed', output=receipt(route, {}))
+            elif route.args.get('action')=='add' and not result.get('verified'):
                 self._finish(mid,'unknown',output=self.FAST_BOOKKEEPING_UNCERTAIN)
-            else:self._finish(mid,'completed',output=receipt(route,result))
+            else:
+                self._finish(mid, 'completed', output=receipt(route, result))
         except Exception:
             if route.args.get('action')=='add':self._finish(mid,'unknown',output=self.FAST_BOOKKEEPING_UNCERTAIN)
             else:self._finish(mid,'failed',error='业务查询暂不可用，请稍后重试。')
@@ -813,6 +963,7 @@ class PersonalConversation:
             from message_router import MessageRouter
             route=MessageRouter(self.path.parent).decide(row['request_id'],row['text'])
             self._set(mid, "sending", phase=route.label)
+            self._start_plan(mid, row["text"])
             pending = ""
             last_flush = 0.0
             has_partial = False
@@ -920,6 +1071,8 @@ class PersonalConversation:
                             "status": "running", "started_at": time.time(),
                         })
                         self._record_tasks(mid, work_tasks)
+                        from turn_planner import advance
+                        self._step_plan(mid, advance, name)
                     elif event in ("tool.completed", "tool.failed"):
                         self._set(mid, "running", phase="thinking")
                         call_id = payload.get('tool_call_id')
@@ -939,6 +1092,9 @@ class PersonalConversation:
                     elif event == "assistant.delta":
                         delta = payload.get("delta")
                         if isinstance(delta, str) and delta:
+                            if not has_partial and not pending:
+                                from turn_planner import responding
+                                self._step_plan(mid, responding)
                             pending += delta
                             if not has_partial or len(pending) >= 64 or time.monotonic() - last_flush >= .08:
                                 flush()

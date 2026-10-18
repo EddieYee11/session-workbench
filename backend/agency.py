@@ -19,6 +19,9 @@ SOURCE_LABELS = {'gmail':'Gmail','work_mail':'工作邮箱','github':'GitHub','a
                 'phone_health':'Apple 健康','garmin':'Garmin','com_task':'Com 工作','goal':'个人目标'}
 
 
+# 主动观察（心跳、看板下一步播报）每天进主对话的条数上限；10-10 Eddie 要求至少 20 条。
+OBSERVATION_DAILY_MAX={'quiet':3,'balanced':10,'active':20}
+
 class Agency:
     def __init__(self, state, hub, goals, tasks, proactive, conversation, clock=time.time):
         self.state=Path(state);self.path=self.state/'agency.sqlite'
@@ -198,7 +201,7 @@ class Agency:
         start,end=cfg['quiet_start'],cfg['quiet_end']
         quiet=(local.hour>=start or local.hour<end) if start>end else start<=local.hour<end
         if cfg['paused'] or quiet:return False
-        budget={'quiet':0,'balanced':2,'active':4}[cfg['intensity']]
+        budget=OBSERVATION_DAILY_MAX[cfg['intensity']]
         day=local.date().isoformat()
         with self.db() as db:
             if db.execute('SELECT 1 FROM publications WHERE id=?',(key,)).fetchone():return False

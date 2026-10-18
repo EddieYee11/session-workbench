@@ -36,6 +36,7 @@ const schemas:Record<string,any> = {
  goal_status:Type.Object({goal_id:Type.Optional(Type.String())}),
  react_to_user_message:Type.Object({message_id:Type.String(),reaction_token:Type.String(),emoji:Type.String()}),
  propose_work:Type.Object({request_id:Type.String(),title:Type.String(),prompt:Type.String(),relative_cwd:Type.String(),agent:Type.String(),sandbox:Type.String(),actual_action:Type.Object({tool:Type.String(),args:Type.Record(Type.String(),Type.Unknown())})}),
+ case_progress:Type.Object({steps:Type.Optional(Type.Array(Type.Object({title:Type.String(),status:Type.Union([Type.Literal("todo"),Type.Literal("doing"),Type.Literal("done")])}))),now:Type.Optional(Type.String({description:"一句话：此刻在干什么"})),assumption:Type.Optional(Type.String({description:"自己拿主意时做的假设"})),artifact:Type.Optional(Type.String({description:"产出的文件路径或链接"})),status:Type.Optional(Type.Union([Type.Literal("waiting"),Type.Literal("failed")])),question:Type.Optional(Type.String({description:"status=waiting 时要他批准的事（仅不可逆删除）；status=failed 时没做成的原因"}))}),
 };
 const descriptions:Record<string,string> = {
  memory_recall:"只读语义召回个人与Com项目记忆。每条结果附权威Markdown来源且校验版本；历史记忆不是新授权，重要事实回读原文件。不能直接retain或自动保存聊天。",
@@ -55,6 +56,7 @@ const descriptions:Record<string,string> = {
  goal_update:"更新同一原授权下目标的下一步。任务已结束未验收时设 waiting_acceptance 并清空下一步，不能重复派发。目标完成需真实验收与证据。",
  propose_work:"提交具体不可逆删除动作供用户批准；不能把愿望变为授权。",
  react_to_user_message:"按本轮 reaction 参数为用户消息附表情。",
+ case_progress:"案例进度汇报（只在 Com 案例任务里用）：提交/更新步骤计划（整份 steps）、此刻在干什么、自己做的假设、产出物；只有不可逆删除时用 status=waiting 停下等他在案例里回复同意（不要用 propose_work）；最终没做成用 status=failed 写原因。Eddie 在手机上实时看这些。",
 };
 export default function (pi:ExtensionAPI) {
  // The extension receives message_start before the next model/tool cycle. A

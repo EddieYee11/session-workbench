@@ -17,6 +17,10 @@ MONEY_NUMBER=r'[0-9零〇一二两三四五六七八九十百千万亿]+(?:[.点
 MONEY=re.compile(r'(?P<yuan>'+MONEY_NUMBER+r')\s*(?:元|圆|块钱?|块)(?:\s*(?P<jiao>[0-9零〇一二两三四五六七八九])\s*(?:毛|角)(?:\s*(?P<fen>[0-9零〇一二两三四五六七八九])\s*分?)?|\s*(?P<only_fen>[0-9零〇一二两三四五六七八九])\s*分|\s*(?P<tail>[0-9零〇一二两三四五六七八九]{1,2})(?![0-9零〇一二两三四五六七八九十百千万亿]))?')
 COINS=re.compile(r'(?P<jiao>[0-9零〇一二两三四五六七八九])\s*(?:毛|角)(?:\s*(?P<fen>[0-9零〇一二两三四五六七八九])\s*分?)?|(?P<only_fen>[0-9零〇一二两三四五六七八九])\s*分(?!钟)')
 BOOK_VERB=re.compile(r'记(?:个|一下|一笔|一条)?账|记一(?:笔|条)|记一下|记下|记录(?:一下|这笔|一笔)?')
+# 无单位中文数字金额（语音常见）：后面若不是量词/时间单位、也不是另一个汉字，才当成金额。
+CN_AMOUNT=re.compile(r'(?<![\d零〇一二两三四五六七八九十百千万亿.])[零〇一二两三四五六七八九十百千万亿]+(?![\d零〇一二两三四五六七八九十百千万亿])')
+CN_AMOUNT_TRAILING=re.compile(r'(?:左右|多|来|余|整|以上|以下)?\s*(?:[。，,！!？?、；;：:）)】\]"\'\s]|$)')
+CN_QUANTITY=re.compile(r'(?:个|笔|条|次|件|份|名|人|位|台|张|本|瓶|杯|套|层|楼|排|遍|周|星期|季|度|岁|斤|公斤|克|升|公里|千米|米|厘米|毫米|分钟|秒|小时|天|年|月|日|号|点|折|成|%|％)')
 EXPENSE_FACT=re.compile(r'花费|花了|消费|支出|付了|支付|付款|到账|收入|收了')
 BOOK_BLOCK=re.compile(r'(?:不要|别|不想|不用|不需要|先不|暂不|不能|禁止|不许|先别).{0,8}(?:记|记录|添加|保存)|(?:只是|仅是|只做|只要).{0,8}(?:举例|例子|测试|分析|讨论|候选)|(?:如果|假如|比如|例如|假设)|(?:以后|将来|有空|打算|计划|准备|明天|后天).{0,20}(?:记|花|消费|支出|买)|(?:花|消费|支出).{0,20}(?:预算|预计)|(?:能否|是否|会不会|能不能|可以|能|会).{0,8}(?:记账|记录|记个账).{0,4}(?:吗|么|嘛|不)|(?:记账|记个账).{0,8}(?:系统|软件|工具|功能|能力|怎么|如何)|(?:能|会)(?:记账|记个账)[?？]|(?:查|查询|查看|统计|检索|看看).{0,24}(?:记账|账单|账目|支出|消费|花费)|(?:记账|消费|支出|花费).{0,24}(?:多少|几笔|有哪些|统计)')
 
@@ -68,6 +72,17 @@ def _money_matches(text):
         if not any(start<=match.start()<end for start,end in covered):
             value=Decimal(match[0])
             if value>0:matches.append((match.start(),match.end(),value))
+    # 无单位中文数字（语音常说“剪头发花费一百一十四”）：仅当后面不是量词/时间单位、
+    # 也不是另一个汉字（或只跟“左右/多/来/余”这类语气词）时才算金额，避免把数量当晚金额。
+    for match in CN_AMOUNT.finditer(text):
+        if any(start<=match.start()<end for start,end in covered):continue
+        tail=text[match.end():match.end()+3]
+        if CN_QUANTITY.match(tail):continue
+        if not CN_AMOUNT_TRAILING.match(tail):continue
+        value=_money_number(match[0])
+        try:precise=value==value.quantize(Decimal('.01'))
+        except InvalidOperation:precise=False
+        if value>0 and precise:matches.append((match.start(),match.end(),value));covered.append(match.span())
     return sorted(matches)
 
 

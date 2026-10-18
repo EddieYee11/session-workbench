@@ -5,14 +5,14 @@ import ComCore
 /// 四个 tab：对话 / 下一步（它主动整理的建议）/ 在办（真正在跑和等你拍板的任务）/ 工作。
 /// 记忆、账本、连接器、设置都在点角色打开的菜单里。
 enum SectionTab: String, CaseIterable, Identifiable {
-    case chat = "Com", next = "下一步", doing = "今天", work = "工作"  // 轨道 pages：.doing 现在是「今天」时间线，case 名保留免得牵动其他文件
+    case chat = "Com", next = "下一步", doing = "今天", health = "健康", work = "工作"  // 轨道 pages：.doing 现在是「今天」时间线，case 名保留免得牵动其他文件
     var id: String { rawValue }
     /// 底栏四页（10-15 Eddie：今天页塞太多，「下一步」拆回独立一页）。
-    static let dock: [SectionTab] = [.chat, .next, .doing, .work]
+    static let dock: [SectionTab] = [.chat, .next, .doing, .health, .work]  // 10-17：身体数据单独一页「健康」
     /// 底部有输入框的页：键盘弹起时 Dock 让位。
     static let typing: Set<SectionTab> = [.chat, .work]
     var symbol: String {
-        switch self { case .chat: "face.smiling"; case .next: "shoeprints.fill"; case .doing: "calendar.day.timeline.left"; case .work: "square.grid.2x2" }  // 轨道 r2-pages：next 仅系统兜底，Dock 画自绘靴印
+        switch self { case .chat: "face.smiling"; case .next: "shoeprints.fill"; case .doing: "calendar.day.timeline.left"; case .health: "heart.text.square"; case .work: "square.grid.2x2" }  // 轨道 r2-pages：next 仅系统兜底，Dock 画自绘靴印
     }
 }
 
@@ -62,6 +62,11 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var workJumpMessage: String?
     /// 别处（任务详情、项目看板、派活页）要打开的会话：RootView 接住，切到工作页原地打开。
     var selectedSession: JSON?
+    /// 10-17 案例：要打开的案例 id（聊天里的案例卡、今天页、推送深链都走这里，RootView 用 sheet 接住）；showCases 打开案例列表。
+    var presentedCase: String?
+    var showCases = false
+    /// 10-18 统一「等你」收件箱：审批 + 等你批准的案例 + 微信在等回话 + 过期待办。
+    var showWaiting = false
     var localHealth: JSON = .null
     var banner = ""
     var moreHistory = true
@@ -123,6 +128,11 @@ enum SectionTab: String, CaseIterable, Identifiable {
     init() {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+            // 今天页记住的展开状态每次验收都从默认开始；要先展开表盘 / 时间线的用例带 --ui-today-dial / --ui-today-timeline。
+            let args = ProcessInfo.processInfo.arguments, defaults = UserDefaults.standard
+            ["today.brief.open", "today.now.open", "today.deck", "health.done", "health.span"].forEach(defaults.removeObject(forKey:))
+            if args.contains("--ui-today-dial") { defaults.set("dial", forKey: "today.now.open") }
+            if args.contains("--ui-today-timeline") { defaults.set("timeline", forKey: "today.deck") }
             devices = DeviceBridge(model: self)
             seedUIPreview()
             stage.receive("snapshot", .object(["messages": .array(conversation.messages), "activity": .object(["kind": .string("idle")])]))
@@ -296,13 +306,15 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
     }
     func refresh(_ tab: SectionTab) async {
+        _ = await load("/personal/waiting")  // 10-18：「等你」角标全局可见，每次刷新都带上
         switch tab {
         case .chat:
             if let data = await load("/personal/conversation") { conversation.apply(data, snapshot: true); ComNotifications.observe(conversation.messages) }
         case .next:
-            _ = await load("/personal/next"); _ = await load("/personal/connectors"); _ = await load("/personal/finance")
+            _ = await load("/personal/next"); _ = await load("/personal/connectors"); _ = await load("/personal/finance"); _ = await load("/personal/plan")
         case .doing:
-            await refreshFlow(); _ = await load("/personal/today"); _ = await load("/personal/automations")  // 轨道 pages：今天时间线
+            await refreshFlow(); _ = await load("/personal/today"); _ = await load("/personal/automations"); _ = await load("/personal/cases")  // 轨道 pages：今天时间线
+        case .health: _ = await load("/personal/health?days=30"); _ = await load("/personal/health/insight")
         case .work: _ = await load("/personal/projects"); _ = await load("/sessions")
         }
     }
@@ -584,7 +596,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
         guard voice.phase == .ready, voice.captureID == capture, !voice.transcript.isEmpty else { return }
         // Show the glyph reveal before entering the same durable text-message outbox.
         let text = voice.transcript
-        try? await Task.sleep(for: .milliseconds(1200))
+        // Auto-send is the quick 记账 path: a shorter reveal keeps the round trip snappy.
+        try? await Task.sleep(for: .milliseconds(voice.autoSend ? 500 : 1200))
         guard !Task.isCancelled, voice.phase == .ready, voice.captureID == capture else { return }
         await send(voiceMessage: true, textOverride: text)
         if voice.phase == .ready {
@@ -734,6 +747,7 @@ extension AppModel {
         }
         seedPagesPreview()  // 轨道 pages：今天时间线与依据详情的验收数据
         if ProcessInfo.processInfo.arguments.contains("--ui-r3-work") { seedR3WorkPreview() }  // r3-work：工作页原地聊天
+        if ProcessInfo.processInfo.arguments.contains("--ui-cases") { seedCasesPreview() }  // 10-17：案例 / 明天建议 / 对话 todo 清单验收
         for path in datasets.keys { fetchedAt[path] = Date() }
         recomputeFlow()
     }

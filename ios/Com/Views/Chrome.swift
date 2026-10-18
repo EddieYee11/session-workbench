@@ -130,7 +130,7 @@ struct ComTopBar: View {
     private func figure(hop: StripFigure.Hop) -> some View {
         @Bindable var model = model
         return Button { Haptics.selection(); model.showMenu.toggle() } label: {
-            StripFigure(state: model.stripState, sign: model.stripSign, animated: model.active, quiet: !model.workBubble.isEmpty, hop: hop)
+            StripFigure(state: model.stripState, sign: model.stripSign, animated: model.active, quiet: !model.workBubble.isEmpty, hop: hop, outfit: model.tab.outfit)
                 .frame(width: StripFigure.bodyWidth + 6, height: StripFigure.size.height, alignment: .leading)
                 .contentShape(Rectangle())
         }
@@ -170,6 +170,9 @@ struct ComTopBar: View {
     private func trailingItem(closing: Bool) -> BarItem {
         if closing { return BarItem(symbol: "chevron.up", label: "收起工作舞台", id: "agent-stage-close") { model.closeStage() } }
         switch model.tab {
+        case .health:
+            let running = model.healthInsight["running"].bool
+            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "重新评估身体", id: "health-refresh", disabled: running) { Task { await model.refreshHealthInsight() } }
         case .chat, .doing:
             return BarItem(symbol: "magnifyingglass", label: "搜索聊天与成果", id: "top-search") { model.showSearch = true }
         case .next:
@@ -290,7 +293,7 @@ struct ComDock: View {
         HStack(spacing: Space.sm) {
             ForEach(SectionTab.dock) { tab in
                 DockItem(tab: tab, selected: model.tab == tab,
-                         badge: tab == .doing ? model.decisionCount : tab == .next ? model.nextUrgentCount : 0)
+                         badge: tab == .doing ? model.waitingCount : tab == .next ? model.nextUrgentCount : 0)
             }
         }
         .sensoryFeedback(.selection, trigger: model.tab)
@@ -341,10 +344,17 @@ private struct DockItem: View {
     }
 }
 
+extension SectionTab {
+    /// 顶栏她在这一页的造型（10-17）。
+    var outfit: CharacterOutfit {
+        switch self { case .chat: .chat; case .next: .next; case .doing: .today; case .health: .health; case .work: .work }
+    }
+}
+
 private extension SectionTab {
     /// 选中时图标和名字的颜色：每页一种，Com 用主题青柠的深色版。
     var tint: Color {
-        switch self { case .chat: Palette.accentText; case .next: Color(red: 0.55, green: 0.33, blue: 0.95); case .doing: Palette.info; case .work: Palette.warning }
+        switch self { case .chat: Palette.accentText; case .next: Color(red: 0.55, green: 0.33, blue: 0.95); case .doing: Palette.info; case .health: TodayHue.pink.ink; case .work: Palette.warning }
     }
 }
 
@@ -447,7 +457,7 @@ struct StagePanel: View {
     /// 展开后的一行实情：等你 / 在跑 / 信源，各自能跳过去。
     private var stats: some View {
         HStack(spacing: Space.sm) {
-            chip("等你 \(model.decisionCount)", symbol: "hand.raised", tone: model.decisionCount > 0 ? .warning : .neutral) { model.closeStage(); model.tab = .doing }
+            chip("等你 \(model.waitingCount)", symbol: "hand.raised", tone: model.waitingCount > 0 ? .warning : .neutral) { model.closeStage(); model.showWaiting = true }  // 10-18 统一「等你」
             chip("在跑 \(model.runningTasks.count)", symbol: "play.circle", tone: model.runningTasks.isEmpty ? .neutral : .info) { model.closeStage(); model.tab = .doing }
             chip(model.brokenSources.isEmpty ? "信源正常" : "信源断了 \(model.brokenSources.count)", symbol: model.brokenSources.isEmpty ? "checkmark.circle" : "exclamationmark.triangle", tone: model.brokenSources.isEmpty ? .success : .danger) { model.closeStage(); model.showConnectors = true }
             if model.stripState == .done, !model.stage.deliveryID.isEmpty {

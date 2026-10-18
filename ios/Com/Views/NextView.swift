@@ -2,7 +2,7 @@ import SwiftUI
 import ComCore
 
 // 下一步：它主动把邮件、日程、项目、任务和账本收拢，归纳成几件现在值得做的事。
-// 每条都写「凭什么」，依据可展开；「交给 Com」会作为一条消息交给主对话去办，执行仍走批准流。
+// 每条都写「凭什么」，依据可展开；「交给 Com」建一个案例（独立 Pi 会话，入口在右上角），「加到待办」写进行动台，「稍后再说」明天再提。
 
 extension AppModel {
     var nextData: JSON { datasets["/personal/next"] ?? .null }
@@ -70,6 +70,7 @@ struct NextView: View {
     var body: some View {
         ScreenScaffold(title: "下一步") {
             header
+            TomorrowPlanCard()
             let broken = model.brokenSources
             if !broken.isEmpty {
                 ForEach(broken.map { RemoteRow(.object(["id": $0["name"], "source": $0])) }) { row in SourceBrokenNote(source: row.value["source"]) }
@@ -109,6 +110,7 @@ struct NextView: View {
                 }
             }
             Spacer(minLength: 0)
+            CasesEntry()
         }
     }
     @ViewBuilder private var footer: some View {
@@ -141,9 +143,26 @@ private struct NextCard: View {
                     // 依据只用依据袋表达：点开纸片从袋口飞出来停住，点哪张纸就打开哪份原始来源（轨道 r2-pages：去掉了卡片里的列表）。
                     EvidencePocket(evidence: evidence, itemID: item.id, itemTitle: item["title"].string)
                 }
+                if !item["in_todo"].isNull {
+                    // 10-17 去重：这件事行动台里已经有了，不再当新建议，只提醒一下它在哪天
+                    Label("已在待办 · " + (item["in_todo"]["due"].string.isEmpty ? "未定日期" : String(item["in_todo"]["due"].string.suffix(5))), systemImage: "checklist")
+                        .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                }
                 HStack(spacing: Space.sm) {
-                    Button("交给 Com") { act("discuss") }.buttonStyle(.primaryCompact).disabled(busy).accessibilityIdentifier("next-discuss-" + item.id)
-                    Button("已经做了") { act("done") }.buttonStyle(.secondaryCompact).disabled(busy)
+                    Button("交给 Com") { delegate() }.buttonStyle(.primaryCompact).disabled(busy).accessibilityIdentifier("next-discuss-" + item.id)
+                    if item["in_todo"].isNull {
+                        Menu {
+                            Button("今天", systemImage: "sun.max") { todo(0) }
+                            Button("明天", systemImage: "sunrise") { todo(1) }
+                            Button("后天", systemImage: "calendar") { todo(2) }
+                            Divider()
+                            Button("明天 9:00 提醒我", systemImage: "bell") { todo(1, remind: "09:00") }
+                            Button("今晚 20:00 提醒我", systemImage: "bell") { todo(0, remind: "20:00") }
+                        } label: { Text("加到待办") }
+                        .buttonStyle(.secondaryCompact).disabled(busy).accessibilityIdentifier("next-todo-" + item.id)
+                    } else {
+                        Button("已经做了") { act("done") }.buttonStyle(.secondaryCompact).disabled(busy)
+                    }
                     Spacer(minLength: 0)
                     Button("不用") { act("dismiss") }.buttonStyle(.quiet).disabled(busy).accessibilityIdentifier("next-dismiss-" + item.id)
                 }
@@ -158,7 +177,9 @@ private struct NextCard: View {
             if value.translation.width < -80 { act("dismiss") }
         })
         .contextMenu {
-            Button("交给 Com", systemImage: "bubble.left") { act("discuss") }
+            Button("交给 Com", systemImage: "paperplane") { delegate() }
+            Button("加到明天的待办", systemImage: "checklist") { todo(1) }
+            Button("稍后再说（明天再提）", systemImage: "clock.arrow.circlepath") { act("snooze") }
             Button("已经做了", systemImage: "checkmark") { act("done") }
             Button("不用，少提这类", systemImage: "xmark") { act("dismiss") }
         }
@@ -168,6 +189,22 @@ private struct NextCard: View {
     private func act(_ action: String) {
         busy = true
         Task { await model.nextAction(item, action); busy = false }
+    }
+    /// 交给 Com：建案例并直接打开它，能马上看到拆出来的步骤；关掉就回到这里。
+    private func delegate() {
+        #if DEBUG
+        if model.isUITesting { act("discuss"); return }
+        #endif
+        busy = true
+        Task {
+            if let id = await model.delegateNext(item) { model.presentedCase = id }
+            busy = false
+        }
+    }
+    private func todo(_ offset: Int, remind: String? = nil) {
+        busy = true
+        let day = AppModel.dayString(offset)
+        Task { await model.nextToTodo(item, day: day, remindAt: remind.map { day + " " + $0 }); busy = false }
     }
 }
 

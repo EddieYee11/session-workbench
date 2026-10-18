@@ -359,9 +359,9 @@ final class ComUITests: XCTestCase {
         app.buttons["tab-今天"].tap()
         // 大日期下面一行灰字（轨道 r2-pages）：4 个日程；待办 = 2 条提醒 + 2 条行动台待办 + 1 件等你回应的任务。
         XCTAssertTrue(app.staticTexts["4 个日程 · 5 个待办"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["today-next-card"].firstMatch.exists, "下一件大卡")
+        XCTAssertTrue(app.descendants(matching: .any)["today-now-banner"].firstMatch.exists, "下一件 + 身体横幅")
         XCTAssertFalse(app.descendants(matching: .any)["today-tip"].firstMatch.exists, "深色提示条已并进简报")
-        XCTAssertTrue(app.buttons["today-decision:task:task-2"].exists, "等你回应的任务在黄色大卡里")
+        app.buttons["today-deck-timeline"].tap()
         sleep(2)
         capture("today-top", app: app)
         // 横向时间轴：有「现在」线，卡片点进详情。
@@ -382,7 +382,8 @@ final class ComUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["3F 会议室"].exists)
         capture("today-event-detail", app: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        // 待办白卡里的过期提醒：点进去完成，回来灰字跟着少一件。
+        // 待办那一段里的过期提醒：切回待办，点进去完成，回来灰字跟着少一件。
+        app.buttons["today-deck-todo"].tap()
         let reminder = app.buttons["today-reminder:rm-late"]
         XCTAssertTrue(reminder.waitForExistence(timeout: 5))
         if !reminder.isHittable { app.swipeDown() }
@@ -390,9 +391,10 @@ final class ComUITests: XCTestCase {
         app.buttons["reminder-confirm"].tap()
         if !app.staticTexts["4 个日程 · 4 个待办"].exists { app.swipeDown() }
         XCTAssertTrue(app.staticTexts["4 个日程 · 4 个待办"].waitForExistence(timeout: 5))
-        app.buttons["today-decision:task:task-2"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["pending-task:task-2"].firstMatch.waitForExistence(timeout: 5))
-        capture("today-decision-detail", app: app)
+        // 10-17 黄色拍板卡拿掉了：等你回应的任务从标题旁的小按钮进「任务与目标」。
+        app.buttons["today-task-hub"].tap()
+        XCTAssertTrue(app.buttons["管理"].waitForExistence(timeout: 5))
+        capture("today-task-hub", app: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         // 工作页：空白新对话，侧栏按钮拉出历史。
         app.buttons["tab-工作"].tap()
@@ -437,13 +439,18 @@ final class ComUITests: XCTestCase {
         XCTAssertTrue(app.buttons["开始语音"].waitForExistence(timeout: 15))
         app.buttons["开始语音"].tap()
         XCTAssertTrue(app.staticTexts["正在录音"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["voice-auto-send"].exists)
+        // The reveal before auto-send is short now, so check the transcript surface while recording.
+        XCTAssertTrue(app.staticTexts["voice-rhythmic-text"].waitForExistence(timeout: 5))
+        sleep(1)
+        capture("voice-recording-edge-glow", app: app)
         app.buttons["完成录音"].tap()
         let text = "帮我整理今天的安排，再留一点时间去攀岩。"
-        XCTAssertTrue(app.staticTexts["voice-rhythmic-text"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["确认发送"].exists)
         XCTAssertTrue(app.buttons["开始语音"].waitForExistence(timeout: 8))
         let bubbles = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "chat-bubble-", text))
-        XCTAssertEqual(bubbles.count, 1)
+        let sent = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in bubbles.count == 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [sent], timeout: 8), .completed)
         sleep(2)
         XCTAssertEqual(bubbles.count, 1, "The accepted reply must replace the same voice outbox entry")
         capture("voice-auto-sent", app: app)

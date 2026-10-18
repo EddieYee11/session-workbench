@@ -71,6 +71,8 @@ class DeviceNodes:
         await ws.accept();old=self.sockets.get(node)
         if old:await old.close(code=1012)
         self.sockets[node]=ws
+        # 手机只有 App 在前台时才连得上：一连上就让人顺手拉一次手机健康 / 日历（回调自己判断要不要拉）。
+        if getattr(self,'on_connect',None):asyncio.create_task(self.on_connect(node))
         try:
             # Snapshot contains ACKed work, never resend uncertain side effects.
             with self.db() as d:rows=[json.loads(r[0]) for r in d.execute('SELECT data FROM invocations WHERE node=?',(node,))]

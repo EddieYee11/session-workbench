@@ -116,6 +116,14 @@ class PiRPC:
                 '--provider', 'opencode-go', '--model', 'deepseek-v4.1-flash',
                 '--session-dir', str(self.root / 'sessions'), '--no-context-files', '--no-extensions',
                 '--extension', str(Path(__file__).with_name('com-pi.ts'))]
+        # 2026-10-17：opencode-go 直连订阅已失效（403），后台 worker 跟随本机 Pi 默认通道（magpie 网关，同一个模型）。
+        try:
+            defaults = json.loads((Path.home() / '.pi/agent/settings.json').read_text())
+            if defaults.get('defaultProvider') and defaults.get('defaultModel'):
+                args[args.index('--provider') + 1] = defaults['defaultProvider']
+                args[args.index('--model') + 1] = defaults['defaultModel']
+        except (OSError, ValueError):
+            pass
         if self.name == 'main':
             from pi_main import MAIN_PROMPT
             # Com main uses the existing Pi subscription; other RPC lanes keep their defaults.

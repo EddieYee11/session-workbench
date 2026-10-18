@@ -2,6 +2,7 @@ import SwiftUI
 import ComCore
 
 // 聊天轨道（chat）· 「工作过程」：Eddie 说完话后，助手一侧一行实时显示它在做什么；
+// 10-17 起优先显示这一轮的 todo 清单（任务名 + 步骤），没有清单（闲聊）才退回工具步骤；
 // 做完折成「做了 N 步 · 用时 X 秒」。顶栏人物旁的手绘气泡读同一份「当前步骤」（AppModel.workBubble）。
 //
 // 数据就是后端已有的工具事件：用户消息的 `tasks`（kind=tool，tool / status / started_at / finished_at），
@@ -142,6 +143,24 @@ struct WorkGroup: Identifiable, Equatable, Sendable {
     }
 }
 
+/// 10-17：这一轮的 todo 清单（后端 turn_planner / Hermes turn_plan 写在用户消息 tasks 里 kind=plan）。有它就替代工具日志当思考过程。
+struct TurnPlan: Equatable, Sendable {
+    let title: String
+    let steps: [TodoStep]
+    let active: String
+    var done: Int { steps.filter { $0.status == "done" }.count }
+    static func from(_ entry: JSON) -> TurnPlan? {
+        let todos = entry["todos"].array
+        guard !todos.isEmpty else { return nil }
+        let steps = todos.map { t in
+            TodoStep(id: t["id"].string, text: t["content"].string,
+                     status: ["completed": "done", "in_progress": "doing", "blocked": "blocked", "skipped": "skipped"][t["status"].string] ?? "todo")
+        }
+        let active = todos.first { $0["status"].string == "in_progress" }?["active"].string ?? ""
+        return TurnPlan(title: entry["title"].string, steps: steps, active: active)
+    }
+}
+
 struct WorkProcess: Equatable, Sendable {
     let groups: [WorkGroup]
     let live: Bool
@@ -150,10 +169,15 @@ struct WorkProcess: Equatable, Sendable {
     let finishedAt: Double
     let durationMS: Double
     let seed: Int
+    var plan: TurnPlan? = nil
+    var messageID = ""
     var stepCount: Int { groups.reduce(0) { $0 + $1.steps.count } }
+    /// 3 步以上的轮次进了案例列表，可以回看。
+    var isCase: Bool { (plan?.steps.count ?? 0) >= 3 }
 
     /// 「当前步骤」：顶栏气泡和流里那一行共用。
     var current: String {
+        if let plan, live, !plan.active.isEmpty { return plan.active }
         if let group = groups.last, group.running { return group.liveText }
         if phase == "responding" || phase == "speaking" { return ["在组织回复", "开始写回复", "把结果理一理"][seed % 3] }
         if groups.isEmpty { return ["在想怎么办", "先理一理思路", "琢磨一下"][seed % 3] }
@@ -161,6 +185,7 @@ struct WorkProcess: Equatable, Sendable {
     }
     var summary: String {
         let seconds = durationMS > 0 ? durationMS / 1000 : max(0, finishedAt - startedAt)
+        if let plan { return (plan.title.isEmpty ? "" : plan.title + " · ") + "\(plan.done)/\(plan.steps.count) 步 · " + Self.duration(seconds) }
         return "做了 \(stepCount) 步 · 用时 " + Self.duration(seconds)
     }
     static func duration(_ seconds: Double) -> String {
@@ -182,7 +207,8 @@ struct WorkProcess: Equatable, Sendable {
             return WorkStep(id: task.id, tool: task["tool"].string, kind: kind, status: task["status"].string,
                             startedAt: task["started_at"].double, finishedAt: task["finished_at"].double)
         }
-        guard live || !steps.isEmpty else { return nil }
+        let plan = message["tasks"].array.first { $0["kind"].string == "plan" }.flatMap(TurnPlan.from)
+        guard live || !steps.isEmpty || plan != nil else { return nil }
         var groups: [WorkGroup] = []
         for step in steps {
             if let last = groups.last, last.kind == step.kind { groups[groups.count - 1].steps.append(step) }
@@ -192,7 +218,8 @@ struct WorkProcess: Equatable, Sendable {
         let end = steps.map(\.finishedAt).max() ?? 0
         return WorkProcess(groups: groups, live: live, phase: message["phase"].string,
                            startedAt: start, finishedAt: max(end, start), durationMS: message["summary"]["duration_ms"].double,
-                           seed: message.id.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xFFFF })
+                           seed: message.id.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xFFFF },
+                           plan: plan, messageID: message.id)
     }
 }
 
@@ -203,6 +230,7 @@ struct WorkProcessRow: View {
     let process: WorkProcess
     /// 后台派活的事件（不是主对话的工具调用），展开时附在后面。
     var extra: [JSON] = []
+    @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var open = false
     var body: some View {
@@ -216,10 +244,25 @@ struct WorkProcessRow: View {
                 .accessibilityHint(open ? "收起步骤" : "展开全部步骤")
             if open {
                 VStack(alignment: .leading, spacing: Space.xs) {
-                    ForEach(Array(process.groups.enumerated()), id: \.element.id) { index, group in
-                        StepLine(group: group, live: process.live && index == process.groups.count - 1 && group.running)
+                    if let plan = process.plan {
+                        // todo 清单就是思考过程：每步在干嘛一目了然；工具细节不再露出来
+                        TodoChecklist(steps: plan.steps, live: process.live)
+                        if process.stepCount > 0 {
+                            Text("动用了 \(process.stepCount) 次工具").font(.caption2).foregroundStyle(Palette.textTertiary).padding(.leading, 26)
+                        }
+                        if process.isCase {
+                            Button { model.presentedCase = "turn:" + process.messageID } label: {
+                                Label("在案例里回看", systemImage: "rectangle.stack").font(TypeScale.footnote.weight(.medium))
+                            }
+                            .buttonStyle(.plain).foregroundStyle(Palette.accentText).padding(.leading, 26).padding(.top, 2)
+                            .accessibilityIdentifier("work-process-case")
+                        }
+                    } else {
+                        ForEach(Array(process.groups.enumerated()), id: \.element.id) { index, group in
+                            StepLine(group: group, live: process.live && index == process.groups.count - 1 && group.running)
+                        }
+                        if process.groups.isEmpty { Text("还没动用工具，先在想。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary) }
                     }
-                    if process.groups.isEmpty { Text("还没动用工具，先在想。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary) }
                     ForEach(Array(extra.suffix(8).enumerated()), id: \.offset) { index, event in
                         StepRow(text: eventLabel(event), state: index < min(8, extra.count) - 1 ? .done : stepState(event), time: clockTime(event["at"].double))
                     }
@@ -240,6 +283,10 @@ struct WorkProcessRow: View {
         HStack(spacing: Space.sm) {
             if process.live {
                 WorkPulse()
+                if let plan = process.plan, !plan.title.isEmpty {
+                    Text(plan.title).font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary).lineLimit(1).layoutPriority(1)
+                    Text("\(plan.done)/\(plan.steps.count)").font(.caption2.monospacedDigit()).foregroundStyle(Palette.textTertiary)
+                }
                 Text(process.current)
                     .font(TypeScale.subheadline.weight(.medium)).foregroundStyle(Palette.textPrimary)
                     .contentTransition(.opacity)
@@ -252,7 +299,7 @@ struct WorkProcessRow: View {
                     }
                 }
             } else {
-                Image(systemName: "checkmark.circle").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
+                Image(systemName: process.isCase ? "rectangle.stack" : "checkmark.circle").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
                 Text(process.summary).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
             }
             Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.textTertiary)
@@ -263,7 +310,7 @@ struct WorkProcessRow: View {
     }
 }
 
-/// 展开后的一组：图标 + 合并说法 + 原始工具名小字 + 耗时。
+/// 展开后的一组：图标 + 合并说法 + 耗时（10-17 起不再露出原始工具名）。
 private struct StepLine: View {
     let group: WorkGroup
     let live: Bool
@@ -275,7 +322,6 @@ private struct StepLine: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(live ? group.liveText : group.doneText).font(TypeScale.footnote.weight(live ? .semibold : .regular))
                     .foregroundStyle(group.failures > 0 ? Palette.warning : live ? Palette.textPrimary : Palette.textSecondary)
-                Text(group.detail).font(.caption2.monospaced()).foregroundStyle(Palette.textTertiary).lineLimit(1)
             }
             Spacer(minLength: 0)
             if let seconds = duration { Text(seconds).font(.caption2).monospacedDigit().foregroundStyle(Palette.textTertiary) }

@@ -4,6 +4,38 @@ from contextlib import contextmanager
 from pathlib import Path
 from memory import ROOT,SENSITIVE,sources,sanitize,digest
 CATEGORIES=('关于我','工作','项目','生活','兴趣','健康','财务')
+# 手机上按「文件夹」浏览：比写入时的 category 粗一层、按用途分。category 仍是写入校验口径，不动。
+FOLDERS=(
+    {'name':'关于我','blurb':'身份、称呼和协作偏好'},
+    {'name':'工作','blurb':'搜狐、求职与职业发展'},
+    {'name':'创作','blurb':'视频号、素材与发布口径'},
+    {'name':'技能','blurb':'自动化、工程与排障方法'},
+    {'name':'设备','blurb':'电脑、手机、NAS 与网络'},
+    {'name':'项目','blurb':'Agent 系统与在做的工程'},
+    {'name':'生活','blurb':'记账、提醒、健康与兴趣'},
+)
+FOLDER_WORDS=(
+    ('关于我',('身份','协作偏好','Markdown排版')),
+    ('创作',('视频号','素材技术','内容偏好')),
+    ('设备',('设备','网络','内网','移动端','Tailscale','Windows','NAS','macOS','Macmini')),
+    ('技能',('自动化','前端工程','排障','EMFILE','微信数据','豆包','方法论')),
+    ('工作',('搜狐','求职')),
+    ('生活',('生活','记账','财务','健康','睡眠','运动','提醒','摩托车','攀岩','旅行')),
+)
+CATEGORY_FOLDER={'兴趣':'生活','健康':'生活','财务':'生活'}
+def folder_of(row,name=''):
+    if row.get('kind')=='knowledge':
+        return next((f for f,words in FOLDER_WORDS if any(w in name for w in words)),'项目')
+    return CATEGORY_FOLDER.get(row.get('category'),row.get('category') or '生活')
+def plain(text,limit=160):
+    """列表预览用的纯文本：去掉 Markdown 记号，免得手机上露出 ** 和反引号。"""
+    text=re.sub(r'`([^`]*)`',r'\1',text);text=re.sub(r'\*\*|__|\[(.*?)\]\(.*?\)',lambda m:m.group(1) or '',text)
+    text=re.sub(r'^\s*(?:[-*+]|\d+\.)\s+','',text,flags=re.M)
+    return re.sub(r'\s+',' ',text).strip()[:limit]
+def headline(text):
+    """对话里记住的事没有标题：取第一句，太长截断。"""
+    first=re.split(r'[。；;！!？?\n]',plain(text,400),maxsplit=1)[0]
+    return first if len(first)<=24 else first[:23]+'…'
 class MemoryCatalog:
     def __init__(self,root=ROOT):
         self.root=Path(root)/'_global/记忆库/Com'
@@ -84,7 +116,8 @@ class SharedKnowledgeCatalog:
             rows.append({
                 'id': 'doc_' + hashlib.sha256(relative.encode()).hexdigest()[:24],
                 'title': title, 'content': content, 'summary': '\n'.join(paragraphs)[:500],
-                'category': self.category(path.stem), 'kind': 'knowledge',
+                'category': self.category(path.stem), 'kind': 'knowledge', 'folder': folder_of({'kind': 'knowledge'}, path.stem),
+                'preview': plain('\n'.join(paragraphs)),
                 'read_only': True, 'updated_at': modified, 'version': 1,
                 'archived': False, 'history': [],
                 'source': {'type': 'shared_markdown', 'path': relative, 'sha256': digest(raw)},

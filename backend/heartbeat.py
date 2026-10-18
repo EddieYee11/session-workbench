@@ -70,7 +70,8 @@ class Heartbeat:
         try:checklist=self.checklist.read_text()[:500]
         except OSError:checklist='清单未找到，保持安静'
         priority={'running':0,'waiting':0,'queued':0,'dispatching':0,'unknown':1,'approval_required':1}
-        selected=sorted(tasks,key=lambda t:priority.get(t['status'],2))[:8]
+        # Finished/cancelled jobs are history, not something to speak up about (轨道 agent).
+        selected=sorted([t for t in tasks if t['status'] in priority],key=lambda t:priority[t['status']])[:8]
         value={'tasks':[{'title':t['title'][:40],'status':t['status'],'reason':t.get('block_reason','')[:80]} for t in selected],
                'proposals':[{'title':r['title'][:40],'reason':r.get('reason','')[:60]} for r in self.proposals.list() if r['status']=='proposed'][:4],
                'recent':[{'action':r['decision']['action'],'reason':r['decision']['reason'][:60]} for r in recent], 'checklist':checklist}

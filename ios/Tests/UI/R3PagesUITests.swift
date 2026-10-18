@@ -66,36 +66,56 @@ final class R3PagesUITests: XCTestCase {
 
     // MARK: 今天页
 
-    /// 驾驶舱：顶上简报、身体卡（点进 7 天明细）、一句话交代给 Com、建议卡和「全部建议」入口。
+    /// 10-17 收拢后的今天页：简报标题 + 可收起的要点（资讯左滑不感兴趣）、下一件 + 身体横幅两半各自展开、待办 / 时间线分段切换；
+    /// 微信、拍板、一句话交代和整行的任务入口都不在了，任务入口缩成标题旁的小按钮。
     @MainActor func testTodayCockpit() throws {
         let app = launch(tab: "今天")
         XCTAssertTrue(app.staticTexts["today-headline"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["today-headline"].label.contains("电量 47"))
+        let news = app.descendants(matching: .any)["today-brief-point-3"].firstMatch
+        XCTAssertTrue(news.waitForExistence(timeout: 3), "要点默认展开，4 条")
+        XCTAssertFalse(app.textFields["today-quick-add"].exists, "一句话交代已去掉")
+        XCTAssertFalse(app.descendants(matching: .any)["today-decision-card"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["today-task-hub"].exists, "任务入口缩成小按钮")
+        XCTAssertTrue(app.descendants(matching: .any)["today-deck"].firstMatch.exists)
+        pause(1.5)
+        capture("today-v2-top", app: app)
+        // 资讯左滑：不感兴趣，这条收起。
+        news.swipeLeft()
+        XCTAssertTrue(news.waitForNonExistence(timeout: 3), "左滑掉的资讯收起")
+        // 收起要点 → 再展开。
+        app.descendants(matching: .any)["today-brief-toggle"].firstMatch.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["today-brief-point-0"].firstMatch.waitForNonExistence(timeout: 3))
+        pause(1)
+        capture("today-v2-brief-collapsed", app: app)
+        // 身体那半：展开身体卡，再点进 7 天明细。
+        app.buttons["today-body-toggle"].tap()
         let body = app.buttons["today-body"]
-        XCTAssertTrue(body.exists)
+        XCTAssertTrue(body.waitForExistence(timeout: 3))
         pause(1.2)
-        capture("today-cockpit-top", app: app)
+        capture("today-v2-body-open", app: app)
         body.tap()
         XCTAssertTrue(app.descendants(matching: .any)["health-detail"].firstMatch.waitForExistence(timeout: 5))
-        pause(1)
-        capture("today-health-detail", app: app)
         app.navigationBars.buttons.firstMatch.tap()
         pause(1)
-        let field = app.textFields["today-quick-add"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        field.tap()
-        field.typeText("明天下午三点提醒我交报销")
-        XCTAssertTrue(app.buttons["today-quick-send"].waitForExistence(timeout: 2))
-        app.buttons["today-quick-send"].tap()
-        let sent = app.descendants(matching: .any)["today-quick-sent"].firstMatch
-        XCTAssertTrue(sent.waitForExistence(timeout: 3))
-        XCTAssertEqual(sent.label, "已交给 Com：明天下午三点提醒我交报销")
-        XCTAssertFalse(app.buttons["today-next-all"].exists, "建议回到「下一步」页")
+        // 下一件那半：换成表盘（身体收起，同一时刻只开一边）。
+        app.buttons["today-next-toggle"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["today-dial-now"].firstMatch.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["today-body"].exists)
+        pause(1.2)
+        capture("today-v2-dial-open", app: app)
+        app.buttons["today-next-toggle"].tap()
+        // 分段：切到时间线。
+        app.buttons["today-deck-timeline"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["today-timeline"].firstMatch.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.descendants(matching: .any)["today-todo-card"].firstMatch.exists)
+        pause(1.2)
+        capture("today-v2-timeline", app: app)
     }
 
     /// 半圈表盘：会动（每秒取一次现在）、外圈有整点时间、切眼前 / 半天 / 全天、点圆点进日程详情、沿弧拖读出时间。
     @MainActor func testTodayDialLiveAndInteractive() throws {
-        let app = launch(tab: "今天")
+        let app = launch(["--ui-today-dial"], tab: "今天")
         let now = app.descendants(matching: .any)["today-dial-now"].firstMatch
         XCTAssertTrue(now.waitForExistence(timeout: 15))
         pause(1.5)
@@ -186,7 +206,7 @@ final class R3PagesUITests: XCTestCase {
 
     /// 录屏用：表盘上那一摞点开、收起、再点开，抽帧看卡片长高 / 行错峰上浮 / 收起是否对称、有没有闪。
     @MainActor func testR3DialStackMotion() throws {
-        let app = launch(["--ui-r3-dense"], tab: "今天")
+        let app = launch(["--ui-r3-dense", "--ui-today-dial", "--ui-today-timeline"], tab: "今天")
         let stack = app.buttons["today-dial-stack"]
         XCTAssertTrue(stack.waitForExistence(timeout: 15))
         pause(3)
@@ -201,9 +221,9 @@ final class R3PagesUITests: XCTestCase {
     }
 
     /// 密集日程（现在固定 14:00）：表盘上的标记互不压、也不压「现在」点，三件挨着的并成一摞、点开在卡片里展开；
-    /// 时间线上卡片分道互不遮挡，全天的单独一行；页头那排圆不叠。
+    /// 时间线上卡片分道互不遮挡，全天的单独一行。（10-17 页头那排圆已去掉。）
     @MainActor func testR3DenseDialAndTimeline() throws {
-        let app = launch(["--ui-r3-dense"], tab: "今天")
+        let app = launch(["--ui-r3-dense", "--ui-today-dial", "--ui-today-timeline"], tab: "今天")
         let stack = app.buttons["today-dial-stack"]
         XCTAssertTrue(stack.waitForExistence(timeout: 15), "15:20 起三件挨着，并成一摞")
         pause(2.5)
@@ -219,12 +239,6 @@ final class R3PagesUITests: XCTestCase {
         for i in 0..<marks.count { for j in (i + 1)..<marks.count {
             let d = hypot(marks[i].1.x - marks[j].1.x, marks[i].1.y - marks[j].1.y)
             XCTAssertGreaterThanOrEqual(d + 0.5, marks[i].2 + marks[j].2, "\(marks[i].0) 和 \(marks[j].0) 叠在一起了")
-        } }
-        // 页头那排圆不叠。
-        let upcoming = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'today-upcoming-'")).allElementsBoundByIndex.map(\.frame)
-        XCTAssertGreaterThanOrEqual(upcoming.count, 2)
-        for i in 0..<upcoming.count { for j in (i + 1)..<upcoming.count {
-            XCTAssertFalse(upcoming[i].insetBy(dx: 0.5, dy: 0.5).intersects(upcoming[j]), "页头的圆叠在一起了")
         } }
         // 点开那一摞：卡片里展开三行，点一行进那件的详情。
         stack.tap()
@@ -253,5 +267,63 @@ final class R3PagesUITests: XCTestCase {
             XCTAssertFalse(frames[i].1.insetBy(dx: 0.5, dy: 0.5).intersects(frames[j].1), "\(frames[i].0) 和 \(frames[j].0) 叠在一起了")
         } }
         XCTAssertTrue(app.descendants(matching: .any)["today-now"].exists, "「现在」线还在")
+    }
+
+    // MARK: 健康页（10-17）
+
+    /// 健康页二版：一级只有恢复环 + 维度小环（点开冒一句）、「为什么」收着、建议卡堆（点翻面 / 右滑做完）、六格指标（点开 zoom 进趋势页）、活动徽章。
+    @MainActor func testHealthPage() throws {
+        let app = launch(tab: "健康")
+        XCTAssertTrue(app.descendants(matching: .any)["health-hero"].firstMatch.waitForExistence(timeout: 15))
+        XCTAssertEqual(app.staticTexts["health-headline"].label, "恢复不错，下午可以上强度")
+        XCTAssertFalse(app.descendants(matching: .any)["health-summary"].firstMatch.exists, "解释默认收着")
+        pause(1.8)
+        capture("health-v2-top", app: app)
+        app.buttons["health-dim-load"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["health-dim-note"].firstMatch.waitForExistence(timeout: 2))
+        app.buttons["health-why"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["health-summary"].firstMatch.waitForExistence(timeout: 2))
+        pause(1)
+        capture("health-v2-why", app: app)
+        app.buttons["health-why"].tap()
+        // 建议卡堆：点一下翻面，再右滑做完。
+        let card = app.descendants(matching: .any)["health-action-top"].firstMatch
+        for _ in 0..<4 where !(card.exists && card.frame.maxY < app.frame.maxY - 140) { app.swipeUp(velocity: 500); pause(0.6) }
+        card.tap()
+        pause(1)
+        capture("health-v2-card-flipped", app: app)
+        card.swipeRight(velocity: .fast)
+        pause(1)
+        XCTAssertEqual(app.descendants(matching: .any)["health-actions-progress"].firstMatch.label, "完成 1 / 4")
+        capture("health-v2-card-done", app: app)
+        // 指标方格 → HRV 趋势页。
+        let tile = app.buttons["health-tile-hrv"]
+        for _ in 0..<4 where !(tile.exists && tile.isHittable && tile.frame.maxY < app.frame.maxY - 120) { app.swipeUp(velocity: 500); pause(0.6) }
+        pause(0.8)
+        capture("health-v2-grid", app: app)
+        tile.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["health-hrv"].firstMatch.waitForExistence(timeout: 4))
+        app.buttons["health-span-7"].tap()
+        pause(1.2)
+        capture("health-v2-hrv-page", app: app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        pause(1)
+        for _ in 0..<4 where !app.buttons["health-activity-0"].exists { app.swipeUp(velocity: 500); pause(0.6) }
+        app.buttons["health-activity-0"].tap()
+        pause(1)
+        capture("health-v2-activity", app: app)
+    }
+
+    /// 顶栏的她：每个 tab 一套造型，切 tab 时跳一下换装。录屏抽帧看；这里每页落定后截一张顶栏。
+    @MainActor func testCharacterOutfitPerTab() throws {
+        let app = launch()
+        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
+        for tab in ["Com", "下一步", "今天", "健康", "工作"] {
+            app.buttons["tab-" + tab].tap()
+            pause(0.18)
+            capture("outfit-\(tab)-mid", app: app)
+            pause(1.2)
+            capture("outfit-\(tab)", app: app)
+        }
     }
 }

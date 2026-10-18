@@ -6,7 +6,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from calendar_bridge import CalendarBridge
 TZ=ZoneInfo('Asia/Shanghai')
-SOURCES={'gmail':900,'work_mail':900,'github':900,'apple_calendar':900,'google_calendar':900,'accounting':900,'garmin':1800,'phone_calendar':900,'phone_health':1800}
+SOURCES={'gmail':900,'work_mail':900,'github':900,'apple_calendar':900,'google_calendar':900,'accounting':900,'garmin':1800,'phone_calendar':900,'phone_health':1800,'wechat':3600,
+         'phone_reminders':900,'weather':3600,'sms':3600,'plaud':3600}
+# MBP 采集端经 SSH 推进来的源：这里不抓，只按最近一次推送判断通没通（秒）。
+PUSHED={'sms':3*3600,'plaud':3*3600}
+# 只喂「下一步」、不进简报卡的源（天气、手机提醒、短信、录音、此刻的位置/专注）。
+QUIET=('weather','phone_reminders','sms','plaud','context')
+WEATHER={0:'晴',1:'大致晴',2:'多云',3:'阴',45:'雾',48:'雾凇',51:'小毛毛雨',53:'毛毛雨',55:'大毛毛雨',61:'小雨',63:'中雨',65:'大雨',66:'冻雨',67:'强冻雨',
+         71:'小雪',73:'中雪',75:'大雪',77:'雪粒',80:'阵雨',81:'强阵雨',82:'暴雨',85:'阵雪',86:'强阵雪',95:'雷阵雨',96:'雷阵雨伴冰雹',99:'强雷阵雨伴冰雹'}
 class PersonalHub:
     def __init__(self,state,home=None):
         self.state=Path(state);self.home=Path(home or Path.home());self.path=self.state/'personal-hub.sqlite';self.lock=asyncio.Lock()
@@ -23,12 +30,14 @@ class PersonalHub:
     def configure(self,name,data):
         if name not in SOURCES:raise ValueError('Unsupported connector settings')
         if 'enabled' in data and not isinstance(data['enabled'],bool):raise ValueError('enabled must be boolean')
-        allowed={'work_mail':('host','username','password','port'),'garmin':('domain','username','password')}.get(name,())
+        allowed={'work_mail':('host','username','password','port','protocol','email'),'garmin':('domain','username','password'),'weather':('city','latitude','longitude')}.get(name,())
         cfg={**self.config(name),**{k:v for k,v in data.items() if k in (*allowed,'enabled')}}
         if any(k in data for k in allowed):
             if name=='work_mail':
                 if not all(isinstance(cfg.get(k),str) and cfg[k] for k in ('host','username','password')):raise ValueError('需要邮箱服务器、账号和专用密码')
                 if '/' in cfg['host'] or len(cfg['host'])>253:raise ValueError('Invalid mail hostname')
+                if cfg.get('protocol','imap') not in ('imap','ews'):raise ValueError('邮箱协议只支持 IMAP 或 Exchange(EWS)')
+                if cfg.get('protocol')=='ews' and '@' not in (cfg.get('email') or cfg['username']):raise ValueError('Exchange 需要邮箱地址（用于定位邮箱）')
             if name=='garmin' and cfg.get('domain') not in ('garmin.cn','garmin.com'):raise ValueError('Unsupported Garmin region')
         with self.db() as d:d.execute('INSERT OR REPLACE INTO connector_config VALUES (?,?)',(name,json.dumps(cfg)))
         return {'saved':True,'name':name,'enabled':cfg.get('enabled',True)}
@@ -121,7 +130,7 @@ class PersonalHub:
                 token=data.get('nextPageToken')
                 if not token:break
             return {'count':count,'updated_count':updated,'coverage':'最近30天分页读取；按原消息 ID 增量同步'}
-        if name=='work_mail':return await asyncio.to_thread(self.imap_sync)
+        if name=='work_mail':return await asyncio.to_thread(self.ews_sync if self.config('work_mail').get('protocol')=='ews' else self.imap_sync)
         if name=='github':
             data=await self.command(['gh','api','/notifications?all=true&since='+(now-timedelta(days=30)).isoformat(),'--jq','{items: .}'])
             for n in data.get('items',[]):self.matter(name,n['id'],n['subject']['title'],{'reason':n.get('reason'),'repository':n['repository']['full_name']},link=n['repository']['html_url'],source_updated_at=datetime.fromisoformat(n['updated_at'].replace('Z','+00:00')).timestamp(),deadline=None)
@@ -145,17 +154,54 @@ class PersonalHub:
             self.matter(name,result['month'],'本月账本',result,deadline=None)
             return {'count':result['count'],'coverage':result['month']}
         if name=='garmin':
-            data=await self.command([self.home/'.session-workbench/connectors-venv/bin/python',Path(__file__).parent/'garmin_source.py',self.config('garmin').get('domain','garmin.cn')],timeout=50)
-            self.matter(name,data['date'],'佳明健康记录',data,deadline=None)
-            return {'count':1,'coverage':data['date']}
-        if name in ('phone_calendar','phone_health'):
+            # 今天和昨天每次都重取（睡眠、HRV 会在醒后补齐）；再往前到 30 天（健康页的趋势）只补库里还没有、或还是旧版字段的，
+            # 每轮最多补 8 天，免得一次撞 150 秒超时；几轮之后自然补满。
+            dates=[(now.date()-timedelta(days=i)).isoformat() for i in range(30)]
+            have={r['source_id'] for r in self.matters() if r['source']=='garmin' and (r.get('facts') or {}).get('version',0)>=2}
+            dates=dates[:2]+[d for d in dates[2:] if d not in have][:8]
+            data=await self.command([self.home/'.session-workbench/connectors-venv/bin/python','-I',Path(__file__).parent/'garmin_source.py',self.config('garmin').get('domain','garmin.cn'),*dates],timeout=150)
+            for day in data['days']:
+                if day['measurements']:self.matter(name,day['date'],'佳明健康记录',{**day,'source':data['source']},deadline=None)
+            return {'count':len(data['days']),'coverage':dates[-1]+' 至 '+dates[0]}
+        if name=='wechat':
+            # 微信数据只在 MBP 上，采集端 backend/probes/wechat_digest.py --push-mini 经 SSH 写进来；
+            # 这里不抓取，只按已有摘要上报状态，让连接器页说清楚「通没通、多久没更新」。
+            rows=[r for r in self.matters() if r.get('source')==name]
+            if not rows:raise RuntimeError('还没收到微信摘要；确认 MBP 上的 com.eddie.wechat-digest 在跑')
+            latest=max(rows,key=lambda r:r.get('source_updated_at') or 0)
+            age=time.time()-(latest.get('source_updated_at') or 0)
+            if age>3*3600:raise RuntimeError(f'微信摘要已 {int(age//3600)} 小时没更新；检查 MBP 上的采集任务')
+            chats=len((latest.get('facts') or {}).get('chats') or [])
+            return {'count':chats,'coverage':f'{latest.get("title","")}；保留最近 48 小时'}
+        if name=='weather':
+            cfg=self.config('weather');city=cfg.get('city','北京')
+            import httpx
+            params={'latitude':cfg.get('latitude',39.9042),'longitude':cfg.get('longitude',116.4074),'timezone':'Asia/Shanghai','forecast_days':3,
+                    'daily':'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max'}
+            async with httpx.AsyncClient(timeout=20,trust_env=False) as client:
+                r=await client.get('https://api.open-meteo.com/v1/forecast',params=params);r.raise_for_status();d=r.json()['daily']
+            for i,day in enumerate(d['time']):
+                code=d['weather_code'][i]
+                self.matter(name,day,f"{city} {day[5:]} {WEATHER.get(code,'天气')}",{'city':city,'date':day,'text':WEATHER.get(code,''),'code':code,
+                    'high':d['temperature_2m_max'][i],'low':d['temperature_2m_min'][i],'rain_chance':d['precipitation_probability_max'][i],
+                    'rain_mm':d['precipitation_sum'][i],'wind_max':d['wind_speed_10m_max'][i]},deadline=None)
+            return {'count':len(d['time']),'coverage':f'{city} 未来 3 天（Open-Meteo）'}
+        if name in PUSHED:
+            rows=[r for r in self.matters() if r.get('source')==name]
+            if not rows:raise RuntimeError('还没收到 MBP 推来的数据；确认 MBP 上的 com.eddie.'+name+'-digest 在跑')
+            age=time.time()-max(r.get('updated_at') or 0 for r in rows)
+            if age>PUSHED[name]:raise RuntimeError(f'已 {int(age//3600)} 小时没收到 MBP 推送；检查 MBP 上的采集任务')
+            # 推送端写的说明（例如「MBP 信息库很久没新消息」）保留，不被这里的检查覆盖
+            return {'count':len(rows),'coverage':next((r.get('coverage') for r in self.status()['sources'] if r['name']==name and r.get('coverage')),'MBP 采集推送')}
+        if name in ('phone_calendar','phone_health','phone_reminders'):
             nodes=getattr(self,'device_nodes',None)
-            tool='health.summary' if name=='phone_health' else 'calendar.list'
+            tool={'phone_health':'health.summary','phone_calendar':'calendar.list','phone_reminders':'reminders.list'}[name]
             device=next((d for d in nodes.list() if d['online'] and any(c['tool']==tool and c['permission'] and c.get('available',True) for c in d['capabilities'])),None) if nodes else None
             if not device:raise RuntimeError('没有在线且已授权的手机来源；请打开 App 并检查权限与同步设置')
-            args={'days':7} if name=='phone_health' else {'days':30}
+            args={'days':7} if name=='phone_health' else {} if name=='phone_reminders' else {'days':30}
             row=await nodes.call(device['id'],tool,args,'sync-'+name+'-'+str(int(time.time()*1000)))
             if row['status']!='succeeded':raise RuntimeError('手机数据不可读：'+row['status'])
+            if name=='phone_reminders':return self.ingest_reminders(row)
             return self.ingest_phone(row)
         raise ValueError('Unknown connector')
     async def google_calendar(self,now):
@@ -178,6 +224,21 @@ class PersonalHub:
             async with httpx.AsyncClient(timeout=25,trust_env=False) as client:
                 response=await client.get('https://www.googleapis.com/calendar/v3/calendars/'+quote(settings['id'],safe='')+'/events',headers={'Authorization':'Bearer '+key},params={'timeMin':(now-timedelta(days=7)).isoformat(),'timeMax':(now+timedelta(days=30)).isoformat(),'singleEvents':'true','maxResults':250})
                 response.raise_for_status();return response.json()
+    def ingest_reminders(self,row):
+        """iPhone 提醒事项：未完成的全量覆盖（手机上删了 / 完成了的，这里一并删掉）。"""
+        items=[i for i in (row.get('result') or {}).get('items',[]) if not i.get('completed')]
+        for i in items:self.matter('phone_reminders',i['id'],i.get('title') or '提醒事项',{'title':i.get('title',''),'due':i.get('due'),'notes':str(i.get('notes') or '')[:400]},deadline=i.get('due'))
+        keep={i['id'] for i in items}
+        with self.db() as d:
+            for ident,sid in d.execute('SELECT id,source_id FROM matters WHERE source=?',('phone_reminders',)).fetchall():
+                if sid not in keep:d.execute('DELETE FROM matters WHERE id=?',(ident,))
+        return {'count':len(items),'coverage':'iPhone 提醒事项（未完成）','node':row['node']}
+    def context(self,kind,value,place=''):
+        """快捷指令推来的此刻状态：到了哪 / 开了什么专注。只留最新一条，给「下一步」看。"""
+        if kind not in ('place','focus'):raise ValueError('只接受 place 或 focus')
+        value=str(value or '').strip()[:60]
+        if not value:raise ValueError('缺少内容')
+        return self.matter('context',kind,value,{'kind':kind,'value':value,'event':str(place or '')[:20]},deadline=None)
     def ingest_phone(self,row):
         data=row.get('result') or {};name='phone_health' if row['tool']=='health.summary' else 'phone_calendar'
         with self.db() as db:
@@ -192,6 +253,31 @@ class PersonalHub:
                 facts={**e,'start':start,'end':end,'source':e.get('source') or data.get('source') or '手机 CalendarProvider','node':row['node']}
                 self.matter(name,row['node']+':'+str(e['event_id'])+':'+start,e.get('title','手机日程'),facts,deadline_type='calendar_event',deadline=start)
         return {'count':1 if name=='phone_health' else len(data.get('items',[])),'coverage':str(data.get('start',''))+' 至 '+str(data.get('end','')),'node':row['node']}
+    def ews_sync(self):
+        """搜狐这类只开 OWA/EWS、不开 IMAP 的 Exchange：用 NTLM 读收件箱邮件头，不改已读状态。"""
+        cfg=self.config('work_mail')
+        if not cfg:raise RuntimeError('工作邮箱未连接：需要 Exchange 服务器、域账号与密码')
+        from exchangelib import Credentials,Configuration,Account,NTLM,DELEGATE,EWSDateTime,EWSTimeZone
+        import exchangelib
+        exchangelib.BaseProtocol.TIMEOUT=30
+        address=cfg.get('email') or cfg['username']
+        config=Configuration(server=cfg['host'],credentials=Credentials(cfg['username'],cfg['password']),auth_type=NTLM)
+        account=Account(primary_smtp_address=address,config=config,autodiscover=False,access_type=DELEGATE)
+        since=EWSDateTime.from_datetime(datetime.now(TZ)-timedelta(days=30)).astimezone(EWSTimeZone('Asia/Shanghai'))
+        namespace='work_mail:ews:'+hashlib.sha256((cfg['host']+':'+address).encode()).hexdigest()
+        items=list(account.inbox.filter(datetime_received__gt=since).only('id','subject','sender','datetime_received','conversation_id').order_by('-datetime_received')[:300])
+        updated=0
+        for item in items:
+            uid=item.id
+            if self.seen(namespace,uid):continue
+            thread=item.conversation_id.id if item.conversation_id else uid
+            sender=item.sender.email_address if item.sender else ''
+            name=item.sender.name if item.sender and item.sender.name else ''
+            received=item.datetime_received
+            stamp=received.timestamp() if received else 0
+            self.matter('work_mail',thread,item.subject or '邮件',{'from':(name+' <'+sender+'>' if name else sender),'date':received.isoformat() if received else '','uid':uid},source_updated_at=stamp,deadline=None)
+            self.mark_seen(namespace,uid);updated+=1
+        return {'count':len(items),'updated_count':updated,'coverage':'最近30天收件箱；Exchange EWS 增量，仅邮件头，不改变已读状态'}
     def imap_sync(self):
         cfg=self.config('work_mail')
         if not cfg:raise RuntimeError('工作邮箱未连接：需要 IMAP 服务器、账号与专用密码')
@@ -233,22 +319,47 @@ class PersonalHub:
             await asyncio.gather(*(one(n) for n in names))
             self.briefing()
             return self.status()
+    async def sync_phone(self,fresh=600):
+        """手机节点刚连上时调：手机健康 / 日历上次成功超过 fresh 秒就强制拉一次（定时同步多半碰不上 App 在前台的那几分钟）。"""
+        await asyncio.sleep(1)  # 等节点的收消息循环先跑起来，调用结果才回得来
+        rows={r['name']:r for r in self.status()['sources']}
+        for name in ('phone_health','phone_calendar','phone_reminders'):
+            row=rows.get(name,{})
+            # 上次成功和上次尝试都超过 fresh 才拉：手机端出错时不会每次连上都再触发一遍（10-15 提醒事项闪退循环的教训）
+            if time.time()-max(row.get('updated_at') or 0,row.get('attempted_at') or 0)>fresh:await self.sync(name,force=True)
     def status(self):
         with self.db() as d:rows={k:json.loads(v) for k,v in d.execute('SELECT name,data FROM sources')}
         return {'sources':[{**rows.get(n,{'name':n,'status':'not_synced','interval_seconds':interval}),**({'status':'disconnected'} if self.config(n).get('enabled',True) is False else {}),'enabled':self.config(n).get('enabled',True)} for n,interval in SOURCES.items()],
                 'connections':{'gmail':{'action':'Google OAuth','required':'在 mini 的既有 gws 授权入口重新授权 Gmail/Calendar'},'work_mail':{'action':'IMAP','fields':['host','username','password','port']},'garmin':{'action':'existing_session','regions':['garmin.cn','garmin.com']}},'timezone':'Asia/Shanghai','morning_at':'09:00'}
+    def health(self,days=7):
+        """最近 N 天的身体数据：Garmin 一天一条（旧版只有 5 个字段的记录照样返回），今天没有 Garmin 时附上最新的手机健康快照。"""
+        today=datetime.now(TZ).date();want=[(today-timedelta(days=i)).isoformat() for i in range(max(1,min(30,days)))]
+        rows={r['source_id']:r for r in self.matters() if r['source']=='garmin'}
+        out=[]
+        for date in reversed(want):
+            r=rows.get(date)
+            if not r:continue
+            f=r.get('facts') or {}
+            out.append({'date':date,'measurements':f.get('measurements') or {},'body_battery_curve':f.get('body_battery_curve') or [],'activities':f.get('activities') or [],'missing':f.get('missing') or [],'updated_at':r.get('updated_at')})
+        phone=max((r for r in self.matters() if r['source']=='phone_health'),key=lambda r:r.get('updated_at') or 0,default=None)
+        status={s['name']:s for s in self.status()['sources'] if s['name'] in ('garmin','phone_health')}
+        current=out[-1] if out and out[-1]['date']==want[0] else None
+        return {'date':want[0],'today':current,'days':out,'phone':(phone or {}).get('facts') if not current else None,
+                'sources':{k:{'status':v.get('status'),'updated_at':v.get('updated_at'),'error':v.get('error') or ''} for k,v in status.items()}}
     def briefing(self):
         rows=self.matters();now=time.time();cards=[]
         for r in rows:
             f=r['feedback'];action=f.get('action')
             if action in ('handled','mute') or action=='later' and f.get('until',0)>now:continue
+            if r['source']=='garmin' and r.get('source_id')!=datetime.now(TZ).date().isoformat():continue  # 历史天数只给趋势用，不进简报
+            if r['source'] in QUIET:continue
             if r['source'] in ('apple_calendar','google_calendar','phone_calendar') and r.get('deadline'):
                 try:
                     end=r.get('facts',{}).get('end')
                     if isinstance(end,dict):end=end.get('dateTime',end.get('date'))
                     if datetime.fromisoformat(end or r['deadline']).replace(tzinfo=TZ).timestamp()<now:continue
                 except ValueError:pass
-            cards.append({**r,'what':r['title'],'why':{'gmail':'与你的个人邮件往来有关','work_mail':'来自工作邮箱的事项','github':'你关注的项目有新动态','apple_calendar':'来自苹果日历的个人安排','google_calendar':'来自 Google 日历的安排','accounting':'本月真实账目汇总','garmin':'已同步的身体与运动数据'}.get(r['source'],'你正在处理的事项'),
+            cards.append({**r,'what':r['title'],'why':{'gmail':'与你的个人邮件往来有关','work_mail':'来自工作邮箱的事项','github':'你关注的项目有新动态','apple_calendar':'来自苹果日历的个人安排','google_calendar':'来自 Google 日历的安排','accounting':'本月真实账目汇总','garmin':'已同步的身体与运动数据','wechat':'微信里有人在等你'}.get(r['source'],'你正在处理的事项'),
                 'next_step':'结合资料分析并提出下一步','suggested_at':now,'suggested_time_is_deadline':False,'user_correction':f.get('correction'),'action_context':{'matter_id':r['id'],'goal':'分析这件事并给出下一步','facts':r['facts'],'source':r['source'],'feedback':f}})
         def order(r):
             try:due=datetime.fromisoformat(r.get('deadline') or '').replace(tzinfo=TZ).timestamp()

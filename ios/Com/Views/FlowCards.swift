@@ -141,16 +141,19 @@ extension AppModel {
     }
     var stripCaption: String {
         if !isPaired { return "先连上 Mac mini" }
+        // 10-17：这一轮有 todo 清单时，锁屏/灵动岛直接说「任务名 · 正在做的那步」
+        if let plan = liveProcess?.plan, !plan.active.isEmpty { return plan.title.isEmpty ? plan.active : plan.title + " · " + plan.active }
         switch stage.state {
         case .offline: return "正在恢复连接"
         case .failed: return "遇到了问题，看流里的说明"
         case .delivered: return "已送达，在下面"
         case .review: return "这一步等你点头"
         case .idle, .waiting:
-            if decisionCount > 0 { return "\(decisionCount) 件等你点头" }
+            if waitingCount > 0 { return "\(waitingCount) 件等你" }
             if let broken = brokenSources.first { return "读不到 " + sourceName(broken["name"].string) + " 了" }
             if stage.state == .waiting { return "还在等新进展" }
             if nextUrgentCount > 0 { return "有 \(nextUrgentCount) 件现在就该做" }
+            if casesData["active"].int > 0 { return "Com 正在办 \(casesData["active"].int) 个案例" }
             return "在这儿，随时叫我"
         case .searching: return "在翻找相关资料"
         case .remembering: return "在想之前记下的事"
