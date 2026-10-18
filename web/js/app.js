@@ -8,14 +8,17 @@ import { icon, act, ACT, closeSheets, sheetOpen } from './ui.js';
 import { mountChat, renderChat, workBubble, focusChat } from './chat.js';
 import { renderNext } from './next.js';
 import { renderToday, setTodayRender } from './today.js';
+import { renderHealth, refreshHealth } from './health.js';
 import { mountWork, renderWork, renderWorkComposer, W, newChat, workHead, titleMenuHTML, poll as pollWork } from './work.js';
 import { menuHTML } from './sheets.js';
 import { waitingCount } from './cases.js';
 
+// 与 iOS SectionTab.dock 一致：对话、下一步、今天、健康、工作（tint 同 Chrome.swift DockItem.tint）
 const TABS = [
   { id: 'chat', name: 'Com', ic: 'smile', tint: 'var(--accent-text)' },
   { id: 'next', name: '下一步', ic: 'boot', tint: '#8C54F2' },
   { id: 'today', name: '今天', ic: 'timeline', tint: 'var(--info)' },
+  { id: 'health', name: '健康', ic: 'heart', tint: 'var(--hue-pink-ink)' },
   { id: 'work', name: '工作', ic: 'grid', tint: 'var(--warning)' },
 ];
 if (!TABS.some((t) => t.id === S.tab)) S.tab = 'chat';
@@ -151,6 +154,8 @@ function renderDock() {
   const badges = { today: waitingCount(), next: nextUrgentCount() };
   $('#dock').innerHTML = TABS.map((t, i) => html`<button class="dock-item ${S.tab === t.id ? 'on' : ''}" style="--tint:${raw(t.tint)}" data-act="go-tab" data-tab="${t.id}" aria-label="${t.name}" title="${t.name}（⌘${i + 1}）">
     ${icon(t.ic)}${S.tab === t.id ? html`<span class="dock-name">${t.name}</span>` : ''}${S.tab !== t.id && badges[t.id] ? html`<b class="badge-count">${Math.min(99, badges[t.id])}</b>` : ''}</button>`).join('');
+  // 徽标挂在右上角（iOS CountBadge(offset: 4,-3)），未选中才显示
+
 }
 
 // ─── 页面切换 ───
@@ -172,7 +177,7 @@ function renderPage(tab) {
   // 正在输入框里打字时不整页重画
   if (el.contains(document.activeElement) && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
   const sc = el.scrollTop;
-  if (tab === 'next') renderNext(el); else if (tab === 'today') renderToday(el);
+  if (tab === 'next') renderNext(el); else if (tab === 'today') renderToday(el); else if (tab === 'health') renderHealth(el);
   el.scrollTop = sc;
 }
 onTab(showTab);
@@ -180,6 +185,7 @@ setTodayRender(() => { if (S.tab === 'today') renderPage('today'); });
 onChange((keys) => {
   if (!S.token) return;
   renderTop(); renderDock();
+  if (S.tab === 'health' && [...keys].some((k) => k.startsWith('/personal/health'))) renderPage('health');
   if (S.tab === 'next' || S.tab === 'today') {
     const relevant = ['/personal/next', '/personal/today', '/personal/connectors', '/personal/finance', '/personal/agency', '/personal/tasks', '/personal/work/proposals?limit=20', '/personal/automations', 'stage', '*'];
     if (relevant.some((k) => keys.has(k))) renderPage(S.tab);

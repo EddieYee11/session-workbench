@@ -358,6 +358,7 @@ export async function refresh(tab) {
     case 'chat': { const d = await load('/personal/conversation'); if (d) applyConversation(d, true); break; }
     case 'next': await Promise.all([load('/personal/next'), load('/personal/connectors'), load('/personal/finance'), load('/personal/plan'), load('/personal/cases')]); break;
     case 'today': await Promise.all([refreshFlow(), load('/personal/today', { timeout: 60000 }), load('/personal/automations'), load('/personal/cases')]); break;
+    case 'health': await Promise.all([load('/personal/health?days=30'), load('/personal/health/insight')]); break;
     case 'work': await Promise.all([load('/personal/projects'), load('/sessions')]); break;
   }
 }

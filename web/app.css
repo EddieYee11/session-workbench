@@ -882,3 +882,57 @@ details.menu > summary::-webkit-details-marker { display: none; }
 .wx-wait, .todo-wait { display: flex; flex-direction: column; gap: 6px; padding: 10px 4px; border-bottom: 1px solid var(--line, rgba(28,29,25,.06)); }
 .todo-wait { flex-direction: row; align-items: center; flex-wrap: wrap; }
 .wx-wait .actions { padding-left: 40px; }
+
+/* ─── 健康 Tab（js/health.js，对齐 iOS HealthView） ─── */
+.health .health-hero { display: flex; align-items: center; gap: 18px; padding: 18px; border-radius: 22px; background: var(--card, #fff); box-shadow: var(--shadow); margin-bottom: 12px; }
+.hero-ring { position: relative; width: 112px; height: 112px; flex: none; }
+.hero-ring svg { width: 112px; height: 112px; transform: rotate(-90deg); display: block; }
+.ring-track, .ring-fill { fill: none; stroke-width: 8; }
+.ring-track { stroke: var(--fill, rgba(28,29,25,.06)); }
+.ring-fill { stroke: var(--accent, #D1F263); stroke-linecap: round; transition: stroke-dasharray .8s var(--spring, cubic-bezier(.2,.9,.3,1.2)); }
+.hero-num { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.hero-num b { font-size: 30px; line-height: 1; font-weight: 700; }
+.hero-num small { font-size: 11px; color: var(--muted, #74756E); margin-top: 4px; }
+.hero-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.hero-text b { font-size: 16px; line-height: 1.35; }
+.hero-text p { margin: 0; font-size: 13px; color: var(--muted, #74756E); line-height: 1.5; }
+.dim-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
+.dim { position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 4px 10px; border: 0; border-radius: 18px; background: var(--card, #fff); box-shadow: var(--shadow); cursor: pointer; color: inherit; font: inherit; }
+.dim svg { width: 56px; height: 56px; transform: rotate(-90deg); display: block; }
+.dim i { position: absolute; top: 24px; left: 50%; transform: translateX(-50%); display: grid; place-items: center; }
+.dim i .ic { width: 16px; height: 16px; }
+.dim small { font-size: 12px; font-weight: 600; margin-top: 4px; }
+.dim em { font-style: normal; font-size: 11px; }
+.health .stack { display: flex; flex-direction: column; gap: 10px; }
+.health .action { display: flex; flex-direction: column; gap: 6px; }
+.health .action p { margin: 0; font-size: 13px; color: var(--muted, #74756E); line-height: 1.5; }
+.metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0 14px; }
+.metric { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; border: 0; border-radius: 18px; background: var(--card, #fff); box-shadow: var(--shadow); cursor: pointer; color: inherit; text-align: left; font: inherit; }
+.metric .ic { width: 16px; height: 16px; color: var(--muted, #74756E); }
+.metric small { font-size: 11px; color: var(--muted, #74756E); }
+.metric b { font-size: 17px; font-weight: 600; }
+.activity { display: flex; align-items: flex-end; gap: 8px; height: 110px; padding: 14px 14px 10px; }
+.act-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 6px; height: 100%; }
+.act-col i { width: 100%; max-width: 26px; border-radius: 8px 8px 4px 4px; background: var(--accent, #D1F263); display: block; }
+.trend { display: flex; align-items: flex-end; gap: 6px; height: 160px; margin-top: 12px; }
+.trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; height: 100%; }
+.trend-col i { width: 100%; max-width: 22px; border-radius: 6px; background: var(--pi, #4A7149); display: block; }
+.trend-col small { font-size: 9px; }
+.health .page-head .sub { font-size: 14px; }
+@media (max-width: 420px) { .dim-row { grid-template-columns: repeat(2, 1fr); } .metric-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* 对齐 iOS DockItem：选中是一颗胶囊（图标+名字，带该页 tint）；未选中只有图标，徽标挂在右上角 */
+.dock-item .badge-count { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; font-size: 11px; line-height: 14px; }
+.dock-item:not(.on) .badge-count { z-index: 1; }
+.dock-item.on { min-width: 48px; }
+body[data-tab="health"] .dock-item.on { color: var(--hue-pink-ink); }
+
+/* 页面底部留出 Dock 的真实高度（iOS ComDock.height = 48 + 8 + 4），下一步/今天/健康都不被挡住 */
+:root { --dock-clear: calc(48px + 12px + 14px + 28px); }
+.page-host.scroll { padding-bottom: 0; }
+.page-host.scroll > .page { padding-bottom: calc(var(--dock-clear) + 12px); }
+
+/* 与 iOS TodayHue.pink.ink 同值（浅色 B23C68 / 深色 FFA8C6），让健康 Tab 与今天页的粉色一致 */
+:root { --hue-pink-ink: #B23C68; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --hue-pink-ink: #FFA8C6; } }
+:root[data-theme="dark"] { --hue-pink-ink: #FFA8C6; }

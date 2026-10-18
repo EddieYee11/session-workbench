@@ -12,7 +12,8 @@ export const W = {
   mode: 'home', generation: 0, sessionID: '', metadata: {}, snapshot: {}, history: [], live: {}, outgoing: [], loaded: false, note: '',
   models: [], modelsFor: '', selection: '', effort: '', directory: store.get('work.dir', ROOT), homeDraft: '', sessionDraft: '',
   lastAgent: store.get('work.lastAgent', 'codex'), host: store.get('work.host', 'mini'), filter: store.get('work.agent', ''),
-  sidebar: store.get('work.sidebar', window.innerWidth >= 1180), limit: 40, sending: false, openSteps: new Set(), jump: '',
+  // 与 iOS 一致：历史对话默认收起，只由左上角按钮打开；用户手动开过才记住
+  sidebar: store.get('work.sidebar', false), limit: 40, sending: false, openSteps: new Set(), jump: '',
 };
 const agent = () => (W.mode === 'home' ? W.lastAgent : W.mode === 'snapshot' ? W.snapshot.agent : W.metadata.agent) || 'codex';
 const status = () => W.live.status || W.metadata.status || '';

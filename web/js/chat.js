@@ -326,7 +326,7 @@ export function renderComposer() {
     <form class="composer glass" id="composer">
       <div class="plus-wrap"><button type="button" class="round fill" data-act="composer-plus" aria-label="附件与成果">${icon(S.uploading ? 'hourglass' : 'plus')}</button>
         <div class="menu-pop hidden" id="plusMenu"><button type="button" data-act="pick-file">${icon('doc')}选择文件</button><button type="button" data-act="open-search">${icon('tray')}查看成果</button></div></div>
-      <textarea id="chatInput" rows="1" placeholder="发消息（Enter 发送，Shift+Enter 换行，⌘K 聚焦）" aria-label="发消息"></textarea>
+      <textarea id="chatInput" rows="1" placeholder="发消息" aria-label="发消息" title="Enter 发送，Shift+Enter 换行，⌘K 聚焦"></textarea>
       <span id="composerAction"></span>
       <input type="file" id="fileInput" multiple hidden>
     </form>`.s;
