@@ -140,7 +140,7 @@ function deliveryLine(m, pending, process) {
   const bad = m.status === 'failed' || m.status === 'unknown';
   return html`<div class="delivery ${bad ? 'warn' : ''}">${icon(bad ? 'warning' : 'check')}<span>${DELIVERY[m.status] || '已送达'}</span></div>`;
 }
-/** todo 清单（案例详情和思考过程共用）。status：todo / doing / done / blocked / skipped。 */
+/** todo 清单（航程详情和思考过程共用）。status：todo / doing / done / blocked / skipped。 */
 export function checklist(steps, live = true) {
   const mark = { done: 'checkCircle', blocked: 'warning' };
   return html`<div class="checklist">${steps.map((x) => html`<div class="check-step ${x.status} ${live ? 'live' : ''}">${x.status === 'doing' && live ? raw('<i class="pulse"></i>') : x.status in mark ? icon(mark[x.status]) : raw('<i class="ring"></i>')}<span>${x.text}</span></div>`)}</div>`;
@@ -150,7 +150,7 @@ export function processRow(p, open, key, extra = []) {
     // todo 清单就是思考过程；工具细节不再露出来
     const body = open ? html`<div class="steps">${checklist(p.plan.steps, p.live)}
       ${p.toolCount ? html`<small class="muted small tool-count">动用了 ${p.toolCount} 次工具</small>` : ''}
-      ${p.isCase ? html`<button class="link case-link" data-act="case-open" data-id="turn:${p.messageID}">${icon('layers')}在案例里回看</button>` : ''}${extra}</div>` : '';
+      ${p.isCase ? html`<button class="link case-link" data-act="case-open" data-id="turn:${p.messageID}">${icon('layers')}在航程里回看</button>` : ''}${extra}</div>` : '';
     const head = p.live
       ? html`<i class="pulse"></i>${p.plan.title ? html`<b class="plan-title">${p.plan.title}</b><small class="mono muted">${p.plan.done}/${p.plan.steps.length}</small>` : ''}<span class="cur">${p.current}</span><span class="elapsed" data-since="${p.start}"></span>`
       : html`${icon(p.isCase ? 'layers' : 'checkCircle')}<span class="sum">${p.summary}</span>`;

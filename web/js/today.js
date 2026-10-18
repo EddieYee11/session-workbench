@@ -5,7 +5,7 @@ import {
 } from './core.js';
 import { icon, act, stamp, empty, openSheet, pushSheet, kv, section, countUp } from './ui.js';
 import { pendingNoteHTML } from './sheets.js';
-import { todayCasesStrip, threadStrip } from './cases.js';
+import { threadStrip } from './cases.js';
 
 // ─── 条目（TodayEntry） ───
 const settling = new Set();
@@ -263,7 +263,6 @@ export function renderToday(root) {
       <small class="faint">${running ? '重新整理中' : nd.updated_at > 0 ? '整理于 ' + relativeTime(nd.updated_at) : '从日程、身体、邮件和微信里看'}</small></div>
       <button class="round fill small ${running ? 'spinning' : ''}" data-act="next-refresh" ${running ? raw('disabled') : ''} aria-label="重新整理今天">${icon('refresh')}</button></div>
     ${nextUpCard(timed, events, now)}
-    ${todayCasesStrip()}
     ${bodyCard()}
     <div class="duo">${todoCard(todos)}${decisionCard(decisions)}</div>
     <div class="quick-add rise" style="--d:240ms"><form class="qa" id="quickAdd">${icon('plus')}<input id="quickInput" placeholder="记一件事，或让 Com 去办…" autocomplete="off"><button class="round ink small hidden" id="quickSend" aria-label="交给 Com">${icon('arrowUp')}</button></form><p class="qa-sent" id="qaSent"></p></div>
@@ -411,7 +410,7 @@ function todayDetail(e) {
           ${v.path ? threadStrip('todo:' + v.path) : ''}
           ${v.next_step ? html`<div class="card"><small class="label">下一步</small><p class="lined">${v.next_step}</p></div>` : ''}
           <div class="card list">${kv('项目', v.project)}${kv('备注', v.note)}${kv('来源', 'Obsidian 行动台')}</div>
-          <button class="btn primary full" data-act="todo-delegate" data-path="${v.path || ''}">交给 Com（开一个案例）</button>
+          <button class="btn primary full" data-act="todo-delegate" data-path="${v.path || ''}">交给 Com（开一段航程）</button>
           <p class="mono faint small">${v.path || ''}</p>`;
       }
       const cur = flowItems.find((i) => e.pending && i.id === e.pending.id);

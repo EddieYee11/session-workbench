@@ -297,8 +297,6 @@ struct TodayView: View {
                     .modifier(EnterRise(on: shown, delay: 0.08))
                 NowBanner(next: next, timed: events, now: now, shown: shown)
                     .modifier(EnterRise(on: shown, delay: 0.14))
-                TodayCasesStrip()  // 10-17：进行中的案例串到今天页，点开看到哪一步
-                    .modifier(EnterRise(on: shown, delay: 0.17))
                 TodayDeck(todos: todos, timed: timed, allDay: entries.filter { $0.kind == .event && $0.start == 0 }, now: now, shown: shown,
                           complete: complete, postpone: { entry in Task { await model.postponeTodayEntry(entry) } })
                     .modifier(EnterRise(on: shown, delay: 0.2))
@@ -1428,7 +1426,7 @@ private struct TodoRow: View {
             if !checked {
                 Button(entry.kind == .todo ? "改到明天" : "晚 1 小时", systemImage: "arrow.uturn.forward") { postpone() }
                 Button("完成", systemImage: "checkmark.circle") { check() }
-                // 10-17：待办也能交给 Com，走同一套案例，跑完自动打勾。
+                // 10-17：待办也能交给 Com，走同一套航程，跑完自动打勾。
                 if entry.kind == .todo && !entry.value["path"].string.isEmpty {
                     Button("交给 Com", systemImage: "paperplane") {
                         Task { if let id = await model.delegateTodo(entry.value["path"].string) { model.presentedCase = id } }

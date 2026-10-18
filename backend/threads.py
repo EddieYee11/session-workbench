@@ -1,9 +1,9 @@
-"""线索（2026-10-18）：把下一步、待办、案例、对话、执行会话、项目页串成一条线，每张卡片都能看到上下游并互相跳转。
+"""线索（2026-10-18）：把下一步、待办、航程、对话、执行会话、项目页串成一条线，每张卡片都能看到上下游并互相跳转。
 
 节点统一写成「类型:ID」：
   next:<建议 id>  todo:<任务/待处理/x.md>  case:<task_id 或 turn:消息>  msg:<用户消息 id>  session:<sid>  project:<项目名>
-关系在创建的地方记下（交给 Com、加到待办、对话派活、明天建议落地、案例结论回流），存 threads.sqlite；
-另有两种隐式关系查询时现补：待办 →（关联项目）→ 项目页、案例 →（执行）→ Pi 会话。
+关系在创建的地方记下（交给 Com、加到待办、对话派活、明天建议落地、航程结论回流），存 threads.sqlite；
+另有两种隐式关系查询时现补：待办 →（关联项目）→ 项目页、航程 →（执行）→ Pi 会话。
 展示信息（标题、状态、怎么打开）由 app.py 注入的 resolver 现查，线索本身不存业务数据。
 """
 import sqlite3, time
@@ -52,7 +52,7 @@ class Threads:
         return edges
 
     def thread(self, key, depth=3, limit=12, resolve=None, implicit=None):
-        """从 key 出发沿关系走 depth 步，返回整条线（按 对话→下一步→待办→案例→会话→项目 排好）。"""
+        """从 key 出发沿关系走 depth 步，返回整条线（按 对话→下一步→待办→航程→会话→项目 排好）。"""
         seen, frontier, edges = {key}, [key], set()
         for _ in range(depth):
             nxt = []

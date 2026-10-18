@@ -153,7 +153,7 @@ extension AppModel {
             if let broken = brokenSources.first { return "读不到 " + sourceName(broken["name"].string) + " 了" }
             if stage.state == .waiting { return "还在等新进展" }
             if nextUrgentCount > 0 { return "有 \(nextUrgentCount) 件现在就该做" }
-            if casesData["active"].int > 0 { return "Com 正在办 \(casesData["active"].int) 个案例" }
+            if casesData["active"].int > 0 { return "Com 正在办 \(casesData["active"].int) 段航程" }
             return "在这儿，随时叫我"
         case .searching: return "在翻找相关资料"
         case .remembering: return "在想之前记下的事"

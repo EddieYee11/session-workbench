@@ -820,7 +820,7 @@ body.dropping .drop-hint { display: grid; }
 .card.row > .grow, .card.row > span.grow { display: flex; flex-direction: column; }
 .stage-title { position: static; align-self: flex-start; margin: 4px 0 0 4px; }
 
-/* ─── 2026-10-17/18 案例 · 线索 · 等你 · 明天建议（js/cases.js） ─── */
+/* ─── 2026-10-17/18 航程 · 线索 · 等你 · 明天建议（js/cases.js） ─── */
 .cases-entry { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; background: var(--card, #fff); font: 600 12px/1 inherit; color: var(--ink, #1C1D19); border: 0; cursor: pointer; }
 .cases-entry.warn { color: var(--amber-ink, #85662A); }
 .cases-entry .ic { width: 13px; height: 13px; }
@@ -936,3 +936,22 @@ body[data-tab="health"] .dock-item.on { color: var(--hue-pink-ink); }
 :root { --hue-pink-ink: #B23C68; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --hue-pink-ink: #FFA8C6; } }
 :root[data-theme="dark"] { --hue-pink-ink: #FFA8C6; }
+
+/* ─── 航程入口（下一步页大卡，对齐 iOS VoyageBanner；头像菜单行用 route 图标） ─── */
+.voyage-banner { display: flex; flex-direction: column; gap: 10px; width: 100%; text-align: left; border: 0; cursor: pointer; padding: 18px; margin: 0 0 14px; border-radius: 22px; background: var(--ink, #1C1D19); color: #fff; box-shadow: var(--shadow); }
+.voyage-banner .ic { width: 15px; height: 15px; color: var(--accent, #D1F263); }
+.voyage-banner .vb-top { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.voyage-banner .vb-top b { color: #fff; }
+.voyage-banner .vb-top em { font-style: normal; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: rgba(209,242,99,.18); color: var(--accent, #D1F263); }
+.voyage-banner .vb-top em.warn { background: rgba(233,196,120,.2); color: #E9C478; }
+.voyage-banner .vb-title { font-size: 17px; font-weight: 600; line-height: 1.35; }
+.voyage-banner .vb-line { display: flex; align-items: center; gap: 7px; font-size: 13px; color: rgba(255,255,255,.68); }
+.voyage-banner .vb-line.warn { color: #E9C478; }
+.voyage-banner .vb-bar { display: flex; align-items: center; gap: 10px; }
+.voyage-banner .vb-bar .trk { flex: 1; height: 6px; border-radius: 99px; background: rgba(255,255,255,.16); overflow: hidden; }
+.voyage-banner .vb-bar i { display: block; height: 100%; border-radius: 99px; background: var(--accent, #D1F263); transition: width .5s cubic-bezier(.2,.9,.3,1); }
+.voyage-banner .vb-bar small { color: rgba(255,255,255,.68); font-size: 11px; }
+.voyage-banner .vb-more { display: flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--accent, #D1F263); }
+.voyage-quiet { display: flex; align-items: center; gap: 8px; width: 100%; height: 44px; padding: 0 16px; margin: 0 0 14px; border: 0; border-radius: 14px; background: var(--card, #fff); color: inherit; cursor: pointer; text-align: left; }
+.voyage-quiet .ic { width: 14px; height: 14px; }
+.voyage-quiet small { flex: 1; color: var(--muted, #74756E); }

@@ -153,7 +153,7 @@ private struct RootItemSheets: ViewModifier {
             .sheet(item: Binding(get: { model.selectedConnector.map(RemoteRow.init) }, set: { model.selectedConnector = $0?.value })) { ConnectorSheet(source: $0.value) }
             .sheet(item: Binding(get: { model.selectedTask.map(RemoteRow.init) }, set: { model.selectedTask = $0?.value })) { TaskDetailView(task: $0.value).presentationDragIndicator(.visible) }
             .sheet(item: Binding(get: { model.selectedMatter.map(RemoteRow.init) }, set: { model.selectedMatter = $0?.value })) { MatterDetailView(matter: $0.value).presentationDragIndicator(.visible) }
-            // 10-17 案例：聊天里的案例卡、今天页、推送深链都从这里打开
+            // 10-17 航程：聊天里的航程卡、今天页、推送深链都从这里打开
             .sheet(item: Binding(get: { model.presentedCase.map { RemoteRow(.object(["id": .string($0)])) } }, set: { model.presentedCase = $0?.id })) { CaseSheet(id: $0.id) }
             .sheet(isPresented: Binding(get: { model.showCases }, set: { model.showCases = $0 })) { CasesSheet() }
             .sheet(isPresented: Binding(get: { model.showWaiting }, set: { model.showWaiting = $0 })) { WaitingSheet() }

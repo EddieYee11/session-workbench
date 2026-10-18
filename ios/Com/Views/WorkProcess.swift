@@ -172,7 +172,7 @@ struct WorkProcess: Equatable, Sendable {
     var plan: TurnPlan? = nil
     var messageID = ""
     var stepCount: Int { groups.reduce(0) { $0 + $1.steps.count } }
-    /// 3 步以上的轮次进了案例列表，可以回看。
+    /// 3 步以上的轮次进了航程列表，可以回看。
     var isCase: Bool { (plan?.steps.count ?? 0) >= 3 }
 
     /// 「当前步骤」：顶栏气泡和流里那一行共用。
@@ -252,7 +252,7 @@ struct WorkProcessRow: View {
                         }
                         if process.isCase {
                             Button { model.presentedCase = "turn:" + process.messageID } label: {
-                                Label("在案例里回看", systemImage: "rectangle.stack").font(TypeScale.footnote.weight(.medium))
+                                Label("在航程里回看", systemImage: "rectangle.stack").font(TypeScale.footnote.weight(.medium))
                             }
                             .buttonStyle(.plain).foregroundStyle(Palette.accentText).padding(.leading, 26).padding(.top, 2)
                             .accessibilityIdentifier("work-process-case")

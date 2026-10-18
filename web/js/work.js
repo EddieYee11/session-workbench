@@ -27,11 +27,11 @@ export function workStatusLabel(s) { return ({ starting: '正在派出', ready: 
 export const workHead = () => agentName(agent());
 
 function reset(keep) { W.history = []; W.live = {}; W.outgoing = []; W.note = ''; W.loaded = false; if (!keep) { W.selection = ''; W.effort = ''; } W.generation++; }
-/** 10-18 会话↔案例互通：这段是某个案例的执行会话，一键回到案例。 */
+/** 10-18 会话↔航程互通：这段是某段航程的执行会话，一键回到航程。 */
 function caseBanner() {
   if (W.mode !== 'session') return '';
   const owner = ((D('/sessions') || {}).sessions || []).find((x) => x.id === W.sessionID);
-  return owner && owner.case_id ? html`<button class="case-banner" data-act="case-open" data-id="${owner.case_id}">${icon('layers')}案例「${owner.case_title}」的执行会话 · 看案例</button>` : '';
+  return owner && owner.case_id ? html`<button class="case-banner" data-act="case-open" data-id="${owner.case_id}">${icon('layers')}航程「${owner.case_title}」的执行会话 · 看航程</button>` : '';
 }
 export function openSession(s) { W.mode = 'session'; W.sessionID = s.id; W.metadata = s; W.snapshot = {}; reset(); W.sessionDraft = store.get('work.draft.' + s.id, '') || ''; poll(true); changed('work'); }
 function openSnapshot(item) { W.mode = 'snapshot'; W.sessionID = ''; W.metadata = {}; W.snapshot = item; reset(); poll(true); changed('work'); }
@@ -259,7 +259,7 @@ function renderSidebar() {
     <div class="side-list">${!shown.length ? html`<p class="faint small pad">${loading ? '正在汇总两台电脑的会话…' : S.errors['/sessions'] ? '会话列表没读到：' + S.errors['/sessions'] : W.host === 'macbook' ? 'MacBook 的会话每 15 分钟同步一次。' : '这里还没有对话。'}</p>` : ''}
       ${days.map(([d, ts]) => html`<h4>${d}</h4>${ts.map((t) => html`<button class="thread ${current && ((t.session && t.session.id === current) || (t.item && t.item.id === current)) ? 'on' : ''}" data-act="work-open-thread" data-id="${t.id}">${agentAvatar(t.agent, 34)}
         <span class="grow"><span class="row between"><b>${t.title}</b><small class="faint">${relativeTime(t.updated)}</small></span>${t.summary || t.project ? html`<small class="sub clamp2">${t.summary || t.project}</small>` : ''}
-        <small class="faint meta">${toneLabel(t.status) ? html`<span class="st ${tone(t.status)}"><i></i>${toneLabel(t.status)}</span>` : ''}${!W.filter ? html`<span>${agentName(t.agent)}</span>` : ''}${t.project && t.summary ? html`<span>${t.project}</span>` : ''}${!t.session ? html`<span>${icon('eye')}只读</span>` : ''}</small>${t.session && t.session.case_title ? html`<small class="case-tag">${icon('layers')}案例 · ${t.session.case_title}</small>` : ''}</span></button>`)}`)}
+        <small class="faint meta">${toneLabel(t.status) ? html`<span class="st ${tone(t.status)}"><i></i>${toneLabel(t.status)}</span>` : ''}${!W.filter ? html`<span>${agentName(t.agent)}</span>` : ''}${t.project && t.summary ? html`<span>${t.project}</span>` : ''}${!t.session ? html`<span>${icon('eye')}只读</span>` : ''}</small>${t.session && t.session.case_title ? html`<small class="case-tag">${icon('layers')}航程 · ${t.session.case_title}</small>` : ''}</span></button>`)}`)}
       ${shown.length > W.limit ? html`<button class="btn quiet full" data-act="work-more">再看更早的 ${shown.length - W.limit} 段</button>` : ''}</div>`.s;
   const list = el.querySelector('.side-list'); if (list) list.scrollTop = scroll;
 }

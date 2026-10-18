@@ -15,10 +15,10 @@ CONTEXTUAL_FOLLOWUP = re.compile(r'\s*(?:请|帮我)?(?:验收|合入|合并)(?:
 RESTRICTION_ONLY = re.compile(r'^(?:不要|别|禁止|不许|保持|只读|限制|只能|只做)')
 MONEY_NUMBER=r'[0-9零〇一二两三四五六七八九十百千万亿]+(?:[.点][0-9零〇一二两三四五六七八九]+)?'
 MONEY=re.compile(r'(?P<yuan>'+MONEY_NUMBER+r')\s*(?:元|圆|块钱?|块)(?:\s*(?P<jiao>[0-9零〇一二两三四五六七八九])\s*(?:毛|角)(?:\s*(?P<fen>[0-9零〇一二两三四五六七八九])\s*分?)?|\s*(?P<only_fen>[0-9零〇一二两三四五六七八九])\s*分|\s*(?P<tail>[0-9零〇一二两三四五六七八九]{1,2})(?![0-9零〇一二两三四五六七八九十百千万亿]))?')
-COINS=re.compile(r'(?P<jiao>[0-9零〇一二两三四五六七八九])\s*(?:毛|角)(?:\s*(?P<fen>[0-9零〇一二两三四五六七八九])\s*分?)?|(?P<only_fen>[0-9零〇一二两三四五六七八九])\s*分(?!钟)')
+COINS=re.compile(r'(?P<jiao>[0-9零〇一二两三四五六七八九])\s*(?:毛|角(?![洲形度色板尺架楼函钢铁]))(?:\s*(?P<fen>[0-9零〇一二两三四五六七八九])\s*分?)?|(?P<only_fen>[0-9零〇一二两三四五六七八九])\s*分(?!钟)')
 BOOK_VERB=re.compile(r'记(?:个|一下|一笔|一条)?账|记一(?:笔|条)|记一下|记下|记录(?:一下|这笔|一笔)?')
 # 无单位中文数字金额（语音常见）：后面若不是量词/时间单位、也不是另一个汉字，才当成金额。
-CN_AMOUNT=re.compile(r'(?<![\d零〇一二两三四五六七八九十百千万亿.])[零〇一二两三四五六七八九十百千万亿]+(?![\d零〇一二两三四五六七八九十百千万亿])')
+CN_AMOUNT=re.compile(r'(?<![\d零〇一二两三四五六七八九十百千万亿.周期拜第])[零〇一二两三四五六七八九十百千万亿]+(?![\d零〇一二两三四五六七八九十百千万亿])')
 CN_AMOUNT_TRAILING=re.compile(r'(?:左右|多|来|余|整|以上|以下)?\s*(?:[。，,！!？?、；;：:）)】\]"\'\s]|$)')
 CN_QUANTITY=re.compile(r'(?:个|笔|条|次|件|份|名|人|位|台|张|本|瓶|杯|套|层|楼|排|遍|周|星期|季|度|岁|斤|公斤|克|升|公里|千米|米|厘米|毫米|分钟|秒|小时|天|年|月|日|号|点|折|成|%|％)')
 EXPENSE_FACT=re.compile(r'花费|花了|消费|支出|付了|支付|付款|到账|收入|收了')
@@ -68,7 +68,7 @@ def _money_matches(text):
             value=Decimal(match[1])
             if value>0:matches.append((match.start(),match.end(),value));covered.append(match.span())
     # Bare Arabic amounts are common ASR output. Exclude dates, times and quantities.
-    for match in re.finditer(r'(?<![\d./:：-])\d+(?:\.\d{1,2})?(?![\d./:：-]|\s*(?:年|月|日|号|点|个|笔|条|次|件|分钟|秒|小时|天|公里|米|岁|折|%))',text):
+    for match in re.finditer(r'(?<![\d./:：-])\d+(?:\.\d{1,2})?(?![\d./:：-]|\s*(?:年|月|日|号|点|个|笔|条|次|件|份|页|遍|行|台|张|本|位|套|名|人|只|辆|瓶|杯|层|楼|周|星期|分钟|秒|小时|天|公里|米|岁|折|%))',text):
         if not any(start<=match.start()<end for start,end in covered):
             value=Decimal(match[0])
             if value>0:matches.append((match.start(),match.end(),value))

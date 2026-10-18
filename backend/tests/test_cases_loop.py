@@ -1,4 +1,4 @@
-"""2026-10-17 案例 + 下一步/待办闭环 + 明天建议。"""
+"""2026-10-17 航程 + 下一步/待办闭环 + 明天建议。"""
 import asyncio, json, sys, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -68,7 +68,7 @@ def test_delegate_creates_pi_case_and_finish_links_back(tmp_path):
     assert result['mode'] == 'case'
     task = store.list()[0]
     assert task['agent'] == 'pi' and task['interactive'] and task['status'] == 'queued' and task['case_source'] == 'next'
-    assert '[Com 案例规则]' in task['prompt'] and task['authorization']['entry'] == 'case_button'
+    assert '[Com 航程规则]' in task['prompt'] and task['authorization']['entry'] == 'case_button'
     # 同一条再点一次：不重复建
     again = asyncio.run(cases.delegate('next', item['id'], item['title'], item['prompt'], 'req-delegate-0002'))
     assert again['task_id'] == result['task_id'] and len(store.list()) == 1
@@ -250,10 +250,10 @@ def test_case_conclusion_flows_back_to_todo_and_project(tmp_path):
     store.finish(tid, 'execution_finished', '**已核对 12 张发票**，差 1 张\n其余已提交')
     cases.sync()
     text = todo.read_text(encoding='utf-8')
-    assert '- 2026-10-05 建立\n- 2026-10-17 Com 案例「交报销单」完成：已核对 12 张发票，差 1 张\n\n## 备注' in text
+    assert '- 2026-10-05 建立\n- 2026-10-17 Com 航程「交报销单」完成：已核对 12 张发票，差 1 张\n\n## 备注' in text
     assert '状态: 已完成' in text  # 回流后再打勾
     project = (steps.vault / '项目' / '合同与劳务结算.md').read_text(encoding='utf-8')
-    assert '## 进展\n\n- 2026-10-17 Com 案例「交报销单」完成' in project and project.index('## 进展') < project.index('## 笔记')
+    assert '## 进展\n\n- 2026-10-17 Com 航程「交报销单」完成' in project and project.index('## 进展') < project.index('## 笔记')
     links = cases.threads.thread('case:' + tid, resolve=lambda k: {'title': k})
     assert {n['key'] for n in links['nodes']} >= {'todo:任务/待处理/交报销单.md', 'project:合同与劳务结算'}
     assert any(t['text'].startswith('结论已写进') for t in cases.detail(tid)['timeline'])

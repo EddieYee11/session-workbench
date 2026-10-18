@@ -331,7 +331,7 @@ async def lifespan(app):
 
     next_task = asyncio.create_task(next_loop())
 
-    # 10-17：案例跑完联动下一步/待办（15 秒一次）；每晚 21:30 生成并推送明天建议。
+    # 10-17：航程跑完联动下一步/待办（15 秒一次）；每晚 21:30 生成并推送明天建议。
     async def case_loop():
         await asyncio.sleep(25)
         while True:
@@ -1126,7 +1126,7 @@ async def sessions(
         if s["managed"]:
             s["model"] = managed[s["id"]].get("model", "")
             s["effort"] = managed[s["id"]].get("effort", "")
-            # 10-18 会话↔案例互通：这段会话是哪个案例的执行会话
+            # 10-18 会话↔航程互通：这段会话是哪段航程的执行会话
             task_id = managed[s["id"]].get("task_id", "")
             if task_id and task_id in case_titles:
                 s["case_id"], s["case_title"] = task_id, case_titles[task_id]
@@ -2367,7 +2367,7 @@ async def notification_disable(ident: str):
 @app.get("/personal/next")
 async def personal_next():
     snap = next_steps.snapshot()
-    with contextlib.suppress(Exception):  # 下一步页右上角「案例 · N 进行中」入口
+    with contextlib.suppress(Exception):  # 下一步页右上角「航程 · N 进行中」入口
         listing = await asyncio.to_thread(cases.list)
         snap["cases"] = {"active": listing["active"], "waiting": listing["waiting"], "total": len(listing["items"])}
     return snap
@@ -2391,7 +2391,7 @@ async def personal_news_feedback(ident: str, request: Request):
 async def personal_next_action(ident: str, request: Request):
     data = await request.json()
     action = data.get("action")
-    # 2026-10-17：「交给 Com」建案例（旧客户端的 discuss 同样走案例；Hermes 判断是小事时才回到主对话）
+    # 2026-10-17：「交给 Com」建航程（旧客户端的 discuss 同样走航程；Hermes 判断是小事时才回到主对话）
     if action in ("discuss", "delegate"):
         return await delegate_next(ident, _case_request_id(data))
     if action == "todo":
@@ -2489,8 +2489,8 @@ async def personal_today_todo_postpone(request: Request):
     )
 
 
-# ---- 2026-10-17 案例（交给 Com）+ 下一步/待办闭环 + 明天建议 ------------------------------------
-# 需求：docs/COM_CASES_AND_NEXT_LOOP_REQ_20261017.md。案例底座是 task_store，cases.sqlite 只存来源/步骤/假设/产出。
+# ---- 2026-10-17 航程（交给 Com）+ 下一步/待办闭环 + 明天建议 ------------------------------------
+# 需求：docs/COM_CASES_AND_NEXT_LOOP_REQ_20261017.md。航程底座是 task_store，cases.sqlite 只存来源/步骤/假设/产出。
 from cases import BRIEF_INSTRUCTIONS as CASE_BRIEF_INSTRUCTIONS
 from cases import Cases
 from tomorrow_plan import TomorrowPlan
@@ -2611,7 +2611,7 @@ async def next_to_todo(ident, day, remind_at=None):
 
 @app.post("/personal/today/todos/delegate")
 async def personal_today_todo_delegate(request: Request):
-    """待办也能交给 Com：同一套案例，跑完自动打勾。"""
+    """待办也能交给 Com：同一套航程，跑完自动打勾。"""
     data = await request.json()
     path = data.get("path")
     todo = next((t for t in await asyncio.to_thread(today_view.todo_index) if t["path"] == path), None)
@@ -2658,7 +2658,7 @@ def _obsidian_url(rel):
 
 
 def thread_resolvers():
-    """每次查线索现建一套：同一请求里案例列表只读一次。"""
+    """每次查线索现建一套：同一请求里航程列表只读一次。"""
     from today import _front
 
     memo = {}
@@ -2677,7 +2677,7 @@ def thread_resolvers():
         kind, _, ident = key.partition(":")
         if kind == "case":
             c = case_rows().get(ident)
-            return c and {"title": c["title"], "state": c["state_label"], "tone": c["state"], "at": c["created_at"], "label": "案例"}
+            return c and {"title": c["title"], "state": c["state_label"], "tone": c["state"], "at": c["created_at"], "label": "航程"}
         if kind == "next":
             try:
                 item = next_steps.get(ident)
@@ -2749,7 +2749,7 @@ WECHAT_SELF = {"我", "高杰", "野望", "野哥", "小野", "Eddie"}
 
 
 def waiting_items():
-    """统一「等你」（审批卡在 App 里另有数据，由客户端并进来）：等你批准的案例、过期待办、微信里有人在等回话。"""
+    """统一「等你」（审批卡在 App 里另有数据，由客户端并进来）：等你批准的航程、过期待办、微信里有人在等回话。"""
     import re
     from datetime import timedelta
 

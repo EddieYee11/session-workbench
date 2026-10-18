@@ -1,7 +1,7 @@
 // 「下一步」：它把邮件、日程、项目、任务和账本收拢成几件现在值得做的事（iOS NextView.swift）。
 import { S, $, html, raw, nextData, nextItems, brokenSources, sourceName, relativeTime, clockTime, nextAction, refreshNext, onChange, D, yuan, agentName, hostName, agencyCards, tasks } from './core.js';
 import { icon, act, stamp, empty, section, pushSheet, openSheet } from './ui.js';
-import { casesEntry, planCard, nextActions } from './cases.js';
+import { voyageBanner, planCard, nextActions } from './cases.js';
 
 const EV_ICON = { mail: 'envelope', event: 'calendar', project: 'desktop', task: 'checklist', finance: 'card', goal: 'scope', wechat: 'message', health: 'heart', todo: 'checklist', inbox: 'tray', reminder: 'bell', sms: 'message', plaud: 'waveform', weather: 'cloud' };
 const EV_NAME = { mail: '邮件', event: '日程', project: '项目', task: '任务', finance: '账本', goal: '目标', wechat: '微信', health: '身体', todo: '行动台', inbox: '速记', reminder: '提醒事项', sms: '短信', plaud: '录音纪要', weather: '天气' };
@@ -79,9 +79,10 @@ export function renderNext(root) {
   const open = new Set([...root.querySelectorAll('.pocket.open')].map((p) => p.dataset.pocket));
   let n = 0;
   root.innerHTML = html`<div class="page">
-    <div class="page-head rise"><div class="row between"><p class="sub">${data.running ? '正在重新整理…' : '我从邮件、日程、项目和账本里挑的'}</p>${casesEntry()}</div>
+    <div class="page-head rise"><div class="row between"><p class="sub">${data.running ? '正在重新整理…' : '我从邮件、日程、项目和账本里挑的'}</p></div>
       ${data.updated_at > 0 ? html`<small class="muted">上次整理 ${relativeTime(data.updated_at)}${data.source === 'rule' ? ' · 模型没接上，先按规则排' : ''}</small>` : ''}
       ${S.errors['/personal/next'] ? html`<small class="danger-text">${S.errors['/personal/next']}</small>` : ''}</div>
+    ${voyageBanner()}
     ${planCard()}
     ${brokenSources().map(sourceBrokenNote)}
     ${data.running ? buildingCard(data.progress) : !nextItems().length && D('/personal/next') ? empty('眼下没有要提的事', '我每小时会自己再看一遍；有新邮件、新日程或项目有进展，会整理成下一步放在这里。', 'sparkles') : ''}

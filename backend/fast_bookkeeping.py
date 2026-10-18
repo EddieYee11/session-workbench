@@ -89,7 +89,7 @@ def _comment(text):
 def parse(text):
     """返回 ezbookkeeping 的记账参数；返回 None 表示交回 Hermes（模糊回退）。"""
     external = quote_free(text)
-    if not external or not bookkeeping_intent(external):
+    if not external or not bookkeeping_intent(external) or not _looks_like_statement(external):
         return None
     amounts = {value for value in money_amounts(external)}
     if len(amounts) != 1:
@@ -114,6 +114,19 @@ def parse(text):
     }
 
 
+# 正常提问、交办、长段说明里常带数字（时间、数量、型号），不能因此被当成一笔账。
+# 记账口述都很短、是陈述句：下面任何一条命中就不出候选卡，原样交给 Hermes 去答。
+_QUESTION = re.compile(r'[？?]|(?:吗|呢|么|嘛)\s*[。.!！]?$|(?:如何|怎么|怎样|为什么|为啥|是否|是不是|能不能|可不可以|有没有|有哪些|哪些|什么时候|多久|是什么|区别|对比|比较|整理|检索|总结|分析|解释|介绍|调用|检查|汇总)')
+_REQUEST = re.compile(r'(?:帮我|请|麻烦|给我|替我)(?!.{0,2}记)')
+_CODEISH = re.compile(r'https?://|~/|/[A-Za-z_]+/|\.(?:py|md|json|swift|js|ts|csv|xlsx)\b|`')
+MAX_STATEMENT_CHARS = 48
+
+
+def _looks_like_statement(text):
+    """是不是一句简短的花销陈述：不是提问、不是交办、不是长文，也不带路径/代码。"""
+    return not (len(text) > MAX_STATEMENT_CHARS or _QUESTION.search(text) or _REQUEST.search(text) or _CODEISH.search(text))
+
+
 def parse_candidate(text):
     """模糊记账只产出待确认候选，绝不授权写入。
 
@@ -124,6 +137,8 @@ def parse_candidate(text):
     if not external or bookkeeping_query(external) or BOOK_BLOCK.search(external):
         return None
     if re.search(r"我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)", external):
+        return None
+    if not _looks_like_statement(external):
         return None
     hits = _money_matches(external)
     if len(hits) != 1:

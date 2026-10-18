@@ -120,7 +120,7 @@ class PushNotifications:
             with self.conversation.db() as chat:
                 found=chat.execute('SELECT text FROM messages WHERE id=?',(row['message_id'],)).fetchone()
             if found and found[0]:body=str(found[0]).strip().replace('\n',' ')[:80]
-        # 10-17：明天建议点开到下一步页的建议卡，案例回执/等你点开到案例列表；其余照旧回对话
+        # 10-17：明天建议点开到下一步页的建议卡，航程回执/等你点开到航程列表；其余照旧回对话
         mid=str(row['message_id'])
         url='com-eddie://plan' if mid.startswith('task-result:plan:') else 'com-eddie://cases' if mid.startswith(('task-result:case-wait:','task-result:task_')) else 'com-eddie://today'
         payload={'device_key':cfg['device_key'],'title':'Com','body':body,'group':'com','url':url,'isArchive':'1'}

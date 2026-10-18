@@ -621,7 +621,7 @@ class PersonalConversation:
         return row["id"] if row else None
 
     def turn_record(self, mid: str) -> dict | None:
-        """一轮对话的状态和最终回复（案例列表回看用）。"""
+        """一轮对话的状态和最终回复（航程列表回看用）。"""
         with self.db() as db:
             user = db.execute("SELECT id,text,status,created_at,updated_at FROM messages WHERE id=?", (mid,)).fetchone()
             if not user:

@@ -244,6 +244,12 @@ private struct MenuContent: View {
         guard !money.isNull else { return "本月账目" }
         return "\(monthName())已花 ¥" + (money["month_minor"].double / 100).formatted(.number.precision(.fractionLength(0)))
     }
+    private var voyageNote: String {
+        let c = model.casesData
+        if c["waiting"].int > 0 { return "\(c["waiting"].int) 段停下来等你" }
+        if c["active"].int > 0 { return "\(c["active"].int) 段进行中 · 看它每一步怎么做的" }
+        return "Com 自己开的 session 和每一步操作"
+    }
     private var connectorNote: (String, Bool) {
         let broken = model.brokenSources
         if let first = broken.first { return ((broken.count > 1 ? "\(broken.count) 个来源" : sourceName(first["name"].string)) + "需要重新授权", true) }
@@ -254,7 +260,8 @@ private struct MenuContent: View {
             row("记忆", "搜索、分类、纠正它记住的事", symbol: "brain") { model.showMemory = true }
             row("账本", ledger, symbol: "creditcard") { model.showFinance = true }
             row("连接器", connectorNote.0, symbol: "link", warning: connectorNote.1) { model.showConnectors = true }
-            row("看她的工作台", "也可以按住她往下拉", symbol: "rectangle.3.group") { model.openStage() }
+            // 10-18：原「看她的工作台」换成航程（Com 自己开的 session 和每一步操作）；下拉工作台的手势保留
+            row("航程", voyageNote, symbol: "location.north.line", warning: model.casesData["waiting"].int > 0) { model.showCases = true }
             row("设置", "", symbol: "slider.horizontal.3") { model.showSettings = true }
         }
         .padding(.vertical, Space.sm).padding(.horizontal, Space.sm)

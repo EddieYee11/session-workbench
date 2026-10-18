@@ -2,15 +2,15 @@ import SwiftUI
 import ComCore
 
 // 线索 + 统一「等你」（2026-10-18）。
-// 线索：每张卡片都能看到上下游（对话 → 下一步 → 待办 → 案例 → 执行会话 → 项目页），点哪一环就跳到哪。后端 backend/threads.py（/personal/thread）。
-// 等你：审批卡（App 里已有的 pendingItems）+ 等你批准的案例 + 微信在等回话 + 过期待办，一个角标一个收件箱。后端 /personal/waiting。
+// 线索：每张卡片都能看到上下游（对话 → 下一步 → 待办 → 航程 → 执行会话 → 项目页），点哪一环就跳到哪。后端 backend/threads.py（/personal/thread）。
+// 等你：审批卡（App 里已有的 pendingItems）+ 等你批准的航程 + 微信在等回话 + 过期待办，一个角标一个收件箱。后端 /personal/waiting。
 
 extension AppModel {
     var waitingData: JSON { datasets["/personal/waiting"] ?? .null }
     /// 全局「等你」数：审批卡 + 后端汇总的三类。Dock 徽标、顶栏、灵动岛都读它。
     var waitingCount: Int { decisionCount + waitingData["count"].int }
 
-    /// 打开线索里的一环。先收起正在看的案例 sheet，再跳过去。
+    /// 打开线索里的一环。先收起正在看的航程 sheet，再跳过去。
     func openThreadNode(_ node: JSON) {
         let ident = node["id"].string
         switch node["kind"].string {
@@ -114,12 +114,12 @@ struct WaitingSheet: View {
             ScrollPage(spacing: Layout.sectionSpacing) {
                 let decisions = model.pendingItems.filter { !$0.stale }
                 if decisions.isEmpty && items.isEmpty {
-                    EmptyState(title: "没有在等你的事", description: "要你拍板的审批、停下来等你批准的案例、微信里有人在等回话、过期的待办，都会汇到这里。", symbol: "checkmark.circle")
+                    EmptyState(title: "没有在等你的事", description: "要你拍板的审批、停下来等你批准的航程、微信里有人在等回话、过期的待办，都会汇到这里。", symbol: "checkmark.circle")
                 }
                 if !decisions.isEmpty {
                     GroupSection("要你拍板 · \(decisions.count)") { ForEach(decisions) { item in PendingNote(item: item) } }
                 }
-                section("案例停下来等你", kind: "case") { item in
+                section("航程停下来等你", kind: "case") { item in
                     row(item, symbol: "rectangle.stack", tone: .warning) { model.openThreadNode(.object(["kind": .string("case"), "id": item["case_id"]])) }
                 }
                 section("微信在等你回", kind: "wechat") { item in
@@ -176,7 +176,7 @@ extension AppModel {
             .object(["id": .string("todo:任务/待处理/大有可攀场地对接.md"), "kind": .string("todo"), "title": .string("大有可攀场地对接"), "why": .string("过期 5 天（计划 10-13）"), "path": .string("任务/待处理/大有可攀场地对接.md")])])])
         let thread: JSON = .object(["nodes": .array([
             .object(["key": .string("next:next-reply"), "kind": .string("next"), "id": .string("next-reply"), "label": .string("下一步"), "title": .string("回复王总的排期邮件"), "state": .string("已交给 Com"), "current": .bool(false)]),
-            .object(["key": .string("case:task_demo_running"), "kind": .string("case"), "id": .string("task_demo_running"), "label": .string("案例"), "title": .string("起草王总排期回复"), "state": .string("进行中"), "current": .bool(true)]),
+            .object(["key": .string("case:task_demo_running"), "kind": .string("case"), "id": .string("task_demo_running"), "label": .string("航程"), "title": .string("起草王总排期回复"), "state": .string("进行中"), "current": .bool(true)]),
             .object(["key": .string("session:pi:com-demo"), "kind": .string("session"), "id": .string("pi:com-demo"), "label": .string("工作会话"), "title": .string("Pi 执行会话"), "state": .string("deepseek-v4.1-flash"), "current": .bool(false)]),
             .object(["key": .string("project:合同与劳务结算"), "kind": .string("project"), "id": .string("合同与劳务结算"), "label": .string("项目页"), "title": .string("合同与劳务结算"), "state": .string("项目"), "current": .bool(false)])])])
         datasets["/personal/thread?key=case:task_demo_running"] = thread

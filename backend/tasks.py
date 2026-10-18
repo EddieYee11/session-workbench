@@ -471,9 +471,9 @@ class TaskStore:
             self._event(db, tid, 'terminal:' + tid + (':'+str(task.get('run_id')) if previous else ''), status, result)
             label = {'execution_finished':'执行结束，待验收','failed':'执行失败','cancelled':'已取消'}.get(status,'执行状态待核实')
             text = f"任务「{task['title']}」：{label}。\n{result}"
-            if task.get('case_source'):  # 案例跑完即完成（2026-10-17），不写「待验收」
+            if task.get('case_source'):  # 航程跑完即完成（2026-10-17），不写「待验收」
                 label = {'execution_finished':'完成','failed':'失败','cancelled':'已取消'}.get(status,'状态待核实')
-                text = f"案例「{task['title']}」{label}。\n{result}"
+                text = f"航程「{task['title']}」{label}。\n{result}"
             if task.get('agent')=='hermes' and not requirements_current:
                 text='最新补充尚未确认被执行器消费，本结果不能作为最新要求的完成证明。\n'+text
             db.execute('INSERT OR REPLACE INTO outbox(task_id,text) VALUES (?,?)', (tid, text))

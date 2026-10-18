@@ -46,13 +46,19 @@ act('proposal-reject', async (b) => { b.disabled = true; if (await action('/pers
 act('task-dismiss', async (b) => { b.disabled = true; try { await mutate('/personal/tasks/' + encodeURIComponent(b.dataset.id) + '/dismiss'); await load('/personal/tasks'); toast('已归档，在「已结束」里还能恢复'); } catch { b.disabled = false; } });
 
 // ─── 菜单（点她弹出） ───
+function voyageNote() {
+  const c = D('/personal/cases') || {};
+  if (c.waiting) return `${c.waiting} 段停下来等你`;
+  if (c.active) return `${c.active} 段进行中 · 看它每一步怎么做的`;
+  return 'Com 自己开的 session 和每一步操作';
+}
 export function menuHTML() {
   const fin = D('/personal/finance'), m = ((fin || {}).currencies || [])[0];
   const ledger = m ? `${new Date().getMonth() + 1}月已花 ${yuan(m.month_minor)}` : '本月账目';
   const broken = brokenSources();
   const conn = broken.length ? [(broken.length > 1 ? `${broken.length} 个来源` : sourceName(broken[0].name)) + '需要重新授权', true] : ['邮件、日历、账本都在读', false];
   const row = (a, ic, t, sub, warn) => html`<button class="menu-row" data-act="${a}"><i class="badge ${warn ? 'warning' : ''}">${icon(ic)}</i><span><b>${t}</b>${sub ? html`<small class="${warn ? 'warn-text' : ''}">${sub}</small>` : ''}</span></button>`;
-  return html`${row('open-memory', 'brain', '记忆', '搜索、分类、纠正它记住的事')}${row('open-finance', 'card', '账本', ledger)}${row('open-connectors', 'link', '连接器', conn[0], conn[1])}${row('open-stage', 'layers', '看她的工作台', '也可以按住她往下拉')}${row('open-settings', 'sliders', '设置', '')}`;
+  return html`${row('open-memory', 'brain', '记忆', '搜索、分类、纠正它记住的事')}${row('open-finance', 'card', '账本', ledger)}${row('open-connectors', 'link', '连接器', conn[0], conn[1])}${row('cases-open', 'route', '航程', voyageNote(), ((D('/personal/cases') || {}).waiting || 0) > 0)}${row('open-settings', 'sliders', '设置', '')}`;
 }
 
 // ─── 任务详情（TaskDetailView） ───

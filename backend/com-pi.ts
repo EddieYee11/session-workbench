@@ -56,7 +56,7 @@ const descriptions:Record<string,string> = {
  goal_update:"更新同一原授权下目标的下一步。任务已结束未验收时设 waiting_acceptance 并清空下一步，不能重复派发。目标完成需真实验收与证据。",
  propose_work:"提交具体不可逆删除动作供用户批准；不能把愿望变为授权。",
  react_to_user_message:"按本轮 reaction 参数为用户消息附表情。",
- case_progress:"案例进度汇报（只在 Com 案例任务里用）：提交/更新步骤计划（整份 steps）、此刻在干什么、自己做的假设、产出物；只有不可逆删除时用 status=waiting 停下等他在案例里回复同意（不要用 propose_work）；最终没做成用 status=failed 写原因。Eddie 在手机上实时看这些。",
+ case_progress:"航程进度汇报（只在 Com 航程任务里用）：提交/更新步骤计划（整份 steps）、此刻在干什么、自己做的假设、产出物；只有不可逆删除时用 status=waiting 停下等他在航程里回复同意（不要用 propose_work）；最终没做成用 status=failed 写原因。Eddie 在手机上实时看这些。",
 };
 export default function (pi:ExtensionAPI) {
  // The extension receives message_start before the next model/tool cycle. A

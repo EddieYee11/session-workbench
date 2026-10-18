@@ -74,11 +74,11 @@ class AgentTools:
             return {'status':'loaded'}
         if name=='case_progress':
             cases=getattr(self,'cases',None)
-            if not cases:raise ValueError('案例服务未启用')
+            if not cases:raise ValueError('航程服务未启用')
             return cases.progress(context.get('task_id'),args)
         if name=='turn_plan':
             cases=getattr(self,'cases',None)
-            if not cases:raise ValueError('案例服务未启用')
+            if not cases:raise ValueError('航程服务未启用')
             return cases.turn_plan(args)
         if name=='memory_recall':
             from memory import recall_on_demand
@@ -199,7 +199,7 @@ class AgentTools:
             cases=getattr(self,'cases',None)
             if cases and draft['agent']=='pi':
                 from cases import CASE_RULES
-                draft['prompt']=draft['prompt'][:6000-len(CASE_RULES)]+CASE_RULES  # 对话里派给 Pi 的也是案例，汇报步骤
+                draft['prompt']=draft['prompt'][:6000-len(CASE_RULES)]+CASE_RULES  # 对话里派给 Pi 的也是航程，汇报步骤
             task=self.store.create_authorized(draft,authorization,request_id)
             if cases:
                 cases.register(task,'chat',draft.get('origin_message_id',''))
@@ -312,7 +312,7 @@ class AgentTools:
         if task_id:
             if not task or not task.get('authorization') or task['status'] not in ('dispatching','running','waiting'):
                 raise ValueError('工作器没有活动授权')
-            # 「交给 Com」按钮建的案例没有聊天消息：授权来源就是任务里记下的那次点按（cases.py create_task）。
+            # 「交给 Com」按钮建的航程没有聊天消息：授权来源就是任务里记下的那次点按（cases.py create_task）。
             if task['authorization'].get('entry')=='case_button' and context.get('origin_message_id')==task['authorization'].get('source_message_id'):
                 actual={'id':task['authorization']['source_message_id']}
             else:

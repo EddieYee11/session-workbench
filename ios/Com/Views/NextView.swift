@@ -2,7 +2,7 @@ import SwiftUI
 import ComCore
 
 // 下一步：它主动把邮件、日程、项目、任务和账本收拢，归纳成几件现在值得做的事。
-// 每条都写「凭什么」，依据可展开；「交给 Com」建一个案例（独立 Pi 会话，入口在右上角），「加到待办」写进行动台，「稍后再说」明天再提。
+// 每条都写「凭什么」，依据可展开；「交给 Com」建一段航程（独立 Pi 会话，入口在右上角），「加到待办」写进行动台，「稍后再说」明天再提。
 
 extension AppModel {
     var nextData: JSON { datasets["/personal/next"] ?? .null }
@@ -70,6 +70,7 @@ struct NextView: View {
     var body: some View {
         ScreenScaffold(title: "下一步") {
             header
+            VoyageBanner()
             TomorrowPlanCard()
             let broken = model.brokenSources
             if !broken.isEmpty {
@@ -110,7 +111,6 @@ struct NextView: View {
                 }
             }
             Spacer(minLength: 0)
-            CasesEntry()
         }
     }
     @ViewBuilder private var footer: some View {
@@ -190,7 +190,7 @@ private struct NextCard: View {
         busy = true
         Task { await model.nextAction(item, action); busy = false }
     }
-    /// 交给 Com：建案例并直接打开它，能马上看到拆出来的步骤；关掉就回到这里。
+    /// 交给 Com：建航程并直接打开它，能马上看到拆出来的步骤；关掉就回到这里。
     private func delegate() {
         #if DEBUG
         if model.isUITesting { act("discuss"); return }

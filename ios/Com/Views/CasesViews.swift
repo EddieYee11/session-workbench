@@ -1,7 +1,7 @@
 import SwiftUI
 import ComCore
 
-// 案例（2026-10-17）：一次「交给 Com」= 一个独立的 Pi 会话，能长时跟踪到了哪一步。
+// 航程（2026-10-17）：一次「交给 Com」= 一个独立的 Pi 会话，能长时跟踪到了哪一步。
 // 入口在下一步页右上角（二级，不进 Dock）；聊天里 3 步以上的复杂轮次也会进来，可回看。
 // 后端：backend/cases.py（/personal/cases），明天建议 backend/tomorrow_plan.py（/personal/plan）。
 
@@ -9,7 +9,7 @@ extension AppModel {
     var casesData: JSON { datasets["/personal/cases"] ?? .null }
     var planData: JSON { datasets["/personal/plan"] ?? .null }
 
-    /// 交给 Com：建案例，返回案例 id；Hermes 判断是一步就能办的小事时会回到主对话，返回 nil 并切到聊天。
+    /// 交给 Com：建航程，返回航程 id；Hermes 判断是一步就能办的小事时会回到主对话，返回 nil 并切到聊天。
     func delegateNext(_ item: JSON) async -> String? {
         do {
             let result = try await mutate("/personal/next/" + item.id.pathEncoded, fields: ["action": .string("delegate")])
@@ -64,25 +64,82 @@ private func caseTone(_ state: String) -> Tone {
 }
 private let activeStates: Set<String> = ["running", "queued", "waiting", "attention"]
 
-// MARK: - 入口
+// MARK: - 下一步页入口：航程大卡
 
-/// 下一步页右上角：「案例 · 2 进行中」。有等你的就标出来。
-struct CasesEntry: View {
+/// 下一步页顶上的航程入口（10-18 重做：原来右上角一颗小胶囊，太容易漏掉）。
+/// 有在跑 / 等你的航程时是一张反色大卡：最要紧的那段的标题、它此刻在做什么、进度条，点开进列表；
+/// 没有在跑的但做过一些，缩成一行「航程 · 看做过的 N 段」；从来没有过就不占位（头像菜单里始终有入口）。
+struct VoyageBanner: View {
     @Environment(AppModel.self) private var model
     var body: some View {
-        let summary = model.nextData["cases"]
-        NavigationLink { CasesListView() } label: {
-            HStack(spacing: 6) {
-                if summary["active"].int > 0 { WorkPulse() } else { Image(systemName: "rectangle.stack").font(.system(size: 12, weight: .semibold)) }
-                Text(summary["waiting"].int > 0 ? "案例 · \(summary["waiting"].int) 等你" : summary["active"].int > 0 ? "案例 · \(summary["active"].int) 进行中" : "案例")
-                    .font(TypeScale.footnote.weight(.semibold))
+        let items = model.casesData["items"].array
+        let live = items.filter { activeStates.contains($0["state"].string) }
+        if let top = live.first {
+            NavigationLink { CasesListView() } label: { card(top: top, live: live) }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("voyage-banner")
+        } else if !items.isEmpty {
+            NavigationLink { CasesListView() } label: {
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "location.north.line").font(.system(size: 13, weight: .semibold))
+                    Text("航程").font(TypeScale.subheadline.weight(.semibold))
+                    Text("看做过的 \(items.count) 段").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.textTertiary)
+                }
+                .foregroundStyle(Palette.textPrimary)
+                .padding(.horizontal, Space.lg).frame(height: 44)
+                .background(Palette.surface, in: .rect(cornerRadius: Radius.md, style: .continuous))
             }
-            .foregroundStyle(summary["waiting"].int > 0 ? Palette.warning : Palette.textPrimary)
-            .padding(.horizontal, 12).frame(height: 30)
-            .background(Palette.surface, in: .capsule)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("voyage-banner-quiet")
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("cases-entry")
+    }
+    private func card(top: JSON, live: [JSON]) -> some View {
+        let waiting = live.filter { $0["state"].string == "waiting" }.count
+        let running = live.count - waiting
+        let p = top["progress"]
+        let line = top["state"].string == "waiting" ? "等你：" + top["waiting"]["question"].string : (top["now"].string.isEmpty ? "正在准备" : top["now"].string)
+        return Card(.ink, padding: Space.lg) {
+            VStack(alignment: .leading, spacing: Space.md) {
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "location.north.line").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.accent)
+                    Text("航程").font(TypeScale.subheadline.weight(.bold)).foregroundStyle(Palette.onInk)
+                    Spacer(minLength: Space.sm)
+                    if running > 0 { chip("\(running) 段进行中", tone: Palette.accent) }
+                    if waiting > 0 { chip("\(waiting) 段等你", tone: Palette.warning) }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(top["title"].string).font(TypeScale.headline).foregroundStyle(Palette.onInk).lineLimit(2)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if top["state"].string == "running" { WorkPulse() }
+                        Text(line).font(TypeScale.subheadline).foregroundStyle(top["state"].string == "waiting" ? Palette.warning : Palette.onInkSecondary).lineLimit(2)
+                    }
+                }
+                if p["total"].int > 0 {
+                    HStack(spacing: Space.sm) {
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Palette.onInk.opacity(0.16))
+                                Capsule().fill(Palette.accent).frame(width: max(8, geo.size.width * CGFloat(p["done"].int) / CGFloat(max(1, p["total"].int))))
+                                    .animation(.smooth(duration: 0.5), value: p["done"].int)
+                            }
+                        }.frame(height: 6)
+                        Text("\(p["done"].int)/\(p["total"].int)").font(.caption.monospacedDigit()).foregroundStyle(Palette.onInkSecondary)
+                    }
+                }
+                HStack(spacing: 4) {
+                    Text(live.count > 1 ? "还有 \(live.count - 1) 段 · 全部航程" : "全部航程").font(TypeScale.footnote.weight(.semibold))
+                    Image(systemName: "arrow.right").font(.system(size: 11, weight: .bold))
+                }
+                .foregroundStyle(Palette.accent)
+            }
+        }
+    }
+    private func chip(_ text: String, tone: Color) -> some View {
+        Text(text).font(.caption.weight(.semibold)).foregroundStyle(tone)
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(tone.opacity(0.18), in: .capsule)
     }
 }
 
@@ -96,7 +153,7 @@ struct CasesListView: View {
         let finished = items.filter { !activeStates.contains($0["state"].string) }
         ScrollPage(spacing: Layout.sectionSpacing) {
             if items.isEmpty {
-                EmptyState(title: "还没有案例", description: "在「下一步」或待办里点「交给 Com」，或者在聊天里让它办一件复杂的事，它会单独开一个案例，在这里看它一步步怎么做的。", symbol: "rectangle.stack")
+                EmptyState(title: "还没有航程", description: "在「下一步」或待办里点「交给 Com」，或者在聊天里让它办一件复杂的事，它会单独开一段航程，在这里看它一步步怎么做的。", symbol: "rectangle.stack")
             }
             if !active.isEmpty {
                 GroupSection("进行中 · \(active.count)") { ForEach(active.map(RemoteRow.init)) { row in caseLink(row.value) } }
@@ -105,7 +162,7 @@ struct CasesListView: View {
                 GroupSection("做过的", footer: "简单的事不进这里，只留在聊天里。") { ForEach(finished.prefix(40).map(RemoteRow.init)) { row in caseLink(row.value) } }
             }
         }
-        .navigationTitle("案例").navigationBarTitleDisplayMode(.large)
+        .navigationTitle("航程").navigationBarTitleDisplayMode(.large)
         .toolbarBackground(Palette.background, for: .navigationBar)
         .refreshable { _ = await model.load("/personal/cases") }
         .task {
@@ -166,7 +223,7 @@ struct StepProgress: View {
     }
 }
 
-// MARK: - 步骤清单（案例详情与聊天「思考过程」共用）
+// MARK: - 步骤清单（航程详情与聊天「思考过程」共用）
 
 struct TodoStep: Identifiable, Equatable, Sendable {
     let id: String
@@ -264,7 +321,7 @@ struct CaseDetailView: View {
                 timeline
                 if data["can_send"].bool || data["state"].string == "done" && data["kind"].string != "turn" { composer }
                 if data["can_cancel"].bool {
-                    Button("停止这个案例", role: .destructive) { confirmCancel = true }
+                    Button("停止这段航程", role: .destructive) { confirmCancel = true }
                         .buttonStyle(.quiet).frame(maxWidth: .infinity)
                         .confirmationDialog("停止后 Pi 会中断当前这一步，已经做的不会撤回。", isPresented: $confirmCancel, titleVisibility: .visible) {
                             Button("停止", role: .destructive) { Task { await model.caseCancel(id); _ = await model.load("/personal/cases/" + id) } }
@@ -272,7 +329,7 @@ struct CaseDetailView: View {
                 }
             }
         }
-        .navigationTitle(data["title"].string.isEmpty ? "案例" : data["title"].string).navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(data["title"].string.isEmpty ? "航程" : data["title"].string).navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Palette.background, for: .navigationBar)
         .refreshable { _ = await model.load("/personal/cases/" + id) }
         .task {
@@ -368,7 +425,7 @@ struct CaseDetailView: View {
     }
 }
 
-/// 从聊天、今天页、推送打开的案例：sheet 里带一个导航栈。
+/// 从聊天、今天页、推送打开的航程：sheet 里带一个导航栈。
 struct CaseSheet: View {
     let id: String
     @Environment(\.dismiss) private var dismiss
@@ -393,7 +450,7 @@ struct CasesSheet: View {
 
 // MARK: - 明天建议
 
-/// 每晚 21:30 生成的明天清单：勾选后一键放进行动台。日程和进行中的案例只做参考。
+/// 每晚 21:30 生成的明天清单：勾选后一键放进行动台。日程和进行中的航程只做参考。
 struct TomorrowPlanCard: View {
     @Environment(AppModel.self) private var model
     @State private var selected: Set<String> = []
@@ -454,7 +511,7 @@ struct TomorrowPlanCard: View {
                 Image(systemName: item["checkable"].bool ? (on ? "checkmark.square.fill" : "square") : symbol)
                     .font(.system(size: item["checkable"].bool ? 15 : 12)).foregroundStyle(item["checkable"].bool && on ? Palette.accentText : Palette.textTertiary).frame(width: 20)
                 VStack(alignment: .leading, spacing: 1) {
-                    // 日程和进行中的案例只做参考：字号小一号、次要色，不像可勾的待办
+                    // 日程和进行中的航程只做参考：字号小一号、次要色，不像可勾的待办
                     Text(item["title"].string).font(item["checkable"].bool ? TypeScale.subheadline : TypeScale.footnote)
                         .foregroundStyle(item["checkable"].bool ? Palette.textPrimary : Palette.textSecondary).lineLimit(2)
                     if !item["why"].string.isEmpty { Text(item["why"].string).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).lineLimit(2) }
@@ -467,45 +524,9 @@ struct TomorrowPlanCard: View {
     }
 }
 
-// MARK: - 今天页：进行中的案例
-
-/// 今天页的一条：Com 正在替你办的事（只在有进行中的案例时出现），点一条直接打开。
-struct TodayCasesStrip: View {
-    @Environment(AppModel.self) private var model
-    var body: some View {
-        let active = model.casesData["items"].array.filter { activeStates.contains($0["state"].string) }
-        if !active.isEmpty {
-            Card(padding: Space.md) {
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    HStack {
-                        Text("Com 正在办").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary)
-                        Spacer(minLength: 0)
-                        Button("全部") { model.showCases = true }.font(TypeScale.footnote).buttonStyle(.plain).foregroundStyle(Palette.accentText)
-                    }
-                    ForEach(active.prefix(3).map(RemoteRow.init)) { row in
-                        Button { model.presentedCase = row.id } label: {
-                            HStack(spacing: Space.sm) {
-                                if row.value["state"].string == "running" { WorkPulse() } else { Image(systemName: "hand.raised").font(.system(size: 12)).foregroundStyle(Palette.warning).frame(width: 14) }
-                                Text(row.value["title"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                                Spacer(minLength: Space.sm)
-                                let p = row.value["progress"]
-                                Text(row.value["state"].string == "waiting" ? "等你" : p["total"].int > 0 ? "\(p["done"].int)/\(p["total"].int)" : row.value["state_label"].string)
-                                    .font(.caption.monospacedDigit()).foregroundStyle(row.value["state"].string == "waiting" ? Palette.warning : Palette.textTertiary)
-                            }
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .accessibilityIdentifier("today-cases")
-        }
-    }
-}
-
 #if DEBUG
 extension AppModel {
-    /// `--ui-cases`：案例列表 / 详情、明天建议卡、已在待办标记、对话 todo 清单的验收数据。COM_PREVIEW_SHEET=case 直接打开详情。
+    /// `--ui-cases`：航程列表 / 详情、明天建议卡、已在待办标记、对话 todo 清单的验收数据。COM_PREVIEW_SHEET=case 直接打开详情。
     func seedCasesPreview() {
         let now = Date().timeIntervalSince1970
         func step(_ t: String, _ s: String) -> JSON { .object(["title": .string(t), "status": .string(s)]) }
@@ -545,7 +566,7 @@ extension AppModel {
         if items.count > 1, case .object(var o) = items[1] { o["in_todo"] = .object(["name": .string("会前过一遍周会议题"), "due": .string(AppModel.dayString(1))]); items[1] = .object(o) }
         next["items"] = .array(items)
         datasets["/personal/next"] = .object(next)
-        // 对话：一轮带 todo 清单（3 步，进了案例）
+        // 对话：一轮带 todo 清单（3 步，进了航程）
         let plan: JSON = .object(["id": .string("plan"), "kind": .string("plan"), "title": .string("查后天日程和饭钱"), "todos": .array([
             .object(["id": .string("1"), "content": .string("读后天日历安排"), "active": .string("正在看日程"), "status": .string("completed")]),
             .object(["id": .string("2"), "content": .string("统计本月餐饮花销"), "active": .string("正在翻账本"), "status": .string("completed")]),
@@ -560,6 +581,7 @@ extension AppModel {
         tab = ProcessInfo.processInfo.environment["COM_PREVIEW_TAB"] == "chat" ? .chat : ProcessInfo.processInfo.environment["COM_PREVIEW_TAB"] == "today" ? .doing : .next
         if ProcessInfo.processInfo.environment["COM_PREVIEW_SHEET"] == "case" { presentedCase = "task_demo_running" }
         if ProcessInfo.processInfo.environment["COM_PREVIEW_SHEET"] == "cases" { showCases = true }
+        if ProcessInfo.processInfo.environment["COM_PREVIEW_MENU"] == "1" { Task { try? await Task.sleep(for: .seconds(1)); showMenu = true } }
     }
 }
 #endif

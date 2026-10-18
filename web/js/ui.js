@@ -80,6 +80,7 @@ const I = {
   share: '<path d="M12 3v13M7 8l5-5 5 5M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>',
   wifiOff: '<path d="M2 8a16 16 0 0 1 5-3M22 8a16 16 0 0 0-9-4M5 12a11 11 0 0 1 4-2.5M19 12a11 11 0 0 0-3-2M8.5 15.5a5 5 0 0 1 7 0M12 19h.01M3 3l18 18"/>',
   cloud: '<path d="M7 18h10a4 4 0 0 0 0-8 6 6 0 0 0-11.5 2A3 3 0 0 0 7 18z"/>',
+  route: '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M6 17V11a4 4 0 0 1 4-4h6"/>',
 };
 export const icon = (name, cls = '') => raw(`<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${I[name] || I.doc}</svg>`);
 

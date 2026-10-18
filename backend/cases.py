@@ -1,11 +1,11 @@
-"""案例：一次「交给 Com」= 一个独立 Pi 会话 + 可跟踪的步骤时间线（2026-10-17，需求见 docs/COM_CASES_AND_NEXT_LOOP_REQ_20261017.md）。
+"""航程：一次「交给 Com」= 一个独立 Pi 会话 + 可跟踪的步骤时间线（2026-10-17，需求见 docs/COM_CASES_AND_NEXT_LOOP_REQ_20261017.md）。
 
 - 底座是现有任务账本（tasks.py）：执行、插话（steer）、取消、结束回执都走 TaskController，不另起一套执行器。
   本模块只多存一张 cases 表：来源（下一步 / 待办 / 对话）、步骤计划、此刻在干什么、假设、产出、联动的待办。
 - Hermes 当调度员：点「交给 Com」时先用 Hermes 同一个模型拆一下（review_json），简单的回到主对话由 Hermes 自己办，
   复杂的写成任务书交给 Pi，在独立 session 里跑。
 - Pi 通过 com-pi.ts 的 case_progress 工具汇报步骤、假设和产出；跑完即完成（interactive，不走验收），
-  对应的下一步和待办自动勾掉。唯一停点是不可逆删除：Pi 用 case_progress(status=waiting) 停下推送等你，他在案例里回复同意（即授权）才继续。
+  对应的下一步和待办自动勾掉。唯一停点是不可逆删除：Pi 用 case_progress(status=waiting) 停下推送等你，他在航程里回复同意（即授权）才继续。
 """
 import hashlib, json, re, sqlite3, time
 from datetime import datetime
@@ -19,12 +19,12 @@ SOURCE_LABELS = {'next': '下一步', 'todo': '待办', 'chat': '对话', 'plan'
 ACTIVE = ('queued', 'dispatching', 'running', 'waiting', 'paused', 'unknown', 'cancel_requested', 'approval_required')
 
 CASE_RULES = (
-    '\n\n[Com 案例规则]\n'
-    '这是 Eddie 交给你的一个独立案例，他会在手机上看你的进度。\n'
+    '\n\n[Com 航程规则]\n'
+    '这是 Eddie 交给你的一个独立航程，他会在手机上看你的进度。\n'
     '1. 动手前先调用 case_progress 提交 3 到 7 步的计划（steps，每步 status=todo/doing/done），并用 now 一句话说你在干什么；'
     '每开始或完成一步再调用一次更新。\n'
     '2. 中途信息不够或有分岔时，不要停下来问，选最稳妥、可撤回的做法继续，并用 case_progress 的 assumption 记下这个假设。\n'
-    '3. 唯一要停下来的情况是不可逆删除或清空：不要执行，也不要用 propose_work；调用 case_progress(status="waiting", question=要删什么、为什么)，然后结束本轮。他在案例里回复同意后你才继续（他的回复就是授权）。\n'
+    '3. 唯一要停下来的情况是不可逆删除或清空：不要执行，也不要用 propose_work；调用 case_progress(status="waiting", question=要删什么、为什么)，然后结束本轮。他在航程里回复同意后你才继续（他的回复就是授权）。\n'
     '4. 生成的文件、草稿或链接用 case_progress 的 artifact 登记（文件同时可用 artifact_register）。\n'
     '5. 最后一条回复写结论：做成了什么、还差什么、他需要知道的，3 到 6 行，口语。\n'
     '6. 如果最终没能完成（工具不可用、缺关键资料等），结束前调用 case_progress(status="failed", question=一句话原因)，不要把没做成说成完成。'
@@ -43,7 +43,7 @@ BRIEF_INSTRUCTIONS = (
 
 
 PLAN_STATUSES = ('pending', 'in_progress', 'completed', 'blocked', 'skipped')
-TURN_CASE_MIN_STEPS = 3  # 3 步以上的对话轮次进案例列表可回看；简单的只在聊天里显示
+TURN_CASE_MIN_STEPS = 3  # 3 步以上的对话轮次进航程列表可回看；简单的只在聊天里显示
 
 
 def merge_plan(old, args, clock=time.time):
@@ -102,7 +102,7 @@ class Cases:
         self.store, self.controller, self.conversation = store, controller, conversation
         self.workspace = Path(workspace)
         self.today, self.next_steps, self.brief, self.clock = today, next_steps, brief, clock
-        self.threads = None  # threads.Threads，app.py 注入：建案例时记下上游（下一步 / 待办 / 对话）
+        self.threads = None  # threads.Threads，app.py 注入：建航程时记下上游（下一步 / 待办 / 对话）
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS cases(task_id TEXT PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL,'
                        ' created_at REAL NOT NULL, data TEXT NOT NULL)')
@@ -121,7 +121,7 @@ class Cases:
     # ---------- 建立 ----------
 
     def register(self, task, source, source_id='', **data):
-        """把一条任务登记为案例（幂等）。对话里 Hermes 派的 task_submit 也走这里。"""
+        """把一条任务登记为航程（幂等）。对话里 Hermes 派的 task_submit 也走这里。"""
         with self.db() as db:
             row = db.execute('SELECT data FROM cases WHERE task_id=?', (task['id'],)).fetchone()
             if row:
@@ -139,7 +139,7 @@ class Cases:
         return case
 
     def turn_plan(self, args):
-        """对话这一轮的 todo 清单：写到当前那条用户消息上；3 步以上登记为可回看的案例（id = turn:<消息>）。"""
+        """对话这一轮的 todo 清单：写到当前那条用户消息上；3 步以上登记为可回看的航程（id = turn:<消息>）。"""
         mid = self.conversation.active_user_message()
         if not mid:
             raise ValueError('现在没有进行中的对话轮次')
@@ -154,7 +154,7 @@ class Cases:
         return {'recorded': True, 'title': plan['title'], 'progress': f"{done}/{len(plan['todos'])}"}
 
     def register_turn(self, mid, plan):
-        """3 步以上的对话轮次登记成可回看的案例；简单的只留在聊天里。"""
+        """3 步以上的对话轮次登记成可回看的航程；简单的只留在聊天里。"""
         if len(plan.get('todos') or []) < TURN_CASE_MIN_STEPS:
             return False
         with self.db() as db:
@@ -185,7 +185,7 @@ class Cases:
         return row['task_id'] if row else None
 
     async def delegate(self, source, source_id, title, prompt, request_id, evidence=(), todo_path=''):
-        """「交给 Com」。返回 {'mode':'case','task_id'} 或 {'mode':'chat','receipt'}。同一来源已有进行中的案例就直接返回它。"""
+        """「交给 Com」。返回 {'mode':'case','task_id'} 或 {'mode':'chat','receipt'}。同一来源已有进行中的航程就直接返回它。"""
         existing = self.find(source, source_id)
         if existing:
             task = next((t for t in self.store.list() if t['id'] == existing), None)
@@ -234,11 +234,11 @@ class Cases:
 
     def progress(self, task_id, args):
         if not task_id:
-            raise ValueError('case_progress 只能在案例任务里调用')
+            raise ValueError('case_progress 只能在航程任务里调用')
         with self.db() as db:
             row = db.execute('SELECT * FROM cases WHERE task_id=?', (task_id,)).fetchone()
             if not row:
-                raise ValueError('这个任务不是案例')
+                raise ValueError('这个任务不是航程')
             case = json.loads(row['data'])
             now = self.clock()
             steps = args.get('steps')
@@ -273,7 +273,7 @@ class Cases:
             db.execute('UPDATE cases SET data=? WHERE task_id=?', (json.dumps(case, ensure_ascii=False), task_id))
         if waiting:
             # 推送载体：task-result: 消息（Bark 只推这一类主动消息）
-            self.conversation.task_receipt('case-wait:' + task_id + ':' + str(int(now)), '案例「' + case['title'] + '」等你批准：' + waiting)
+            self.conversation.task_receipt('case-wait:' + task_id + ':' + str(int(now)), '航程「' + case['title'] + '」等你批准：' + waiting)
         return {'recorded': True, 'steps': len(case['steps'])}
 
     # ---------- 读 ----------
@@ -311,7 +311,7 @@ class Cases:
     def detail(self, task_id):
         rows = self._rows()
         if task_id not in rows:
-            raise ValueError('案例不存在')
+            raise ValueError('航程不存在')
         if task_id.startswith('turn:'):  # 对话轮次：清单就是步骤，回复就是结果
             s = self.turn_summary(rows[task_id])
             record = s.pop('_record')
@@ -322,7 +322,7 @@ class Cases:
                     'todo_path': '', 'can_send': False, 'can_cancel': False}
         task = next((t for t in self.store.list() if t['id'] == task_id), None)
         if not task:
-            raise ValueError('案例对应的任务不存在')
+            raise ValueError('航程对应的任务不存在')
         row, case = rows[task_id], rows[task_id]['data']
         timeline = list(case.get('timeline', []))
         tools = 0
@@ -352,13 +352,13 @@ class Cases:
     async def send(self, task_id, text, request_id):
         """运行中：走 steer 插进当前会话；已结束：在同一个 Pi 会话里开下一轮（账本 result_round 记多轮结果）。"""
         if task_id not in self._rows():
-            raise ValueError('案例不存在')
+            raise ValueError('航程不存在')
         text = _text(text, 4000)
         if not text:
             raise ValueError('说点什么再发')
         task = next((t for t in self.store.list() if t['id'] == task_id), None)
         if task and task['status'] in ('execution_finished', 'failed') and task.get('session_id'):
-            run_id = await self.controller.runtime.input(task['session_id'], '[Eddie 在案例里补充]\n' + text + CASE_RULES, request_id)
+            run_id = await self.controller.runtime.input(task['session_id'], '[Eddie 在航程里补充]\n' + text + CASE_RULES, request_id)
             if not run_id:
                 raise ValueError('Pi 会话没有接住这句话，请稍后再试')
             self.store.change(task_id, 'reopen:' + request_id, 'input_accepted_after_finish', text,
@@ -381,7 +381,7 @@ class Cases:
         with self.db() as db:
             row = db.execute('SELECT data FROM cases WHERE task_id=?', (task_id,)).fetchone()
             if not row:
-                raise ValueError('案例不存在')
+                raise ValueError('航程不存在')
             case = json.loads(row['data'])
             case['waiting'] = None
             case['timeline'].append({'at': self.clock(), 'kind': 'note', 'text': '你已处理，标为完成'})
@@ -391,20 +391,20 @@ class Cases:
 
     async def cancel(self, task_id, request_id):
         if task_id not in self._rows():
-            raise ValueError('案例不存在')
+            raise ValueError('航程不存在')
         return await self.controller.command(task_id, '', request_id, cancel=True)
 
     # ---------- 结束联动 ----------
 
     def backflow(self, tid, case, task):
-        """案例结论回流（2026-10-18）：一行写进对应待办和它关联项目页的「## 进展」，并记进线索。打勾之前写，免得文件已被挪走。"""
+        """航程结论回流（2026-10-18）：一行写进对应待办和它关联项目页的「## 进展」，并记进线索。打勾之前写，免得文件已被挪走。"""
         if not self.today or not case.get('todo_path'):
             return
         ok = task['status'] == 'execution_finished' and (case.get('outcome') or {}).get('state') != 'failed'
         result = case.get('outcome', {}).get('reason') if not ok and case.get('outcome') else task.get('result', '')
         first = next((re.sub(r'[*#>`|]+', '', l).strip() for l in str(result or '').splitlines() if re.sub(r'[*#>`|\-\s]+', '', l)), '')
         day = datetime.fromtimestamp(self.clock(), ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d')
-        line = f"- {day} Com 案例「{case.get('title') or task.get('title', '')}」{'完成' if ok else '没做成'}" + ('：' + first[:120] if first else '')
+        line = f"- {day} Com 航程「{case.get('title') or task.get('title', '')}」{'完成' if ok else '没做成'}" + ('：' + first[:120] if first else '')
         written = []
         try:
             if self.today.todo_progress(case['todo_path'], line):
@@ -420,7 +420,7 @@ class Cases:
             case['timeline'].append({'at': self.clock(), 'kind': 'note', 'text': '结论已写进' + '、'.join(written) + '的进展'})
 
     def sync(self):
-        """跑完的案例：对应的下一步标完成、待办打勾；只做一次。由主循环周期调用。"""
+        """跑完的航程：对应的下一步标完成、待办打勾；只做一次。由主循环周期调用。"""
         rows = self._rows()
         pending = {k: v for k, v in rows.items() if not v['data'].get('linked')}
         if not pending:

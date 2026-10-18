@@ -507,9 +507,9 @@ private struct ThreadRow: View {
                         if !thread.project.isEmpty && !thread.summary.isEmpty { Text(thread.project).lineLimit(1) }
                         if thread.session == nil { Label("只读", systemImage: "eye").labelStyle(.titleAndIcon) }
                     }.font(.caption).foregroundStyle(Palette.textTertiary)
-                    // 10-18 会话↔案例互通：这段是某个案例的执行会话
+                    // 10-18 会话↔航程互通：这段是某段航程的执行会话
                     if let title = thread.session?["case_title"].string, !title.isEmpty {
-                        Label("案例 · " + title, systemImage: "rectangle.stack").font(.caption.weight(.medium)).foregroundStyle(Palette.accentText).lineLimit(1)
+                        Label("航程 · " + title, systemImage: "rectangle.stack").font(.caption.weight(.medium)).foregroundStyle(Palette.accentText).lineLimit(1)
                     }
                 }
             }
@@ -521,7 +521,7 @@ private struct ThreadRow: View {
         .buttonStyle(ThreadPress())
         .contextMenu {
             if let caseID = thread.session?["case_id"].string, !caseID.isEmpty {
-                Button("查看案例", systemImage: "rectangle.stack") { model.openThreadNode(.object(["kind": .string("case"), "id": .string(caseID)])) }
+                Button("查看航程", systemImage: "rectangle.stack") { model.openThreadNode(.object(["kind": .string("case"), "id": .string(caseID)])) }
             }
         }
         .accessibilityIdentifier("work-thread-" + thread.id)

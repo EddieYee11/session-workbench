@@ -62,10 +62,10 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var workJumpMessage: String?
     /// 别处（任务详情、项目看板、派活页）要打开的会话：RootView 接住，切到工作页原地打开。
     var selectedSession: JSON?
-    /// 10-17 案例：要打开的案例 id（聊天里的案例卡、今天页、推送深链都走这里，RootView 用 sheet 接住）；showCases 打开案例列表。
+    /// 10-17 航程：要打开的航程 id（聊天里的航程卡、今天页、推送深链都走这里，RootView 用 sheet 接住）；showCases 打开航程列表。
     var presentedCase: String?
     var showCases = false
-    /// 10-18 统一「等你」收件箱：审批 + 等你批准的案例 + 微信在等回话 + 过期待办。
+    /// 10-18 统一「等你」收件箱：审批 + 等你批准的航程 + 微信在等回话 + 过期待办。
     var showWaiting = false
     var localHealth: JSON = .null
     var banner = ""
@@ -306,14 +306,15 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
     }
     func refresh(_ tab: SectionTab) async {
-        _ = await load("/personal/waiting")  // 10-18：「等你」角标全局可见，每次刷新都带上
+        _ = await load("/personal/waiting")  // 10-18：「等你」角标全局可见
+        _ = await load("/personal/cases")    // 10-18：航程入口在头像菜单和下一步页，哪一页都要有最新数，每次刷新都带上
         switch tab {
         case .chat:
             if let data = await load("/personal/conversation") { conversation.apply(data, snapshot: true); ComNotifications.observe(conversation.messages) }
         case .next:
             _ = await load("/personal/next"); _ = await load("/personal/connectors"); _ = await load("/personal/finance"); _ = await load("/personal/plan")
         case .doing:
-            await refreshFlow(); _ = await load("/personal/today"); _ = await load("/personal/automations"); _ = await load("/personal/cases")  // 轨道 pages：今天时间线
+            await refreshFlow(); _ = await load("/personal/today"); _ = await load("/personal/automations")  // 轨道 pages：今天时间线
         case .health: _ = await load("/personal/health?days=30"); _ = await load("/personal/health/insight")
         case .work: _ = await load("/personal/projects"); _ = await load("/sessions")
         }
@@ -747,7 +748,7 @@ extension AppModel {
         }
         seedPagesPreview()  // 轨道 pages：今天时间线与依据详情的验收数据
         if ProcessInfo.processInfo.arguments.contains("--ui-r3-work") { seedR3WorkPreview() }  // r3-work：工作页原地聊天
-        if ProcessInfo.processInfo.arguments.contains("--ui-cases") { seedCasesPreview() }  // 10-17：案例 / 明天建议 / 对话 todo 清单验收
+        if ProcessInfo.processInfo.arguments.contains("--ui-cases") { seedCasesPreview() }  // 10-17：航程 / 明天建议 / 对话 todo 清单验收
         for path in datasets.keys { fetchedAt[path] = Date() }
         recomputeFlow()
     }

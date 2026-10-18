@@ -258,7 +258,7 @@
 		F9D90C9360DCE4743755E1B6 /* CasesViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CasesViews.swift; sourceTree = "<group>"; };
 		FDDB7C77B7EAB250E94DEFC6 /* ComUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ComUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FEE32CA35186E717D66E3076 /* AgentStageMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageMachineTests.swift; sourceTree = "<group>"; };
-		"TEMP_398FE8A6-B016-4618-8943-3F8A5FE1CDEA" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		"TEMP_3A421ADF-E8AB-4E0A-BF43-5553B9435DE9" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -479,10 +479,10 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		"TEMP_42624FE3-E6DD-452E-A78C-5A94F0CF6B67" /* ios */ = {
+		"TEMP_5D190BE1-8E03-46BB-893F-7B24D62BB706" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_398FE8A6-B016-4618-8943-3F8A5FE1CDEA" /* Config.xcconfig */,
+				"TEMP_3A421ADF-E8AB-4E0A-BF43-5553B9435DE9" /* Config.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -871,7 +871,7 @@
 		};
 		3090500630AD48E73BFDF9C7 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_398FE8A6-B016-4618-8943-3F8A5FE1CDEA" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_3A421ADF-E8AB-4E0A-BF43-5553B9435DE9" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -907,7 +907,7 @@
 				COM_APNS_ENVIRONMENT = "";
 				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2026101801;
+				CURRENT_PROJECT_VERSION = 2026101802;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -1015,7 +1015,7 @@
 		};
 		77A0C5116CC8A0F0C01DCC13 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_398FE8A6-B016-4618-8943-3F8A5FE1CDEA" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_3A421ADF-E8AB-4E0A-BF43-5553B9435DE9" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1051,7 +1051,7 @@
 				COM_APNS_ENVIRONMENT = "";
 				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2026101801;
+				CURRENT_PROJECT_VERSION = 2026101802;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

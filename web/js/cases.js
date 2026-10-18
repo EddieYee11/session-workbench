@@ -1,4 +1,4 @@
-// 案例 + 下一步闭环 + 线索 + 统一「等你」（2026-10-17/18，对应 iOS CasesViews.swift / ThreadsViews.swift）。
+// 航程 + 下一步闭环 + 线索 + 统一「等你」（2026-10-17/18，对应 iOS CasesViews.swift / ThreadsViews.swift）。
 // 后端：/personal/cases、/personal/plan、/personal/thread、/personal/waiting（backend/cases.py、tomorrow_plan.py、threads.py）。
 import { S, html, raw, D, load, mutate, changed, setTab, send, relativeTime, clockTime, toast, md, decisionCount, flowItems, locateMessage } from './core.js';
 import { icon, act, stamp, empty, section, openSheet, pushSheet, closeSheets, confirmBox } from './ui.js';
@@ -11,7 +11,7 @@ const pathOf = (id) => '/personal/cases/' + encodeURIComponent(id);
 export const casesData = () => D('/personal/cases') || {};
 export const planData = () => D('/personal/plan') || {};
 export const waitingData = () => D('/personal/waiting') || {};
-/** 全局「等你」数：审批卡 + 后端汇总（案例等你、微信在等回话、过期待办）。 */
+/** 全局「等你」数：审批卡 + 后端汇总（航程等你、微信在等回话、过期待办）。 */
 export const waitingCount = () => decisionCount() + (waitingData().count || 0);
 function day(offset) {
   const d = new Date(Date.now() + offset * 86400000);
@@ -19,11 +19,24 @@ function day(offset) {
 }
 const progressBar = (p, live) => p && p.total > 0 ? html`<div class="case-progress ${live ? 'live' : ''}"><i style="width:${Math.max(4, (100 * p.done) / p.total)}%"></i></div><small class="mono faint">${p.done}/${p.total}</small>` : '';
 
-// ─── 入口 ───
-export function casesEntry() {
-  const c = (D('/personal/next') || {}).cases || casesData();
-  const waiting = c.waiting || 0, active = c.active || 0;
-  return html`<button class="cases-entry ${waiting ? 'warn' : ''}" data-act="cases-open">${active ? raw('<i class="pulse"></i>') : icon('layers')}${waiting ? `案例 · ${waiting} 等你` : active ? `案例 · ${active} 进行中` : '案例'}</button>`;
+// ─── 下一步页入口：航程大卡（10-18 重做，原来是右上角一颗小胶囊）───
+// 有在跑 / 等你的：反色大卡（最要紧那段的标题、此刻在做什么、进度条）；只有做过的：缩成一行；从没有过：不占位（头像菜单里始终有入口）。
+export function voyageBanner() {
+  const items = casesData().items || [];
+  const live = items.filter((c) => ACTIVE.has(c.state));
+  if (!live.length) {
+    return items.length ? html`<button class="voyage-quiet" data-act="cases-open">${icon('route')}<b>航程</b><small>看做过的 ${items.length} 段</small>${icon('right', 'chev')}</button>` : '';
+  }
+  const top = live[0], waiting = live.filter((c) => c.state === 'waiting').length, running = live.length - waiting;
+  const p = top.progress || {};
+  const line = top.state === 'waiting' ? '等你：' + ((top.waiting || {}).question || '') : top.now || '正在准备';
+  return html`<button class="voyage-banner rise" data-act="cases-open" id="voyage-banner">
+    <span class="vb-top">${icon('route')}<b>航程</b><span class="grow"></span>${running ? html`<em class="on">${running} 段进行中</em>` : ''}${waiting ? html`<em class="warn">${waiting} 段等你</em>` : ''}</span>
+    <span class="vb-title">${top.title}</span>
+    <span class="vb-line ${top.state === 'waiting' ? 'warn' : ''}">${top.state === 'running' ? raw('<i class="pulse"></i>') : ''}${line}</span>
+    ${p.total > 0 ? html`<span class="vb-bar"><span class="trk"><i style="width:${Math.max(4, (100 * p.done) / p.total)}%"></i></span><small class="mono">${p.done}/${p.total}</small></span>` : ''}
+    <span class="vb-more">${live.length > 1 ? `还有 ${live.length - 1} 段 · 全部航程` : '全部航程'}${icon('right')}</span>
+  </button>`;
 }
 
 // ─── 列表 ───
@@ -37,11 +50,11 @@ function caseRow(c) {
 }
 function casesView() {
   return {
-    title: '案例', wide: true,
+    title: '航程', wide: true,
     render: () => {
       const items = casesData().items || [];
       const active = items.filter((c) => ACTIVE.has(c.state)), done = items.filter((c) => !ACTIVE.has(c.state));
-      return html`${!items.length ? empty('还没有案例', '在「下一步」或待办里点「交给 Com」，或者在聊天里让它办一件复杂的事，它会单独开一个案例，在这里看它一步步怎么做的。', 'layers') : ''}
+      return html`${!items.length ? empty('还没有航程', '在「下一步」或待办里点「交给 Com」，或者在聊天里让它办一件复杂的事，它会单独开一段航程，在这里看它一步步怎么做的。', 'layers') : ''}
         ${active.length ? section(`进行中 · ${active.length}`, html`<div class="stack">${active.map(caseRow)}</div>`) : ''}
         ${done.length ? section('做过的', html`<div class="stack">${done.slice(0, 40).map(caseRow)}</div><p class="foot">简单的事不进这里，只留在聊天里。</p>`) : ''}`;
     },
@@ -61,7 +74,7 @@ act('cases-open', () => openCases());
 const TL = { step_doing: '开始：', step_done: '完成：', assumption: '拿了个主意：', waiting: '停下等你：', you: '你说：', failed: '没做成：' };
 function caseView(id) {
   return {
-    title: '案例', wide: true,
+    title: '航程', wide: true,
     render: () => {
       const d = D(pathOf(id));
       if (!d) return html`<div class="skeleton"></div><div class="skeleton"></div>`;
@@ -87,7 +100,7 @@ function caseView(id) {
           ${d.tool_calls ? html`<p class="foot">Pi 一共动用了 ${d.tool_calls} 次工具。</p>` : ''}`) : ''}
         ${d.can_send || (d.state === 'done' && d.kind !== 'turn') ? html`<div class="case-composer"><textarea id="case-draft" rows="2" placeholder="${d.state === 'done' ? '还要它接着做什么？' : '插一句：补充要求、改方向…'}"></textarea>
           <button class="btn primary compact" data-act="case-send" data-id="${id}">${icon('arrowUp')}</button></div>` : ''}
-        ${d.can_cancel ? html`<button class="btn quiet danger-text full" data-act="case-cancel" data-id="${id}">停止这个案例</button>` : ''}`;
+        ${d.can_cancel ? html`<button class="btn quiet danger-text full" data-act="case-cancel" data-id="${id}">停止这段航程</button>` : ''}`;
     },
     mounted: () => poll(pathOf(id), () => { const d = D(pathOf(id)); return d && ACTIVE.has(d.state) && d.state !== 'waiting' ? 3000 : 15000; }),
   };
@@ -104,7 +117,7 @@ act('case-send', async (b) => {
 act('case-reply', async (b) => { b.disabled = true; await caseSend(b.dataset.id, b.dataset.text); });
 act('case-resolve', async (b) => { b.disabled = true; try { await mutate(pathOf(b.dataset.id) + '/resolve'); await load(pathOf(b.dataset.id)); } catch { /* toast */ } });
 act('case-cancel', async (b) => {
-  if (!(await confirmBox({ title: '停止这个案例？', message: '停止后 Pi 会中断当前这一步，已经做的不会撤回。', ok: '停止', danger: true }))) return;
+  if (!(await confirmBox({ title: '停止这段航程？', message: '停止后 Pi 会中断当前这一步，已经做的不会撤回。', ok: '停止', danger: true }))) return;
   try { await mutate(pathOf(b.dataset.id) + '/cancel'); await load(pathOf(b.dataset.id)); } catch { /* toast */ }
 });
 
@@ -143,9 +156,9 @@ function waitingView() {
       const items = (waitingData().items || []).filter((i) => !hiddenWaiting.has(i.id));
       const of = (k) => items.filter((i) => i.kind === k);
       const row = (i, ic, tone, actAttr) => html`<button class="list-row" ${raw(actAttr)}><span class="badge ${tone}">${icon(ic)}</span><span><b>${i.title}</b><small>${i.why}</small></span>${icon('right', 'chev')}</button>`;
-      return html`${!decisions.length && !items.length ? empty('没有在等你的事', '要你拍板的审批、停下来等你批准的案例、微信里有人在等回话、过期的待办，都会汇到这里。', 'checkCircle') : ''}
+      return html`${!decisions.length && !items.length ? empty('没有在等你的事', '要你拍板的审批、停下来等你批准的航程、微信里有人在等回话、过期的待办，都会汇到这里。', 'checkCircle') : ''}
         ${decisions.length ? section(`要你拍板 · ${decisions.length}`, html`<div class="stack">${decisions.map((d) => pendingNoteHTML(d))}</div>`) : ''}
-        ${of('case').length ? section(`案例停下来等你 · ${of('case').length}`, html`<div class="card list">${of('case').map((i) => row(i, 'layers', 'warning', `data-act="case-open" data-id="${i.case_id}"`))}</div>`) : ''}
+        ${of('case').length ? section(`航程停下来等你 · ${of('case').length}`, html`<div class="card list">${of('case').map((i) => row(i, 'layers', 'warning', `data-act="case-open" data-id="${i.case_id}"`))}</div>`) : ''}
         ${of('wechat').length ? section(`微信在等你回 · ${of('wechat').length}`, html`<div class="card list">${of('wechat').map((i) => html`<div class="wx-wait"><div class="row"><span class="badge info">${icon('message')}</span><span class="grow"><b>${i.title}</b><small>${i.why}</small></span></div>
             <div class="row actions"><button class="btn secondary compact" data-act="wx-draft" data-title="${i.title}" data-why="${i.why}">让 Com 起草回复</button><button class="btn quiet" data-act="wx-done" data-id="${i.id}">已经回了</button></div></div>`)}</div>`) : ''}
         ${of('todo').length ? section(`过期的待办 · ${of('todo').length}`, html`<div class="card list">${of('todo').map((i) => html`<div class="todo-wait"><span class="badge warning">${icon('checklist')}</span><span class="grow"><b>${i.title}</b><small>${i.why}</small></span>
@@ -244,12 +257,4 @@ act('plan-apply', async (b) => {
   try { await mutate('/personal/plan/apply', { day: planData().day, selected: [...planPick.set] }); toast('放进明天的待办了'); await Promise.all([load('/personal/plan'), load('/personal/next'), load('/personal/today')]); } catch { b.disabled = false; }
 });
 
-// ─── 今天页：Com 正在办 ───
-export function todayCasesStrip() {
-  const active = (casesData().items || []).filter((c) => ACTIVE.has(c.state));
-  if (!active.length) return '';
-  return html`<div class="card cases-strip rise" style="--d:170ms"><div class="row between"><small class="label">Com 正在办</small><button class="link" data-act="cases-open">全部</button></div>
-    ${active.slice(0, 3).map((c) => html`<button class="strip-row" data-act="case-open" data-id="${c.id}">${c.state === 'running' ? raw('<i class="pulse"></i>') : icon('hand')}<b>${c.title}</b><span class="grow"></span>
-      <small class="mono ${c.state === 'waiting' ? 'warn-text' : 'faint'}">${c.state === 'waiting' ? '等你' : c.progress && c.progress.total ? `${c.progress.done}/${c.progress.total}` : c.state_label}</small></button>`)}</div>`;
-}
 export { S };

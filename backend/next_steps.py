@@ -5,7 +5,7 @@
 - 模型不可用时退回确定性规则，页面不会空。
 - 划掉、做完、交给 Com 的 7 天内不再提：按依据去重，不按标题。模型每小时换个说法（「回复物料需求」→「推进物料设计」），
   只要引用的还是同一封邮件、同一个日程、同一步项目进展，就算同一件事。每条建议的去留都记账，用来算打扰精度。
-「交给 Com」建一个案例（cases.py，独立 Pi 会话可跟踪）；「加到待办」写进行动台并按 com_next_id 去重；「稍后再说」明天再回来。
+「交给 Com」建一段航程（cases.py，独立 Pi 会话可跟踪）；「加到待办」写进行动台并按 com_next_id 去重；「稍后再说」明天再回来。
 """
 import asyncio, hashlib, json, re, sqlite3, time
 from datetime import datetime, timedelta
@@ -576,7 +576,7 @@ class NextSteps:
                                       sender=facts.get('from', ''), link=facts.get('link', ''))
 
     def act(self, ident, action, **extra):
-        """discuss/delegate=交给 Com（建案例），todo=已加到待办（extra: todo 路径与日期），snooze=稍后再说（明天回来）。"""
+        """discuss/delegate=交给 Com（建航程），todo=已加到待办（extra: todo 路径与日期），snooze=稍后再说（明天回来）。"""
         if action not in ('discuss', 'delegate', 'dismiss', 'done', 'todo', 'snooze'):
             raise ValueError('不支持的操作')
         with self.db() as db:
