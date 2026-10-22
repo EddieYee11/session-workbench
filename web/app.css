@@ -955,3 +955,6 @@ body[data-tab="health"] .dock-item.on { color: var(--hue-pink-ink); }
 .voyage-quiet { display: flex; align-items: center; gap: 8px; width: 100%; height: 44px; padding: 0 16px; margin: 0 0 14px; border: 0; border-radius: 14px; background: var(--card, #fff); color: inherit; cursor: pointer; text-align: left; }
 .voyage-quiet .ic { width: 14px; height: 14px; }
 .voyage-quiet small { flex: 1; color: var(--muted, #74756E); }
+
+.art-frame { width: 100%; height: 76vh; border: 0; border-radius: 14px; background: #fff; }
+.kv.art { width: 100%; text-align: left; background: none; border: 0; cursor: pointer; }

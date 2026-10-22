@@ -109,8 +109,19 @@ function rows() {
 // ─── 渲染 ───
 const toolOf = (s) => String(s.title || '').split(' · ')[0] || s.role || '';
 const firstLine = (t) => { const l = String(t || '').split('\n')[0] || ''; return l.length > 120 ? l.slice(0, 119) + '…' : l; };
+// 大步骤：连续同类工具调用并成一项（「读了 5 个文件」），不露命令和路径；模型写的「进度」单独成项（同 iOS WorkStepsRow.groups）。
+function stepGroups(calls) {
+  const out = [];
+  for (const s of calls) {
+    if (s.role === 'progress') { out.push({ k: 'other', n: 0, note: firstLine(s.text) }); continue; }
+    const k = stepKind(toolOf(s)) || 'other', last = out[out.length - 1];
+    if (last && !last.note && last.k === k) last.n++; else out.push({ k, n: 1, note: '' });
+  }
+  return out;
+}
 function stepsRow(r) {
   const calls0 = r.steps.filter((s) => toolOf(s) !== '工具输出'), calls = calls0.length ? calls0 : r.steps;
+  const groups = stepGroups(calls);
   const open = W.openSteps.has(r.id);
   const lastS = calls[calls.length - 1];
   let head;
@@ -119,11 +130,11 @@ function stepsRow(r) {
     head = html`<i class="pulse"></i><span class="cur">${lastS.role === 'progress' ? firstLine(lastS.text) : STEP_LIVE[k][seedOf(lastS.id) % 3]}</span>`;
   } else {
     const times = r.steps.map((s) => s.time).filter((t) => t > 0), span = times.length ? Math.max(...times) - Math.min(...times) : 0;
-    head = html`${icon('checkCircle')}<span class="sum">做了 ${calls.length} 步${span >= 1 ? ' · 用时 ' + durationText(span) : ''}</span>`;
+    head = html`${icon('checkCircle')}<span class="sum">做了 ${groups.length} 步${span >= 1 ? ' · 用时 ' + durationText(span) : ''}</span>`;
   }
   return html`<div class="process ${r.live ? 'live' : ''}"><button class="process-head" data-act="work-steps" data-key="${r.id}">${head}${icon('right', open ? 'rot' : '')}</button>
-    ${open ? html`<div class="steps">${calls.map((s, i) => { const k = stepKind(toolOf(s)) || 'other', run = r.live && i === calls.length - 1;
-      return html`<div class="step ${run ? 'live' : ''}">${icon(STEP_ICON[k])}<div><b>${s.role === 'progress' ? '进度' : run ? STEP_LIVE[k][0] : stepDone(k, 1)}</b><small>${firstLine(s.text) || toolOf(s)}</small></div></div>`; })}</div>` : ''}</div>`;
+    ${open ? html`<div class="steps">${groups.map((g, i) => { const run = r.live && i === groups.length - 1;
+      return html`<div class="step ${run ? 'live' : ''}">${icon(run ? STEP_ICON[g.k] : 'checkCircle')}<div><b>${g.note || (run ? STEP_LIVE[g.k][0] : stepDone(g.k, g.n))}</b></div></div>`; })}</div>` : ''}</div>`;
 }
 function rowHTML(r) {
   if (r.kind === 'steps') return stepsRow(r);

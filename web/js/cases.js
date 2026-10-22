@@ -1,6 +1,6 @@
 // 航程 + 下一步闭环 + 线索 + 统一「等你」（2026-10-17/18，对应 iOS CasesViews.swift / ThreadsViews.swift）。
 // 后端：/personal/cases、/personal/plan、/personal/thread、/personal/waiting（backend/cases.py、tomorrow_plan.py、threads.py）。
-import { S, html, raw, D, load, mutate, changed, setTab, send, relativeTime, clockTime, toast, md, decisionCount, flowItems, locateMessage } from './core.js';
+import { S, BASE, html, raw, D, load, mutate, changed, setTab, send, relativeTime, clockTime, toast, md, decisionCount, flowItems, locateMessage } from './core.js';
 import { icon, act, stamp, empty, section, openSheet, pushSheet, closeSheets, confirmBox } from './ui.js';
 import { checklist } from './chat.js';
 import { pendingNoteHTML } from './sheets.js';
@@ -95,7 +95,7 @@ function caseView(id) {
         ${steps.length ? section('步骤', html`<div class="card">${checklist(steps, live)}</div>`) : ''}
         ${d.result ? section('结果', html`<div class="card md">${raw(md(d.result))}</div>`) : ''}
         ${(d.assumptions || []).length ? section('它自己拿主意的地方', html`<div class="card inset">${d.assumptions.map((a) => html`<p class="row">${icon('sparkles')}<span>${a.text}</span></p>`)}</div><p class="foot">信息不够时它选了最稳妥的做法继续；不对的话在下面直接说。</p>`) : ''}
-        ${(d.artifacts || []).filter(Boolean).length ? section('产出', html`<div class="card list">${d.artifacts.filter(Boolean).map((p) => html`<div class="kv"><span>${icon(p.startsWith('http') ? 'link' : 'doc')}</span><b class="mono">${p}</b></div>`)}</div>`) : ''}
+        ${(d.artifacts || []).length ? section('产出', html`<div class="card list">${d.artifacts.map((a) => { const isHtml = /\.html$/i.test(a.name || a.path || ''); return html`<button class="kv art" data-act="case-artifact" data-id="${a.id || ''}" data-name="${a.name || ''}"><span>${icon(isHtml ? 'sparkles' : 'doc')}</span><b>${a.name || a.path}</b><small class="faint">${isHtml ? '点开直接看' : '下载'}</small></button>`; })}</div>`) : ''}
         ${tl.length ? section('过程', html`<div class="card inset timeline">${tl.slice(-30).map((e) => html`<div class="tl-row ${e.kind === 'you' ? 'you' : ''}"><em class="mono">${clockTime(e.at)}</em><span>${(TL[e.kind] || '') + e.text}</span></div>`)}</div>
           ${d.tool_calls ? html`<p class="foot">Pi 一共动用了 ${d.tool_calls} 次工具。</p>` : ''}`) : ''}
         ${d.can_send || (d.state === 'done' && d.kind !== 'turn') ? html`<div class="case-composer"><textarea id="case-draft" rows="2" placeholder="${d.state === 'done' ? '还要它接着做什么？' : '插一句：补充要求、改方向…'}"></textarea>
@@ -258,3 +258,21 @@ act('plan-apply', async (b) => {
 });
 
 export { S };
+
+// 航程产出：HTML 在沙箱 iframe 里直接交互（不给同源权限、不联网），其它文件走下载
+act('case-artifact', async (b) => {
+  const { id, name } = b.dataset;
+  if (!id) return toast('这个产出还没登记，打不开');
+  try {
+    const res = await fetch(BASE + '/personal/artifacts/' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + S.token } });
+    if (!res.ok) throw new Error('打不开（' + res.status + '）');
+    if (/\.html$/i.test(name)) {
+      const text = await res.text();
+      openSheet({ title: name.replace(/\.html$/i, ''), render: () => html`<iframe class="art-frame" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${text}"></iframe>` });
+    } else {
+      const url = URL.createObjectURL(await res.blob());
+      Object.assign(document.createElement('a'), { href: url, download: name }).click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+  } catch (e) { toast(e.message || '打不开'); }
+});
