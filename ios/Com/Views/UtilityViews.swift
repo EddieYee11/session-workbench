@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 import ComCore
 import QuickLook
 
@@ -181,6 +182,7 @@ struct ArtifactList: View {
     @Environment(AppModel.self) private var model
     let artifacts: [JSON]
     @State private var preview: PreviewFile?
+    @State private var page: PreviewFile?
     @State private var loading: String?
     @State private var error = ""
     var body: some View {
@@ -191,9 +193,9 @@ struct ArtifactList: View {
                         Button {
                             Task { await open(artifact) }
                         } label: {
-                            ListRow(symbol: artifact["mime"].string.hasPrefix("image") ? "photo" : "doc.richtext", tone: .info,
+                            ListRow(symbol: artifact["mime"].string.hasPrefix("image") ? "photo" : artifact["name"].string.hasSuffix(".html") ? "rectangle.on.rectangle.angled" : "doc.richtext", tone: .info,
                                     title: artifact["name"].string.isEmpty ? URL(fileURLWithPath: artifact["path"].string).lastPathComponent : artifact["name"].string,
-                                    subtitle: artifact["availability"].string == "available" ? "预览与分享" : artifact["availability"].string == "missing" ? "文件已移动或不存在" : "核对登记后预览", subtitleLines: 1) {
+                                    subtitle: artifact["availability"].string == "available" ? (artifact["name"].string.hasSuffix(".html") ? "点开直接看" : "预览与分享") : artifact["availability"].string == "missing" ? "文件已移动或不存在" : "核对登记后预览", subtitleLines: 1) {
                                 if loading == artifact.id { ProgressView() } else { Image(systemName: "arrow.up.right").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary) }
                             }
                         }.buttonStyle(.row).disabled(loading != nil)
@@ -202,6 +204,7 @@ struct ArtifactList: View {
             }
             if !error.isEmpty { InlineNotice(text: error) }
         }
+        .fullScreenCover(item: $page) { file in NavigationStack { HTMLPreview(url: file.url).ignoresSafeArea(edges: .bottom).navigationTitle(file.url.deletingPathExtension().lastPathComponent).navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .topBarLeading) { Button("完成") { page = nil } }; ToolbarItem(placement: .topBarTrailing) { ShareLink(item: file.url) { Image(systemName: "square.and.arrow.up") } } } } }
         .sheet(item: $preview) { file in NavigationStack { FilePreview(url: file.url).navigationTitle(file.url.lastPathComponent).navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .topBarLeading) { Button("完成") { preview = nil } }; ToolbarItem(placement: .topBarTrailing) { ShareLink(item: file.url) { Image(systemName: "square.and.arrow.up") } } } } }
     }
     private func open(_ item: JSON) async {
@@ -216,11 +219,31 @@ struct ArtifactList: View {
             }
             let file = try await api.download(record.id, name: record["name"].string, into: SecureVault.directory.appendingPathComponent("Previews"))
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: file.path)
-            preview = PreviewFile(url: file)
+            if file.pathExtension.lowercased() == "html" { page = PreviewFile(url: file) } else { preview = PreviewFile(url: file) }
         } catch { self.error = error.localizedDescription }
     }
 }
 private struct PreviewFile: Identifiable { let url: URL; var id: String { url.path } }
+/// 航程产出的 HTML：自包含单文件，直接在 App 里交互；只读本文件所在目录，外部链接一律不跳转。
+struct HTMLPreview: UIViewRepresentable {
+    let url: URL
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.navigationDelegate = context.coordinator
+        view.isOpaque = false; view.backgroundColor = .clear
+        view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        return view
+    }
+    func updateUIView(_ view: WKWebView, context: Context) {}
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(action.request.url?.isFileURL == true || action.request.url?.scheme == "about" ? .allow : .cancel)
+        }
+    }
+}
 struct FilePreview: UIViewControllerRepresentable {
     let url: URL
     func makeCoordinator() -> Coordinator { Coordinator(url) }

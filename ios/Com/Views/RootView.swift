@@ -8,6 +8,9 @@ struct RootView: View {
     /// r3-work：哪个 tab 的根页被推到了下一层（今天页的详情）。那时全局顶栏让位给系统导航栏。
     @State private var pushed: Set<SectionTab> = []
     @State private var screenWidth: CGFloat = 0
+    /// 折痕（官方：向 GeometryProxy 要 reservedRegions(kind: .division)）：半折叠时是内屏上一条有宽度的活动区域，摊平 / 合上时没有。
+    @State private var crease: CGRect?
+    @State private var hingeTick = 0
     @Namespace private var details
     @AppStorage("appearance") private var appearance = "light"
     var body: some View {
@@ -29,36 +32,36 @@ struct RootView: View {
     }
     private var paired: some View {
         @Bindable var model = model
-        let sidebar = WorkSidebarLayer.width(for: screenWidth)
+        let wide = screenWidth >= Self.splitMinWidth
+        // 折痕是竖条（展开横拿、半折叠）：左右栏各占折痕两边，折痕那一条留空；其他情况按固定比例分栏。
+        let vertical = crease.flatMap { $0.width > 0 && $0.height > $0.width ? $0 : nil }
+        let leftWidth = vertical.map { $0.minX.rounded() } ?? Self.leftPaneWidth(for: screenWidth)
+        let gap = vertical?.width.rounded() ?? 0
+        let sidebar = wide ? min(340, leftWidth - 40) + 40 : WorkSidebarLayer.width(for: screenWidth)
         let base: CGFloat = model.showWorkSidebar ? sidebar : 0
         let open = min(1, max(0, (base + model.workSidebarDrag) / sidebar))
-        let barHidden = pushed.contains(model.tab)
+        let barHidden = pushed.contains(wide ? .chat : model.tab)
+        let rightBarHidden = pushed.contains(model.rightTab)
         return ZStack(alignment: .top) {
             // 主内容：页面 + Dock + 工作台 + 顶栏。工作页开侧栏时整块往右推走，Dock 跟着淡出。
             ZStack(alignment: .top) {
-                TabView(selection: $model.tab) {
-                    ForEach(SectionTab.dock) { tab in
-                        Tab(tab.rawValue, systemImage: tab.symbol, value: tab) {
-                            NavigationStack {
-                                page(tab)
-                                    // 根页被推走（还停在这个 tab）= 进了详情；回到根页再把顶栏请回来。
-                                    .onAppear { pushed.remove(tab) }
-                                    .onDisappear { if model.tab == tab { pushed.insert(tab) } }
-                            }
-                            .toolbar(.hidden, for: .tabBar)
+                if wide {
+                    splitContent(leftWidth: leftWidth, gap: gap, rightBarHidden: rightBarHidden)
+                } else {
+                    tabHost(SectionTab.dock, selection: $model.tab)
+                        .onChange(of: model.tab) { _, tab in
+                            Task { await model.refresh(tab) }; model.showMenu = false
+                            if tab != .work { model.showWorkSidebar = false; model.workSidebarDrag = 0; model.workSidebarMounted = false }
                         }
-                    }
+                        // Dock 只有一条，放在 TabView 外面：放进每个 tab 的话，切页时旧 Dock 和新 Dock 会一起淡入淡出，胶囊撑开的动画就看不到了。
+                        .overlay(alignment: .bottom) { if !SectionTab.typing.contains(model.tab) || !keyboardVisible { ComDock().opacity(Double(1 - open)) } }
                 }
-                .onChange(of: model.tab) { _, tab in
-                    Task { await model.refresh(tab) }; model.showMenu = false
-                    if tab != .work { model.showWorkSidebar = false; model.workSidebarDrag = 0; model.workSidebarMounted = false }
-                }
-                // Dock 只有一条，放在 TabView 外面：放进每个 tab 的话，切页时旧 Dock 和新 Dock 会一起淡入淡出，胶囊撑开的动画就看不到了。
-                .overlay(alignment: .bottom) { if !SectionTab.typing.contains(model.tab) || !keyboardVisible { ComDock().opacity(Double(1 - open)) } }
                 // 工作台在顶栏下面一层：没拉开时完全透明、不接触摸；拉开的过程跟着手指长出来。
                 StagePanel().zIndex(2)
                 // 顶栏也只有一条（r3-work）：她是全 App 唯一的实例，切页不重建、不挪位。进详情页时往左淡出让位。
-                ComTopBar()
+                ComTopBar(pinned: wide ? .chat : nil)
+                    .frame(width: wide ? leftWidth : nil)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .opacity(barHidden ? 0 : 1).offset(x: barHidden ? -40 : 0)
                     .allowsHitTesting(!barHidden).accessibilityHidden(barHidden)
                     .animation(reduce ? .easeOut(duration: 0.2) : .easeInOut(duration: 0.32), value: barHidden)
@@ -78,7 +81,7 @@ struct RootView: View {
             .offset(x: sidebar * open)
             .overlay(alignment: .leading) {
                 // 工作页从左边缘往右拉：侧栏跟着手指出来。
-                if model.tab == .work && !model.showWorkSidebar && !barHidden {
+                if model.isShown(.work) && !model.showWorkSidebar && !(wide ? rightBarHidden : barHidden) {
                     Color.clear.frame(width: 20).contentShape(Rectangle()).gesture(sidebarDrag(sidebar))
                 }
             }
@@ -92,7 +95,21 @@ struct RootView: View {
                     .zIndex(4)
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { screenWidth = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { screenWidth = $0; model.splitView = $0 >= Self.splitMinWidth }
+        .background { CreaseProbe(tick: hingeTick) { crease = $0 } }
+        .modifier(HingeWatch { hingeTick += 1 })
+        // 折痕上不放交互元素：不管下面是什么，这一条不接触摸（官方只给了区域，怎么避开由 App 定）。
+        .overlay(alignment: .topLeading) {
+            if let crease, crease.width > 0, crease.height > 0 {
+                Color.clear.frame(width: crease.width, height: crease.height)
+                    .contentShape(Rectangle()).onTapGesture {}
+                    .offset(x: crease.minX, y: crease.minY)
+                    .accessibilityHidden(true)
+            }
+        }
+        // 折叠 / 展开会整块重建页面：旧页面的 onDisappear 晚于新页面的 onAppear，会把顶栏误判成「进了详情」而藏起来。
+        // 宽窄一换就清零，随后各页自己的 onAppear 会把真正推进详情的那几页补回来。
+        .onChange(of: wide) { _, _ in pushed = [] }
         // 别处要打开某段工作会话（任务详情、项目看板、派活页）：切到工作页原地打开，不再弹 WorkDetailView。
         .onChange(of: model.selectedSession) { _, session in
             guard let session else { return }
@@ -102,6 +119,55 @@ struct RootView: View {
             if model.tab != .work { withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.46, dampingFraction: 0.66)) { model.tab = .work } }
         }
     }
+    /// 展开的折叠屏：宽度到这个值就换成左右双栏（iPhone Duo 展开横屏约 951pt；竖拿约 669pt 仍是单栏）。
+    static let splitMinWidth: CGFloat = 700
+    static func leftPaneWidth(for screen: CGFloat) -> CGFloat { min(420, max(360, (screen * 0.42).rounded())) }
+
+    /// 一组页面各自带导航栈，切页保留各自的状态；Dock 另外画在外面。
+    private func tabHost(_ tabs: [SectionTab], selection: Binding<SectionTab>) -> some View {
+        TabView(selection: selection) {
+            ForEach(tabs) { tab in
+                Tab(tab.rawValue, systemImage: tab.symbol, value: tab) {
+                    NavigationStack {
+                        page(tab)
+                            // 根页被推走（还停在这个 tab）= 进了详情；回到根页再把顶栏请回来。
+                            .onAppear { pushed.remove(tab) }
+                            .onDisappear { if selection.wrappedValue == tab { pushed.insert(tab) } }
+                    }
+                    .toolbar(.hidden, for: .tabBar)
+                }
+            }
+        }
+    }
+
+    /// 展开后的双栏：左边 Com 主对话（顶栏上的她留在左栏），右边一个工作页面（自己的标题栏 + Dock）。
+    private func splitContent(leftWidth: CGFloat, gap: CGFloat, rightBarHidden: Bool) -> some View {
+        @Bindable var model = model
+        return HStack(spacing: 0) {
+            NavigationStack {
+                page(.chat, dock: false)
+                    .onAppear { pushed.remove(.chat) }
+                    .onDisappear { pushed.insert(.chat) }
+            }
+            .frame(width: leftWidth)
+            // 半折叠时这里是折痕：不画线、不放任何东西；摊平时是一条分隔线。
+            if gap > 0 { Color.clear.frame(width: gap) } else { Rectangle().fill(Palette.separator).frame(width: 1).ignoresSafeArea() }
+            tabHost(SectionTab.workspace, selection: Binding(get: { model.rightTab }, set: { model.tab = $0 }))
+                .onChange(of: model.rightTab) { _, tab in
+                    Task { await model.refresh(tab) }; model.showMenu = false
+                    if tab != .work { model.showWorkSidebar = false; model.workSidebarDrag = 0; model.workSidebarMounted = false }
+                }
+                .overlay(alignment: .top) {
+                    PaneBar(tab: model.rightTab)
+                        .opacity(rightBarHidden ? 0 : 1).allowsHitTesting(!rightBarHidden)
+                        .animation(reduce ? .easeOut(duration: 0.2) : .easeInOut(duration: 0.32), value: rightBarHidden)
+                }
+                .overlay(alignment: .bottom) {
+                    if !SectionTab.typing.contains(model.rightTab) || !keyboardVisible { ComDock(tabs: SectionTab.workspace) }
+                }
+        }
+    }
+
     /// 拖侧栏：开着时往左拖收起，关着时（左边缘）往右拉出来；跟手，松手按速度和位置决定。
     private func sidebarDrag(_ width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 12)
@@ -117,14 +183,14 @@ struct RootView: View {
                 DispatchQueue.main.async { model.settleWorkSidebar(predicted: predicted, width: width, reduce: reduce) }
             }
     }
-    @ViewBuilder private func page(_ tab: SectionTab) -> some View {
+    @ViewBuilder private func page(_ tab: SectionTab, dock: Bool = true) -> some View {
         Group {
             switch tab { case .chat: ChatView(); case .next: NextView(); case .doing: TodayView(); case .health: HealthView(); case .work: WorkView() }
         }
         // 顶栏在 RootView 最上层只有一条（r3-work）：这里只给它让出高度，内容从它下面滑过。
         .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: Layout.topBar) }
         // 给上面那条 Dock 留位置；聊天页和工作页打字时让位给键盘。
-        .safeAreaInset(edge: .bottom, spacing: 0) { if !SectionTab.typing.contains(tab) || !keyboardVisible { Color.clear.frame(height: ComDock.height) } }
+        .safeAreaInset(edge: .bottom, spacing: 0) { if dock && (!SectionTab.typing.contains(tab) || !keyboardVisible) { Color.clear.frame(height: ComDock.height) } }
     }
 }
 
@@ -257,5 +323,27 @@ struct PairingView: View {
                 Text("配对码在 Mac mini 上生成。账号凭据留在这台 iPhone 的钥匙串中。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
             }
         }
+    }
+}
+
+/// 读折痕：iOS 27.1 起 GeometryProxy 能给出 .division 区域；只取活动的那条（半折叠），换成 id 重建来强制重读。
+private struct CreaseProbe: View {
+    let tick: Int
+    let update: (CGRect?) -> Void
+    var body: some View {
+        Color.clear
+            .onGeometryChange(for: CGRect?.self) { proxy in
+                if #available(iOS 27.1, *) { return proxy.reservedRegions(kind: .division).first(where: \.isActive)?.frame }
+                return nil
+            } action: { update($0) }
+            .id(tick)
+    }
+}
+
+/// 铰链状态一变（合上 / 半折叠 / 完全展开）就让上面重读一次折痕。
+private struct HingeWatch: ViewModifier {
+    let changed: () -> Void
+    func body(content: Content) -> some View {
+        if #available(iOS 27.1, *) { content.onHingeChange { _, _ in changed() } } else { content }
     }
 }

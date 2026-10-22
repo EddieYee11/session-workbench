@@ -9,6 +9,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     /// 底栏四页（10-15 Eddie：今天页塞太多，「下一步」拆回独立一页）。
     static let dock: [SectionTab] = [.chat, .next, .doing, .health, .work]  // 10-17：身体数据单独一页「健康」
+    /// 双栏右栏的页面：去掉常驻左栏的 Com 主对话。
+    static let workspace: [SectionTab] = [.next, .doing, .health, .work]
     /// 底部有输入框的页：键盘弹起时 Dock 让位。
     static let typing: Set<SectionTab> = [.chat, .work]
     var symbol: String {
@@ -17,7 +19,12 @@ enum SectionTab: String, CaseIterable, Identifiable {
 }
 
 @MainActor @Observable final class AppModel {
-    var tab: SectionTab = .chat
+    var tab: SectionTab = .chat { didSet { if tab != .chat { rightTab = tab } } }
+    /// 展开的折叠屏（宽屏）双栏：左栏常驻 Com 主对话，右栏显示这一页；任何「跳到某页」仍然只写 tab。
+    var rightTab: SectionTab = .doing
+    var splitView = false
+    /// 这一页此刻在屏幕上：单栏时是当前 tab，双栏时是左栏的聊天和右栏的 rightTab。
+    func isShown(_ page: SectionTab) -> Bool { splitView ? (page == .chat || page == rightTab) : tab == page }
     var base = UserDefaults.standard.string(forKey: "base") ?? "https://pi.eddiegao.work:8443/sessions"
     var isPaired = false
     var conversation = ConversationState()
@@ -133,6 +140,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
             ["today.brief.open", "today.now.open", "today.deck", "health.done", "health.span"].forEach(defaults.removeObject(forKey:))
             if args.contains("--ui-today-dial") { defaults.set("dial", forKey: "today.now.open") }
             if args.contains("--ui-today-timeline") { defaults.set("timeline", forKey: "today.deck") }
+            // 双栏验收：--ui-tab=下一步 / 今天 / 健康 / 工作，启动就停在那一页（折叠屏右栏逐页截图用）。
+            if let flag = args.first(where: { $0.hasPrefix("--ui-tab=") }), let page = SectionTab(rawValue: String(flag.dropFirst("--ui-tab=".count))) { tab = page }
             devices = DeviceBridge(model: self)
             seedUIPreview()
             stage.receive("snapshot", .object(["messages": .array(conversation.messages), "activity": .object(["kind": .string("idle")])]))
@@ -247,6 +256,11 @@ enum SectionTab: String, CaseIterable, Identifiable {
                 // 流里的便签（事项、待批准、信源状态）每分钟补一次，不随 SSE。
                 if ticks % 4 == 0 { await self.refreshFlow(); _ = await self.load("/personal/next") }
                 // 聊天页由 SSE 推送；只有流断开时才用快照补拉，避免每 15 秒重复下载整份对话。
+                if self.splitView {
+                    if !self.streaming { await self.refresh(.chat) }
+                    await self.refresh(self.rightTab)
+                    continue
+                }
                 if self.tab == .chat && self.streaming { continue }
                 await self.refresh(self.tab)
             }

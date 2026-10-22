@@ -15,23 +15,26 @@ struct ComTopBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     @AppStorage("work.lastAgent") private var lastAgent = "codex"
     @State private var dragStart: CGFloat?
+    /// 双栏时左栏的顶栏固定是 Com 主对话，不跟着右栏换页。
+    var pinned: SectionTab? = nil
+    private var tab: SectionTab { pinned ?? model.tab }
     /// 她的左边缘（顶栏坐标）：正中往右 26pt。字挂她左边、牌子伸她右边，整组看着居中；哪一页都是这个位置。
     static func figureX(in width: CGFloat) -> CGFloat { (width / 2 + 26 - StripFigure.bodyWidth / 2).rounded() }
     private var motion: Animation { reduce ? .easeOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 0.86) }
     private var stage: CGFloat { min(1, max(0, model.stageProgress)) }
     /// 标题：工作页是「派给谁」（点开换人 / 会话菜单），其他页是页名。
     private var head: String {
-        switch model.tab {
+        switch tab {
         case .chat: "Com"
         case .work: agentName(model.work.mode == .home ? lastAgent : model.work.agent)
-        default: model.tab.rawValue
+        default: tab.rawValue
         }
     }
     var body: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let x = Self.figureX(in: width)
-            let leading = Space.lg + (model.tab == .work ? 44 + Space.sm : 0)
+            let leading = Space.lg + (tab == .work ? 44 + Space.sm : 0)
             let titleWidth = max(56, x - 6 - leading)
             // 往下拉时标题先走（拉到 0.2 就没了）：她要往左下跳，不能从字上面穿过去。
             let center = Double(1 - min(1, stage * 5))
@@ -50,14 +53,14 @@ struct ComTopBar: View {
                     .padding(.leading, x).padding(.top, (Layout.topBar - StripFigure.size.height) / 2)
                     .allowsHitTesting(stage < 0.05)
                 HStack(spacing: 0) {
-                    if model.tab == .work {
+                    if tab == .work {
                         GlassIconButton(symbol: "sidebar.left", label: "历史对话") { model.openWorkSidebar(reduce: reduce) }
                             .accessibilityIdentifier("work-sidebar")
                             .opacity(Double(1 - min(1, stage * 2))).allowsHitTesting(stage < 0.05)
                             .transition(reduce ? .opacity : .opacity.combined(with: .scale(scale: 0.7)))
                     }
                     Spacer(minLength: 0)
-                    trailingButton
+                    TopBarTrailing(tab: tab, closing: model.stageExpanded || stage > 0.5)
                 }
                 .padding(.horizontal, Space.lg)
                 .frame(width: width, height: Layout.topBar)
@@ -77,7 +80,7 @@ struct ComTopBar: View {
         }
         .contentShape(Rectangle())
         .simultaneousGesture(stageDrag)
-        .animation(motion, value: model.tab)
+        .animation(motion, value: tab)
     }
 
     /// 标题 + 她现在的状态；她说话时状态那行换成手绘气泡（尾巴指向她）。
@@ -90,8 +93,8 @@ struct ComTopBar: View {
                 // 小箭头一直在，只是别的页收成 0 宽、透明：插入 / 移除会在切页那一帧闪没。
                 Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.textSecondary)
                     .padding(.leading, 4)
-                    .frame(width: model.tab == .work ? 15 : 0, alignment: .leading)
-                    .opacity(model.tab == .work ? 1 : 0)
+                    .frame(width: tab == .work ? 15 : 0, alignment: .leading)
+                    .opacity(tab == .work ? 1 : 0)
                     .accessibilityHidden(true)
             }
             ZStack(alignment: .trailing) {
@@ -112,7 +115,7 @@ struct ComTopBar: View {
 
     /// 标题的触摸：工作页是换人 / 会话菜单；其他页和点她一样弹主菜单。
     @ViewBuilder private var titleTarget: some View {
-        if model.tab == .work {
+        if tab == .work {
             WorkTitleMenu()
         } else {
             Button { Haptics.selection(); model.showMenu.toggle() } label: { Color.clear.contentShape(Rectangle()) }
@@ -130,7 +133,7 @@ struct ComTopBar: View {
     private func figure(hop: StripFigure.Hop) -> some View {
         @Bindable var model = model
         return Button { Haptics.selection(); model.showMenu.toggle() } label: {
-            StripFigure(state: model.stripState, sign: model.stripSign, animated: model.active, quiet: !model.workBubble.isEmpty, hop: hop, outfit: model.tab.outfit)
+            StripFigure(state: model.stripState, sign: model.stripSign, animated: model.active, quiet: !model.workBubble.isEmpty, hop: hop, outfit: tab.outfit)
                 .frame(width: StripFigure.bodyWidth + 6, height: StripFigure.size.height, alignment: .leading)
                 .contentShape(Rectangle())
         }
@@ -147,43 +150,6 @@ struct ComTopBar: View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Com 的工作台").font(TypeScale.headline)
             Text(model.stripCaption).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).lineLimit(1)
-        }
-    }
-
-    /// 右上一颗玻璃按钮：图标随页换（符号替换动画），拉开工作台时变成收起。玻璃本身不换，切页不闪。
-    private var trailingButton: some View {
-        let item = trailingItem(closing: model.stageExpanded || stage > 0.5)
-        return Button(action: item.action) {
-            Image(systemName: item.symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(Palette.textPrimary)
-                .contentTransition(.symbolEffect(.replace))
-                .opacity(item.disabled ? 0.4 : 1)
-                .frame(width: 44, height: 44)
-        }
-        .buttonStyle(MessagePressStyle())
-        .floatingGlass(.circle)
-        .disabled(item.disabled)
-        .accessibilityLabel(item.label)
-        .accessibilityIdentifier(item.id)
-        .animation(motion, value: item.symbol)
-    }
-    private struct BarItem { let symbol: String; let label: String; let id: String; var disabled = false; let action: () -> Void }
-    private func trailingItem(closing: Bool) -> BarItem {
-        if closing { return BarItem(symbol: "chevron.up", label: "收起工作舞台", id: "agent-stage-close") { model.closeStage() } }
-        switch model.tab {
-        case .health:
-            let running = model.healthInsight["running"].bool
-            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "重新评估身体", id: "health-refresh", disabled: running) { Task { await model.refreshHealthInsight() } }
-        case .chat, .doing:
-            return BarItem(symbol: "magnifyingglass", label: "搜索聊天与成果", id: "top-search") { model.showSearch = true }
-        case .next:
-            let running = model.nextData["running"].bool
-            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "让它重新整理", id: "next-refresh", disabled: running) { Task { await model.refreshNext() } }
-        case .work:
-            // ChatGPT 右上角：新对话。已经在新对话里就是灰的。
-            return BarItem(symbol: "square.and.pencil", label: "新对话", id: "work-new", disabled: model.work.mode == .home) {
-                Haptics.selection()
-                withAnimation(motion) { model.work.newChat() }
-            }
         }
     }
 
@@ -214,6 +180,50 @@ struct ComTopBar: View {
                     DispatchQueue.main.async { model.settleStage(predicted: predicted) }
                 }
             }
+    }
+}
+
+/// 顶栏右上那颗玻璃按钮：图标随页换（符号替换动画），拉开工作台时变成收起。玻璃本身不换，切页不闪。
+struct TopBarTrailing: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    let tab: SectionTab
+    var closing = false
+    private var motion: Animation { reduce ? .easeOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 0.86) }
+    var body: some View {
+        let item = trailingItem(closing: closing)
+        return Button(action: item.action) {
+            Image(systemName: item.symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(Palette.textPrimary)
+                .contentTransition(.symbolEffect(.replace))
+                .opacity(item.disabled ? 0.4 : 1)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(MessagePressStyle())
+        .floatingGlass(.circle)
+        .disabled(item.disabled)
+        .accessibilityLabel(item.label)
+        .accessibilityIdentifier(item.id)
+        .animation(motion, value: item.symbol)
+    }
+    private struct BarItem { let symbol: String; let label: String; let id: String; var disabled = false; let action: () -> Void }
+    private func trailingItem(closing: Bool) -> BarItem {
+        if closing { return BarItem(symbol: "chevron.up", label: "收起工作舞台", id: "agent-stage-close") { model.closeStage() } }
+        switch tab {
+        case .health:
+            let running = model.healthInsight["running"].bool
+            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "重新评估身体", id: "health-refresh", disabled: running) { Task { await model.refreshHealthInsight() } }
+        case .chat, .doing:
+            return BarItem(symbol: "magnifyingglass", label: "搜索聊天与成果", id: "top-search") { model.showSearch = true }
+        case .next:
+            let running = model.nextData["running"].bool
+            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "让它重新整理", id: "next-refresh", disabled: running) { Task { await model.refreshNext() } }
+        case .work:
+            // ChatGPT 右上角：新对话。已经在新对话里就是灰的。
+            return BarItem(symbol: "square.and.pencil", label: "新对话", id: "work-new", disabled: model.work.mode == .home) {
+                Haptics.selection()
+                withAnimation(motion) { model.work.newChat() }
+            }
+        }
     }
 }
 
@@ -295,11 +305,13 @@ struct ComDock: View {
     /// 胶囊 48 + 上 8 + 下 4；页面按这个高度留底部空白。
     static let height: CGFloat = 48 + Space.sm + Space.xs
     @Environment(AppModel.self) private var model
+    /// 双栏时右栏的 Dock 只放工作页面（Com 主对话常驻左栏）。
+    var tabs: [SectionTab] = SectionTab.dock
     var body: some View {
         // 不包 GlassEffectContainer：每颗各自一块玻璃，徽标才能压在玻璃上面。
         HStack(spacing: Space.sm) {
-            ForEach(SectionTab.dock) { tab in
-                DockItem(tab: tab, selected: model.tab == tab,
+            ForEach(tabs) { tab in
+                DockItem(tab: tab, selected: (model.splitView ? model.rightTab : model.tab) == tab,
                          badge: tab == .doing ? model.waitingCount : tab == .next ? model.nextUrgentCount : 0)
             }
         }

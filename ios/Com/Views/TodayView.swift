@@ -359,7 +359,9 @@ private struct TodayBrief: View {
     var body: some View {
         let running = model.nextData["running"].bool
         let headline = model.todayHeadline
-        let points = model.todayBrief
+        let all = model.todayBrief
+        let projects = all.filter { $0["kind"].string == "project" }
+        let points = all.filter { $0["kind"].string != "project" }
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: Space.md) {
                 Image(systemName: "sparkles").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.onAccent)
@@ -375,8 +377,8 @@ private struct TodayBrief: View {
                         .opacity(running && !reduce ? 0.55 : 1)
                     HStack(spacing: 4) {
                         Text(running ? "重新整理中" : model.nextData["updated_at"].double > 0 ? "整理于 " + relativeTime(model.nextData["updated_at"].double) : "从日程、身体、行动台和资讯里看")
-                        if !points.isEmpty {
-                            Text("· \(points.count) 条要点")
+                        if !all.isEmpty {
+                            Text("· \(all.count) 条要点")
                             Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
                                 .rotationEffect(.degrees(open ? 180 : 0))
                         }
@@ -394,18 +396,24 @@ private struct TodayBrief: View {
             }
             .contentShape(.rect)
             .onTapGesture {
-                guard !points.isEmpty else { return }
+                guard !all.isEmpty else { return }
                 Haptics.selection()
                 withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.86)) { open.toggle() }
             }
             // 先自成一个容器再挂标识，不然标识会盖掉里面「today-headline」这些子元素的。
             .accessibilityElement(children: .contain)
-            .accessibilityHint(points.isEmpty ? "" : open ? "点一下收起要点" : "点一下展开要点")
+            .accessibilityHint(all.isEmpty ? "" : open ? "点一下收起要点" : "点一下展开要点")
             .accessibilityIdentifier("today-brief-toggle")
-            if open && !points.isEmpty {
-                VStack(alignment: .leading, spacing: Space.sm) {
+            if open && !all.isEmpty {
+                VStack(alignment: .leading, spacing: Space.md) {
+                    ForEach(Array(projects.enumerated()), id: \.offset) { index, project in
+                        ProjectBriefCard(project: project, index: index)
+                    }
+                    if !points.isEmpty && !projects.isEmpty {
+                        Text("其它").font(.caption.weight(.bold)).foregroundStyle(Palette.textTertiary).padding(.leading, 2)
+                    }
                     ForEach(Array(points.sorted { BriefPoint.order($0["kind"].string) < BriefPoint.order($1["kind"].string) }.enumerated()), id: \.element["text"].string) { index, point in
-                        BriefPoint(point: point, index: index)
+                        BriefPoint(point: point, index: index + projects.count)
                     }
                 }
                 .padding(.top, Space.md)
@@ -416,10 +424,75 @@ private struct TodayBrief: View {
         .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
         .clipShape(.rect(cornerRadius: Radius.lg, style: .continuous))
         .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: headline)
-        .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: points.map { $0["text"].string })
+        .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: all.map { $0["text"].string })
         .animation(.smooth(duration: 0.3), value: running)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("today-brief")
+    }
+}
+
+/// 焦点项目卡：左边大倒计时，右边一句话进展；下面「还差」打圈列表、「风险」琥珀条。
+/// 数据来自「下一步」归纳时对微信里这个项目全部对话的通读（backend/next_steps.py::clean_focus）。
+private struct ProjectBriefCard: View {
+    let project: JSON
+    let index: Int
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var shown = false
+    private var days: Int? { project["days_left"].isNull ? nil : project["days_left"].int }
+    private var countdown: (String, String) {
+        guard let days else { return ("·", "") }
+        if days > 0 { return ("\(days)", "天后") }
+        return days == 0 ? ("今", "天") : ("已", "结束")
+    }
+    private var dateLabel: String {
+        let raw = project["date"].string
+        guard raw.count >= 10 else { return raw }
+        return String(raw.dropFirst(5)).replacingOccurrences(of: "-", with: "月") + "日"
+    }
+    var body: some View {
+        let (big, unit) = countdown
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack(alignment: .top, spacing: Space.md) {
+                VStack(spacing: 0) {
+                    Text(big).font(.system(size: 34, weight: .heavy, design: .rounded)).foregroundStyle(Palette.accent).monospacedDigit()
+                    if !unit.isEmpty { Text(unit).font(.caption2.weight(.bold)).foregroundStyle(Palette.onInkSecondary) }
+                }
+                .frame(width: 58)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(project["title"].string).font(TypeScale.callout.weight(.bold)).foregroundStyle(Palette.onInk)
+                    Text([dateLabel, project["venue"].string].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(TypeScale.footnote).foregroundStyle(Palette.onInkSecondary)
+                    Text(project["text"].string).font(TypeScale.subheadline).foregroundStyle(Palette.onInk)
+                        .lineSpacing(2).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
+                }
+                Spacer(minLength: 0)
+            }
+            let open = project["open"].array.map(\.string).filter { !$0.isEmpty }
+            if !open.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("还差").font(.caption.weight(.bold)).foregroundStyle(Palette.onInkSecondary)
+                    ForEach(Array(open.enumerated()), id: \.offset) { _, line in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "circle").font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.accent)
+                            Text(line).font(TypeScale.subheadline).foregroundStyle(Palette.onInk).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            let risks = project["risks"].array.map(\.string).filter { !$0.isEmpty }
+            ForEach(Array(risks.enumerated()), id: \.offset) { _, line in
+                Label(line, systemImage: "exclamationmark.triangle.fill")
+                    .font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.warning)
+                    .padding(.horizontal, Space.sm + 2).padding(.vertical, 6)
+                    .background(Palette.warning.opacity(0.14), in: .rect(cornerRadius: Radius.sm, style: .continuous))
+            }
+        }
+        .padding(Space.lg)
+        .background(Palette.ink, in: .rect(cornerRadius: Radius.md, style: .continuous))
+        .opacity(shown ? 1 : 0).offset(y: shown || reduce ? 0 : 10)
+        .onAppear { withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 0.86).delay(0.04 + Double(index) * 0.05)) { shown = true } }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("today-brief-project-\(index)")
     }
 }
 

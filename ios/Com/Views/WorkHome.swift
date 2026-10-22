@@ -56,7 +56,7 @@ struct WorkView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
                 guard !Task.isCancelled else { return }
-                if model.active && model.tab == .work { await work.refresh(model) }
+                if model.active && model.isShown(.work) { await work.refresh(model) }
             }
         }
         .task(id: agent) { await work.loadModels(for: agent, model) }

@@ -258,8 +258,8 @@ private struct WorkStepsRow: View {
                 .accessibilityHint(open ? "收起步骤" : "展开全部步骤")
             if open {
                 VStack(alignment: .leading, spacing: Space.xs) {
-                    ForEach(Array(calls.enumerated()), id: \.offset) { index, step in
-                        line(step, running: live && index == calls.count - 1)
+                    ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                        line(group, running: live && index == groups.count - 1)
                     }
                 }
                 .padding(.leading, 6).padding(.top, Space.sm).padding(.bottom, Space.xs)
@@ -293,21 +293,29 @@ private struct WorkStepsRow: View {
     private var summary: String {
         let times = steps.map { $0["time"].double }.filter { $0 > 0 }
         let span = (times.max() ?? 0) - (times.min() ?? 0)
-        return "做了 \(calls.count) 步" + (span >= 1 ? " · 用时 " + WorkProcess.duration(span) : "")
+        return "做了 \(groups.count) 步" + (span >= 1 ? " · 用时 " + WorkProcess.duration(span) : "")
     }
-    private func line(_ step: JSON, running: Bool) -> some View {
-        let kind = Self.kind(step)
-        return HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-            Image(systemName: kind.symbol).font(.system(size: 12, weight: .medium))
+    /// 大步骤：连续同类的工具调用并成一项（「读了 5 个文件」），不露具体命令和路径；模型自己写的「进度」单独成项。
+    private struct Group { let kind: StepKind; let count: Int; let note: String }
+    private var groups: [Group] {
+        var out: [Group] = []
+        for step in calls {
+            if step["role"].string == "progress" { out.append(Group(kind: .other, count: 0, note: firstLine(step["text"].string))); continue }
+            let kind = Self.kind(step)
+            if let last = out.last, last.note.isEmpty, last.kind == kind { out[out.count - 1] = Group(kind: kind, count: last.count + 1, note: "") }
+            else { out.append(Group(kind: kind, count: 1, note: "")) }
+        }
+        return out
+    }
+    /// TodoCard 式一行：做完是勾，正在做是呼吸点。
+    private func line(_ group: Group, running: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+            Image(systemName: running ? "circle.dotted" : "checkmark.circle.fill").font(.system(size: 12, weight: .medium))
                 .foregroundStyle(running ? Palette.accentText : Palette.textTertiary)
                 .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(step["role"].string == "progress" ? "进度" : running ? kind.live[0] : kind.done(1))
-                    .font(TypeScale.footnote.weight(running ? .semibold : .regular))
-                    .foregroundStyle(running ? Palette.textPrimary : Palette.textSecondary)
-                let detail = firstLine(step["text"].string)
-                Text(detail.isEmpty ? Self.tool(step) : detail).font(.caption2.monospaced()).foregroundStyle(Palette.textTertiary).lineLimit(1)
-            }
+            Text(!group.note.isEmpty ? group.note : running ? group.kind.live[0] : group.kind.done(group.count))
+                .font(TypeScale.footnote.weight(running ? .semibold : .regular))
+                .foregroundStyle(running ? Palette.textPrimary : Palette.textSecondary)
             Spacer(minLength: 0)
         }
         .padding(.vertical, 3)

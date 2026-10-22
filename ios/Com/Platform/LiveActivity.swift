@@ -78,11 +78,15 @@ import ComCore
         guard let state = state() else { endAll(); return }
         // 已经结束的那个会在锁屏上留到 4 小时：直接收掉，免得和新开的并排出现两个。
         for ended in Activity<ComActivityAttributes>.activities where ended.activityState == .ended {
+            nonisolated(unsafe) let ended = ended
             Task { await ended.end(nil, dismissalPolicy: .immediate) }
         }
         let alive = activities
         if let keep = alive.first {
-            for extra in alive.dropFirst() { Task { await extra.end(nil, dismissalPolicy: .immediate) } }
+            for extra in alive.dropFirst() {
+                nonisolated(unsafe) let extra = extra
+                Task { await extra.end(nil, dismissalPolicy: .immediate) }
+            }
             push(state, to: [keep])
             return
         }
@@ -105,7 +109,10 @@ import ComCore
             MainActor.assumeIsolated { self?.endBackgroundTask() }
         }
         Task {
-            for activity in alive { await activity.update(content(state)) }
+            for activity in alive {
+                nonisolated(unsafe) let activity = activity
+                await activity.update(content(state))
+            }
             #if DEBUG
             if demo { await runDemo() }
             #endif
@@ -122,12 +129,18 @@ import ComCore
     private func push(_ state: State, to targets: [Activity<ComActivityAttributes>]? = nil) {
         guard state != last else { return }
         last = state
-        for activity in targets ?? activities { Task { await activity.update(content(state)) } }
+        for activity in targets ?? activities {
+            nonisolated(unsafe) let activity = activity
+            Task { await activity.update(content(state)) }
+        }
     }
 
     private func endAll() {
         last = nil; busySince = nil; runningSince = nil
-        for activity in Activity<ComActivityAttributes>.activities { Task { await activity.end(nil, dismissalPolicy: .immediate) } }
+        for activity in Activity<ComActivityAttributes>.activities {
+            nonisolated(unsafe) let activity = activity
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+        }
     }
 
     private func content(_ state: State) -> ActivityContent<State> {

@@ -73,8 +73,19 @@ struct ChatView: View {
                         let previousIsAgent = index > 0 ? rows[index - 1].message["role"].string == "assistant" : false
                         let isConsecutiveAgent = isAgent && previousIsAgent
 
-                        MessageView(message: row.message, layoutID: row.id, flying: flights[row.id] != nil, pending: row.pending, isConsecutiveAgent: isConsecutiveAgent)
-                            .equatable()
+                        // 连续的主动消息（晨晚报、提醒、回执）折成一条「N 条主动消息」，只展开最新那条，不让它们堆成一整屏字。
+                        let foldsIntoNext = ProactiveMessage.matches(row.message) && index + 1 < rows.count && ProactiveMessage.matches(rows[index + 1].message)
+                        let runStart = foldsIntoNext && !(index > 0 && ProactiveMessage.matches(rows[index - 1].message))
+                        Group {
+                            if runStart {
+                                ProactiveStack(run: ProactiveMessage.run(in: rows, from: index))
+                            } else if foldsIntoNext {
+                                EmptyView()
+                            } else {
+                                MessageView(message: row.message, layoutID: row.id, flying: flights[row.id] != nil, pending: row.pending, isConsecutiveAgent: isConsecutiveAgent)
+                                    .equatable()
+                            }
+                        }
                             .id(row.id)
                             .transition(.asymmetric(
                                 insertion: reduce ? .opacity : .scale(scale: 0.96).combined(with: .offset(y: 8)).combined(with: .opacity),
@@ -410,7 +421,9 @@ struct MessageView: View, Equatable {
                     .accessibilityIdentifier("chat-bubble-" + message.id)
             } else {
                 // 它的回复：加浅色气泡区分连续消息，靠标题层级、粗体重点和段落呼吸分层。
-                ReplyText(text: text, motionID: message.id, createdAt: message["created_at"].double)
+                ClampedWhenProactive(proactive: ProactiveMessage.matches(message), text: text) {
+                    ReplyText(text: text, motionID: message.id, createdAt: message["created_at"].double)
+                }
                     .foregroundStyle(Palette.textPrimary)
                     .agentBubble()
                     .accessibilityIdentifier("agent-bubble-" + message.id)
@@ -599,5 +612,97 @@ struct ComposerView: View {
             model.attachments.append(value)
             model.persistNow()
         } catch { model.banner = error.localizedDescription }
+    }
+}
+
+
+// MARK: 主动消息（晨晚报 / 提醒 / 任务回执）折叠
+
+enum ProactiveMessage {
+    /// 不是被我问出来的、由后台主动写进对话的助手消息（回执通道 task_receipt 的 request_id 都以此开头）。
+    static func matches(_ message: JSON) -> Bool {
+        message["role"].string == "assistant" && message["request_id"].string.hasPrefix("task-result:")
+    }
+    /// 从 start 起连续的主动消息，最后一条（最新）不在内——它单独完整显示。
+    static func run(in rows: [ChatTimelineRow], from start: Int) -> [ChatTimelineRow] {
+        var out: [ChatTimelineRow] = []
+        var i = start
+        while i + 1 < rows.count, matches(rows[i].message), matches(rows[i + 1].message) { out.append(rows[i]); i += 1 }
+        return out
+    }
+    /// 折叠行里的一句话：去掉 markdown 标记，取第一行。
+    static func preview(_ text: String) -> String {
+        let line = text.split(separator: "\n").map(String.init).first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? text
+        return line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "#", with: "").trimmingCharacters(in: .whitespaces)
+    }
+}
+
+/// N 条连续的主动消息折成一行；点开在原位展开，再点收起。
+struct ProactiveStack: View {
+    let run: [ChatTimelineRow]
+    @State private var open = false
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Button {
+                Haptics.selection()
+                withAnimation(reduce ? nil : .spring(response: 0.38, dampingFraction: 0.86)) { open.toggle() }
+            } label: {
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "bell.badge").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accentText)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(run.count) 条更早的主动消息").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                        if !open, let last = run.last {
+                            Text(ProactiveMessage.preview(textContent(last.message["text"]))).font(TypeScale.footnote)
+                                .foregroundStyle(Palette.textSecondary).lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.textTertiary)
+                        .rotationEffect(.degrees(open ? 180 : 0))
+                }
+                .padding(.horizontal, Space.md).padding(.vertical, Space.sm + 2)
+                .background(Palette.fill, in: .rect(cornerRadius: Radius.md, style: .continuous))
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("proactive-stack")
+            if open {
+                ForEach(run) { row in
+                    MessageView(message: row.message, layoutID: row.id, flying: false, pending: row.pending, isConsecutiveAgent: false)
+                        .transition(.opacity)
+                }
+            }
+        }
+    }
+}
+
+/// 主动消息超过约 6 行时收起，底部渐隐 +「展开」；普通对话回复原样不动。
+struct ClampedWhenProactive<Content: View>: View {
+    let proactive: Bool
+    let text: String
+    @ViewBuilder var content: () -> Content
+    @State private var open = false
+    private var long: Bool { proactive && (text.count > 150 || text.filter { $0 == "\n" }.count >= 5) }
+    var body: some View {
+        if long && !open {
+            content()
+                .frame(maxHeight: 132, alignment: .top)
+                .clipped()
+                .mask(LinearGradient(stops: [.init(color: .black, location: 0.7), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                .overlay(alignment: .bottomLeading) {
+                    Button("展开全文") { withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) { open = true } }
+                        .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.accentText)
+                        .accessibilityIdentifier("proactive-expand")
+                }
+        } else {
+            VStack(alignment: .leading, spacing: Space.xs) {
+                content()
+                if long {
+                    Button("收起") { withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) { open = false } }
+                        .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
+                }
+            }
+        }
     }
 }

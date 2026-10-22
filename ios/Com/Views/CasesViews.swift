@@ -312,11 +312,9 @@ struct CaseDetailView: View {
                         }
                     }
                 }
-                let artifacts = data["artifacts"].array.map(\.string).filter { !$0.isEmpty }
+                let artifacts = data["artifacts"].array.filter { !$0["path"].string.isEmpty }
                 if !artifacts.isEmpty {
-                    GroupSection("产出") {
-                        GroupedCard { ForEach(artifacts, id: \.self) { path in ListRow(symbol: path.hasPrefix("http") ? "link" : "doc", title: (path as NSString).lastPathComponent, subtitle: path, subtitleLines: 1) {}.rowPadding() } }
-                    }
+                    GroupSection("产出") { ArtifactList(artifacts: artifacts) }
                 }
                 timeline
                 if data["can_send"].bool || data["state"].string == "done" && data["kind"].string != "turn" { composer }
