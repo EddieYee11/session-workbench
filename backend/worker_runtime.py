@@ -201,6 +201,7 @@ class WorkerRuntime:
                 if event=='run.completed':
                     terminal='completed'
                 elif event=='error':
+                    if payload.get('stalled'):self.runtime.emit(sid,{'kind':'stalled','turn_id':request_id,**payload['stalled']})
                     # Aborted is a observed terminal condition, not transport ACK.
                     if rejection:terminal='failed'
                     else:

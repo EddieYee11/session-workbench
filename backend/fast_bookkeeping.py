@@ -86,9 +86,25 @@ def _comment(text):
     return re.sub(r'\s+', ' ', rest).strip(' ，,。.：:·')
 
 
+# 语音常把「花费」听成「话费」：前面不是充/交/缴/手机/电话/上网时，按花费理解（「晚饭话费65块9」）。
+_HUAFEI = re.compile(r'(?<![充交缴])(?<!手机|电话|上网)话费')
+
+# 金额离谱的口述（多半是语音把 26 听成「二六零」）：先问一句，不直接入账。各类单笔的合理上限。
+_PLAUSIBLE = (('早饭 早餐', 60), ('午饭 午餐 晚饭 晚餐 吃饭 夜宵', 150), ('饮料 饮品 奶茶 咖啡 可乐 买水 喝水', 60), ('打车 滴滴 出租 单车 地铁 公交', 300))
+
+
+def suspect(plan, text):
+    """金额超出这类开销的合理上限时，返回更可能的金额（除以 10）；否则 None。"""
+    for words, limit in _PLAUSIBLE:
+        if any(w in text for w in words.split()) and plan['amount'] > limit:
+            alt = round(plan['amount'] / 10, 2)
+            return alt if alt <= limit else None
+    return None
+
+
 def parse(text):
     """返回 ezbookkeeping 的记账参数；返回 None 表示交回 Hermes（模糊回退）。"""
-    external = quote_free(text)
+    external = _HUAFEI.sub('花费', quote_free(text) or '')
     if not external or not bookkeeping_intent(external) or not _looks_like_statement(external):
         return None
     amounts = {value for value in money_amounts(external)}
@@ -133,7 +149,7 @@ def parse_candidate(text):
     parse() 已完成第一道筛选，这里兜住“含义足够清楚但没打中词表”的口语：
     单个金额、不是查询/否定/第三人口述，且金额外还留有可读用途。
     """
-    external = quote_free(text)
+    external = _HUAFEI.sub('花费', quote_free(text) or '')
     if not external or bookkeeping_query(external) or BOOK_BLOCK.search(external):
         return None
     if re.search(r"我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)", external):
@@ -178,6 +194,8 @@ def confirm_card(result):
     if result.get('comment'):
         text += '·' + str(result['comment'])
     text += '（' + str(result.get('account') or DEFAULT_ACCOUNT) + '），记这笔账吗？确认金额后直接入账。'
+    if result.get('suspect'):
+        text = '%g 元有点多，是不是 %g？' % (float(result['amount']), float(result['suspect'])) + text
     return text
 
 

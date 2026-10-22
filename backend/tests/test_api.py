@@ -255,3 +255,22 @@ def test_manual_preflight_failure_is_not_submitted(service,monkeypatch):
  r=c.post('/sessions',headers={'Authorization':'Bearer '+app.TOKEN},json={'request_id':rid,'agent':'claude','cwd':str(project),'prompt':'帮我修好项目配置','sandbox':'workspace-write'}).json()
  assert r['status']=='rejected' and r['submission_state']=='not_submitted'
  assert app.task_store.list()[0]['status']=='failed'
+
+def test_task_dismiss_archives_waiting_task_without_touching_worker(service,monkeypatch):
+ app,c=service
+ h={'Authorization':'Bearer '+app.TOKEN}
+ task=app.task_store.create_authorized({'id':'prop-dismiss-1','title':'等人回应的旧任务','prompt':'看一下','agent':'codex','cwd':str(app.HOME),'origin_message_id':'msg-dismiss-1'},
+                                       {'authorized':True,'source':'test','source_quote':'看一下'},'dismiss-request-0001')
+ app.task_store.change(task['id'],'dismiss-wait-0001','waiting_input','等你回应',status='waiting')
+ async def never(*a,**k):raise AssertionError('worker must not be contacted')
+ monkeypatch.setattr(app.runtime,'cancel_task',never,raising=False)
+ monkeypatch.setattr(app.runtime,'stop',never,raising=False)
+ response=c.post('/personal/tasks/'+task['id']+'/dismiss',headers=h,json={})
+ assert response.status_code==200,response.text
+ assert response.json()['status']=='cancelled'
+ saved=next(t for t in app.task_store.list() if t['id']==task['id'])
+ assert saved['status']=='cancelled' and any(e['kind']=='dismissed' for e in saved['events'])
+ running=app.task_store.create_authorized({'id':'prop-dismiss-2','title':'在跑的','prompt':'跑','agent':'codex','cwd':str(app.HOME),'origin_message_id':'msg-dismiss-2'},
+                                          {'authorized':True,'source':'test','source_quote':'跑'},'dismiss-request-0002')
+ app.task_store.change(running['id'],'dismiss-run-0001','dispatching','',status='running')
+ assert c.post('/personal/tasks/'+running['id']+'/dismiss',headers=h,json={}).status_code>=400

@@ -197,7 +197,13 @@ class PersonalHub:
             nodes=getattr(self,'device_nodes',None)
             tool={'phone_health':'health.summary','phone_calendar':'calendar.list','phone_reminders':'reminders.list'}[name]
             device=next((d for d in nodes.list() if d['online'] and any(c['tool']==tool and c['permission'] and c.get('available',True) for c in d['capabilities'])),None) if nodes else None
-            if not device:raise RuntimeError('没有在线且已授权的手机来源；请打开 App 并检查权限与同步设置')
+            if not device:
+                # 手机节点只在 App 打开时在线；离线不等于断开。24 小时内同步过就按「已连接」报，免得简报把它当资料缺口。
+                rows=[r for r in self.matters() if r.get('source')==name]
+                last=max((r.get('updated_at') or 0 for r in rows),default=0)
+                if rows and time.time()-last<24*3600:
+                    return {'count':len(rows),'coverage':f'上次手机同步 {max(1,int((time.time()-last)//60))} 分钟前（App 打开时更新）'}
+                raise RuntimeError('没有在线且已授权的手机来源；请打开 App 并检查权限与同步设置')
             args={'days':7} if name=='phone_health' else {} if name=='phone_reminders' else {'days':30}
             row=await nodes.call(device['id'],tool,args,'sync-'+name+'-'+str(int(time.time()*1000)))
             if row['status']!='succeeded':raise RuntimeError('手机数据不可读：'+row['status'])

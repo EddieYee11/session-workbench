@@ -257,3 +257,127 @@ def test_case_conclusion_flows_back_to_todo_and_project(tmp_path):
     links = cases.threads.thread('case:' + tid, resolve=lambda k: {'title': k})
     assert {n['key'] for n in links['nodes']} >= {'todo:任务/待处理/交报销单.md', 'project:合同与劳务结算'}
     assert any(t['text'].startswith('结论已写进') for t in cases.detail(tid)['timeline'])
+
+
+class Runtime:
+    """执行器：原会话已没了（服务重启），只能新开一个。"""
+    def __init__(self, dead=True):
+        self.dead, self.inputs, self.created = dead, [], 0
+
+    async def input(self, sid, text, request_id):
+        if self.dead and sid == 'pi:old':
+            raise ValueError('工作器重启后状态 uncertain，不自动续跑')
+        self.inputs.append((sid, text))
+        return request_id
+
+    async def create_task_worker(self, task):
+        self.created += 1
+        return 'pi:new'
+
+
+def stuck_case(tmp_path):
+    steps, store, chat, today, cases = setup(tmp_path)
+    item = steps.snapshot()['items'][0]
+    tid = asyncio.run(cases.delegate('next', item['id'], item['title'], item['prompt'], 'req-stuck-0001'))['task_id']
+    store.change(tid, 'started:' + tid, 'started', status='running', session_id='pi:old', run_id='r1')
+    store.change(tid, 'unk:' + tid, 'execution_unknown', status='unknown', verification_status='uncertain')
+    cases.controller.runtime = Runtime()
+    return store, cases, tid
+
+
+def test_unknown_case_is_rescued_on_a_fresh_worker_then_given_up_after_two_tries(tmp_path):
+    store, cases, tid = stuck_case(tmp_path)
+    cases.clock = lambda: time.time() + 200
+    asyncio.run(cases.rescue())
+    task = next(t for t in store.list() if t['id'] == tid)
+    assert task['status'] == 'running' and task['session_id'] == 'pi:new' and task['run_id'].startswith('rescue-')
+    assert cases.controller.runtime.created == 1 and '已有的产出' in cases.controller.runtime.inputs[0][1]
+    # 刚转未知不到 90 秒：不动
+    store.change(tid, 'unk2:' + tid, 'execution_unknown', status='unknown')
+    cases.clock = lambda: time.time()
+    asyncio.run(cases.rescue())
+    assert next(t for t in store.list() if t['id'] == tid)['status'] == 'unknown'
+    # 第二次、第三次：第三次不再试，收成失败而不是悬着
+    cases.clock = lambda: time.time() + 200
+    asyncio.run(cases.rescue())
+    store.change(tid, 'unk3:' + tid, 'execution_unknown', status='unknown')
+    cases.clock = lambda: time.time() + 400
+    asyncio.run(cases.rescue())
+    assert next(t for t in store.list() if t['id'] == tid)['status'] == 'failed'
+
+
+def test_eddie_saying_continue_revives_unknown_case(tmp_path):
+    store, cases, tid = stuck_case(tmp_path)
+    result = asyncio.run(cases.send(tid, '继续', 'req-continue-0001'))
+    assert result['revived'] and next(t for t in store.list() if t['id'] == tid)['status'] == 'running'
+    assert any(t['text'] == '继续' for t in cases.detail(tid)['timeline'])
+
+
+def test_failed_with_no_result_is_rescued_too(tmp_path):
+    """服务重启后账本把中断的一轮收成 failed（没有结果正文）：同样接着跑，而不是停在失败。"""
+    store, cases, tid = stuck_case(tmp_path)
+    store.finish(tid, 'failed', '工作器未提供结果正文，请查看执行会话。')
+    asyncio.run(cases.rescue())
+    assert next(t for t in store.list() if t['id'] == tid)['status'] == 'running'
+
+
+def test_case_deliverable_is_html_and_opens_from_detail(tmp_path):
+    from artifacts import ArtifactAccess
+    from cases import CASE_RULES
+    assert '单个 HTML 文件' in CASE_RULES and '竖屏' in CASE_RULES and '一屏' not in CASE_RULES
+    steps, store, chat, today, cases = setup(tmp_path)
+    work = tmp_path / 'ws'
+    (work / 'out.html').write_text('<h1>ok</h1>')
+    cases.artifact_access = ArtifactAccess(store, work, tmp_path)
+    item = steps.snapshot()['items'][0]
+    tid = asyncio.run(cases.delegate('next', item['id'], item['title'], item['prompt'], 'req-html-0001'))['task_id']
+    cases.progress(tid, {'artifact': str(work / 'a.md')})
+    cases.progress(tid, {'artifact': str(work / 'out.html')})
+    arts = cases.detail(tid)['artifacts']
+    assert arts[0]['name'] == 'out.html' and arts[0]['id'].startswith('art_') and arts[0]['availability'] == 'available'
+
+
+def test_dismissed_next_steps_never_come_back_even_reworded(tmp_path):
+    """10-18：点过「不用」的永久不再出；换说法、换阶段（报名→预赛→决赛）也算同一件事。"""
+    first = {**ITEM, 'title': '上传德州扑克预赛策略'}
+    steps = engine(tmp_path, [first])
+    asyncio.run(steps.refresh(force=True))
+    steps.act(steps.snapshot()['items'][0]['id'], 'dismiss')
+    later = NOW + 30 * 86400
+    steps.clock = lambda: later
+    steps.model = None
+
+    async def model(digest):
+        assert '上传德州扑克预赛策略' in digest['dismissed']
+        return {'items': [first, {**ITEM, 'title': '上传德州扑克预赛策略文件'}, {**ITEM, 'title': '准备大有可攀市集清单', 'refs': ['mail:m1']}]}
+    steps.model = model
+    asyncio.run(steps.refresh(force=True))
+    assert not [i for i in steps.snapshot()['items'] if '德州' in i['title']]
+    from next_steps import muted_topics, _near
+    assert _near('上传德州扑克预赛策略文件', '上传德州扑克预赛策略') and not _near('看一下「搜狐视频新邮件」', '看一下「搜狐视频播客频道」')
+    assert '德州扑克' in muted_topics(['上传德州扑克预赛策略', '定德州扑克决赛策略'])
+
+
+def test_weekly_report_case_is_created_once_on_thursday_afternoon(tmp_path):
+    steps, store, chat, today, cases = setup(tmp_path)
+    thu = time.mktime((2026, 10, 22, 13, 40, 0, 0, 0, -1))
+    cases.clock = lambda: thu - 3600
+    assert cases.weekly_report() is None  # 12:40 还没到点
+    cases.clock = lambda: thu
+    tid = cases.weekly_report()
+    task = next(t for t in store.list() if t['id'] == tid)
+    assert task['agent'] == 'pi' and '【周报】' in task['prompt'] and '梦雨' in task['prompt'] and '2026-10-19 至 2026-10-23' in task['prompt']
+    assert cases.weekly_report() is None and len(store.list()) == 1
+    cases.clock = lambda: thu - 86400  # 周三不建
+    assert cases.weekly_report() is None
+
+
+def test_failed_without_pi_outcome_is_rescued_but_reasoned_failure_is_not(tmp_path):
+    store, cases, tid = stuck_case(tmp_path)
+    store.finish(tid, 'failed', "I'll start by checking the existing progress")  # 被中止那轮留下的半句话
+    asyncio.run(cases.rescue())
+    assert next(t for t in store.list() if t['id'] == tid)['status'] == 'running'
+    cases.progress(tid, {'status': 'failed', 'question': '微信记录不在这台机器'})
+    store.finish(tid, 'failed', '没做成')
+    asyncio.run(cases.rescue())
+    assert next(t for t in store.list() if t['id'] == tid)['status'] == 'failed'

@@ -99,7 +99,15 @@ export default function (pi:ExtensionAPI) {
   if(process.env.COM_PI_OPERATIONAL_TOOLS==="1") pi.setActiveTools(pi.getAllTools().map(t=>t.name));
   await call("loaded",{tools:pi.getActiveTools()},{}).catch(()=>{});
  });
+ // 10-18：Pi 屡次在 mini 上 find / 、扫家目录或 ~/Library，命令挂死几分钟拖垮整个航程。规则写在提示里它不照做，这里硬拦：
+ // 整盘/家目录/Library 扫描直接拒绝；其余 bash 命令没给时限就默认 180 秒。
+ const WIDE_SCAN=/(?:^|[;&|(]\s*|\s)(?:sudo\s+)?(?:find|du|fd|rg|grep\s+-[A-Za-z]*[rR][A-Za-z]*|ls\s+-[A-Za-z]*R[A-Za-z]*|tree)\b[^;&|]*?\s(?:\/|~\/?|\$HOME\/?|\/Users\/[^\/\s]+\/?|\/System|\/Volumes|(?:~|\$HOME|\/Users\/[^\/\s]+)\/Library\S*)(?=\s|$|;|\||&|\))/;
  pi.on("tool_call",async(event)=>{
+  if (event.toolName==="bash" && event.input && typeof event.input.command==="string") {
+   if (WIDE_SCAN.test(event.input.command) || /Library\/(?:Group )?Containers/.test(event.input.command)) return {block:true,reason:"整盘、家目录、~/Library 扫描或读别的 App 的沙盒（Containers）在这台 Mac 上会卡死几分钟，已拦下；微信等 App 的数据不在这里读。请限定到具体项目目录（如 ~/AI_Work_System/work/…）并加 -maxdepth 3。"};
+   const t=Number(event.input.timeout);
+   if (!(t>0 && t<=900)) event.input.timeout=180;
+  }
   if (event.toolName in schemas) return;
   try { await call("authorize_tool",{tool:event.toolName,args:event.input,tool_call_id:event.toolCallId}); }
   catch(e:any) { return {block:true,reason:e.message}; }

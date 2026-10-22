@@ -148,12 +148,15 @@ def bookkeeping_clarification(conversation, row):
     """
     raw = quote_free(row['text'])
     amounts = money_amounts(raw)
-    if len(set(amounts)) != 1 or len(raw) > 48 or QUOTE.search(row['text']):
+    # 10-21：确认卡（fast_bookkeeping.confirm_card）自带「是 / 改一下 / 不记」按钮，点「是」不带金额——
+    # 原来这里一律拒绝，模型被拦后自己绕 60–80 秒。纯肯定词只认确认卡，金额取卡上那笔且必须出现在原话里。
+    affirm = not amounts and re.fullmatch(r'(?:是|是的|对|对的|好|好的|嗯|可以|确认|确定|记|记吧|记上|没问题|就这样)[。！!\s]*', raw)
+    if (len(set(amounts)) != 1 and not affirm) or len(raw) > 48 or QUOTE.search(row['text']):
         return None
     remainder = raw
     for start, end, _ in reversed(_money_matches(raw)):
         remainder = remainder[:start] + remainder[end:]
-    if re.sub(r'确认|确定|就是|是|金额|应该|改成|按|记|吧|钱|[\s。，,！!：:]', '', remainder):
+    if not affirm and re.sub(r'确认|确定|就是|是|金额|应该|改成|按|记|吧|钱|[\s。，,！!：:]', '', remainder):
         return None
     with conversation.db() as db:
         previous = db.execute('SELECT * FROM messages WHERE created_at<? ORDER BY created_at DESC,id DESC LIMIT 1',
@@ -166,7 +169,14 @@ def bookkeeping_clarification(conversation, row):
             re.search(r'[?？]|多少|哪个|还是|回一个数|确认金额', question)):
         return None
     original = quote_free(parent['text'])
-    if (not assignment(original, original) or
+    if affirm:
+        card = re.search(r'记一笔 [+-]?(\d+(?:\.\d+)?) · .*记这笔账吗', question)
+        if not card or float(card[1]) not in [float(a) for a in money_amounts(original)]:
+            return None
+        amounts = [float(card[1])]
+        # 原话是花销陈述（「给女朋友买生日礼物980」）不是祈使句：不要求 assignment，但必须能被出卡逻辑认成记账候选
+        from fast_bookkeeping import parse, parse_candidate
+    if ((not assignment(original, original) if not affirm else not (parse(original) or parse_candidate(original))) or
             not (bookkeeping_intent(original) or money_amounts(original)) or
             BOOK_BLOCK.search(original) or bookkeeping_query(original)):
         return None

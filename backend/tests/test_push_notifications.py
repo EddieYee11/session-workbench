@@ -64,3 +64,26 @@ def test_register_does_not_replay_old_chat_and_token_rotation_keeps_one_device(t
     p.register({'id':'iphone-test','token':'a'*64});p.register({'id':'iphone-test','token':'b'*64})
     p.enqueue()
     assert p.status()['registered_devices']==1 and not p.status()['outbox']
+
+
+def test_bark_config_enables_delivery_without_apns_devices(tmp_path):
+    now=[datetime(2026,10,7,12,tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()]
+    c=PersonalConversation(tmp_path,SimpleNamespace())
+    (tmp_path/'bark-config.json').write_text('{"device_key":"abcDEF123456"}')
+    p=PushNotifications(tmp_path,c,lambda:{'quiet_start':23,'quiet_end':8},clock=lambda:now[0])
+    assert p.status()['delivery']=='bark' and p.status()['registered_devices']==0
+    message(c)
+    calls=[]
+    async def send(device,row):calls.append((device['id'],row['device_id']));return 200,''
+    assert asyncio.run(p.process(send))
+    assert not asyncio.run(p.process(send))
+    assert calls==[('bark','bark')]
+    assert p.status()['outbox']=={'accepted':1}
+    assert 'abcDEF123456' not in str(p.status())
+
+
+def test_bark_rows_are_not_created_without_config(tmp_path):
+    p,c,_=setup(tmp_path);message(c)
+    assert asyncio.run(p.process()) is False
+    with p.db() as db:ids={r[0] for r in db.execute('SELECT device_id FROM outbox')}
+    assert ids=={'iphone-test'}

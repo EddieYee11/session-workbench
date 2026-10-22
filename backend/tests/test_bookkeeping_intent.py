@@ -49,6 +49,9 @@ def service(tmp_path,text,purpose='conversation'):
     ('茶五元，记账',5),
     ('饭30元，记一下',30),
     ('能不能帮我记账这笔午饭30元？',30),
+    ('剪头发花费一百一十四。',114),
+    ('理头发花了一百一十四',114),
+    ('午饭花了三十',30),
 ])
 def test_current_expense_in_normal_voice_is_authorized_once(tmp_path,text,amount):
     assert bookkeeping_intent(text)

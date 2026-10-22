@@ -78,6 +78,7 @@ class PiRPC:
         self.input_contexts = {}
         self.command_lock = asyncio.Lock()
         self.native_started = False
+        self.stalled = None
 
     @property
     def alive(self):
@@ -268,6 +269,7 @@ class PiRPC:
             if (context or {}).get('input_source') == 'rayneo':
                 await self.compact_glasses_context()
             self.run_id = request_id or uuid.uuid4().hex
+            self.stalled = None
             self.native_started = False
             self.stage_input(self.run_id, context or self.context)
             self.bind(context or self.context)
@@ -286,10 +288,22 @@ class PiRPC:
                     return
                 final = ''
                 error = False
-                deadline = time.monotonic() + 1200
+                # 不再用「整轮 20 分钟」一刀切：一条挂死的命令（如 macOS 隐私授权弹窗卡住的 ls）
+                # 会独占整个预算。改成按沉默计时——工具在跑给 7 分钟，模型/其它沉默 5 分钟，整轮上限 2 小时。
+                hard = time.monotonic() + 7200
+                open_tools = {}
                 while True:
-                    event = await asyncio.wait_for(self.queue.get(), max(.01, deadline - time.monotonic()))
+                    quiet = 420 if open_tools else 300
+                    try:
+                        event = await asyncio.wait_for(self.queue.get(), max(.01, min(quiet, hard - time.monotonic())))
+                    except asyncio.TimeoutError:
+                        self.stalled = {'reason': 'tool_hung' if open_tools else 'idle', 'tool': next(iter(open_tools.values()), '')}
+                        raise
                     typ = event.get('type')
+                    if typ == 'tool_execution_start':
+                        open_tools[event.get('toolCallId')] = event.get('toolName') or ''
+                    elif typ == 'tool_execution_end':
+                        open_tools.pop(event.get('toolCallId'), None)
                     if typ == 'com_input_delivered':
                         yield 'input.delivered', {'request_id': event['request_id'], 'run_id': self.run_id}
                     elif typ == 'message_update':
@@ -337,7 +351,8 @@ class PiRPC:
             except (asyncio.TimeoutError, RuntimeError, ValueError):
                 with contextlib.suppress(Exception):
                     await self.abort()
-                yield 'error', {'uncertain': True}
+                stalled, self.stalled = self.stalled, None
+                yield 'error', {'uncertain': True, **({'stalled': stalled} if stalled else {})}
                 yield 'done', {}
             finally:
                 self.queue = None

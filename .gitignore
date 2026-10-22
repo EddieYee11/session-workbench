@@ -37,3 +37,12 @@ ios/VoiceEffects/node_modules/
 
 # Alternate local control-extension build cache.
 ios/DerivedDataControls/
+
+# Local scratch, backups and data snapshots (never publish)
+_archive/
+scratchpad/
+web/_v1/
+backend/_bak-*/
+*.bak-*
+*.sqlite
+backend/src/

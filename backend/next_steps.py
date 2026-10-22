@@ -25,8 +25,9 @@ INSTRUCTIONS = (
     '3. why 80 字以内，说凭什么现在做：截止、对方在等、和目标或项目的关系。\n'
     '4. prompt 200 字以内，是交给你自己去办时的完整要求（例如先起草回复给他确认），不要承诺已经做了。\n'
     '5. urgency 只能是 now、today、week；score 0 到 100，越该先做越高。\n'
-    '6. 跳过广告、验证码、自动通知和已经结束的日程；同一件事只写一条；recent_handled 是他已经做完、交给你办或划掉的事，换个说法也不要再提。\n'
+    '6. 跳过广告、验证码、自动通知和已经结束的日程；同一件事只写一条；recent_handled 是他已经做完、交给你办或划掉的事，换个说法也不要再提；dismissed 是他明确点过「不用」的事，同一件事（换说法、换依据、换阶段都算，比如报名→预赛→决赛）永远不要再提。\n'
     '7. wechat 是微信聊天摘要：mention 为真表示群里有人 @他，group 为假是私聊，sender 是最后发话的人，summary 是那条消息。有人在等回话就属于 now 或 today。\n'
+    '   微信里有大量工作内容，不要只看 @他 的消息：别人之间在商量、需要他拍板或补材料的事，同样要提。群里一句话常是对前文的回应，要结合 recent（按时间排的对话）读懂。\n'
     '8. health 是 Garmin 手表的身体数据（身体电量 0-100、睡眠、HRV、训练准备度、压力）；为空就不提身体，不要猜。状态差时可以建议少排事、早点睡，引用 health:today。\n'
     '9. headline 是今日简报的标题句，40 字以内，一眼看懂今天的基调（例如「睡得够，下午两个会，先把报价发了」）。口语、不客套，像熟人跟他说话。\n'
     '   brief 是展开后的 3 到 5 条要点，每条 {"text":"60 字以内","refs":[...]}，按这个顺序挑有内容的写：身体（有 health 才写，带具体数字并和 week_avg 比）、日程松紧和空档、最要紧的一两件事、资讯。\n'
@@ -35,12 +36,51 @@ INSTRUCTIONS = (
     '11. sms 是最近的短信 / iMessage（快递、银行、航班、预约这类）；只挑需要他动手的，单纯通知不提。\n'
     '12. commitments 是录音笔会议纪要里的行动项（会议标题 + 行动项表）；只挑他自己或他团队（搜狐方）要做、且还没过期的，写清是哪场会。\n'
     '13. weather 是未来几天天气，和户外日程（攀岩、骑行、拍摄、活动）撞上雨、大风、降温时才提；context 是他此刻在哪 / 开了什么专注，专注时只提真正急的。\n'
-    '只返回 JSON：{"headline":"","brief":[{"text":"","refs":[""]}],"items":[{"title":"","why":"","refs":[""],"prompt":"","urgency":"today","score":60}]}'
+    '14. focus 是他当下的焦点项目（名称、场地、日期、days_left 距活动还有几天）；wechat 里 project 与之同名的聊天，recent 是这件事最近两天的完整对话。\n'
+    '    这类项目要当主线：先从所有 recent 里拼出全貌，再判断。items 里和它有关的建议排在最前（score 80 以上，距活动 7 天内 urgency 用 now 或 today），要具体到人、物、时间点（例如「确认秦MAX展车 24 日进场时间」「催物料设计出搭建图」），不要写「跟进活动进展」这种空话；已经有人说搞定、或只是闲聊的不要提。\n'
+    '    focus 输出：每个焦点项目一条 {"project":与输入同名,"status":"一句话说现在到哪一步（60 字内）","open":["还没定/还差的事，最多 4 条，每条 24 字内，带负责人"],"risks":["可能出岔子的地方，最多 2 条"],"refs":[引用的 wechat ref]}。没有依据的项目不要输出。\n'
+    '15. current 是他列表上现在还开着的建议（shown 是已经连着出现了几轮）。还成立、也没有新进展的，原样返回 {"keep":"那条的 id"} 即可，不要换个说法重写；已经过时或被新情况取代的就不返回；只有出现新事情才新增。整张列表要稳定，别每小时大换血。\n'
+    '16. recent_headlines 是最近几轮的简报标题。同一件事已经当过两次主句、又没有新变化，就换成今天别的重点，别一整天反复念同一件事。\n'
+    '只返回 JSON：{"headline":"","focus":[],"brief":[{"text":"","refs":[""]}],"items":[{"keep":""},{"title":"","why":"","refs":[""],"prompt":"","urgency":"today","score":60}]}'
 )
 
 
 def _key(title):
     return hashlib.sha256(re.sub(r'\s+', '', title).lower().encode()).hexdigest()[:20]
+
+
+def _cjk_runs(title, n=4):
+    """标题里连续 n 个及以上汉字的片段（「德州扑克」「大有可攀」这类话题词）。"""
+    out = set()
+    for run in re.findall(r'[\u4e00-\u9fff]{%d,}' % n, title):
+        out.update(run[i:i + n] for i in range(len(run) - n + 1))
+    return out
+
+
+def muted_topics(titles):
+    """他点过两次以上「不用」、标题里共有的话题词：之后同话题的建议一律不再出。"""
+    seen = {}
+    for title in titles:
+        for gram in _cjk_runs(title):
+            seen[gram] = seen.get(gram, 0) + 1
+    return {g for g, n in seen.items() if n >= 2}
+
+
+def _near(a, b):
+    """两个标题几乎是同一句：最长公共片段占短的那个六成以上（且至少 4 个字）。"""
+    # 规则模板的固定开头（「看一下「…」」）不算内容
+    a, b = (re.sub(r'^看一下|[\s「」【】|｜&\-—·,，。]+', '', x) for x in (a, b))
+    if not a or not b:
+        return False
+    short, long_ = sorted((a, b), key=len)
+    best = 0
+    for i in range(len(short)):
+        for j in range(i + best + 1, len(short) + 1):
+            if short[i:j] in long_:
+                best = j - i
+            else:
+                break
+    return best >= max(4, 0.6 * len(short))
 
 
 def _text(value, limit):
@@ -136,7 +176,7 @@ class NextSteps:
         now = self.clock()
         local = datetime.fromtimestamp(now, TZ)
         data = {'now': local.strftime('%Y-%m-%d %H:%M %A'), 'mail': [], 'calendar': [], 'projects': [], 'tasks': [], 'finance': None, 'goals': [], 'wechat': [], 'health': None,
-                'board': [], 'inbox': [], 'reminders': [], 'sms': [], 'commitments': [], 'weather': [], 'context': {}, 'recent_handled': [], 'news': [], 'interests': {}}
+                'board': [], 'inbox': [], 'reminders': [], 'sms': [], 'commitments': [], 'weather': [], 'focus': [], 'context': {}, 'recent_handled': [], 'dismissed': [], 'news': [], 'interests': {}}
         refs = {}
         if self.news:
             try:
@@ -149,6 +189,7 @@ class NextSteps:
                 data['interests'] = self.news.interests()
             except Exception:
                 pass
+        wx, wx_projects = {}, {}
         if self.hub:
             for row in self.hub.matters():
                 fb = (row.get('feedback') or {}).get('action')
@@ -178,29 +219,61 @@ class NextSteps:
                                                    location=facts.get('location'), link=facts.get('htmlLink', ''), calendar=facts.get('calendar'))}
                     data['calendar'].append({'ref': ref, 'title': _text(row.get('title'), 80), 'start': start.astimezone(TZ).strftime('%m-%d %H:%M'), 'location': _text(facts.get('location'), 60)})
                 elif row['source'] == 'wechat':
-                    # 一条 matter 是一小时的摘要，里面装着若干聊天；这里逐聊天展开成依据，
-                    # 「谁在等你」才能被模型单独引用、单独划掉。
+                    # 一条 matter 是一小时的摘要，里面装着若干聊天；这里按聊天归并，
+                    # 「谁在等你」才能被模型单独引用、单独划掉。焦点项目的聊天回看 48 小时并合并消息，
+                    # 否则模型只看得到每小时最后一句，整件事的进展拼不起来。
                     at = float(row.get('source_updated_at') or row.get('changed_at') or 0)
-                    if now - at > 6 * 3600:
+                    if now - at > 48 * 3600:
                         continue
+                    for meta in facts.get('projects') or []:
+                        wx_projects.setdefault(meta.get('name'), meta)
                     for chat in facts.get('chats') or []:
-                        if len(data['wechat']) >= 12:
-                            break
-                        if chat.get('is_group') and not (chat.get('mention') or chat.get('keyword') or chat.get('priority')):
+                        if chat.get('is_group') and not (chat.get('mention') or chat.get('keyword') or chat.get('priority') or chat.get('project')):
                             continue
-                        ref = f"wechat:{row['id']}:{chat.get('username', '')}"
-                        refs[ref] = {'label': '微信 · ' + _text(chat.get('name'), 40), 'kind': 'wechat', 'matter_id': row['id'],
-                                     # 指纹按内容算：每小时一条 matter，用 matter_id 会让同一件事每小时重提一次
-                                     'sig': 'wechat:' + hashlib.sha256(f"{chat.get('username','')}:{chat.get('anchor','')}".encode()).hexdigest()[:12],
-                                     'detail': _detail(chat.get('name'), 'wechat', at, chat.get('summary'), sender=chat.get('sender'),
-                                                       group='群聊' if chat.get('is_group') else '私聊',
-                                                       # 给列表而不是拼好的字符串：_detail 会把字符串截到 200 字，只够装三四句
-                                                       messages=[{'sender': _text(m.get('sender'), 20), 'text': _text(m.get('text'), 200)}
-                                                                 for m in (chat.get('messages') or [])[-8:]])}
-                        data['wechat'].append({'ref': ref, 'chat': _text(chat.get('name'), 40), 'sender': _text(chat.get('sender'), 20),
-                                               'group': bool(chat.get('is_group')), 'mention': bool(chat.get('mention')),
-                                               'keywords': (chat.get('keywords') or [])[:4], 'actions': (chat.get('actions') or [])[:4],
-                                               'summary': _text(chat.get('summary'), 160)})
+                        if now - at > 6 * 3600 and not chat.get('project'):
+                            continue
+                        entry = wx.setdefault(chat.get('username', ''), {'newest': -1, 'messages': {}})
+                        for m in chat.get('messages') or []:
+                            entry['messages'][(m.get('at'), m.get('sender'), m.get('text'))] = m
+                        if at > entry['newest']:
+                            entry.update(newest=at, chat=chat, matter_id=row['id'])
+        # 焦点项目的聊天排最前，且不占普通聊天的 12 个名额
+        ranked = sorted(wx.items(), key=lambda kv: (not kv[1]['chat'].get('project'), -kv[1]['newest']))
+        normal = 0
+        for username, entry in ranked:
+            chat = entry['chat']
+            project = chat.get('project') or ''
+            if not project:
+                if normal >= 12:
+                    continue
+                normal += 1
+            elif sum(1 for w in data['wechat'] if w['project']) >= 8:
+                continue
+            msgs = sorted(entry['messages'].values(), key=lambda m: m.get('at') or 0)
+            keep = msgs[-(14 if project else 8):]
+            ref = f"wechat:{entry['matter_id']}:{username}"
+            at = entry['newest']
+            refs[ref] = {'label': '微信 · ' + _text(chat.get('name'), 40), 'kind': 'wechat', 'matter_id': entry['matter_id'],
+                         # 指纹按内容算：每小时一条 matter，用 matter_id 会让同一件事每小时重提一次
+                         'sig': 'wechat:' + hashlib.sha256(f"{username}:{chat.get('anchor','')}".encode()).hexdigest()[:12],
+                         'detail': _detail(chat.get('name'), 'wechat', at, chat.get('summary'), sender=chat.get('sender'),
+                                           group='群聊' if chat.get('is_group') else '私聊',
+                                           # 给列表而不是拼好的字符串：_detail 会把字符串截到 200 字，只够装三四句
+                                           messages=[{'sender': _text(m.get('sender'), 20), 'text': _text(m.get('text'), 200)} for m in keep])}
+            data['wechat'].append({'ref': ref, 'chat': _text(chat.get('name'), 40), 'sender': _text(chat.get('sender'), 20),
+                                   'group': bool(chat.get('is_group')), 'mention': bool(chat.get('mention')),
+                                   'keywords': (chat.get('keywords') or [])[:4], 'actions': (chat.get('actions') or [])[:4],
+                                   'summary': _text(chat.get('summary'), 160), 'project': project,
+                                   # 项目聊天把整段对话交给模型（谁、说了什么、几点），别只给最后一句
+                                   'recent': [f"{datetime.fromtimestamp(m.get('at') or 0, TZ):%d日%H:%M} {_text(m.get('sender'), 12)}：{_text(m.get('text'), 110)}"
+                                              for m in keep] if project else []})
+        for name, meta in wx_projects.items():
+            try:
+                days = (datetime.strptime(meta.get('date', ''), '%Y-%m-%d').date() - local.date()).days
+            except ValueError:
+                days = None
+            if days is None or days >= -1:
+                data['focus'].append({'project': name, 'venue': meta.get('venue', ''), 'date': meta.get('date', ''), 'days_left': days})
         self.collect_more(data, refs, now)
         if self.hub and hasattr(self.hub, 'health'):
             try:
@@ -260,6 +333,11 @@ class NextSteps:
         with self.db() as db:
             week = now - 7 * 86400
             data['recent_handled'] = [json.loads(r['data'])['title'] for r in db.execute("SELECT data FROM items WHERE state IN ('dismissed','done','acted','todo') AND updated_at>? ORDER BY updated_at DESC LIMIT 30", (week,))]
+            data['dismissed'] = [json.loads(r['data'])['title'] for r in db.execute("SELECT data FROM items WHERE state='dismissed' ORDER BY updated_at DESC LIMIT 60")]
+            # 10-21：上一轮还开着的建议交给模型「保留或撤下」，别每小时整批重写（7 天 546 条里 471 条下一轮就被换掉）。
+            data['current'] = [{'id': r['id'], 'title': d['title'], 'why': d.get('why', ''), 'shown': d.get('shown', 1)}
+                               for r in db.execute("SELECT id, data FROM items WHERE state='open'") for d in [json.loads(r['data'])]]
+            data['recent_headlines'] = [r['headline'] for r in db.execute("SELECT headline FROM runs WHERE headline<>'' ORDER BY id DESC LIMIT 3")]
         return data, refs
 
     def collect_more(self, data, refs, now):
@@ -369,8 +447,16 @@ class NextSteps:
 
     def clean(self, raw, refs):
         out, seen = [], set()
+        with self.db() as db:
+            current = {r['id']: json.loads(r['data']) for r in db.execute("SELECT id, data FROM items WHERE state='open'")}
         for item in (raw or {}).get('items', []) if isinstance(raw, dict) else []:
             if not isinstance(item, dict):
+                continue
+            kept = current.get(item.get('keep'))
+            if kept and kept['id'] not in seen:
+                # 保留：原条原样留下（标题、依据、交办要求都不变），只记它又出现了一轮
+                seen.add(kept['id'])
+                out.append({k: kept[k] for k in ('id', 'title', 'why', 'prompt', 'urgency', 'score', 'evidence') if k in kept} | {'kept': True})
                 continue
             title, why, prompt = _text(item.get('title'), 30), _text(item.get('why'), 160), _text(item.get('prompt'), 400)
             cited = [r for r in item.get('refs', []) if isinstance(r, str) and r in refs][:5]
@@ -412,7 +498,7 @@ class NextSteps:
                         raw = await self.model(data)
                         items = self.clean(raw, refs)
                         headline = _text(raw.get('headline'), 120) if isinstance(raw, dict) else ''
-                        brief = self.clean_brief(raw, refs)
+                        brief = self.clean_focus(raw, refs, data) + self.clean_brief(raw, refs)
                         source = 'model'
                     except Exception as exc:
                         error = _text(f'{type(exc).__name__}: {exc}', 200)
@@ -453,6 +539,21 @@ class NextSteps:
             cited = [r for r in point.get('refs', []) if isinstance(r, str) and r in refs]
             out.append(self.point(_text(point.get('text'), 90), cited, refs))
         return out[:5]
+
+    def clean_focus(self, raw, refs, data):
+        """焦点项目卡：状态一句话 + 还差什么 + 风险，附距活动天数；放在简报最前。"""
+        meta = {f['project']: f for f in data.get('focus', [])}
+        out = []
+        for f in (raw or {}).get('focus', []) if isinstance(raw, dict) else []:
+            if not isinstance(f, dict) or f.get('project') not in meta or not _text(f.get('status'), 90):
+                continue
+            if not [r for r in f.get('refs', []) if isinstance(r, str) and r in refs]:
+                continue
+            m = meta[f['project']]
+            lines = lambda key, n: [_text(x, 40) for x in (f.get(key) or []) if isinstance(x, str) and x.strip()][:n]
+            out.append({'kind': 'project', 'title': m['project'], 'venue': m['venue'], 'date': m['date'], 'days_left': m['days_left'],
+                        'text': _text(f['status'], 90), 'open': lines('open', 4), 'risks': lines('risks', 2)})
+        return out
 
     def point(self, text, cited, refs):
         news = next((refs[r] for r in cited if refs[r]['kind'] == 'news'), None)
@@ -511,12 +612,18 @@ class NextSteps:
             handled = db.execute("SELECT id, data FROM items WHERE state IN ('dismissed','acted','done','todo') AND updated_at>?", (now - 7 * 86400,)).fetchall()
             snoozed = [r for r in db.execute("SELECT id, data FROM items WHERE state='snoozed'").fetchall() if json.loads(r['data']).get('snooze_until', 0) > now]
             handled = list(handled) + snoozed
+            # 点过「不用」的永久算数（10-18 Eddie：说过不用的不要再出现）：同一条、同依据、几乎同一句、同话题都不再出。
+            dismissed = [(r['id'], json.loads(r['data'])) for r in db.execute("SELECT id, data FROM items WHERE state='dismissed'")]
+            handled = list(handled) + [r for r in db.execute("SELECT id, data FROM items WHERE state='dismissed'")]
             blocked = {r['id'] for r in handled} | {r['id'] for r in db.execute("SELECT id FROM items WHERE state IN ('done','todo')")}
             settled = {sig for r in handled for e in json.loads(r['data']).get('evidence', []) if (sig := _sig(e['ref'], e))}
+            no_titles = [d.get('title', '') for _, d in dismissed]
+            muted = muted_topics(no_titles)
 
             def repeat(item):
                 sigs = {_sig(e['ref'], e) for e in item['evidence']}
-                return item['id'] in blocked or ('' not in sigs and sigs <= settled)
+                return (item['id'] in blocked or ('' not in sigs and sigs <= settled)
+                        or any(_near(item['title'], t) for t in no_titles) or bool(_cjk_runs(item['title']) & muted))
             fresh = [i for i in items if not repeat(i)]
             ids = {i['id'] for i in fresh}
             # 上一轮还开着、这一轮没再提的：收起，不删。
@@ -528,8 +635,13 @@ class NextSteps:
                 if json.loads(row['data']).get('snooze_until', 0) <= now and row['id'] not in ids:
                     db.execute("UPDATE items SET state='open', updated_at=? WHERE id=?", (now, row['id']))
             for item in fresh:
-                old = db.execute('SELECT created_at FROM items WHERE id=?', (item['id'],)).fetchone()
+                old = db.execute('SELECT created_at, data, state FROM items WHERE id=?', (item['id'],)).fetchone()
                 created = old['created_at'] if old else now
+                shown = (json.loads(old['data']).get('shown', 1) + 1) if old and old['state'] == 'open' else 1
+                item = {k: v for k, v in item.items() if k != 'kept'} | {'shown': shown}
+                # 连着挂了 4 轮（约 4 小时）还没动它：不是他眼下要做的，往后放，不再顶在最前面
+                if shown >= 4 and item['urgency'] != 'now':
+                    item['urgency'], item['score'] = 'week', max(10, item['score'] - 20)
                 db.execute('INSERT OR REPLACE INTO items VALUES (?,?,?,?,?)', (item['id'], json.dumps({**item, 'source': source}, ensure_ascii=False), 'open', created, now))
             db.execute('INSERT INTO runs(at,source,count,error,headline,brief) VALUES (?,?,?,?,?,?)', (now, source, len(fresh), error, headline, json.dumps(list(brief), ensure_ascii=False)))
 

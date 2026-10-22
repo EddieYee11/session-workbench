@@ -23,7 +23,11 @@ def classify(text, now=None):
     text = str(text).strip()
     # Third-person reports need semantic interpretation even with a bookkeeping word.
     plan = None if re.search(r"我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)",text) else parse(text)
-    if plan: return Route('L0','ledger','记账中','bookkeeping',{'action':'add',**plan})
+    if plan:
+        from fast_bookkeeping import suspect
+        alt = suspect(plan, text)
+        if alt: return Route('L0','ledger','待确认记账','bookkeeping',{'action':'confirm','plan':{**plan,'suspect':alt}})
+        return Route('L0','ledger','记账中','bookkeeping',{'action':'add',**plan})
     if not re.search(r"我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)",text):
         candidate = parse_candidate(text)
         if candidate:
@@ -91,7 +95,10 @@ def receipt(route,result):
     # 模糊候选不由 route.execute 写入， receipts 需要单独转成确认卡。
     if route.tool == 'bookkeeping' and route.args.get('action') == 'confirm':
         from fast_bookkeeping import confirm_card
-        return {'text': confirm_card(route.args['plan']), 'suggestions': ['是', '改一下', '不记']}
+        plan = route.args['plan']
+        if plan.get('suspect'):
+            return {'text': confirm_card(plan), 'suggestions': ['改成 %g' % plan['suspect'], '就是 %g' % plan['amount'], '不记']}
+        return {'text': confirm_card(plan), 'suggestions': ['是', '改一下', '不记']}
     if route.tool=='bookkeeping' and route.args.get('action')=='add':
         from fast_bookkeeping import receipt as booked
         return booked(result)

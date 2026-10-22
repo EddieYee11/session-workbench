@@ -65,3 +65,23 @@ def test_discarding_shell_errors_does_not_trigger_overwrite_gate():
     assert not deletion_risk('bash',{'command':'ls /tmp 2>/dev/null'})
     assert deletion_risk('bash',{'command':'rm /tmp/a 2>/dev/null'})
     assert deletion_risk('bash',{'command':'echo replaced > /tmp/a'})
+
+
+def test_plain_yes_on_confirm_card_books_the_card_amount(tmp_path):
+    # 10-21：确认卡的「是」按钮不带金额，原来被拦，模型绕 60–80 秒
+    card='记一笔 -980 · 人情社交·给女朋友买生日礼物（招商银行储蓄卡），记这笔账吗？确认金额后直接入账。'
+    tools, first, ctx = dialogue(tmp_path, '给女朋友买生日礼物980', card, '是')
+    args={'tool':'bookkeeping','args':{'action':'add','amount':980.0,'comment':'生日礼物'}}
+    with pytest.raises(ValueError):
+        tools.authorize_tool({**args,'args':{**args['args'],'amount':98.0}},ctx)
+    assert tools.authorize_tool(args,ctx)['authorized']
+
+
+@pytest.mark.parametrize('question,answer',[
+    ('记账那句没听准，是记1块还是1块5？你回一个数我就记。','是'),   # 不是确认卡：纯「是」不知道记哪笔
+    ('记一笔 -980 · 人情社交·礼物（招商银行储蓄卡），记这笔账吗？确认金额后直接入账。','是吗'),
+])
+def test_plain_yes_needs_a_confirm_card(tmp_path,question,answer):
+    tools, _, ctx = dialogue(tmp_path,'给女朋友买生日礼物980',question,answer)
+    with pytest.raises(ValueError):
+        tools.authorize_tool({'tool':'bookkeeping','args':{'action':'add','amount':980.0}},ctx)

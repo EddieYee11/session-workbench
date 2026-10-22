@@ -76,7 +76,8 @@ def test_native_request_contains_raw_user_and_ephemeral_context_without_memory(t
         source=json.loads(db.execute('SELECT context FROM tool_sources WHERE request_id=?',('r1',)).fetchone()[0])
     assert source=={'origin_message_id':'m1','origin_request_id':'r1'}
     assert body['model_options']['reasoning']['effort']=='none'
-    assert len(body['instructions'])<1700
+    # 契约含地址簿（10-10 为免全盘搜文件加入）；摘要为空时仍须远小于旧的 30KB 级上下文。
+    assert len(body['instructions'])<2200
 
 
 def test_fast_query_uses_domain_service_and_records_zero_prompt(tmp_path,monkeypatch):
@@ -105,3 +106,48 @@ def test_retry_identity_excludes_changed_task_snapshots_but_binds_real_source(tm
     next_turn=turn({**context,'tasks':[{'id':'t1','status':'completed'}]})
     assert first.source==next_turn.source and first.instructions!=next_turn.instructions
     assert first.source!=turn({**context,'origin_message_id':'m2'}).source
+
+
+def test_general_turns_use_low_reasoning_and_short_replies_none(tmp_path,monkeypatch):
+    import httpx
+    posted=[]
+    class Response:
+        status_code=200
+        def json(self):return {'run_id':'run_fixture'}
+    class HTTP:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*_):pass
+        async def post(self,*_,**kwargs):posted.append(kwargs['json']);return Response()
+    monkeypatch.setattr(httpx,'AsyncClient',lambda **_:HTTP())
+    async def run(text,rid):
+        client=HermesRuntime(tmp_path);client.create_session=AsyncMock();client.key=lambda:'fixture'
+        client.request=AsyncMock(return_value={'status':'completed','output':'好'})
+        async def events(_):yield 'run.completed',{'status':'completed','output':'好'}
+        client._events=events
+        wrapped=MARKER+json.dumps({'origin_request_id':rid,'origin_message_id':'m'+rid})+'\n用户消息：\n'+text
+        assert [x async for x in client.stream_chat('main',wrapped)]
+    asyncio.run(run('帮我看看 Steam VR 为什么掉帧','r-general'))
+    asyncio.run(run('嗯。','r-short'))
+    assert posted[0]['model_options']['reasoning']['effort']=='low'
+    assert posted[1]['model_options']['reasoning']['effort']=='none'
+
+
+def test_voice_double_send_books_once_and_odd_amounts_ask_first(tmp_path,monkeypatch):
+    """10-18：两分钟内一字不差的记账只记一次；午饭 260 这类离谱金额先问；「晚饭话费」按花费记。"""
+    from conversation import PersonalConversation
+    import business_tools
+    calls=[]
+    class Service:
+        def __init__(self,*_):pass
+        async def call(self,tool,args,context):
+            calls.append(args);return {'verified':True,**args}
+    monkeypatch.setattr(business_tools,'BusinessTools',Service)
+    chat=PersonalConversation(tmp_path)
+    for i in range(2):
+        chat.submit('request-dup-00%d'%i,'晚饭话费65块9')
+        asyncio.run(chat.process_one())
+    assert len(calls)==1 and calls[0]['category']=='餐饮外卖' and calls[0]['amount']==65.9
+    assert any('已经记过了' in m['text'] for m in chat.snapshot()['messages'] if m['role']=='assistant')
+    route=classify('午餐消费二六零。')
+    assert route.args['action']=='confirm' and route.args['plan']['suspect']==26
+    assert classify('午饭花费 26 元').args['action']=='add' and classify('充话费50').args['plan']['category']=='通讯话费'

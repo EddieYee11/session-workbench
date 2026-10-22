@@ -149,6 +149,20 @@ def test_calendar_cache_uses_occurrence_start_not_decades_old_master(tmp_path):
  rows=CalendarBridge(tmp_path).cached('2027-08-27','2027-08-27')
  assert len(rows)==1 and rows[0]['start']=='2027-08-27T00:00+08:00'
 
+def test_calendar_adjust_refuses_incomplete_event_snapshot_without_keyerror(tmp_path):
+ from calendar_bridge import CalendarBridge
+ bridge=CalendarBridge(tmp_path)
+ async def run():
+  # A model-supplied event without start used to raise KeyError 'start' at the live-snapshot lookup.
+  with pytest.raises(ValueError,match='Event snapshot must include'):
+   await bridge.adjust({'id':'event-1'},'2026-10-19T10:00+08:00','2026-10-19T11:00+08:00')
+  with pytest.raises(ValueError,match='Event snapshot must include'):
+   await bridge.adjust({'start':'2026-10-19T10:00+08:00','end':'2026-10-19T11:00+08:00'},'2026-10-19T10:00+08:00','2026-10-19T11:00+08:00')
+  # A complete snapshot still reaches the pre-existing safety rules unchanged.
+  with pytest.raises(ValueError,match='without participants'):
+   await bridge.adjust({'id':'event-1','title':'周会','start':'2026-10-19T10:00+08:00','end':'2026-10-19T11:00+08:00','editable':True,'attendee_count':2},'2026-10-19T11:00+08:00','2026-10-19T12:00+08:00')
+ asyncio.run(run())
+
 def test_linked_matters_keep_source_facts_corrections_and_handled_state(tmp_path):
  h=PersonalHub(tmp_path,home=tmp_path)
  a=h.matter('gmail','thread','会议邮件',{'snippet':'原始邮件'})

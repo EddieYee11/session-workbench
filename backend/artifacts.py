@@ -8,7 +8,7 @@ import hashlib
 import mimetypes
 from pathlib import Path
 
-ALLOWED = {'.pdf','.png','.jpg','.jpeg','.webp','.gif','.md','.txt','.csv','.docx','.xlsx','.pptx','.mov','.mp4','.patch'}
+ALLOWED = {'.pdf','.png','.jpg','.jpeg','.webp','.gif','.md','.html','.txt','.csv','.docx','.xlsx','.pptx','.mov','.mp4','.patch'}
 class ArtifactAccess:
     def __init__(self, tasks, workspace, state=None):
         self.tasks, self.workspace = tasks, Path(workspace).resolve()

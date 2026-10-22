@@ -26,7 +26,7 @@ def test_voice_requires_auth_limits_audio_and_never_launches_agent(api, monkeypa
     monkeypatch.setattr(app.runtime, 'input', forbidden)
     import voice
     calls = []
-    async def asr(audio):
+    async def asr(audio, mime):
         calls.append(audio)
         return '保留在草稿中的测试内容'
     monkeypatch.setattr(voice, 'transcribe_local', asr)
@@ -48,13 +48,13 @@ def test_voice_requires_auth_limits_audio_and_never_launches_agent(api, monkeypa
 def test_failed_transcription_can_retry_same_capture(api, monkeypatch):
     app, client = api
     import voice
-    async def unavailable(audio):
+    async def unavailable(audio, mime):
         raise HTTPException(503, 'retry')
     monkeypatch.setattr(voice, 'transcribe_local', unavailable)
     url = '/voice/transcribe/01234567-89ab-cdef-0123-456789abcdef'
     headers = {'Authorization': 'Bearer ' + app.TOKEN, 'Content-Type': 'audio/mp4'}
     assert client.post(url, headers=headers, content=b'x' * 200).status_code == 503
-    async def available(audio):
+    async def available(audio, mime):
         return '恢复后的文字'
     monkeypatch.setattr(voice, 'transcribe_local', available)
     assert client.post(url, headers=headers, content=b'x' * 200).json()['text'] == '恢复后的文字'

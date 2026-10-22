@@ -68,10 +68,12 @@ def test_observation_budget_dedup_pause_and_fixed_report_independence(tmp_path):
     agency,_=setup(tmp_path)
     assert agency.publish_observation('change-1','有一项变化') is True
     assert agency.publish_observation('change-1','重复变化') is False
-    assert agency.publish_observation('change-2','另一项变化') is True
-    assert agency.publish_observation('change-3','超过预算') is False
+    from agency import OBSERVATION_DAILY_MAX
+    budget=OBSERVATION_DAILY_MAX[agency.proactive.settings()['intensity']]
+    for n in range(2,budget+1):assert agency.publish_observation(f'change-{n}','另一项变化') is True
+    assert agency.publish_observation('change-over','超过预算') is False
     agency.proactive.configure({'paused':True})
-    assert agency.publish_observation('change-4','暂停期间') is False
+    assert agency.publish_observation('change-paused','暂停期间') is False
 
 
 def test_independent_report_writes_once_and_does_not_claim_goal_execution(tmp_path):

@@ -278,18 +278,9 @@ async def lifespan(app):
                 )
                 project_board.ingest(snapshot)
                 if not proactive.settings()["paused"]:
+                    # 10-21：看板的「下一步」多是后台自运维会话（巡检、监控、编程会话），
+                    # 7 天往主聊天发了 123 条、占主动消息三分之二。只更新看板，不再进主对话。
                     await project_board.review(limit=12)
-                    actions = project_board.snapshot()["actions"]
-                    for item in actions:
-                        if agency.publish_observation(
-                            "project:" + item["id"] + ":" + item["version"],
-                            "「"
-                            + item["project"]
-                            + "」下一步："
-                            + item["next_step"]
-                            + " 可在工作看板查看依据。",
-                        ):
-                            break
             await asyncio.sleep(900)
 
     project_task = asyncio.create_task(project_loop())
@@ -336,10 +327,22 @@ async def lifespan(app):
         await asyncio.sleep(25)
         while True:
             with contextlib.suppress(Exception):
+                await cases.rescue()
+            with contextlib.suppress(Exception):
+                cases.weekly_report()
+            with contextlib.suppress(Exception):
                 await asyncio.to_thread(cases.sync)
             with contextlib.suppress(Exception):
                 if tomorrow_plan.due():
                     await asyncio.to_thread(tomorrow_plan.generate)
+            with contextlib.suppress(Exception):
+                # 日程 → 当天待办（设定）：每 2 分钟看一眼，新加的日程当天补上；已有的一条不动。
+                if calendar_todos.due():
+                    await asyncio.to_thread(calendar_todos.sync)
+            with contextlib.suppress(Exception):
+                # 待办 → iCloud 提醒事项「Com 待办」列表（iPhone 等设备可见），对账式单向，每分钟一轮。
+                if reminders_sync.due():
+                    await asyncio.to_thread(reminders_sync.sync)
             await asyncio.sleep(15)
 
     case_task = asyncio.create_task(case_loop())
@@ -2495,6 +2498,15 @@ from cases import BRIEF_INSTRUCTIONS as CASE_BRIEF_INSTRUCTIONS
 from cases import Cases
 from tomorrow_plan import TomorrowPlan
 
+# 日程即当天待办（Eddie 设定）：把当天日程同步成行动台待办，复用上面 today_view 的日历链路。
+from calendar_todos import CalendarTodos
+
+calendar_todos = CalendarTodos(today_view)
+
+from reminders_sync import RemindersSync
+
+reminders_sync = RemindersSync(today_view)
+
 
 async def case_brief(data):
     from hermes_review import review_json
@@ -2515,11 +2527,29 @@ cases = Cases(
     brief=case_brief if MAIN_AGENT == "hermes" else None,
 )
 agent_tools.cases = cases
+cases.artifact_access = artifact_access
 tomorrow_plan = TomorrowPlan(STATE, next_steps, today_view, cases, conversation)
 from threads import Threads
 
 threads = Threads(STATE)
 cases.threads = threads
+agency.calendar_todos = calendar_todos   # 晨报那一步先把当天日程落成待办
+
+
+@app.post("/personal/today/sync-reminders")
+async def personal_today_sync_reminders():
+    """手动立刻把待办对账进提醒事项（幂等）。"""
+    report = await asyncio.to_thread(reminders_sync.sync)
+    report["summary"] = reminders_sync.summary(report)
+    return report
+
+
+@app.post("/personal/today/sync-calendar")
+async def personal_today_sync_calendar():
+    """手动／手机上刷新一次「当天日程 → 待办」（幂等，可以反复点）。"""
+    report = await asyncio.to_thread(calendar_todos.sync)
+    report["summary"] = calendar_todos.summary(report)
+    return report
 
 
 async def turn_planner(text):

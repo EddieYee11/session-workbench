@@ -18,6 +18,9 @@ def test_unauthorized_and_fuzzy_text_never_takes_the_fast_path():
         '午饭花了5分钟，记账', '帮我記账午饭“59.22元”',
         # 没有明确记账意图，或用途认不出
         '天气不错啊', '打车 30', '午饭 35', '茶五元，记账',
+        'Apple 礼品卡 145.65', '午饭花的21',
+        # 无单位中文数字是数量、不是金额
+        '我买了十本书', '跑了五公里', '今天下午十点开会', '这本书一百页', '花了三十个积分',
     ):
         assert parse(text) is None, text
 
@@ -34,6 +37,14 @@ def test_income_and_non_default_account_are_kept():
     assert parse('记账 打车 30 用花呗')['account'] == '花呗'
 
 
+def test_unitless_chinese_amount_from_voice_is_recorded():
+    """语音常说“剪头发花费一百一十四”，无单位中文数字也必须落账。"""
+    assert parse('剪头发花费一百一十四。') == {
+        'amount': 114.0, 'category': '个护美容',
+        'account': '招商银行储蓄卡', 'comment': '剪头发'}
+    assert receipt(parse('午饭花了三十五')) == '已记 -35 餐饮外卖·午饭'
+
+
 def _run(tmp_path, text, monkeypatch, *, verified=True):
     calls = []
 
@@ -42,10 +53,11 @@ def _run(tmp_path, text, monkeypatch, *, verified=True):
             pass
 
         async def call(self, tool, args, context):
+            amount = args.get('amount', 0) if isinstance(args, dict) else 0
             calls.append((tool, args, context))
-            return {'verified': verified, 'id': '999', 'amount': args['amount'],
-                    'category': args['category'], 'account': args.get('account', ''),
-                    'comment': args.get('comment', '')}
+            return {'verified': verified, 'id': '999', 'amount': amount,
+                    'category': args.get('category') if isinstance(args, dict) else '',
+                    'account': args.get('account', ''), 'comment': args.get('comment', '')}
 
     monkeypatch.setattr(business_tools, 'BusinessTools', FakeTools)
     chat = PersonalConversation(tmp_path)

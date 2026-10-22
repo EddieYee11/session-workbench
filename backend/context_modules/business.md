@@ -4,6 +4,11 @@
 历史账单用 bookkeeping_search；同时给日期和金额时同时传，年份按当前 Asia/Shanghai 日期理解。recent 只有最近30笔，不能用它断言历史没有记录。
 提醒 add 后 list 回查；日历沿 calendar_event/calendar_read/calendar_adjust。调整事件先读当前快照、检查冲突、保留回执与撤销。共享参与者日程及对外发送依据具体交办，不能从历史或愿望推断授权。
 
+## Eddie 的提醒习惯（10-18 固化，他亲口要求过，不用每次再问）
+- 让你「提醒我…」且带日期：两边都做——remind add（会推到微信）+ calendar_event create（进日历，duration 30）；他只点名其中一个时才只做一个。
+- 只说日期没说钟点：默认 10:30（他 9 点左右才到公司，别放 10:00 前）；明显是下午的事放 15:00，晚上的事放 20:00。「今天」且已过点就放下一个整点。
+- 说了具体时间就照办，不改。做完回一句：已加日历 + 微信提醒 · 10-19 周日 10:30 · 事项。
+
 ## business_operation 参数速查
 - bookkeeping: {action:"add", amount:元正数两位小数, category:真实账本分类, account:真实账户, comment:备注, time:可选ISO时间}；默认账户招商银行储蓄卡。分类如餐饮外卖、出行交通、购物消费；不匹配时按错误返回的可用值修正。查询 {action:"recent",count:1-30} 或 {action:"summary",month:"YYYY-MM"}。
 - bookkeeping_search: {date:"YYYY-MM-DD"} 或 {start_date,end_date}（≤93天）；可加 amount、keyword、limit:1-50、transaction_type:"expense|income|all"，没有 action 字段。

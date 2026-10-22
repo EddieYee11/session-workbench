@@ -214,3 +214,20 @@ def test_option_reply_has_real_context_and_never_grants_from_wishes(tmp_path,pri
         assert task['task_id']
     else:
         with pytest.raises(ValueError):service.authorize_tool(args,follow)
+
+
+def test_reminder_add_needs_no_fixed_wording(tmp_path):
+    # Eddie 2026-10-10「10-16 20:00加提醒」曾被措辞正则连拒三次；授权最高权限后直接放行。
+    service,context=tool_service(tmp_path,'10-16 20:00加提醒')
+    args={'tool':'remind','args':{'action':'add','due':'2026-10-16 20:00','text':'iPhone Duo 预购准备'},'tool_call_id':'remind-add'}
+    assert service.authorize_tool(args,context)['authorized']
+
+
+@pytest.mark.parametrize('text,allowed',[('把刚才那条提醒删掉',True),('这周有哪些提醒',False)])
+def test_business_deletion_follows_users_own_words(tmp_path,text,allowed):
+    service,context=tool_service(tmp_path,text)
+    args={'tool':'remind','args':{'action':'delete','id':'rm-1'},'tool_call_id':'remind-delete'}
+    if allowed:
+        assert service.authorize_tool(args,context)['authorized']
+    else:
+        with pytest.raises(ValueError,match='不可逆删除'):service.authorize_tool(args,context)

@@ -905,6 +905,15 @@ class PersonalConversation:
             return False
         from business_tools import BusinessTools as tools_class
         started=time.monotonic()
+        if route.args.get('action')=='add':
+            # 语音偶尔把同一句发两次：两分钟内一字不差的记账只记一次（真要再记一笔，说「再记一笔…」）。
+            norm=re.sub(r'[\s。，,.!！]+','',row['text'])
+            with self.db() as db:
+                twins=[r for r in db.execute("SELECT id,text,created_at FROM messages WHERE role='user' AND status='completed' AND id!=? AND created_at BETWEEN ? AND ?",
+                       (mid,row['created_at']-120,row['created_at'])) if re.sub(r'[\s。，,.!！]+','',r['text'])==norm]
+            if twins:
+                self._finish(mid,'completed',output='这句和 %d 秒前那句一样，已经记过了，没再重复记。真要再记一笔就说「再记一笔」。'%max(1,int(row['created_at']-twins[-1]['created_at'])))
+                return True
         self._set(mid, 'running', phase=route.label)
         try:
             if route.args.get('action')=='confirm':

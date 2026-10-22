@@ -151,6 +151,8 @@ class CalendarBridge:
         return self.parse(await self.queue(['read', first, last]))
 
     async def adjust(self, event, start, end):
+        if not isinstance(event, dict) or any(k not in event for k in ('id', 'start', 'end', 'title')):
+            raise ValueError('Event snapshot must include id, start, end and title')
         if event.get('editable') is None:
             day=datetime.fromisoformat(event['start']).date().isoformat()
             live=self.parse(await self.queue(['get',day,(datetime.fromisoformat(day)+timedelta(days=1)).date().isoformat(),event['id']]))

@@ -96,3 +96,24 @@ def test_connector_toggle_preserves_credentials_without_exposing_them(tmp_path):
     assert hub.config("work_mail")["password"] == "test-only"
     assert "password" not in str(result)
     assert "test-only" not in str(hub.status())
+
+
+def test_work_mail_exchange_protocol_routes_to_ews(tmp_path, monkeypatch):
+    import asyncio
+    from personal_hub import PersonalHub
+    (tmp_path / "state").mkdir()
+    hub = PersonalHub(tmp_path / "state")
+    hub.configure("work_mail", {"host": "mail.example.com", "username": "CORP\\eddie", "password": "test-only", "protocol": "ews", "email": "eddie@example.com"})
+    assert hub.config("work_mail")["protocol"] == "ews"
+    called = []
+    monkeypatch.setattr(hub, "ews_sync", lambda: called.append("ews") or {"count": 0})
+    monkeypatch.setattr(hub, "imap_sync", lambda: called.append("imap") or {"count": 0})
+    asyncio.run(hub.sync_source("work_mail"))
+    assert called == ["ews"]
+    (tmp_path / "fresh").mkdir()
+    fresh = PersonalHub(tmp_path / "fresh")
+    try:
+        fresh.configure("work_mail", {"host": "mail.example.com", "username": "nobody", "password": "x", "protocol": "ews"})
+        assert False, "EWS without a mailbox address must be rejected"
+    except ValueError:
+        pass

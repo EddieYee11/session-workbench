@@ -36,3 +36,6 @@ requests==2.34.2
 
 # APNs uses ES256 provider tokens.
 PyJWT[crypto]>=2.10,<3
+
+# 搜狐 Exchange 只开 OWA/EWS，不开 IMAP。
+exchangelib>=5.6,<6

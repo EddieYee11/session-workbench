@@ -1,13 +1,18 @@
 """「今天」：把今天的日程、提醒和行动台待办收成一份，给手机上的时间线用。
 
+日程 → 当天待办（Eddie 设定，见 calendar_todos.py）：`todo_create(..., event_id=…)` 建，
+`todo_sync_event()` 只更新来源待办的 `计划结束` 和 Com 自己写的来源备注行；`todo_index()` 带出
+`com_event_id` 供幂等去重。
+
 只读聚合，不新建任何存储：
 - 日程：personal_hub 里已同步的日历事项（苹果 / Google / 手机日历），同一个日程在多个日历里只算一次；
 - 提醒：pi-gateway 的提醒记录（reminder_cards），今天到点的，加上还没处理的过期提醒；
 - 待办：Obsidian 行动台 `任务/待处理/`，计划结束在今天或已经过期、或今天落在计划区间里的。
 派活待批准、停下来等你的任务不在这里：App 已经有那份数据（/personal/tasks、proposals），自己并进时间线。
 
-唯一的写操作（轨道 r3-pages）：在手机上给行动台待办打勾 / 撤销。只改那个文件属性头里的 `状态` 和 `完成时间` 两行，
-正文和其他字段一个字节不动；临时文件 + replace 原子写；不挪文件（Obsidian 的 auto-move 插件按状态归位）。
+写操作（轨道 r3-pages + 日程同步）：手机上打勾 / 撤销 / 改期只改那个文件属性头里的 `状态`、`完成时间`、
+`计划结束` 三行；日程同步只新建来源待办、或更新它的 `计划结束` 与 Com 写的来源备注行；
+两者都是临时文件 + replace 原子写，正文和其他字段不动，不挪文件（Obsidian 的 auto-move 插件按状态归位）。
 """
 import json, os, re, stat, threading, time
 from datetime import datetime, timedelta
@@ -17,6 +22,24 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo('Asia/Shanghai')
 CALENDAR = ('apple_calendar', 'google_calendar', 'phone_calendar')
 INFORMATIONAL = ('节假日', '中国大陆', '中国节日')
+EVENT_FIELD = 'com_event_id'   # 由日程同步来的待办，记来源日程 id（幂等去重账本）
+SOURCE_MARK = '来源：日程'      # Com 写的备注行前缀；只有这种备注才会被同步刷新
+
+def todo_name(title):
+    """待办标题 → 文件名：Obsidian 禁用字符换空格；【】只是装饰，直接去掉，
+    这样日程「【AI德州扑克】预赛」和手建的「AI德州扑克预赛」算同名，不会多建一条。"""
+    text = re.sub(r'[【】]+', '', str(title or ''))
+    text = re.sub(r'[\\/:*?"<>|#^\[\]\n\r]+', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()[:60].strip('. ')
+
+
+def yaml_value(text):
+    """frontmatter 的单行标量。含 ASCII `: ` 这类 YAML 敏感写法（Obsidian 按 YAML 读属性头）就加双引号，
+    否则 Obsidian 会把这一行当成嵌套映射、整个属性头报错。_front 和 _value 读的时候都会剥掉引号。"""
+    clean = re.sub(r'\s+', ' ', str(text or '')).strip()
+    if ': ' in clean or clean[:1] in tuple('-?:#&*!|>@`"\'{[%,') or ' #' in clean:
+        return '"' + clean.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    return clean
 
 
 def _instant(value):
@@ -361,17 +384,19 @@ class Today:
             if f.get('flow') != '任务' or f.get('状态', '待处理') != '待处理':
                 continue
             rows.append({'name': path.stem, 'due': f.get('计划结束', ''), 'path': str(path.relative_to(self.vault)),
-                         'next_id': f.get('com_next_id', ''), 'sigs': [s for s in f.get('com_sigs', '').split(',') if s]})
+                         'next_id': f.get('com_next_id', ''), 'sigs': [s for s in f.get('com_sigs', '').split(',') if s],
+                         'event_id': f.get(EVENT_FIELD, '')})
         return rows
 
-    def todo_create(self, title, day, next_step='', note='', body='', next_id='', sigs=()):
-        """新建一条行动台待办（frontmatter 与手建的一致，另记 com_next_id / com_sigs 供去重）。同名已存在就不覆盖，返回已有那条。"""
+    def todo_create(self, title, day, next_step='', note='', body='', next_id='', sigs=(), event_id='', progress=''):
+        """新建一条行动台待办（frontmatter 与手建的一致，另记 com_next_id / com_sigs / com_event_id 供去重）。同名已存在就不覆盖，返回已有那条。
+        event_id：由日程同步来的待办记来源日程 id；progress：换掉「## 进展」里那句来源说明。"""
         if not self.vault:
             raise ValueError('行动台没接上')
         target = _day(day)
         if not target:
             raise ValueError('日期无效')
-        name = re.sub(r'[\\/:*?"<>|#^\[\]\n\r]+', ' ', str(title or '')).strip()[:60].strip('. ')
+        name = todo_name(title)
         if not name:
             raise ValueError('待办标题为空')
         folder = self.vault / '任务' / '待处理'
@@ -383,10 +408,12 @@ class Today:
         one = lambda v: re.sub(r'\s+', ' ', str(v or '')).strip()[:200]
         today = datetime.fromtimestamp(self.clock(), TZ).date().isoformat()
         text = ('---\nflow: 任务\n状态: 待处理\n关联项目:\n计划开始:\n计划结束: ' + target.isoformat() + '\n完成时间:\n'
-                + '下一步: ' + one(next_step) + '\n备注: ' + one(note) + '\ncreated: ' + today + '\n'
+                + '下一步: ' + yaml_value(one(next_step)) + '\n备注: ' + yaml_value(one(note)) + '\ncreated: ' + today + '\n'
                 + ('com_next_id: ' + one(next_id) + '\n' if next_id else '')
                 + ('com_sigs: ' + ','.join(s.replace(',', ' ') for s in sigs if s) + '\n' if sigs else '')
-                + '---\n\n# ' + name + '\n\n## 说明\n\n' + (body.strip() or one(next_step)) + '\n\n## 进展\n- ' + today + ' 由 Com「下一步」加入待办\n')
+                + (EVENT_FIELD + ': ' + one(event_id) + '\n' if event_id else '')
+                + '---\n\n# ' + name + '\n\n## 说明\n\n' + (body.strip() or one(next_step)) + '\n\n## 进展\n- ' + today + ' '
+                + (progress or '由 Com「下一步」加入待办') + '\n')
         tmp = path.with_name('.' + path.name + '.com-tmp')
         with self._lock:
             try:
@@ -398,6 +425,41 @@ class Today:
                 if tmp.exists():
                     tmp.unlink()
         return {'status': 'created', 'path': rel, 'name': name, 'due': target.isoformat()}
+
+    # ---- 日程 → 当天待办（设定：日程上的事情就是当天的待办） ------------------------------------------
+
+    def todo_sync_event(self, rel, day, note=''):
+        """日程同步：只更新 `计划结束`（改期）和 Com 自己写的 `来源：日程…` 备注行，其余字节一字不动。
+        返回 {'status','path','due','changed','updated'}；已经不是待处理（被勾掉/挪走）就抛 ValueError，由调用方跳过。
+        不新建文件、不改标题、不动正文和其他 frontmatter —— 用户改过的备注（不以 `来源：日程` 开头）永不覆盖。"""
+        target = _day(day)
+        if not target:
+            raise ValueError('日期无效')
+        with self._lock:
+            path = self._pending_file(rel)
+            if not path.is_file():
+                raise ValueError('这条待办已经不在待处理里了，请刷新')
+            stamp = path.stat().st_mtime_ns
+            lines, end = _head(path.read_bytes().decode('utf-8'))
+            out, updated = list(lines), []
+            index = _field(lines, end, '计划结束')
+            text = '计划结束: ' + target.isoformat()
+            if index is None:
+                out.insert(end, text + _ending(lines[0]))
+                updated.append('计划结束')
+            elif _value(lines[index])[:10] != target.isoformat():
+                out[index] = text + _ending(lines[index], _ending(lines[0]))
+                updated.append('计划结束')
+            index = _field(lines, end, '备注')
+            if note and index is not None and _value(lines[index]).startswith(SOURCE_MARK):
+                line = '备注: ' + yaml_value(re.sub(r'\s+', ' ', str(note)).strip()[:200])
+                if _value(line) != _value(lines[index]):
+                    out[index] = line + _ending(lines[index], _ending(lines[0]))
+                    updated.append('备注')
+            if not updated:
+                return {'status': 'same', 'path': rel, 'due': target.isoformat(), 'changed': False, 'updated': []}
+            self._write(path, ''.join(out), stamp)
+            return {'status': 'updated', 'path': rel, 'due': target.isoformat(), 'changed': True, 'updated': updated}
 
     # ---- 航程结论回流（2026-10-18）：追加到待办 / 项目页的「## 进展」 ------------------------------
 

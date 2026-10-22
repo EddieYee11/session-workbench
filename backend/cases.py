@@ -8,14 +8,14 @@
   对应的下一步和待办自动勾掉。唯一停点是不可逆删除：Pi 用 case_progress(status=waiting) 停下推送等你，他在航程里回复同意（即授权）才继续。
 """
 import hashlib, json, re, sqlite3, time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from contextlib import contextmanager
 from pathlib import Path
 
 from operation_policy import POLICY_REVISION, effective_sandbox
 
-SOURCE_LABELS = {'next': '下一步', 'todo': '待办', 'chat': '对话', 'plan': '明天建议'}
+SOURCE_LABELS = {'next': '下一步', 'todo': '待办', 'chat': '对话', 'plan': '明天建议', 'weekly': '周报'}
 ACTIVE = ('queued', 'dispatching', 'running', 'waiting', 'paused', 'unknown', 'cancel_requested', 'approval_required')
 
 CASE_RULES = (
@@ -25,9 +25,12 @@ CASE_RULES = (
     '每开始或完成一步再调用一次更新。\n'
     '2. 中途信息不够或有分岔时，不要停下来问，选最稳妥、可撤回的做法继续，并用 case_progress 的 assumption 记下这个假设。\n'
     '3. 唯一要停下来的情况是不可逆删除或清空：不要执行，也不要用 propose_work；调用 case_progress(status="waiting", question=要删什么、为什么)，然后结束本轮。他在航程里回复同意后你才继续（他的回复就是授权）。\n'
-    '4. 生成的文件、草稿或链接用 case_progress 的 artifact 登记（文件同时可用 artifact_register）。\n'
-    '5. 最后一条回复写结论：做成了什么、还差什么、他需要知道的，3 到 6 行，口语。\n'
-    '6. 如果最终没能完成（工具不可用、缺关键资料等），结束前调用 case_progress(status="failed", question=一句话原因)，不要把没做成说成完成。'
+    '4. 产出一律做成「单个 HTML 文件」：自包含（样式和脚本写在文件里，不引外链、不联网），针对手机竖屏设计（加 viewport meta、单列、字号和点按区域适合手指），页面可以滚动，长短不限。'
+    '以图形界面和可交互为主——卡片、对比表、可筛选或可切换的清单、图表、时间线、可复制的草稿按钮，信息密度高；'
+    '文字精炼，不要整屏大段文字，不要 Markdown。存到 ~/AI_Work_System/work/航程产出/日期-名称.html，再用 case_progress 的 artifact 登记这个路径。需要给他发的文字稿（如微信回复）放进页面里做成一键复制。\n'
+    '5. 最后一条回复写结论：做成了什么、还差什么、他需要知道的，3 行以内，口语；细节都放在 HTML 里，不在回复里重复。\n'
+    '6. 如果最终没能完成（工具不可用、缺关键资料等），结束前调用 case_progress(status="failed", question=一句话原因)，不要把没做成说成完成。\n'
+    '7. 这台 Mac 的 ~/Library、iCloud 目录和整个家目录用 find/ls 扫描会卡死几分钟：可能慢的命令一律加 timeout 30 前缀、限定目录和 -maxdepth；命令超时就换办法，不要重复同一条。微信聊天内容不在这台机器的文件里，用 Com 里已有的工具或摘要，找不到就在 case_progress 里说明缺什么。'
 )
 
 BRIEF_INSTRUCTIONS = (
@@ -102,6 +105,7 @@ class Cases:
         self.store, self.controller, self.conversation = store, controller, conversation
         self.workspace = Path(workspace)
         self.today, self.next_steps, self.brief, self.clock = today, next_steps, brief, clock
+        self.artifact_access = None  # app.py 注入：产出登记成可下载的成果
         self.threads = None  # threads.Threads，app.py 注入：建航程时记下上游（下一步 / 待办 / 对话）
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS cases(task_id TEXT PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL,'
@@ -213,6 +217,40 @@ class Cases:
         task = self.create_task(name, full, completion, request_id, quote, source)
         self.register(task, source, source_id, goal=goal, steps=plan.get('steps') or [], evidence=evidence, todo_path=todo_path)
         return {'mode': 'case', 'task_id': task['id']}
+
+    WEEKLY_PROMPT = (
+        '起草本周（{start} 至 {end}）的公司周报，今天 15:00 前要交，他确认后自己提交，你不要替他发送。\n\n'
+        '素材（都要看，缺哪个在 case_progress 的 assumption 里写明）：\n'
+        '1. 本周每天的口述工作记录 ~/AI_Work_System/work/周报/*-工作记录.md；\n'
+        '2. 本周日历（osascript 读苹果日历，不要套 try，会吞错）；\n'
+        '3. 本周 ~/AI_Work_System/work/ 下改动过的项目文件（攀岩、搜狐等）；\n'
+        '4. Plaud 录音纪要里的行动项、本周 Com 航程和已完成任务。\n\n'
+        '产出三份：\n'
+        'A. 聊天版：「【周报】」编号清单约 7 条，每条「事项 - 一句话动作」，只写工作，不写个人项目和内部技术细节；同一项目可拆多条；结款、报销、日更视频号、关注流运营这类固定项放末尾；人名「梦雨」不是「孟雨」。\n'
+        'B. 手机版 HTML（按航程规则）：本周主线、各项目进展卡片、聊天版一键复制、遗留与下周计划。\n'
+        'C. 详细版 Markdown（含证据底稿、遗留与风险、下周计划）存 ~/AI_Work_System/work/周报/{start}至{end_short}-周报.md，'
+        '并复制一份到 Obsidian vault 的 工作/项目复盘/周报-{start}至{end_short}.md。\n\n'
+        '最后一条回复例外：直接给 A 聊天版全文，方便他复制；其余放进 HTML。'
+    )
+
+    def weekly_report(self):
+        """每周四 13:30 起草周报（10-18 Eddie 定：周四自动起草、他确认后再交）。主循环调用，一周只建一次。"""
+        now = datetime.fromtimestamp(self.clock(), ZoneInfo('Asia/Shanghai'))
+        if now.weekday() != 3 or (now.hour, now.minute) < (13, 30):
+            return None
+        week = now.strftime('%G-W%V')
+        if self.find('weekly', week):
+            return None
+        start = (now - timedelta(days=3)).strftime('%Y-%m-%d')
+        end = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+        prompt = self.WEEKLY_PROMPT.format(start=start, end=end, end_short=end[5:])
+        title = '起草本周周报'
+        quote = 'Eddie 在 Com 里定下：每周四下午自动起草周报，他确认后自己提交'
+        full = '用户交办：\n' + quote + '\n\n任务说明：\n' + prompt + '\n\n完成条件：\n聊天版周报可直接复制，HTML 与详细版已存好' + CASE_RULES
+        task = self.create_task(title, full, '聊天版周报可直接复制，HTML 与详细版已存好', 'weekly-' + week, quote, 'weekly')
+        self.register(task, 'weekly', week, goal='本周周报草稿（' + start + ' 至 ' + end + '）',
+                      steps=['收集本周工作记录与日历', '核对各项目文件与纪要', '写聊天版周报', '做手机版 HTML', '存详细版'])
+        return task['id']
 
     def create_task(self, title, prompt, completion, request_id, quote, source):
         cwd = str(self.workspace.resolve())
@@ -340,7 +378,7 @@ class Cases:
                 timeline.append({'at': e['at'], 'kind': 'note', 'text': (e['text'] or kind)[:200]})
         timeline.sort(key=lambda x: x['at'])
         return {**self.summary(task, row), 'goal': case.get('goal', ''), 'steps': case.get('steps', []), 'assumptions': case.get('assumptions', []),
-                'artifacts': case.get('artifacts', []) + [a.get('path', '') for a in task.get('artifacts', []) if isinstance(a, dict) and a.get('path')],
+                'artifacts': self._artifacts(task, case),
                 'evidence': case.get('evidence', []), 'timeline': timeline[-120:], 'tool_calls': tools,
                 'result': task.get('result', '') if task.get('status') in ('execution_finished', 'failed', 'cancelled') else '',
                 'inputs': [{'text': i['text'][:500], 'state': i['state'], 'at': i['updated_at']} for i in task.get('inputs', [])],
@@ -348,6 +386,23 @@ class Cases:
                 'can_cancel': task.get('status') in ('queued', 'paused', 'running', 'waiting', 'unknown', 'dispatching')}
 
     # ---------- 中途插话 / 取消 ----------
+
+    def _artifacts(self, task, case):
+        """产出登记成可直接打开的成果（带 id 和下载路径）；HTML 排最前，手机点开就能看。"""
+        paths = case.get('artifacts', []) + [a.get('path', '') for a in task.get('artifacts', []) if isinstance(a, dict) and a.get('path')]
+        out, seen = [], set()
+        for path in paths:
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            item = {'path': path, 'name': Path(path).name, 'mime': 'text/html' if path.lower().endswith('.html') else '', 'availability': 'unknown'}
+            if self.artifact_access and not path.startswith('http'):
+                try:
+                    item = self.artifact_access.register(task.get('message_id') or task['id'], path)
+                except Exception:
+                    pass
+            out.append(item)
+        return sorted(out, key=lambda a: not str(a.get('name', '')).lower().endswith('.html'))
 
     async def send(self, task_id, text, request_id):
         """运行中：走 steer 插进当前会话；已结束：在同一个 Pi 会话里开下一轮（账本 result_round 记多轮结果）。"""
@@ -364,6 +419,10 @@ class Cases:
             self.store.change(task_id, 'reopen:' + request_id, 'input_accepted_after_finish', text,
                               status='running', run_id=run_id, verification_status='pending')
             result = {'task_id': task_id, 'request_id': request_id, 'delivery': 'delivered', 'reopened': True}
+        elif task and task['status'] == 'unknown' and task.get('agent') == 'pi':
+            # 卡在「状态未知」的航程：执行器已经停了（超时被中止或服务重启），他说「继续」就接着往下做
+            await self.revive(task, '[Eddie 在航程里补充]\n' + text, request_id)
+            result = {'task_id': task_id, 'request_id': request_id, 'delivery': 'delivered', 'revived': True}
         else:
             result = await self.controller.command(task_id, text, request_id)
         with self.db() as db:
@@ -375,6 +434,60 @@ class Cases:
             case['timeline'].append({'at': self.clock(), 'kind': 'you', 'text': text[:300]})
             db.execute('UPDATE cases SET data=? WHERE task_id=?', (json.dumps(case, ensure_ascii=False), task_id))
         return result
+
+    async def revive(self, task, note, request_id):
+        """让停在「未知」的 Pi 航程接着跑：先试原会话，会话没了（服务重启）就新开一个并带上交接。账本记 run_id 换新，不重放旧指令。"""
+        runtime, tid = self.controller.runtime, task['id']
+        text = note + '\n\n（上一轮被中断，可能有一部分已经做完。先看已有的产出和 case_progress 里的进度，已完成的不要重复，从当前步骤接着做；如果某条命令卡住，换个办法，不要重复同一条。）' + CASE_RULES
+        sid = task.get('session_id') or ''
+        run_id = ''
+        if sid:
+            try:
+                run_id = await runtime.input(sid, text, request_id)
+            except Exception:
+                run_id = ''
+        if not run_id:
+            sid = await runtime.create_task_worker(task)
+            run_id = await runtime.input(sid, self.store.execution_prompt(task) + '\n\n' + text, request_id)
+        if not run_id:
+            raise ValueError('Pi 会话没有接住，请稍后再试')
+        self.store.change(tid, 'revive:' + request_id, 'revived', note[:300], status='running', session_id=sid,
+                          run_id=run_id, verification_status='pending', block_reason='')
+        with self.db() as db:
+            row = db.execute('SELECT data FROM cases WHERE task_id=?', (tid,)).fetchone()
+            case = json.loads(row['data'])
+            case.update(linked=False, outcome=None)  # 新一轮结束后重新联动
+            db.execute('UPDATE cases SET data=? WHERE task_id=?', (json.dumps(case, ensure_ascii=False), tid))
+        return run_id
+
+    async def rescue(self):
+        """主循环调用：Pi 航程悬在「未知」超过 90 秒，或一轮没留下任何结果就失败（被中止、服务重启），自动接着跑，最多两次；
+        用完次数后「未知」收成失败，不再悬着。"""
+        rows = self._rows()
+        tasks = {t['id']: t for t in self.store.list() if t['id'] in rows}
+        for tid, row in rows.items():
+            task, case = tasks.get(tid), row['data']
+            if not task or task.get('agent') != 'pi' or case.get('waiting'):
+                continue
+            unknown = task['status'] == 'unknown' and self.clock() - task.get('updated_at', self.clock()) >= 90
+            # Pi 自己判定没做成时会先报 case_progress(status=failed) 留下 outcome；没有 outcome 的失败是执行被中止或服务重启
+            died = task['status'] == 'failed' and not case.get('outcome')
+            if not (unknown or died):
+                continue
+            tries = case.get('rescues', 0)
+            if tries >= 2:
+                if unknown:
+                    self.store.finish(tid, 'failed', '执行多次中断，没能完成。点开航程说「继续」可以再试一次。')
+                continue
+            with self.db() as db:
+                case['rescues'] = tries + 1
+                case['timeline'].append({'at': self.clock(), 'kind': 'note', 'text': '执行中断，自动接着做（第 %d 次）' % (tries + 1)})
+                db.execute('UPDATE cases SET data=? WHERE task_id=?', (json.dumps(case, ensure_ascii=False), tid))
+            try:
+                await self.revive(task, '[Com 自动续跑]', 'rescue-%s-%d' % (tid[-8:], tries + 1))
+            except Exception as error:
+                if unknown and tries + 1 >= 2:
+                    self.store.finish(tid, 'failed', '续跑失败：' + str(error)[:120])
 
     def resolve(self, task_id):
         """「等你」时他在审批卡里处理完了：解除等待，按完成联动。"""
