@@ -1,7 +1,7 @@
 # Redde 借鉴项落地 · 2026-10-22
 
 > 分支：`redde-gaps-20261022`，基于 `main@4847299`。
-> 参照：[2026-10-22-redde-study.md](../../docs/2026-10-22-redde-study.md)（研究结论）与 Redde commit `747ccf0`。
+> 参照：[2026-10-22-redde-study.md](2026-10-22-redde-study.md)（研究结论）与 Redde commit `747ccf0`。
 > 范围：当前主线以 iOS + web + backend 为主（Android 自 10-08 后未改动），因此本轮落在 **backend + iOS**；web/Android 复用同一后端字段，未单独改 UI。
 
 ## 一、先核对：哪些其实已经有了
