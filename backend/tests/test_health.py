@@ -19,9 +19,7 @@ def day(i):
 def test_health_returns_days_in_order_and_skips_old_garmin_in_briefing(tmp_path):
     hub = PersonalHub(tmp_path, home=tmp_path)
     for i, battery in ((0, 47), (1, 62), (3, 30)):
-        hub.matter(
-            "garmin", day(i), "佳明健康记录", {"date": day(i), "measurements": {"body_battery": battery, "sleep_seconds": 26000}, "body_battery_curve": [[1, battery]], "missing": []}, deadline=None
-        )
+        hub.matter("garmin", day(i), "佳明健康记录", {"date": day(i), "measurements": {"body_battery": battery, "sleep_seconds": 26000}, "body_battery_curve": [[1, battery]], "missing": []}, deadline=None)
     data = hub.health(7)
     assert [d["date"] for d in data["days"]] == [day(3), day(1), day(0)]
     assert data["today"]["measurements"]["body_battery"] == 47 and data["phone"] is None

@@ -35,13 +35,30 @@ class PushNotifications:
         with self.db() as db:
             db.executescript("""CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,token TEXT,environment TEXT,enabled INTEGER,registered REAL);
               CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,message_id TEXT,device_id TEXT,state TEXT,attempts INTEGER,next_at REAL,created REAL,reason TEXT);
-              CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY,sid TEXT,title TEXT,method TEXT,created REAL);
+              CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY,sid TEXT,title TEXT,method TEXT,created REAL,actionable INTEGER DEFAULT 0);
               CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(approvals)")}
+            if "actionable" not in columns:
+                db.execute("ALTER TABLE approvals ADD COLUMN actionable INTEGER DEFAULT 0")
             if not db.execute("SELECT 1 FROM meta WHERE key='cursor'").fetchone():
                 with self.conversation.db() as chat:
                     revision = chat.execute("SELECT COALESCE(MAX(revision),0) FROM messages").fetchone()[0]
                 db.execute("INSERT INTO meta VALUES ('cursor',?)", (str(revision),))
         self.path.chmod(0o600)
+
+    @staticmethod
+    def _number(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _whole(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     @contextmanager
     def db(self):
@@ -130,14 +147,17 @@ class PushNotifications:
             if self.bark():
                 since = db.execute("SELECT value FROM meta WHERE key='bark_registered'").fetchone()
                 if since:
-                    devices.append({"id": "bark", "registered": float(since[0])})
+                    devices.append({"id": "bark", "registered": self._number(since[0])})
             if not devices:
                 return 0
             for a in items:
                 params = a.get("params") or {}
-                reason = str(params.get("reason") or params.get("command") or a.get("method") or "需要你的决定")
+                # 通知库只存一句通用摘要；命令正文可能含路径/凭据，绝不出现在锁屏。
+                reason = str(params.get("reason") or "有一项操作等你决定")
                 reason = " ".join(reason.split())[:140]
-                db.execute("INSERT OR IGNORE INTO approvals VALUES (?,?,?,?,?)", (str(a["id"]), str(a["sid"]), reason, str(a.get("method") or ""), self.clock()))
+                decisions = params.get("availableDecisions") or []
+                actionable = 1 if "accept" in decisions and "decline" in decisions else 0
+                db.execute("INSERT OR IGNORE INTO approvals VALUES (?,?,?,?,?,?)", (str(a["id"]), str(a["sid"]), reason, str(a.get("method") or ""), self.clock(), actionable))
                 for device in devices:
                     if self.clock() < device.get("registered", 0):
                         continue
@@ -150,7 +170,7 @@ class PushNotifications:
     def enqueue(self):
         with self.db() as db:
             row = db.execute("SELECT value FROM meta WHERE key='cursor'").fetchone()
-            cursor = int(row[0]) if row else 0
+            cursor = self._whole(row[0]) if row else 0
             devices = [dict(r) for r in db.execute("SELECT * FROM devices WHERE enabled=1").fetchall()]
             if self.bark():
                 # Bark 没有注册流程：第一次发现配置时记下时间，之前的旧消息不补推。
@@ -158,12 +178,9 @@ class PushNotifications:
                 if not since:
                     db.execute("INSERT INTO meta VALUES ('bark_registered',?)", (str(self.clock()),))
                     since = (str(self.clock()),)
-                devices.append({"id": "bark", "registered": float(since[0])})
+                devices.append({"id": "bark", "registered": self._number(since[0])})
             with self.conversation.db() as chat:
-                messages = [
-                    dict(r)
-                    for r in chat.execute("SELECT id,request_id,revision,created_at FROM messages WHERE revision>? AND role='assistant' AND status='completed' ORDER BY revision LIMIT 100", (cursor,))
-                ]
+                messages = [dict(r) for r in chat.execute("SELECT id,request_id,revision,created_at FROM messages WHERE revision>? AND role='assistant' AND status='completed' ORDER BY revision LIMIT 100", (cursor,))]
             for message in messages:
                 for device in devices:
                     if message["created_at"] < device["registered"]:
@@ -182,7 +199,7 @@ class PushNotifications:
             return self._jwt
         import jwt  # type: ignore[import-not-found]
 
-        self._jwt = jwt.encode({"iss": cfg["team_id"], "iat": int(self.clock())}, Path(cfg["key_path"]).expanduser().read_bytes(), algorithm="ES256", headers={"kid": cfg["key_id"]})
+        self._jwt = jwt.encode({"iss": cfg["team_id"], "iat": self._whole(self.clock())}, Path(cfg["key_path"]).expanduser().read_bytes(), algorithm="ES256", headers={"kid": cfg["key_id"]})
         self._jwt_at = self.clock()
         return self._jwt
 
@@ -193,9 +210,11 @@ class PushNotifications:
         if str(row["message_id"]).startswith("approval:"):
             key = str(row["message_id"])[len("approval:") :]
             with self.db() as db:
-                item = db.execute("SELECT title,sid FROM approvals WHERE id=?", (key,)).fetchone()
-            url = "com-eddie://approval?id=" + key + ("&sid=" + str(item["sid"]) if item and item["sid"] else "")
-            payload = {"device_key": cfg["device_key"], "title": "Com · 需要你决定", "body": (item["title"] if item else "有一步在等你决定")[:120], "group": "com", "url": url, "isArchive": "1"}
+                item = db.execute("SELECT title,sid,actionable FROM approvals WHERE id=?", (key,)).fetchone()
+            title = item["title"] if item is not None else "有一步在等你决定"
+            sid = item["sid"] if item is not None else ""
+            url = "com-eddie://approval?id=" + key + ("&sid=" + str(sid) if sid else "")
+            payload = {"device_key": cfg["device_key"], "title": "Com · 需要你决定", "body": title[:120], "group": "com", "url": url, "isArchive": "1"}
             async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
                 response = await client.post(cfg["server"] + "/push", json=payload)
             reason = ""
@@ -236,16 +255,18 @@ class PushNotifications:
         if mid.startswith("approval:"):
             key = mid[len("approval:") :]
             with self.db() as db:
-                item = db.execute("SELECT title,sid FROM approvals WHERE id=?", (key,)).fetchone()
+                item = db.execute("SELECT title,sid,actionable FROM approvals WHERE id=?", (key,)).fetchone()
+            title = item["title"] if item is not None else "有一步在等你决定"
+            sid = item["sid"] if item is not None else ""
             payload = {
                 "aps": {
-                    "alert": {"title": "Com · 需要你决定", "body": (item["title"] if item else "有一步在等你决定")[:140]},
+                    "alert": {"title": "Com · 需要你决定", "body": title[:140]},
                     "sound": "default",
                     "thread-id": "com-approval",
-                    "category": "COM_APPROVAL",
+                    **({"category": "COM_APPROVAL"} if item is not None and item["actionable"] else {}),
                 },
                 "comApprovalID": key,
-                "comSessionID": item["sid"] if item else "",
+                "comSessionID": sid,
             }
         else:
             payload = {"aps": {"alert": {"title": "Com 有新消息", "body": "已为你整理好，点开查看。"}, "sound": "default", "thread-id": "com-personal"}, "comMessageID": row["message_id"]}
@@ -256,7 +277,7 @@ class PushNotifications:
             "apns-priority": "10",
             "apns-id": row["id"],
             "apns-collapse-id": hashlib.sha256(mid.encode()).hexdigest(),
-            "apns-expiration": str(int(row["created"] + 86400)),
+            "apns-expiration": str(self._whole(row["created"] + 86400)),
         }
         async with httpx.AsyncClient(http2=True, timeout=20, trust_env=False) as client:
             response = await client.post("https://" + host + "/3/device/" + device["token"], json=payload, headers=headers)

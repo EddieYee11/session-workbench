@@ -19,6 +19,10 @@ struct WorkChat: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Space.xl) {
                 WorkChatHeader()
+                if let line = usageLine {
+                    Text(line).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                        .accessibilityIdentifier("work-usage")
+                }
                 // 10-18 会话↔航程互通：这段是某段航程的执行会话，一键回到航程看步骤和结论
                 if let owner = (model.datasets["/sessions"]?["sessions"].array ?? []).first(where: { $0.id == work.sessionID }), !owner["case_id"].string.isEmpty {
                     Button { model.openThreadNode(.object(["kind": .string("case"), "id": owner["case_id"]])) } label: {
@@ -74,6 +78,23 @@ struct WorkChat: View {
         }
         .refreshable { await work.refresh(model) }
         .accessibilityIdentifier("work-chat")
+    }
+    /// 最近一轮的用量：只在服务端真的上报时显示，不显示猜测值。
+    private var usageLine: String? {
+        let u = work.usage
+        guard !u.isNull else { return nil }
+        var parts: [String] = []
+        let used = u["context_used"].int, max = u["context_max"].int
+        if used > 0 && max > 0 {
+            parts.append("上下文 \(Int(Double(used) / Double(max) * 100))%")
+        }
+        let total = u["total"].int, input = u["input"].int, output = u["output"].int
+        if total > 0 {
+            parts.append("本轮 \(total) tok")
+        } else if input > 0 || output > 0 {
+            parts.append("入 \(input) / 出 \(output)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
     /// 在跑但还没有步骤行在动：说一句它在干嘛（派出中 / 在想 / 在写回复）。
     private func liveLine(_ rows: [WorkSessionModel.Row]) -> String? {

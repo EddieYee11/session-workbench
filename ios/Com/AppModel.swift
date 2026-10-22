@@ -69,6 +69,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var workJumpMessage: String?
     /// 别处（任务详情、项目看板、派活页）要打开的会话：RootView 接住，切到工作页原地打开。
     var selectedSession: JSON?
+    /// 正在用语音回答的审批：{id, params}，由审批卡上的「用语音说」设置。
+    var pendingApproval: JSON?
     /// 审批推送的深链：直接打开对应的 Agent 会话，别让用户再自己找。
     func openApproval(_ url: URL) {
         let sid = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "sid" })?.value ?? ""
@@ -474,6 +476,19 @@ enum SectionTab: String, CaseIterable, Identifiable {
             if entry.path.hasPrefix("/sessions") { _ = await deliverWork(entry.id) } else { await deliver(entry.id) }
         }
     }
+    /// 语音回答审批：只接受明确的 accept/decline；复杂问题与密码仍回卡片。
+    func answerApproval(_ approval: JSON, decision: String) async {
+        guard let api else { banner = "请先连接 Mac mini"; return }
+        do {
+            _ = try await api.request("/approvals/" + approval.id.pathEncoded, body: .object(["decision": .string(decision)]))
+            pendingApproval = nil
+            banner = decision == "accept" ? "已批准这次操作。" : "已拒绝这次操作。"
+            await work.refresh(self)
+        } catch {
+            pendingApproval = nil
+            banner = "审批没有送达：" + error.localizedDescription
+        }
+    }
     func interrupt() async {
         guard let api, stage.state.isBusy else { return }
         do {
@@ -620,6 +635,16 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if VoiceCommands.isStop(voice.transcript) {
             voice.cancel(); showQuickVoice = false
             banner = "已按语音指令停止。"
+            return
+        }
+        // 审批模式：这句话是批准/拒绝，不再当作聊天内容发出去。
+        if let approval = pendingApproval, let decision = VoiceCommands.decision(voice.transcript) {
+            await answerApproval(approval, decision: decision)
+            voice.cancel(); showQuickVoice = false
+            return
+        }
+        if pendingApproval != nil {
+            banner = "没听清。请说「批准」或「拒绝」，复杂问题回卡片回答。"
             return
         }
         // Show the glyph reveal before entering the same durable text-message outbox.

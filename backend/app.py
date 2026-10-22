@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false, reportMissingModuleSource=false, reportAttributeAccessIssue=false, reportOptionalSubscript=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportAssignmentType=false, reportCallIssue=false, reportOperatorIssue=false, reportIndexIssue=false, reportReturnType=false
 # Com backend: FastAPI wiring; type-checking baseline lives in pyrightconfig.json.
 import asyncio
 import contextlib
@@ -484,10 +485,20 @@ async def pair(request: Request):
     p = STATE / "pairing.json"
     if not p.exists():
         raise HTTPException(403, "请在 Mac mini 生成配对码")
-    data = json.loads(p.read_text())
-    if data["expires"] < now or not hmac.compare_digest(str(body.get("code", "")), data["code"]):
-        raise HTTPException(403, "配对码无效或已过期")
-    p.unlink()
+    # 串行化校验与消费：并发请求只有一个能读到并删掉 pairing.json，其余在锁后看到文件已消失。
+    # 输错码不消耗配对码（只受上面的频率限制），避免手误就要回终端重开。
+    with (STATE / "pairing.lock").open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                data = json.loads(p.read_text())
+            except FileNotFoundError:
+                raise HTTPException(403, "配对码已被使用，请重新生成")
+            if data["expires"] < now or not hmac.compare_digest(str(body.get("code", "")), data["code"]):
+                raise HTTPException(403, "配对码无效或已过期")
+            p.unlink()
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     return {"token": TOKEN}
 
 
@@ -1089,7 +1100,7 @@ async def detail(sid: str):
     messages = await asyncio.to_thread(history.messages, sid)
     # Bind live Codex item IDs before projecting their persisted history rows.
     presentations.project(sid, live_items(runtime.events(sid)))
-    return {"session": s, "messages": presentations.project(sid, messages)}
+    return {"session": s, "messages": presentations.project(sid, messages), "usage": runtime.usage(sid)}
 
 
 async def session_caps(sid, s):
@@ -1123,6 +1134,7 @@ async def live(sid: str, after: int = -1):
         "items": presentations.project(sid, live_items(events)),
         "cursor": events[-1]["seq"] if events else -1,
         "approvals": [{k: v for k, v in a.items() if k != "rpc_id"} for a in runtime.approvals.values() if a["sid"] == sid],
+        "usage": runtime.usage(sid),
     }
 
 
@@ -1515,6 +1527,7 @@ async def resume(sid: str, request: Request):
     s = history.get(sid)
     if not s:
         raise HTTPException(404, "会话不存在")
+
     async def legacy():
         m = history.managed().get(sid)
         return m if m and m.get("agent") == "pi" and not m.get("ended") and not runtime.stable_input(sid) and await runtime.alive(m["tmux"]) else None

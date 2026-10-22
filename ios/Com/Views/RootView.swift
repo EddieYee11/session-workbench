@@ -251,7 +251,8 @@ private struct RootEvents: ViewModifier {
                 model.work.open(.object(["id": .string(sid), "agent": .string("codex")]))
                 Task { await model.work.refresh(model) }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .comApprovalResolved)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .comApprovalResolved)) { event in
+                if let message = event.userInfo?["message"] as? String { model.banner = message }
                 Task { await model.work.refresh(model) }
             }
             .alert("Com", isPresented: Binding(get: { !model.banner.isEmpty }, set: { if !$0 { model.banner = "" } })) {

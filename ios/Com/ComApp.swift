@@ -83,8 +83,7 @@ struct ComShortcuts: AppShortcutsProvider {
         for approval in approvals {
             let id = approval.id
             guard !id.isEmpty, !seen.contains(id) else { continue }
-            let params = approval["params"]
-            let reason = params["reason"].string.isEmpty ? params["command"].string : params["reason"].string
+            let reason = approval["params"]["reason"].string
             seen.append(id)
             let content = UNMutableNotificationContent()
             content.title = "Com · 需要你决定"
@@ -103,14 +102,13 @@ struct ComShortcuts: AppShortcutsProvider {
         do {
             let api = try APIClient(base: base, token: token)
             _ = try await api.request("/approvals/" + id.pathEncoded, body: .object(["decision": .string(decision)]))
+            let message = decision == "accept" ? "已批准这次操作。" : "已拒绝这次操作。"
             await MainActor.run {
-                UserDefaults.standard.set("已在通知里" + (decision == "accept" ? "批准" : "拒绝"), forKey: "approvalActionStatus")
-                NotificationCenter.default.post(name: .comApprovalResolved, object: id)
+                NotificationCenter.default.post(name: .comApprovalResolved, object: id, userInfo: ["message": message])
             }
         } catch {
             await MainActor.run {
-                UserDefaults.standard.set("审批没有送达：" + error.localizedDescription, forKey: "approvalActionStatus")
-                NotificationCenter.default.post(name: .comApprovalResolved, object: id)
+                NotificationCenter.default.post(name: .comApprovalResolved, object: id, userInfo: ["message": "审批没有送达：" + error.localizedDescription])
             }
         }
     }

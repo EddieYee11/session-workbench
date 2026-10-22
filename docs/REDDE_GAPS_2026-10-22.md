@@ -65,7 +65,25 @@
 - 后端 `/status` 扩展：`running`、`approvals`、`uptime`、`disk_free_gb`、`agents`（pi/codex 是否在 PATH）、`push` 通道；原字段保留。
 - 设置 → 服务器：主机、已索引/运行中、等待审批、可用 Agent、磁盘余量、通知通道、运行时长、刷新按钮。
 
-### 7. 工程基线
+### 7. 语音回答审批（P1）
+
+- `VoiceCommands.decision` 只认整句的「批准/同意/可以/拒绝/不行…」；`VoiceCommands.canAnswer` 只在「单命令审批 + availableDecisions 同时含 accept/decline」时开放。
+- `WorkApprovalCard` 增加「用语音说」，把审批放进 `AppModel.pendingApproval` 后打开语音小窗；转写命中后直接 `POST /approvals/{id}`，不进入聊天队列。
+- 多问题、密码、密钥和带选项的澄清不进语音路径。
+
+### 8. work 会话用量（P1）
+
+- `Runtime._usage` 归一 Pi `message_end.message.usage` 与 Codex `turn/completed` 的 usage；`Runtime.usage(sid)` 按事件文件 mtime/size 缓存，缺失或畸形返回 `null`，不猜。
+- `/sessions/{sid}/live` 与 `/sessions/{sid}` 返回 `usage`；WorkChat 在标题下显示「上下文 N% · 本轮 N tok」。
+- 新增 `tests/test_usage.py`（3 条）。
+
+### 9. 审查修复
+
+- `/pair` 的校验与消费放进 `flock`，并发请求只有一个能消费；输错码不消耗配对码。
+- 通知审批失败/成功回到 App 时用 banner 显示；`reason` 为空不再回退到 `command`，通知库只存通用摘要。
+- 只有 `availableDecisions` 同时含 accept/decline 的审批才标记 `actionable`，APNs 只给这类加 `COM_APPROVAL` 分类；其余点开处理。
+
+### 10. 工程基线
 
 - `ruff.toml`：把仓库既有的紧凑风格（长行、单行 import、分号）固化成配置。
 - `pyrightconfig.json`：指向 `.venv` 与 `backend/`；仓库此前没有类型检查基线。
@@ -78,7 +96,7 @@
 
 ```sh
 cd backend && ../.venv/bin/python -m pytest tests -q
-# 671 passed
+# 675 passed
 
 cd ios
 xcodegen generate
@@ -106,9 +124,8 @@ xcodebuild -project Com.xcodeproj -scheme Com \
 | 项 | 状态 | 原因 / 下一步 |
 | --- | --- | --- |
 | 多服务器 / 多 profile | 未做 | 当前 `base` + 单 token + 单套缓存是全局约定；改造成 server 列表要同时动 `SecureVault`、所有 `datasets` key、SSE 重连与切换时序。建议单独一版，以「先保存会话、再切、丢弃迟到响应」为验收 |
-| 语音回答审批 | 未做 | 可操作通知已覆盖「一手批准」；语音批准需要额外词表、二次确认与旁人在场风险提示，建议在通知稳定后单独做 |
 | 口述前缀切模型 | 未做 | 主对话没有「会话模型」概念；工作会话的模型选择在输入框里已有。等主对话支持 per-conversation 模型时再做 |
-| 上下文占用 / tok/s | 未做 | 主对话的 Hermes 流目前没有稳定的 usage 字段；Pi/Codex 侧要按 runtime 事件解析后再统一呈现，避免显示猜测值 |
+| 主对话上下文占用 | 未做 | 主对话的 Hermes 流没有稳定 usage；work 会话（Pi/Codex）已显示，主对话等上游字段稳定后再接 |
 | 推送中继自建 | 未做 | 现有 APNs/Bark + 后台刷新已覆盖；自建中继属于基础设施，不是本轮收益点 |
 
 ## 五、给下一次的入口

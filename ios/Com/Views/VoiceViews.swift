@@ -61,7 +61,15 @@ struct VoiceSessionPanel: View {
     @Environment(AppModel.self) private var model
     var quick = false
     private var title: String {
-        switch model.voice.phase {
+        if model.pendingApproval != nil {
+            switch model.voice.phase {
+            case .recording: return "说「批准」，或「拒绝」。"
+            case .transcribing: return "正在听你的决定…"
+            case .ready: return "听到了。"
+            default: return "用一句话决定这次操作。"
+            }
+        }
+        return switch model.voice.phase {
         case .recording: "说吧，我在听。"
         case .transcribing: "正在整理你的话…"
         case .ready: "听到了。"

@@ -100,3 +100,15 @@ def test_approval_becomes_actionable_notification_once(tmp_path):
     asyncio.run(p.process(send))
     assert calls[0]['message_id']=='approval:ap-1'
     assert p.status()['outbox']=={'accepted':1}
+
+
+def test_approval_is_only_actionable_when_both_choices_exist(tmp_path):
+    p, c, _ = setup(tmp_path)
+    base = {'sid': 'codex:x', 'method': 'item/commandExecution/requestApproval', 'params': {'reason': '要删除两个文件'}}
+    p.enqueue_approvals([{**base, 'id': 'ap-2', 'params': {**base['params'], 'availableDecisions': ['accept', 'decline']}}])
+    p.enqueue_approvals([{**base, 'id': 'ap-3', 'params': {**base['params'], 'availableDecisions': ['accept', 'cancel']}}])
+    with p.db() as db:
+        rows = {r['id']: r['actionable'] for r in db.execute('SELECT id,actionable FROM approvals')}
+        titles = [r['title'] for r in db.execute('SELECT title FROM approvals')]
+    assert rows == {'ap-2': 1, 'ap-3': 0}
+    assert all('rm -rf' not in title for title in titles)

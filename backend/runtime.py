@@ -1,7 +1,8 @@
+# ruff: noqa: I001
 import asyncio, base64, json, os, shlex, time, uuid, contextlib, fcntl
 from pathlib import Path
 import websockets
-from history import text_content,codex_item
+from history import codex_item
 from operation_policy import effective_sandbox
 
 class Runtime:
@@ -11,7 +12,7 @@ class Runtime:
         self.codex=os.environ.get('WORKBENCH_CODEX','/usr/local/bin/codex')
         self.pi=os.environ.get('WORKBENCH_PI','/usr/local/bin/pi')
         self.sock='session-workbench';self.rpc=None;self.pending={};self.counter=0;self.connect_lock=asyncio.Lock();self.action_lock=asyncio.Lock()
-        self.live={};self.approvals={};self.reader_task=None;self.rpc_errors=''
+        self.live={};self.approvals={};self.reader_task=None;self.rpc_errors='';self.usage_cache={}
         self.model_cache={}
         from worker_runtime import WorkerRuntime
         self.workers=WorkerRuntime(self)
@@ -131,7 +132,9 @@ class Runtime:
                     item=p.get('item',{});e=codex_item(item,item.get('id',''),time.time())
                     if e:self.emit(sid,dict(e,kind='item',state='running' if method.endswith('started') else 'completed',turn_id=p.get('turnId')))
                 elif method=='turn/started':self.emit(sid,{'kind':'status','status':'running','turn_id':p.get('turn',{}).get('id')})
-                elif method=='turn/completed':self.emit(sid,{'kind':'status','status':{'completed':'completed','interrupted':'interrupted'}.get(p.get('turn',{}).get('status'),'failed'),'turn_id':p.get('turn',{}).get('id'),'error':p.get('turn',{}).get('error')})
+                elif method=='turn/completed':
+                    u=self._usage(p.get('turn',{}).get('usage') or p.get('usage'))
+                    self.emit(sid,{'kind':'status','status':{'completed':'completed','interrupted':'interrupted'}.get(p.get('turn',{}).get('status'),'failed'),'turn_id':p.get('turn',{}).get('id'),'error':p.get('turn',{}).get('error'),'usage':u})
                 elif method=='serverRequest/resolved':self.approvals.pop(str(p.get('requestId')),None)
         except Exception as e:self.rpc_errors=type(e).__name__
         finally:
@@ -429,6 +432,40 @@ class Runtime:
                 try:e=json.loads(line);e['seq']=i;out.append(e)
                 except json.JSONDecodeError:pass
         return out
+    @staticmethod
+    def _usage(g):
+        """把 Pi / Codex 各自的 usage 字段归一；没有可识别字段就返回 None，不猜。"""
+        if not isinstance(g,dict):return None
+        def n(*keys):
+            for k in keys:
+                v=g.get(k)
+                if isinstance(v,(int,float)) and not isinstance(v,bool):return int(v)
+            return None
+        i=n('input','input_tokens','prompt_tokens');o=n('output','output_tokens','completion_tokens')
+        if i is None and o is None:return None
+        total=n('totalTokens','total_tokens','total')
+        if total is None:total=(i or 0)+(o or 0)
+        return {'input':i,'output':o,'total':total,
+                'context_used':n('context_used','contextUsed'),'context_max':n('context_max','contextMax','context_window')}
+    def usage(self,sid):
+        m=self.h.managed().get(sid)
+        p=Path(m['pi_file']) if m and m.get('agent')=='pi' and not m.get('transport') and m.get('pi_file') else self.event_file(sid)
+        if not p.exists():return None
+        key=(p.stat().st_mtime_ns,p.stat().st_size)
+        cached=self.usage_cache.get(sid)
+        if cached and cached[0]==key:return cached[1]
+        found=None
+        with p.open() as f:
+            for line in f:
+                try:e=json.loads(line)
+                except Exception:continue
+                if e.get('type')=='message_end':
+                    msg=(e.get('data') or {}).get('message') or {}
+                    if msg.get('role')=='assistant':found=self._usage(msg.get('usage')) or found
+                elif e.get('kind')=='status' and isinstance(e.get('usage'),dict):
+                    found=self._usage(e['usage']) or found
+        self.usage_cache[sid]=(key,found);return found
+
     async def status(self,sid):
         m=self.h.managed().get(sid)
         if m and m.get('transport'):return await self.workers.status(sid)

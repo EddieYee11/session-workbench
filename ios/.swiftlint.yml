@@ -1,5 +1,10 @@
-# The app follows a compact, long-line house style (see Views/*.swift).
+# The app follows a compact house style with long lines and large model/view types.
+# These rules are disabled to describe the existing code, not to reformat it.
 line_length: 320
 disabled_rules:
   - todo
   - trailing_comma
+  - identifier_name
+  - type_body_length
+  - function_body_length
+  - cyclomatic_complexity

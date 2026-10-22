@@ -70,6 +70,8 @@ import ComCore
     var dispatchMode: String { mode == .snapshot ? "forked" : canInput ? "input" : metadata["capabilities"]["dispatch_mode"].string }
     var pinned: Bool { metadata["pinned"].bool }
     var approvals: [JSON] { live["approvals"].array }
+    /// 最近一轮的 token 用量；老会话或未上报时为 null。
+    var usage: JSON { live["usage"] ?? .null }
     var folder: String { URL(fileURLWithPath: mode == .home ? directory : metadata["cwd"].string).lastPathComponent }
     /// 轮询的钥匙：换会话、拿到 sid 时重开。
     var pollKey: String { "\(mode)-\(sessionID)-\(snapshot.id)-\(generation)" }

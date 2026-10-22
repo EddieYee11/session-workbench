@@ -40,6 +40,12 @@ struct WorkApprovalCard: View {
                     Button("提交这些回答") { submit(["answers": .object(answers.mapValues(JSON.string))]) }.buttonStyle(.primaryFull).disabled(questions.contains { (answers[$0.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } || submitting)
                 } else {
                     let decisions = params["availableDecisions"].array.isEmpty ? [JSON.string("accept"), .string("decline"), .string("cancel")] : params["availableDecisions"].array
+                    if VoiceCommands.canAnswer(params) {
+                        Button("用语音说「批准」或「拒绝」") {
+                            model.pendingApproval = approval
+                            model.openVoice(quick: true)
+                        }.buttonStyle(.quiet).frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     VStack(alignment: .leading, spacing: Space.sm) {
                         ForEach(Array(decisions.enumerated()), id: \.offset) { _, choice in
                             let label = decisionLabel(choice)
