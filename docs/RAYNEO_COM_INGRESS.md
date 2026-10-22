@@ -13,6 +13,8 @@
 
 Turbo IO → 模型与对话 →「Com! · 配对与请求回执」。填写服务地址及一次性配对码，点击配对。默认地址为 `https://pi.eddiegao.work:8443/sessions/rayneo/v1`。
 
+同一入口两端对等：Android 由 `ComGlassesUI.java`/`ComNlpPolicy.java` 实现，iOS 由 Turbo-IO `official-addon` 的 `ComIngress.m`/`ComIngressUI.m` 实现（入口同为「模型与对话 → Com! · 配对与请求回执」）。两端都提交 `com-personal`、`stream=true` 与稳定 `request_id`，都以 `X-Com-Request-Id` 保持一致，都只用最后一条用户话语进入主对话，配对令牌都存本机钥匙串/Keystore。
+
 配对成功后启用自有模型 `com-personal`。眼镜令牌使用 Android Keystore 加密保存，APK 不含令牌。03版打开配对页时会关闭原模型设置弹窗，避免旧页面覆盖新配对设置。
 
 “检查真实服务连接”请求实际服务。“发送新消息”进入真实 Com! 主对话；每次点击产生新请求。“查询上次回执”只读；“重连上次请求”沿用原文字及请求标识，不重复交办。这些手机按钮用于诊断，不能代替眼镜实际回显验收。

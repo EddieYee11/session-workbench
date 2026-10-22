@@ -583,6 +583,14 @@ Com 里的“最高 Agent 操作权限”作用于 mini 执行器，不能替代
 
 当前没有多用户账号、团队 RBAC、云端租户管理或应用商店式服务发现。
 
+### 10.6 微信来源（2026-10-13 新增）
+
+微信是本工作台里唯一**数据不在 mini 上**的来源：聊天库只在 MBP 的 `~/wechat-decrypt/`，且不在 Syncthing 范围内。因此 `personal_hub` 的 `sync_source('wechat')` **不抓取**，只按已有摘要上报「通没通、多久没更新」；数据由 MBP 的 launchd `com.eddie.wechat-digest` 每小时跑 `backend/probes/wechat_digest.py --push-mini`，经既有 SSH 通道推给 mini 的同脚本 `--ingest`，写进 `personal_hub` 并同时更新连接器状态行（所以 App 里不必手点「检查连接」也看得到新鲜度）。
+
+收录口径：私聊全收 + 群里 @我 / @所有人 + 关键词命中；**不过滤内容**。采集端只做确定性筛选，不做 LLM 总结——总结由本来就每小时跑的 `next_steps.py` 完成，于是「下一步」tab 的建议带微信原文依据，「今天」tab 多一张 `TodayView` 的微信摘要卡（`/personal/today` 的 `wechat` 段）点开可看原文。
+
+不要把这条写成「Com 能收发微信」：当前是**只读汇总**，一条消息都发不出去，图片和语音也读不到正文（缺 `image_aes_key`，见知识库《微信数据 - 本地解密与 MCP 读取》）。MBP 睡眠期间不采集，醒来按消息时间戳窗口自动补上断档。
+
 ## 11. 快捷语音与专门记账小窗
 
 主要实现：`QuickVoiceActivity.kt`、`QuickVoiceDelivery.kt`、`ExpenseParse.kt`、`UnifiedVoice`、`voice.py`。
