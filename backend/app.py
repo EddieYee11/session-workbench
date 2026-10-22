@@ -1,3 +1,4 @@
+# Com backend: FastAPI wiring; type-checking baseline lives in pyrightconfig.json.
 import asyncio
 import contextlib
 import fcntl
@@ -7,6 +8,7 @@ import json
 import os
 import pty
 import secrets
+import shutil
 import signal
 import struct
 import termios
@@ -16,15 +18,14 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, StreamingResponse
-
 from agent_tools import AgentTools
 from artifacts import ArtifactAccess
 from attachments import AttachmentStore, attachment_router
 from background_events import BackgroundEvents
 from capabilities import CapabilityRegistry
 from conversation import PersonalConversation
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, StreamingResponse
 from goal_proposals import GoalProposals
 from goals import GoalEvents
 from heartbeat import Heartbeat
@@ -63,6 +64,7 @@ if not TOKEN_FILE.exists():
     TOKEN_FILE.write_text(secrets.token_urlsafe(40))
     TOKEN_FILE.chmod(0o600)
 TOKEN = TOKEN_FILE.read_text().strip()
+STARTED = time.time()
 history = History(HOME, STATE)
 runtime = Runtime(history, TOKEN)
 presentations = MessagePresentations(STATE)
@@ -76,11 +78,7 @@ if MAIN_AGENT not in ("pi", "hermes"):
     raise ValueError("Invalid main agent config")
 conversation = PersonalConversation(
     STATE,
-    PiMainClient(
-        STATE, HOME / "AI_Work_System", tools=os.environ.get("COM_PI_SAFE_PROBE") != "1"
-    )
-    if MAIN_AGENT == "pi"
-    else HermesRuntime(STATE),
+    PiMainClient(STATE, HOME / "AI_Work_System", tools=os.environ.get("COM_PI_SAFE_PROBE") != "1") if MAIN_AGENT == "pi" else HermesRuntime(STATE),
 )
 legacy_voice = quick_voice
 quick_voice = UnifiedVoice(conversation, legacy_voice)
@@ -142,18 +140,16 @@ from project_board import collect as collect_project_sessions
 
 project_board = ProjectBoard(STATE)
 agency.project_board = project_board
-from next_steps import INSTRUCTIONS as NEXT_INSTRUCTIONS
-from news import News
 from health_insight import HealthInsight
+from news import News
+from next_steps import INSTRUCTIONS as NEXT_INSTRUCTIONS
 from next_steps import NextSteps
 
 
 async def next_model(digest):
     from hermes_review import review_json
 
-    return await review_json(
-        STATE, "next-" + str(time.time_ns()), NEXT_INSTRUCTIONS, digest, timeout=150
-    )
+    return await review_json(STATE, "next-" + str(time.time_ns()), NEXT_INSTRUCTIONS, digest, timeout=150)
 
 
 next_steps = NextSteps(
@@ -206,16 +202,10 @@ rate = {}
 def reference_message(source_session_id, message_id):
     if source_session_id == "personal-main":
         with conversation.db() as db:
-            row = db.execute(
-                "SELECT id,role,text FROM messages WHERE id=?", (message_id,)
-            ).fetchone()
+            row = db.execute("SELECT id,role,text FROM messages WHERE id=?", (message_id,)).fetchone()
             return dict(row) if row else None
-    stored = presentations.project(
-        source_session_id, history.messages(source_session_id)
-    )
-    actual_live = presentations.project(
-        source_session_id, live_items(runtime.events(source_session_id))
-    )
+    stored = presentations.project(source_session_id, history.messages(source_session_id))
+    actual_live = presentations.project(source_session_id, live_items(runtime.events(source_session_id)))
     return next((m for m in actual_live + stored if m.get("id") == message_id), None)
 
 
@@ -231,10 +221,7 @@ async def lifespan(app):
     async def scan_loop():
         while True:
             await asyncio.to_thread(history.scan)
-            if any(
-                m["agent"] == "codex" and not m.get("ended")
-                for m in history.managed().values()
-            ):
+            if any(m["agent"] == "codex" and not m.get("ended") for m in history.managed().values()):
                 with contextlib.suppress(Exception):
                     await runtime.ensure_rpc()
             await asyncio.sleep(4)
@@ -265,6 +252,7 @@ async def lifespan(app):
     async def notification_loop():
         while True:
             with contextlib.suppress(Exception):
+                notifications.enqueue_approvals(list(runtime.approvals.values()))
                 await notifications.process()
             await asyncio.sleep(5)
 
@@ -273,9 +261,7 @@ async def lifespan(app):
     async def project_loop():
         while True:
             with contextlib.suppress(Exception):
-                snapshot = await asyncio.to_thread(
-                    collect_project_sessions, HOME, STATE, "mini", history
-                )
+                snapshot = await asyncio.to_thread(collect_project_sessions, HOME, STATE, "mini", history)
                 project_board.ingest(snapshot)
                 if not proactive.settings()["paused"]:
                     # 10-21：看板的「下一步」多是后台自运维会话（巡检、监控、编程会话），
@@ -296,9 +282,7 @@ async def lifespan(app):
     ledger_loop = asyncio.create_task(task_loop())
     from service_logs import DailyServiceLogs
 
-    service_logs = (
-        DailyServiceLogs(STATE) if os.environ.get("COM_SERVICE_LOGS") == "1" else None
-    )
+    service_logs = DailyServiceLogs(STATE) if os.environ.get("COM_SERVICE_LOGS") == "1" else None
 
     async def heartbeat_loop():
         while True:
@@ -356,9 +340,7 @@ async def lifespan(app):
             await asyncio.sleep(60)
 
     hub_task = asyncio.create_task(hub_loop())
-    agent_task = asyncio.create_task(
-        agent_track_loop()
-    )  # 轨道 agent：滚动摘要 + 主动提醒，定义见文件末尾
+    agent_task = asyncio.create_task(agent_track_loop())  # 轨道 agent：滚动摘要 + 主动提醒，定义见文件末尾
     quick_voice.start()
     conversation.start()
     inspector.start()
@@ -410,11 +392,7 @@ app.include_router(rayneo.router)
 async def auth(request, call_next):
     if request.url.path not in ("/health", "/pair", "/rayneo/v1/pair"):
         supplied = request.headers.get("authorization", "")
-        valid = (
-            rayneo.authorized(supplied)
-            if request.url.path.startswith("/rayneo/")
-            else hmac.compare_digest(supplied, "Bearer " + TOKEN)
-        )
+        valid = rayneo.authorized(supplied) if request.url.path.startswith("/rayneo/") else hmac.compare_digest(supplied, "Bearer " + TOKEN)
         if not valid:
             return JSONResponse({"detail": "连接凭据无效，请重新配对"}, 401)
     response = await call_next(request)
@@ -439,18 +417,12 @@ try:
         timeout=2,
     ).strip()
 except Exception:
-    BUILD_COMMIT = (
-        json.loads((STATE / "service-build.json").read_text()).get("commit", "unknown")
-        if (STATE / "service-build.json").exists()
-        else "unknown"
-    )
+    BUILD_COMMIT = json.loads((STATE / "service-build.json").read_text()).get("commit", "unknown") if (STATE / "service-build.json").exists() else "unknown"
 
 
 def deployed_build_commit():
     try:
-        return json.loads((STATE / "service-build.json").read_text()).get(
-            "commit", BUILD_COMMIT
-        )
+        return json.loads((STATE / "service-build.json").read_text()).get("commit", BUILD_COMMIT)
     except (OSError, ValueError):
         return BUILD_COMMIT
 
@@ -513,21 +485,37 @@ async def pair(request: Request):
     if not p.exists():
         raise HTTPException(403, "请在 Mac mini 生成配对码")
     data = json.loads(p.read_text())
-    if data["expires"] < now or not hmac.compare_digest(
-        str(body.get("code", "")), data["code"]
-    ):
+    if data["expires"] < now or not hmac.compare_digest(str(body.get("code", "")), data["code"]):
         raise HTTPException(403, "配对码无效或已过期")
     p.unlink()
     return {"token": TOKEN}
 
 
+@app.post("/pair/code")
+async def pair_code():
+    """已配对设备为另一台设备生成一次性码；二维码由客户端用 base + code 拼。"""
+    code = "-".join(secrets.token_hex(2) for _ in range(3))
+    path = STATE / "pairing.json"
+    path.write_text(json.dumps({"code": code, "expires": time.time() + 600}))
+    path.chmod(0o600)
+    return {"code": code, "expires_in": 600}
+
+
 @app.get("/status")
 async def status():
+    managed = history.managed()
+    disk = shutil.disk_usage(str(HOME))
     return {
         "index": history.progress,
-        "managed": len(history.managed()),
+        "managed": len(managed),
+        "running": sum(1 for m in managed.values() if not m.get("ended")),
+        "approvals": len(runtime.approvals),
         "host": "Mac mini",
         "default_cwd": str(HOME / "AI_Work_System"),
+        "uptime": int(time.time() - STARTED),
+        "disk_free_gb": round(disk.free / 1e9, 1),
+        "agents": {"pi": bool(shutil.which("pi")), "codex": bool(shutil.which("codex"))},
+        "push": notifications.status()["delivery"],
     }
 
 
@@ -561,24 +549,14 @@ async def conversation_search(q: str = "", date: str = ""):
 
 @app.get("/personal/search")
 async def personal_search(q: str = "", date: str = ""):
-    messages = [
-        {**item, "kind": "message"} for item in conversation.search(q, date)["items"]
-    ]
+    messages = [{**item, "kind": "message"} for item in conversation.search(q, date)["items"]]
     start, end = 0, float("inf")
     if date:
-        start = (
-            datetime.strptime(date, "%Y-%m-%d")
-            .replace(tzinfo=ZoneInfo("Asia/Shanghai"))
-            .timestamp()
-        )
+        start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
         end = start + 86400
 
     def match(title, at):
-        return (
-            (bool(q.strip()) or bool(date))
-            and q.strip().lower() in title.lower()
-            and start <= at < end
-        )
+        return (bool(q.strip()) or bool(date)) and q.strip().lower() in title.lower() and start <= at < end
 
     tasks = [
         {
@@ -591,11 +569,7 @@ async def personal_search(q: str = "", date: str = ""):
         for t in task_store.list()
         if match(t.get("title", ""), t.get("created_at", 0))
     ]
-    artifacts = [
-        {**a, "kind": "artifact", "source": "成果", "text": a["name"]}
-        for a in artifact_access.index()
-        if match(a["name"], a["created_at"])
-    ]
+    artifacts = [{**a, "kind": "artifact", "source": "成果", "text": a["name"]} for a in artifact_access.index() if match(a["name"], a["created_at"])]
     return {
         "items": sorted(
             messages + tasks[:20] + artifacts[:20],
@@ -634,8 +608,7 @@ async def artifact_file(artifact_id: str):
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
             "Content-Length": str(size),
-            "Content-Disposition": "attachment; filename*=UTF-8''"
-            + quote(record["name"]),
+            "Content-Disposition": "attachment; filename*=UTF-8''" + quote(record["name"]),
         },
     )
 
@@ -665,9 +638,7 @@ async def personal_conversation_stream(request: Request):
                 )
                 yield f"id: {frame['id']}\nevent: {frame['event']}\ndata: {payload}\n\n"
                 for item in semantic:
-                    payload = json.dumps(
-                        item["data"], ensure_ascii=False, separators=(",", ":")
-                    )
+                    payload = json.dumps(item["data"], ensure_ascii=False, separators=(",", ":"))
                     yield f"event: {item['event']}\ndata: {payload}\n\n"
 
     return StreamingResponse(
@@ -682,12 +653,8 @@ def matter_context(matter_id):
         return None
     if not isinstance(matter_id, str):
         raise ValueError("事项标识无效")
-    card = next(
-        (r for r in personal_hub.briefing()["cards"] if r["id"] == matter_id), None
-    )
-    row = card or next(
-        (r for r in personal_hub.matters() if r["id"] == matter_id), None
-    )
+    card = next((r for r in personal_hub.briefing()["cards"] if r["id"] == matter_id), None)
+    row = card or next((r for r in personal_hub.matters() if r["id"] == matter_id), None)
     if not row:
         raise ValueError("事项不存在")
     return {
@@ -706,15 +673,9 @@ def matter_context(matter_id):
 @app.post("/personal/conversation/messages")
 async def personal_message(request: Request):
     data = await request.json()
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get("request_id"), str)
-        or not isinstance(data.get("text"), str)
-    ):
+    if not isinstance(data, dict) or not isinstance(data.get("request_id"), str) or not isinstance(data.get("text"), str):
         raise ValueError("消息格式无效")
-    if legacy_voice.receipt(data["request_id"]) or quick_voice.receipt(
-        data["request_id"]
-    ):
+    if legacy_voice.receipt(data["request_id"]) or quick_voice.receipt(data["request_id"]):
         raise ValueError("这条语音已有受理回执，不会重复交办。")
     attachments = attachment_store.resolve(data.get("attachment_ids", []))
     return conversation.submit(
@@ -740,9 +701,7 @@ async def quick_voice_message(request: Request):
     data = await request.json()
     if not isinstance(data, dict):
         raise ValueError("语音消息格式无效")
-    return quick_voice.submit(
-        data.get("request_id"), data.get("text"), data.get("purpose", "conversation")
-    )
+    return quick_voice.submit(data.get("request_id"), data.get("text"), data.get("purpose", "conversation"))
 
 
 @app.get("/personal/quick-voice")
@@ -809,13 +768,7 @@ async def approve_personal_work(proposal_id: str, request: Request):
         origin = approval_source(conversation, existing)
         task_store.ensure(existing)
         # Serialize tasks in the same directory until isolated workspaces are available.
-        if any(
-            t["cwd"] == existing["cwd"]
-            and t["id"] != proposal_id
-            and t["status"]
-            in ("running", "waiting", "unknown", "dispatching", "cancel_requested")
-            for t in task_store.list()
-        ):
+        if any(t["cwd"] == existing["cwd"] and t["id"] != proposal_id and t["status"] in ("running", "waiting", "unknown", "dispatching", "cancel_requested") for t in task_store.list()):
             raise ValueError("该项目已有未结束任务，请先串行完成")
         proposal = work_proposals.claim_approval(proposal_id, request_id)
         task_store.change(
@@ -844,18 +797,12 @@ async def approve_personal_work(proposal_id: str, request: Request):
             },
         )[0]
         for command in initial_inputs:
-            task_store.transition_input(
-                command["request_id"], ("pending_start",), "sending"
-            )
+            task_store.transition_input(command["request_id"], ("pending_start",), "sending")
         try:
             sid = await runtime.create_task_worker(authorized_task)
-            if proposal["agent"] == "pi" and not runtime.h.managed().get(sid, {}).get(
-                "transport"
-            ):
+            if proposal["agent"] == "pi" and not runtime.h.managed().get(sid, {}).get("transport"):
                 for _ in range(80):
-                    if any(
-                        e.get("type") == "session_start" for e in runtime.events(sid)
-                    ):
+                    if any(e.get("type") == "session_start" for e in runtime.events(sid)):
                         break
                     await asyncio.sleep(0.25)
                 else:
@@ -873,9 +820,7 @@ async def approve_personal_work(proposal_id: str, request: Request):
                 run_id=turn_id,
             )
             for command in initial_inputs:
-                task_store.transition_input(
-                    command["request_id"], ("sending",), "delivered"
-                )
+                task_store.transition_input(command["request_id"], ("sending",), "delivered")
             return work_proposals.mark_accepted(proposal_id, request_id, sid)
         except Exception as exc:
             task_store.change(
@@ -885,9 +830,7 @@ async def approve_personal_work(proposal_id: str, request: Request):
                 status="unknown",
                 session_id=locals().get("sid", ""),
             )
-            work_proposals.mark_unknown(
-                proposal_id, request_id, type(exc).__name__[:80], locals().get("sid")
-            )
+            work_proposals.mark_unknown(proposal_id, request_id, type(exc).__name__[:80], locals().get("sid"))
             for command in initial_inputs:
                 task_store.transition_input(
                     command["request_id"],
@@ -895,18 +838,14 @@ async def approve_personal_work(proposal_id: str, request: Request):
                     "unknown",
                     "初始任务送达待核实；不会重发",
                 )
-            raise RuntimeError(
-                "派发状态待核实，请先查看工作会话；不会自动重发"
-            ) from None
+            raise RuntimeError("派发状态待核实，请先查看工作会话；不会自动重发") from None
 
 
 @app.post("/personal/work/proposals/{proposal_id}/reject")
 async def reject_personal_work(proposal_id: str):
     proposal = work_proposals.reject(proposal_id)
     task_store.ensure(proposal)
-    task_store.change(
-        proposal_id, "rejected:" + proposal_id, "rejected", status="rejected"
-    )
+    task_store.change(proposal_id, "rejected:" + proposal_id, "rejected", status="rejected")
     return proposal
 
 
@@ -925,9 +864,7 @@ async def decide_personal_goals(proposal_id: str, request: Request):
     if not isinstance(approved, list) or not isinstance(rejected, list):
         raise ValueError("approved 与 rejected 必须是数组")
     async with runtime.action_lock:
-        decision = goal_proposals.decide(
-            proposal_id, data.get("request_id"), approved, rejected
-        )
+        decision = goal_proposals.decide(proposal_id, data.get("request_id"), approved, rejected)
         if decision["applied"] is None:  # 首次执行；已落过库的直接返回回执，不重写文件
             from goal_apply import apply_decision
 
@@ -957,9 +894,7 @@ async def personal_tasks():
                 presentations.project(sid, history.messages(sid))
                 identity = presentations.identity(sid, request_id[5:])
             if identity["identity_confirmed"]:
-                item.update(
-                    source_session_id=sid, source_message_id=identity["message_id"]
-                )
+                item.update(source_session_id=sid, source_message_id=identity["message_id"])
         items.append(item)
     return {"items": items}
 
@@ -969,9 +904,7 @@ async def personal_task_create(request: Request):
     data = await request.json()
     if not isinstance(data, dict):
         raise ValueError("Invalid task assignment")
-    task, authorization, request_id = authorized_assignment(
-        conversation, work_proposals, data
-    )
+    task, authorization, request_id = authorized_assignment(conversation, work_proposals, data)
     saved = task_store.create_authorized(task, authorization, request_id)
     return {
         "task_id": saved["id"],
@@ -988,18 +921,14 @@ async def personal_task_input(task_id: str, request: Request):
     if not isinstance(data, dict):
         raise ValueError("Invalid command")
     async with runtime.action_lock:
-        return await task_controller.command(
-            task_id, data.get("text"), data.get("request_id")
-        )
+        return await task_controller.command(task_id, data.get("text"), data.get("request_id"))
 
 
 @app.post("/personal/tasks/{task_id}/inputs/{input_id}/new-item")
 async def task_input_new_item(task_id: str, input_id: str, request: Request):
     data = await request.json()
     async with runtime.action_lock:
-        result = task_store.move_input(
-            task_id, input_id, data.get("request_id"), conversation
-        )
+        result = task_store.move_input(task_id, input_id, data.get("request_id"), conversation)
         conversation.sync_task_cards(task_store.list())
         return result
 
@@ -1016,18 +945,9 @@ async def personal_task_cancel(task_id: str, request: Request):
                 (data["origin_message_id"],),
             ).fetchone()
         quote = data.get("source_quote")
-        if (
-            not origin
-            or origin["request_id"] != data.get("origin_request_id")
-            or not isinstance(quote, str)
-            or len(quote) < 2
-            or quote not in origin["text"]
-        ):
+        if not origin or origin["request_id"] != data.get("origin_request_id") or not isinstance(quote, str) or len(quote) < 2 or quote not in origin["text"]:
             raise ValueError("取消必须引用实际用户消息")
-        if not any(
-            word in quote
-            for word in ("取消", "停止", "暂停", "先别管", "先不要", "停下", "先停")
-        ):
+        if not any(word in quote for word in ("取消", "停止", "暂停", "先别管", "先不要", "停下", "先停")):
             raise ValueError("用户没有明确要求停止此任务")
         if any(
             word in quote
@@ -1044,9 +964,7 @@ async def personal_task_cancel(task_id: str, request: Request):
         ):
             raise ValueError("用户没有明确要求停止此任务")
     async with runtime.action_lock:
-        return await task_controller.command(
-            task_id, "", data.get("request_id"), cancel=True
-        )
+        return await task_controller.command(task_id, "", data.get("request_id"), cancel=True)
 
 
 @app.post("/personal/tasks/{task_id}/dismiss")
@@ -1074,9 +992,7 @@ async def personal_task_dismiss(task_id: str, request: Request):
                 status="cancelled",
             )
         else:
-            task_store.change(
-                task_id, "dismiss:" + task_id, "dismissed", "在手机上归档"
-            )
+            task_store.change(task_id, "dismiss:" + task_id, "dismissed", "在手机上归档")
             task_store.finish(task_id, "cancelled", "在手机上归档；未联系工作器。")
         conversation.sync_task_cards(task_store.list())
     task = next((t for t in task_store.list() if t["id"] == task_id), current)
@@ -1115,9 +1031,7 @@ async def sessions(
     sort: str = "recent",
     archived: bool = False,
 ):
-    rows = await asyncio.to_thread(
-        history.list, q, agent, role, cwd, after, sort, archived
-    )
+    rows = await asyncio.to_thread(history.list, q, agent, role, cwd, after, sort, archived)
     managed = history.managed()
     case_titles = {}
     with contextlib.suppress(Exception):
@@ -1148,21 +1062,11 @@ async def directories(path: str = ""):
     if not p.is_relative_to(HOME) or not p.is_dir():
         raise HTTPException(400, "无效目录")
     with history.db() as d:
-        recent = [
-            r[0]
-            for r in d.execute(
-                "SELECT DISTINCT cwd FROM sessions ORDER BY updated DESC LIMIT 12"
-            )
-            if Path(r[0]).is_dir()
-        ]
+        recent = [r[0] for r in d.execute("SELECT DISTINCT cwd FROM sessions ORDER BY updated DESC LIMIT 12") if Path(r[0]).is_dir()]
     return {
         "path": str(p),
         "parent": str(p.parent) if p != HOME else None,
-        "directories": [
-            str(x)
-            for x in sorted(p.iterdir())
-            if x.is_dir() and not x.name.startswith(".")
-        ],
+        "directories": [str(x) for x in sorted(p.iterdir()) if x.is_dir() and not x.name.startswith(".")],
         "recent": recent,
     }
 
@@ -1190,34 +1094,16 @@ async def detail(sid: str):
 
 async def session_caps(sid, s):
     m = history.managed().get(sid)
-    alive = bool(
-        m
-        and not m.get("ended")
-        and (
-            sid in runtime.workers.workers
-            if m.get("transport")
-            else m["agent"] == "codex" or await runtime.alive(m["tmux"])
-        )
-    )
+    alive = bool(m and not m.get("ended") and (sid in runtime.workers.workers if m.get("transport") else m["agent"] == "codex" or await runtime.alive(m["tmux"])))
     stable_identity = runtime.stable_input(sid)
-    legacy_restart = (
-        alive and not stable_identity and s["agent"] == "pi" and not m.get("transport")
-    )
-    can_resume = (
-        await runtime.legacy_pi_idle(sid)
-        if legacy_restart
-        else False
-        if alive
-        else await runtime.resumable(s)
-    )
+    legacy_restart = alive and not stable_identity and s["agent"] == "pi" and not m.get("transport")
+    can_resume = await runtime.legacy_pi_idle(sid) if legacy_restart else False if alive else await runtime.resumable(s)
     caps = {
         "history": True,
         "input": alive and stable_identity,
         "stable_message_identity_v1": stable_identity,
         "restart_for_identity": legacy_restart,
-        "terminal": alive
-        and not (m or {}).get("transport")
-        and (s["agent"] == "pi" or bool(history.messages(sid))),
+        "terminal": alive and not (m or {}).get("transport") and (s["agent"] == "pi" or bool(history.messages(sid))),
         "resume": can_resume,
         "queue": False,
         "steer": False,
@@ -1236,11 +1122,7 @@ async def live(sid: str, after: int = -1):
         "events": [],
         "items": presentations.project(sid, live_items(events)),
         "cursor": events[-1]["seq"] if events else -1,
-        "approvals": [
-            {k: v for k, v in a.items() if k != "rpc_id"}
-            for a in runtime.approvals.values()
-            if a["sid"] == sid
-        ],
+        "approvals": [{k: v for k, v in a.items() if k != "rpc_id"} for a in runtime.approvals.values() if a["sid"] == sid],
     }
 
 
@@ -1297,18 +1179,13 @@ def live_items(events):
         ):
             key = data.get("toolCallId", "tool")
             result = data.get("result", data.get("partialResult", {}))
-            body = (
-                text_content(result.get("content", ""))
-                if isinstance(result, dict)
-                else str(result)
-            )
+            body = text_content(result.get("content", "")) if isinstance(result, dict) else str(result)
             if not body:
                 body = json.dumps(data.get("args", {}), ensure_ascii=False)
             items[key] = {
                 "id": key,
                 "role": "tool",
-                "title": data.get("toolName", "工具")
-                + (" · 执行中" if typ != "tool_execution_end" else " · 已结束"),
+                "title": data.get("toolName", "工具") + (" · 执行中" if typ != "tool_execution_end" else " · 已结束"),
                 "text": body,
                 "time": ts,
             }
@@ -1338,33 +1215,18 @@ class SubmissionRejected(ValueError):
 
 
 def resolve_old_create_refusal(rid, result):
-    if (
-        result.get("status") == "rejected"
-        and result.get("submission_state") == "not_submitted"
-        and result.get("error")
-        == "尚未提交：这条消息只形成候选，请补充要完成的动作；草稿已保留"
-    ):
+    if result.get("status") == "rejected" and result.get("submission_state") == "not_submitted" and result.get("error") == "尚未提交：这条消息只形成候选，请补充要完成的动作；草稿已保留":
         return {
             **result,
             "error": "旧交办限制已解除。上次消息未提交，草稿已保留，现在可直接发送普通消息。",
             "resolution": "legacy_work_chat_gate_removed",
         }
     # Legacy manual-create source validation ran before any task/worker was created.
-    if (
-        result.get("status") != "unknown"
-        or result.get("error")
-        != "This message is not an explicit assignment; keep it as a candidate"
-    ):
+    if result.get("status") != "unknown" or result.get("error") != "This message is not an explicit assignment; keep it as a candidate":
         return result
     with conversation.db() as db:
-        human = db.execute(
-            "SELECT id,status FROM messages WHERE request_id=?", ("work:" + rid,)
-        ).fetchone()
-    if (
-        not human
-        or human["status"] != "failed"
-        or any(t.get("origin_message_id") == human["id"] for t in task_store.list())
-    ):
+        human = db.execute("SELECT id,status FROM messages WHERE request_id=?", ("work:" + rid,)).fetchone()
+    if not human or human["status"] != "failed" or any(t.get("origin_message_id") == human["id"] for t in task_store.list()):
         return result
     return {
         **result,
@@ -1383,9 +1245,7 @@ async def receipt(rid: str):
             raise HTTPException(404, "尚无发送记录")
         result = resolve_old_create_refusal(rid, json.loads(r[0]))
         if result != json.loads(r[0]):
-            d.execute(
-                "UPDATE receipts SET data=? WHERE id=?", (json.dumps(result), rid)
-            )
+            d.execute("UPDATE receipts SET data=? WHERE id=?", (json.dumps(result), rid))
     return result
 
 
@@ -1396,9 +1256,7 @@ async def once(data, action, preflight=None):
     fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
     async with runtime.action_lock:
         with history.db() as d:
-            old = d.execute(
-                "SELECT fingerprint,data FROM receipts WHERE id=?", (rid,)
-            ).fetchone()
+            old = d.execute("SELECT fingerprint,data FROM receipts WHERE id=?", (rid,)).fetchone()
             if old:
                 if old[0] != fingerprint:
                     raise ValueError("请求标识冲突")
@@ -1444,9 +1302,7 @@ async def once(data, action, preflight=None):
                 "error": str(e),
             }
             with history.db() as d:
-                d.execute(
-                    "UPDATE receipts SET data=? WHERE id=?", (json.dumps(result), rid)
-                )
+                d.execute("UPDATE receipts SET data=? WHERE id=?", (json.dumps(result), rid))
             return result
         except Exception as e:
             # Unknown is deliberate: a process may have accepted before transport failed.
@@ -1454,27 +1310,21 @@ async def once(data, action, preflight=None):
                 d.execute(
                     "UPDATE receipts SET data=? WHERE id=?",
                     (
-                        json.dumps(
-                            {"status": "unknown", "request_id": rid, "error": str(e)}
-                        ),
+                        json.dumps({"status": "unknown", "request_id": rid, "error": str(e)}),
                         rid,
                     ),
                 )
             raise
         result = {"status": "accepted", "request_id": rid, **result}
         with history.db() as d:
-            d.execute(
-                "UPDATE receipts SET data=? WHERE id=?", (json.dumps(result), rid)
-            )
+            d.execute("UPDATE receipts SET data=? WHERE id=?", (json.dumps(result), rid))
         return result
 
 
 @app.post("/sessions")
 async def create(request: Request):
     data = await request.json()
-    reference = canonical_reference(
-        data.get("reference"), reference_message, "personal-main"
-    )
+    reference = canonical_reference(data.get("reference"), reference_message, "personal-main")
     if reference and not data.get("prompt", "").strip():
         raise ValueError("引用消息需要本条消息")
 
@@ -1606,19 +1456,13 @@ async def create(request: Request):
             # Wait for Pi TUI initialization before literal input. Codex uses structured RPC.
             if data.get("agent", "pi") == "pi":
                 for _ in range(80):
-                    if any(
-                        e.get("type") == "session_start" for e in runtime.events(sid)
-                    ):
+                    if any(e.get("type") == "session_start" for e in runtime.events(sid)):
                         break
                     await asyncio.sleep(0.25)
                 else:
-                    raise RuntimeError(
-                        "Pi 启动未就绪，请在会话中检查终端；不要重复提交"
-                    )
+                    raise RuntimeError("Pi 启动未就绪，请在会话中检查终端；不要重复提交")
                 await asyncio.sleep(1)
-            transport = presentations.record(
-                sid, data["request_id"], data["prompt"], reference
-            )
+            transport = presentations.record(sid, data["request_id"], data["prompt"], reference)
             try:
                 turn_id = await runtime.input(
                     sid,
@@ -1671,26 +1515,14 @@ async def resume(sid: str, request: Request):
     s = history.get(sid)
     if not s:
         raise HTTPException(404, "会话不存在")
-    managed = history.managed().get(sid, {})
-
     async def legacy():
         m = history.managed().get(sid)
-        return (
-            m
-            if m
-            and m.get("agent") == "pi"
-            and not m.get("ended")
-            and not runtime.stable_input(sid)
-            and await runtime.alive(m["tmux"])
-            else None
-        )
+        return m if m and m.get("agent") == "pi" and not m.get("ended") and not runtime.stable_input(sid) and await runtime.alive(m["tmux"]) else None
 
     async def preflight():
         if await legacy():
             if not await runtime.legacy_pi_idle(sid):
-                raise ValueError(
-                    "旧 Pi 会话仍在运行或状态未确认；等会话闲置后才能升级并恢复"
-                )
+                raise ValueError("旧 Pi 会话仍在运行或状态未确认；等会话闲置后才能升级并恢复")
         elif not await runtime.resumable(s):
             raise ValueError("会话正在使用或状态无法确认，暂不能恢复输入")
 
@@ -1713,41 +1545,24 @@ async def resume(sid: str, request: Request):
 @app.post("/sessions/{sid}/input")
 async def send(sid: str, request: Request):
     data = await request.json()
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get("text"), str)
-        or not data["text"].strip()
-    ):
+    if not isinstance(data, dict) or not isinstance(data.get("text"), str) or not data["text"].strip():
         raise ValueError("输入为空")
     reference = canonical_reference(data.get("reference"), reference_message, sid)
 
     async def preflight_send():
         metadata = history.managed().get(sid, {})
-        task = next(
-            (t for t in task_store.list() if t["id"] == metadata.get("task_id")), None
-        )
-        if (
-            task
-            and not task.get("interactive")
-            and task["status"] == "execution_finished"
-            and task.get("verification_status") != "passed"
-        ):
+        task = next((t for t in task_store.list() if t["id"] == metadata.get("task_id")), None)
+        if task and not task.get("interactive") and task["status"] == "execution_finished" and task.get("verification_status") != "passed":
             raise ValueError("原任务正在验收，请等主线检查结果后继续")
         await runtime.check_input_identity(sid)
 
     async def action():
         quick_voice.revoke(sid)
-        transport = presentations.record(
-            sid, data["request_id"], data["text"], reference
-        )
+        transport = presentations.record(sid, data["request_id"], data["text"], reference)
         metadata = history.managed().get(sid, {})
-        task = next(
-            (t for t in task_store.list() if t["id"] == metadata.get("task_id")), None
-        )
+        task = next((t for t in task_store.list() if t["id"] == metadata.get("task_id")), None)
         if task and task["status"] in ("running", "waiting"):
-            delivery = await task_controller.command(
-                task["id"], transport, data["request_id"]
-            )
+            delivery = await task_controller.command(task["id"], transport, data["request_id"])
             return {
                 "sid": sid,
                 "turn_id": task["run_id"],
@@ -1755,12 +1570,7 @@ async def send(sid: str, request: Request):
                 "delivery": delivery["delivery"],
                 **presentations.identity(sid, data["request_id"]),
             }
-        if (
-            task
-            and not task.get("interactive")
-            and task["status"] == "execution_finished"
-            and task.get("verification_status") != "passed"
-        ):
+        if task and not task.get("interactive") and task["status"] == "execution_finished" and task.get("verification_status") != "passed":
             raise ValueError("原任务正在验收，请等主线检查结果后继续")
         turn_id = await runtime.input(
             sid,
@@ -1817,9 +1627,7 @@ async def dispatch_route(sid, s, caps):
 
 
 def handoff_prompt(title, agent, where, turns, text):
-    lines = [
-        f"接着之前的一段会话做：《{title}》（{agent}，{where}）。下面是那段会话最后几轮，只是背景："
-    ]
+    lines = [f"接着之前的一段会话做：《{title}》（{agent}，{where}）。下面是那段会话最后几轮，只是背景："]
     for t in turns[-4:]:
         lines.append(("我：" if t["role"] == "user" else "助手：") + t["text"].strip()[:1500])
     lines.append("—— 现在的要求 ——")
@@ -1830,8 +1638,17 @@ def handoff_prompt(title, agent, where, turns, text):
 async def fork_session(agent, cwd, prompt, request_id):
     cwd = cwd if cwd and Path(cwd).is_dir() and Path(cwd).resolve().is_relative_to(HOME) else str(HOME / "AI_Work_System")
     result = await create(
-        _Body({"agent": agent if agent in ("claude", "codex", "pi", "hermes") else "codex", "cwd": cwd,
-               "prompt": prompt, "request_id": request_id, "sandbox": "danger-full-access", "model": "", "effort": ""})
+        _Body(
+            {
+                "agent": agent if agent in ("claude", "codex", "pi", "hermes") else "codex",
+                "cwd": cwd,
+                "prompt": prompt,
+                "request_id": request_id,
+                "sandbox": "danger-full-access",
+                "model": "",
+                "effort": "",
+            }
+        )
     )
     return result
 
@@ -1859,15 +1676,19 @@ async def dispatch(sid: str, request: Request):
     if mode == "input":
         return {**await send(sid, _Body(data)), "mode": mode}
     if mode == "injected":
+
         async def inject():
             await runtime.inject(pane, text, rid)
             return {"sid": sid, "submission_state": "submitted", "pane": pane}
+
         return {**await once(dict(data, sid=sid, action="inject"), inject), "mode": mode}
     if mode in ("resumed", "adopted"):
         # once 在 action_lock 里跑 action，不能套娃：恢复和后面的输入各用自己的请求标识各走一次 once。
         if mode == "adopted":
+
             async def adopt():
                 return {"sid": await runtime.adopt_claude(s)}
+
             revived = await once({"request_id": rid + "-adopt", "sid": sid, "action": "adopt"}, adopt)
         else:
             revived = await resume(sid, _Body({"request_id": rid + "-resume"}))
@@ -1936,12 +1757,7 @@ async def terminal(ws: WebSocket, sid: str):
         async with runtime.action_lock:
             quick_voice.revoke(sid)
             m = history.managed().get(sid)
-        if (
-            not m
-            or m.get("ended")
-            or m.get("transport")
-            or (MAIN_AGENT == "pi" and m["agent"] == "pi")
-        ):
+        if not m or m.get("ended") or m.get("transport") or (MAIN_AGENT == "pi" and m["agent"] == "pi"):
             await ws.close(1008)
             return
         if m["agent"] == "codex":
@@ -2019,11 +1835,7 @@ async def terminal(ws: WebSocket, sid: str):
 @app.post("/internal/agent/{name}")
 async def internal_agent_tool(name: str, request: Request):
     data = await request.json()
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get("args"), dict)
-        or not isinstance(data.get("context"), dict)
-    ):
+    if not isinstance(data, dict) or not isinstance(data.get("args"), dict) or not isinstance(data.get("context"), dict):
         raise ValueError("Invalid agent envelope")
     return await agent_tools.call(name, data["args"], data["context"])
 
@@ -2066,11 +1878,7 @@ async def memory_status():
 async def memory_detail(memory_id: str):
     from memory_catalog import MemoryCatalog, SharedKnowledgeCatalog
 
-    return (
-        SharedKnowledgeCatalog().get(memory_id)
-        if memory_id.startswith("doc_")
-        else MemoryCatalog().get(memory_id)
-    )
+    return SharedKnowledgeCatalog().get(memory_id) if memory_id.startswith("doc_") else MemoryCatalog().get(memory_id)
 
 
 @app.post("/personal/memory/{memory_id}")
@@ -2155,13 +1963,7 @@ async def personal_briefing():
                 deadline=None,
             )
     with personal_hub.db() as db:
-        stale = [
-            r[0]
-            for r in db.execute(
-                "SELECT id,source_id FROM matters WHERE source='com_task'"
-            )
-            if r[1] not in active_ids
-        ]
+        stale = [r[0] for r in db.execute("SELECT id,source_id FROM matters WHERE source='com_task'") if r[1] not in active_ids]
         for ident in stale:
             db.execute("DELETE FROM matters WHERE id=?", (ident,))
     return personal_hub.briefing()
@@ -2170,9 +1972,7 @@ async def personal_briefing():
 @app.post("/personal/matters/{matter_id}/feedback")
 async def matter_feedback(matter_id: str, request: Request):
     data = await request.json()
-    return personal_hub.feedback(
-        matter_id, data["action"], data["request_id"], data.get("text", "")
-    )
+    return personal_hub.feedback(matter_id, data["action"], data["request_id"], data.get("text", ""))
 
 
 @app.post("/personal/matters/{matter_id}/unlink")
@@ -2435,9 +2235,7 @@ today_view = Today(
 
 @app.get("/personal/today")
 async def personal_today():
-    return await asyncio.to_thread(
-        today_view.snapshot
-    )  # 读 hub 库和 iCloud vault，放线程里不卡事件循环
+    return await asyncio.to_thread(today_view.snapshot)  # 读 hub 库和 iCloud vault，放线程里不卡事件循环
 
 
 # 快捷指令推来的此刻状态（到公司 / 到家 / 开了专注）：只给「下一步」当上下文。
@@ -2479,27 +2277,22 @@ async def personal_today_todo_done(request: Request):
 @app.post("/personal/today/todos/undo")
 async def personal_today_todo_undo(request: Request):
     data = await request.json()
-    return await asyncio.to_thread(
-        today_view.todo_undo, data.get("path"), data.get("undo")
-    )
+    return await asyncio.to_thread(today_view.todo_undo, data.get("path"), data.get("undo"))
 
 
 @app.post("/personal/today/todos/postpone")
 async def personal_today_todo_postpone(request: Request):
     data = await request.json()
-    return await asyncio.to_thread(
-        today_view.todo_postpone, data.get("path"), data.get("day")
-    )
+    return await asyncio.to_thread(today_view.todo_postpone, data.get("path"), data.get("day"))
 
 
 # ---- 2026-10-17 航程（交给 Com）+ 下一步/待办闭环 + 明天建议 ------------------------------------
 # 需求：docs/COM_CASES_AND_NEXT_LOOP_REQ_20261017.md。航程底座是 task_store，cases.sqlite 只存来源/步骤/假设/产出。
+# 日程即当天待办（Eddie 设定）：把当天日程同步成行动台待办，复用上面 today_view 的日历链路。
+from calendar_todos import CalendarTodos
 from cases import BRIEF_INSTRUCTIONS as CASE_BRIEF_INSTRUCTIONS
 from cases import Cases
 from tomorrow_plan import TomorrowPlan
-
-# 日程即当天待办（Eddie 设定）：把当天日程同步成行动台待办，复用上面 today_view 的日历链路。
-from calendar_todos import CalendarTodos
 
 calendar_todos = CalendarTodos(today_view)
 
@@ -2511,9 +2304,7 @@ reminders_sync = RemindersSync(today_view)
 async def case_brief(data):
     from hermes_review import review_json
 
-    return await review_json(
-        STATE, "case-brief-" + str(time.time_ns()), CASE_BRIEF_INSTRUCTIONS, data, timeout=45
-    )
+    return await review_json(STATE, "case-brief-" + str(time.time_ns()), CASE_BRIEF_INSTRUCTIONS, data, timeout=45)
 
 
 cases = Cases(
@@ -2533,7 +2324,7 @@ from threads import Threads
 
 threads = Threads(STATE)
 cases.threads = threads
-agency.calendar_todos = calendar_todos   # 晨报那一步先把当天日程落成待办
+agency.calendar_todos = calendar_todos  # 晨报那一步先把当天日程落成待办
 
 
 @app.post("/personal/today/sync-reminders")
@@ -2557,9 +2348,7 @@ async def turn_planner(text):
     from hermes_review import review_json
     from turn_planner import INSTRUCTIONS as TURN_PLAN_INSTRUCTIONS
 
-    return await review_json(
-        STATE, "turn-plan-" + str(time.time_ns()), TURN_PLAN_INSTRUCTIONS, {"message": text[:1500]}, timeout=30
-    )
+    return await review_json(STATE, "turn-plan-" + str(time.time_ns()), TURN_PLAN_INSTRUCTIONS, {"message": text[:1500]}, timeout=30)
 
 
 if MAIN_AGENT == "hermes":
@@ -2606,8 +2395,7 @@ async def personal_case_resolve(ident: str):
 async def delegate_next(ident, request_id):
     item = next_steps.get(ident)
     labels = [e.get("label", "") for e in item.get("evidence", [])]
-    result = await cases.delegate("next", ident, item["title"], item["prompt"], request_id, labels,
-                                  todo_path=(item.get("in_todo") or {}).get("path", ""))
+    result = await cases.delegate("next", ident, item["title"], item["prompt"], request_id, labels, todo_path=(item.get("in_todo") or {}).get("path", ""))
     next_steps.act(ident, "delegate", case_id=result.get("task_id", ""))
     return {"status": "completed", "id": ident, "action": "delegate", **result}
 
@@ -2623,17 +2411,21 @@ async def next_to_todo(ident, day, remind_at=None):
         day = (datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(days=1)).date().isoformat()
     sigs = [s for e in item.get("evidence", []) if (s := _sig(e.get("ref", ""), e))]
     made = await asyncio.to_thread(
-        today_view.todo_create, item["title"], day, item.get("prompt", "")[:200], item.get("why", ""),
-        item.get("prompt", ""), ident, sigs,
+        today_view.todo_create,
+        item["title"],
+        day,
+        item.get("prompt", "")[:200],
+        item.get("why", ""),
+        item.get("prompt", ""),
+        ident,
+        sigs,
     )
     reminder = None
     if remind_at:
         from business_tools import BusinessTools
 
         op = hashlib.sha256(("next-remind:" + ident + ":" + remind_at).encode()).hexdigest()
-        reminder = await BusinessTools(STATE).remind(
-            {"action": "add", "text": item["title"], "at": remind_at, "_operation_id": op}
-        )
+        reminder = await BusinessTools(STATE).remind({"action": "add", "text": item["title"], "at": remind_at, "_operation_id": op})
     next_steps.act(ident, "todo", todo={"path": made["path"], "due": made.get("due", day), "remind_at": remind_at or ""})
     threads.link("next:" + ident, "todo:" + made["path"], "加到待办")
     return {"status": "completed", "id": ident, "action": "todo", "todo": made, "reminder": reminder}
@@ -2677,8 +2469,7 @@ async def personal_plan_apply(request: Request):
 
 
 # ---- 2026-10-18 线索 + 统一「等你」 -------------------------------------------------------------
-NEXT_STATE_LABELS = {"open": "待处理", "acted": "已交给 Com", "todo": "已加到待办", "done": "已完成", "dismissed": "不用了",
-                     "snoozed": "稍后再说", "stale": "已收起"}
+NEXT_STATE_LABELS = {"open": "待处理", "acted": "已交给 Com", "todo": "已加到待办", "done": "已完成", "dismissed": "不用了", "snoozed": "稍后再说", "stale": "已收起"}
 
 
 def _obsidian_url(rel):
@@ -2728,8 +2519,13 @@ def thread_resolvers():
             return record and {"title": record["text"][:40], "state": "对话", "label": "对话", "at": record["created_at"]}
         if kind == "session":
             meta = history.managed().get(ident)
-            return meta and {"title": (meta.get("agent") or "").capitalize() + " 执行会话", "state": meta.get("model", ""), "label": "工作会话",
-                             "agent": meta.get("agent", ""), "at": meta.get("created", 0)}
+            return meta and {
+                "title": (meta.get("agent") or "").capitalize() + " 执行会话",
+                "state": meta.get("model", ""),
+                "label": "工作会话",
+                "agent": meta.get("agent", ""),
+                "at": meta.get("created", 0),
+            }
         if kind == "project":
             path = today_view.project_file(ident)
             return path and {"title": ident, "state": "项目", "label": "项目页", "url": _obsidian_url(str(path.relative_to(today_view.vault)))}
@@ -2789,23 +2585,47 @@ def waiting_items():
     items = []
     for c in cases.list()["items"]:
         if c["state"] == "waiting":
-            items.append({"id": "case:" + c["id"], "kind": "case", "title": c["title"], "why": "等你批准：" + ((c.get("waiting") or {}).get("question") or "它停下来了"),
-                          "at": c["updated_at"], "case_id": c["id"]})
+            items.append(
+                {
+                    "id": "case:" + c["id"],
+                    "kind": "case",
+                    "title": c["title"],
+                    "why": "等你批准：" + ((c.get("waiting") or {}).get("question") or "它停下来了"),
+                    "at": c["updated_at"],
+                    "case_id": c["id"],
+                }
+            )
     for chat in (today_view.wechat_digest(start, start + timedelta(days=1)) or {}).get("chats", []):
         last = (chat.get("messages") or [{}])[-1]
         if re.search(r"bot|机器人|助手|通知|提醒", chat["name"], re.I):  # 自己的提醒机器人（如 微信ClawBot / 果到雷达）不算有人在等
             continue
         if (not chat["is_group"] or chat["mention"]) and last.get("sender") and last["sender"] not in WECHAT_SELF:
-            items.append({"id": "wechat:" + chat["name"], "kind": "wechat", "title": chat["name"] + ("（群里 @你）" if chat["is_group"] else ""),
-                          "why": last["sender"] + "：" + str(last.get("text") or "")[:60], "at": last.get("at") or chat["at"]})
+            items.append(
+                {
+                    "id": "wechat:" + chat["name"],
+                    "kind": "wechat",
+                    "title": chat["name"] + ("（群里 @你）" if chat["is_group"] else ""),
+                    "why": last["sender"] + "：" + str(last.get("text") or "")[:60],
+                    "at": last.get("at") or chat["at"],
+                }
+            )
     for t in today_view.todo_index():
         try:
             due = datetime.strptime(t["due"][:10], "%Y-%m-%d").date() if t["due"] else None
         except ValueError:
             due = None
         if due and due < start.date():
-            items.append({"id": "todo:" + t["path"], "kind": "todo", "title": t["name"], "why": f"过期 {(start.date() - due).days} 天（计划 {t['due'][5:10]}）",
-                          "at": 0, "path": t["path"], "url": _obsidian_url(t["path"])})
+            items.append(
+                {
+                    "id": "todo:" + t["path"],
+                    "kind": "todo",
+                    "title": t["name"],
+                    "why": f"过期 {(start.date() - due).days} 天（计划 {t['due'][5:10]}）",
+                    "at": 0,
+                    "path": t["path"],
+                    "url": _obsidian_url(t["path"]),
+                }
+            )
     rank = {"case": 0, "wechat": 1, "todo": 2}
     items.sort(key=lambda i: (rank[i["kind"]], -i["at"]))
     return items
@@ -2829,17 +2649,11 @@ memory_inbox = MemoryInbox(STATE)
 async def summary_model(data):
     from hermes_review import review_json
 
-    return await review_json(
-        STATE, "summary-" + str(time.time_ns()), SUMMARY_INSTRUCTIONS, data, timeout=120
-    )
+    return await review_json(STATE, "summary-" + str(time.time_ns()), SUMMARY_INSTRUCTIONS, data, timeout=120)
 
 
-conversation_summary = ConversationSummary(
-    STATE, model=summary_model if MAIN_AGENT == "hermes" else None, inbox=memory_inbox
-)
-nudges = Nudges(
-    STATE, conversation, proactive.settings, hub=personal_hub, reminders=reminder_cards
-)
+conversation_summary = ConversationSummary(STATE, model=summary_model if MAIN_AGENT == "hermes" else None, inbox=memory_inbox)
+nudges = Nudges(STATE, conversation, proactive.settings, hub=personal_hub, reminders=reminder_cards)
 
 
 async def agent_track_loop():
@@ -2863,9 +2677,7 @@ async def memory_inbox_list():
 @app.post("/personal/memory-inbox/{ident}")
 async def memory_inbox_action(ident: str, request: Request):
     data = await request.json()
-    return await asyncio.to_thread(
-        memory_inbox.act, ident, data.get("action"), data.get("content", "")
-    )
+    return await asyncio.to_thread(memory_inbox.act, ident, data.get("action"), data.get("content", ""))
 
 
 @app.get("/personal/conversation-summary")

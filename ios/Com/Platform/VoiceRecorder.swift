@@ -67,7 +67,7 @@ private final class VoiceCapture: @unchecked Sendable {
     var autoSend = UserDefaults.standard.object(forKey: "voice.autoSend") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoSend, forKey: "voice.autoSend") }
     }
-    static let pauseToSend: TimeInterval = 0.9
+    static var pauseToSend: TimeInterval { VoiceCommands.pauseToSend }
     /// Ambient loudness, tracked low so a fan or street noise does not count as speech.
     private var noiseFloor = 0.02
     private var lastVoiced = Date.distantFuture

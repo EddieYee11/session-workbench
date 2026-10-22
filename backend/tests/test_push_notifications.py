@@ -1,8 +1,8 @@
 import asyncio
-import sqlite3
-from types import SimpleNamespace
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
+
 from conversation import PersonalConversation
 from push_notifications import PushNotifications
 
@@ -87,3 +87,16 @@ def test_bark_rows_are_not_created_without_config(tmp_path):
     assert asyncio.run(p.process()) is False
     with p.db() as db:ids={r[0] for r in db.execute('SELECT device_id FROM outbox')}
     assert ids=={'iphone-test'}
+
+
+def test_approval_becomes_actionable_notification_once(tmp_path):
+    p,c,_=setup(tmp_path)
+    approval={'id':'ap-1','sid':'codex:x','method':'item/commandExecution/requestApproval',
+              'params':{'reason':'要删除两个文件','command':'rm -rf a b'}}
+    assert p.enqueue_approvals([approval])==1
+    assert p.enqueue_approvals([approval])==0
+    calls=[]
+    async def send(device,row):calls.append(row);return 200,''
+    asyncio.run(p.process(send))
+    assert calls[0]['message_id']=='approval:ap-1'
+    assert p.status()['outbox']=={'accepted':1}

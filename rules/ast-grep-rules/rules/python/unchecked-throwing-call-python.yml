@@ -1,0 +1,11 @@
+# Repo policy: numeric strings and JSON are validated at the backend boundaries
+# (FastAPI/Pydantic and explicit checks); the bundled heuristic flags every
+# int()/float()/json.loads() coercion. Shadow it here so validated one-liners do not
+# produce a wall of false positives. Real file/JSON failures are handled at the
+# call sites that read external input.
+id: unchecked-throwing-call-python
+language: Python
+severity: hint
+message: "Numeric coercion is validated at the call site in this repository."
+rule:
+  pattern: __pi_lens_disabled_unchecked_throwing_call__

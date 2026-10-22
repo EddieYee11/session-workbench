@@ -1,3 +1,4 @@
+// Root navigation, sheets, and the app-lock cover.
 import SwiftUI
 import ComCore
 
@@ -13,12 +14,20 @@ struct RootView: View {
     @State private var hingeTick = 0
     @Namespace private var details
     @AppStorage("appearance") private var appearance = "light"
+    @State private var lock = AppLock.shared
     var body: some View {
         Group {
             if model.isPaired { paired } else { PairingView() }
         }
         .environment(\.detailSpace, details)
         .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
+        .overlay {
+            if lock.isCovering {
+                LockScreen().environment(lock)
+                    .transition(.opacity)
+                    .zIndex(20)
+            }
+        }
         .overlay {
             if [.recording, .transcribing].contains(model.voice.phase) {
                 ScreenEdgeGlow(level: model.voice.level, processing: model.voice.phase == .transcribing)
@@ -236,6 +245,15 @@ private struct RootEvents: ViewModifier {
                 model.tab = .chat
                 if let id = event.object as? String, !id.isEmpty { Task { await model.locateMessage(id) } }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .comOpenApproval)) { event in
+                guard let sid = event.userInfo?["sid"] as? String, !sid.isEmpty else { model.tab = .work; return }
+                model.tab = .work
+                model.work.open(.object(["id": .string(sid), "agent": .string("codex")]))
+                Task { await model.work.refresh(model) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .comApprovalResolved)) { _ in
+                Task { await model.work.refresh(model) }
+            }
             .alert("Com", isPresented: Binding(get: { !model.banner.isEmpty }, set: { if !$0 { model.banner = "" } })) {
                 Button("知道了") { model.banner = "" }
             } message: { Text(model.banner) }
@@ -320,7 +338,13 @@ struct PairingView: View {
                     }.buttonStyle(.primaryFull).disabled(loading || code.isEmpty)
                     if !error.isEmpty { InlineNotice(text: error) }
                 }
-                Text("配对码在 Mac mini 上生成。账号凭据留在这台 iPhone 的钥匙串中。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                Text("配对码在 Mac mini 上生成。账号凭据留在这台 iPhone 的钥匙串中。也可以让已配对的设备出示二维码，用相机扫码自动填入。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            }
+            .onAppear {
+                if let pending = UserDefaults.standard.string(forKey: "pendingPairCode"), !pending.isEmpty {
+                    code = pending
+                    UserDefaults.standard.removeObject(forKey: "pendingPairCode")
+                }
             }
         }
     }

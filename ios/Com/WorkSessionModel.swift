@@ -146,7 +146,11 @@ import ComCore
                     if session["title"].string.isEmpty { session["title"] = metadata["title"] }
                     metadata = session; history = detail["messages"].array
                 }
-                if !current.isNull { live = current }
+                if !current.isNull {
+                    live = current
+                    // 不在工作页时，把新审批发到通知中心；同一张卡只提醒一次。
+                    ComNotifications.approvalWaiting(current["approvals"].array, sessionID: id, show: !model.isShown(.work))
+                }
                 loaded = true; note = ""
             } catch {
                 guard sessionID == id else { return }

@@ -15,6 +15,7 @@ import ComCore
                 .onChange(of: scenePhase) { _, phase in
                     // 灵动岛常驻（轨道 r3-memory）：要在 setActive(false) 断开连接之前，把这一刻的状态推上去。
                     ComLiveActivity.shared.scene(phase)
+                    AppLock.shared.scene(phase, paired: model.isPaired)
                     // .inactive 只是短暂遮挡（控制中心、通知横幅、来电）。只有真正进后台或回到前台才重建连接。
                     guard phase != .inactive else { return }
                     Task { await model.setActive(phase == .active) }
@@ -26,6 +27,17 @@ import ComCore
                     if url.host == "cases" { model.tab = .next; model.showCases = true }  // 10-17：航程回执/等你批准
                     if url.host == "plan" { model.tab = .next }
                     if url.host == "waiting" { model.showWaiting = true }  // 明天建议卡在下一步页顶上
+                    if url.host == "approval" { model.openApproval(url) }
+                    if url.host == "pair" {
+                        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+                        let base = items?.first(where: { $0.name == "base" })?.value ?? ""
+                        let code = items?.first(where: { $0.name == "code" })?.value ?? ""
+                        if !code.isEmpty {
+                            UserDefaults.standard.set(code, forKey: "pendingPairCode")
+                            if model.isPaired { model.banner = "这台设备已经配对；要换服务器，请先在设置里解除配对。" }
+                            else if !base.isEmpty { model.base = base }
+                        }
+                    }
                     if url.host == "voice" { model.openVoice(quick: true) }
                     if url.host == "share", let text = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "text" })?.value {
                         model.tab = .chat; model.draft = model.draft.isEmpty ? text : model.draft + "\n\n" + text; model.persistNow()
@@ -50,7 +62,58 @@ struct ComShortcuts: AppShortcutsProvider {
     static let shared = ComNotifications()
     static let identifier = "work.eddie.com.messages"
     static let enabledKey = "messageNotifications"
-    static func install() { UNUserNotificationCenter.current().delegate = shared }
+    /// 审批通知：通知中心里就能批准/拒绝，不用先回工作页找那张卡。
+    nonisolated static let approvalCategory = "COM_APPROVAL"
+    nonisolated static let approveAction = "com.approval.approve"
+    nonisolated static let denyAction = "com.approval.deny"
+    static func install() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = shared
+        let approve = UNNotificationAction(identifier: approveAction, title: "批准", options: [.authenticationRequired])
+        let deny = UNNotificationAction(identifier: denyAction, title: "拒绝", options: [.destructive, .authenticationRequired])
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: approvalCategory, actions: [approve, deny], intentIdentifiers: []),
+        ])
+    }
+    /// 工作页轮询发现新审批：不在工作页时发本地通知；同一审批只发一次。
+    static func approvalWaiting(_ approvals: [JSON], sessionID: String, show: Bool) {
+        guard show, !ProcessInfo.processInfo.arguments.contains("--ui-testing"),
+              UserDefaults.standard.bool(forKey: enabledKey) else { return }
+        var seen = UserDefaults.standard.stringArray(forKey: "notifiedApprovalIDs") ?? []
+        for approval in approvals {
+            let id = approval.id
+            guard !id.isEmpty, !seen.contains(id) else { continue }
+            let params = approval["params"]
+            let reason = params["reason"].string.isEmpty ? params["command"].string : params["reason"].string
+            seen.append(id)
+            let content = UNMutableNotificationContent()
+            content.title = "Com · 需要你决定"
+            content.body = reason.isEmpty ? "Agent 停下来等你的决定。" : String(reason.prefix(140))
+            content.sound = .default
+            content.categoryIdentifier = approvalCategory
+            content.userInfo = ["comApprovalID": id, "comSessionID": sessionID]
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "approval-" + id, content: content, trigger: nil))
+        }
+        UserDefaults.standard.set(Array(seen.suffix(300)), forKey: "notifiedApprovalIDs")
+    }
+    /// 通知上的批准/拒绝：直接用已保存的连接执行，再让前台刷新。
+    static func resolveApproval(_ id: String, decision: String) async {
+        guard let tokenData = SecureVault.secret("token"), let token = String(data: tokenData, encoding: .utf8),
+              let base = UserDefaults.standard.string(forKey: "base"), !token.isEmpty else { return }
+        do {
+            let api = try APIClient(base: base, token: token)
+            _ = try await api.request("/approvals/" + id.pathEncoded, body: .object(["decision": .string(decision)]))
+            await MainActor.run {
+                UserDefaults.standard.set("已在通知里" + (decision == "accept" ? "批准" : "拒绝"), forKey: "approvalActionStatus")
+                NotificationCenter.default.post(name: .comApprovalResolved, object: id)
+            }
+        } catch {
+            await MainActor.run {
+                UserDefaults.standard.set("审批没有送达：" + error.localizedDescription, forKey: "approvalActionStatus")
+                NotificationCenter.default.post(name: .comApprovalResolved, object: id)
+            }
+        }
+    }
     static func requestIfNeeded() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         if settings.authorizationStatus == .notDetermined { _ = await enable() }
@@ -131,9 +194,23 @@ struct ComShortcuts: AppShortcutsProvider {
         [.banner, .sound]
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        let id = response.notification.request.content.userInfo["comMessageID"] as? String
-        let section = response.notification.request.content.userInfo["comSection"] as? String
+        let info = response.notification.request.content.userInfo
+        if let approvalID = info["comApprovalID"] as? String {
+            if response.actionIdentifier == Self.approveAction { await Self.resolveApproval(approvalID, decision: "accept"); return }
+            if response.actionIdentifier == Self.denyAction { await Self.resolveApproval(approvalID, decision: "decline"); return }
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+               let sid = info["comSessionID"] as? String, !sid.isEmpty {
+                await MainActor.run { NotificationCenter.default.post(name: .comOpenApproval, object: nil, userInfo: ["sid": sid]) }
+                return
+            }
+        }
+        let id = info["comMessageID"] as? String
+        let section = info["comSection"] as? String
         await MainActor.run { NotificationCenter.default.post(name: .comOpenMessage, object: id, userInfo: ["section": section ?? "chat"]) }
     }
 }
-extension Notification.Name { static let comOpenMessage = Notification.Name("com.open.message") }
+extension Notification.Name {
+    static let comOpenMessage = Notification.Name("com.open.message")
+    static let comOpenApproval = Notification.Name("com.open.approval")
+    static let comApprovalResolved = Notification.Name("com.approval.resolved")
+}

@@ -29,6 +29,7 @@
 		35B97609DD142D1A95B57481 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FFE0DAB1403070690833136 /* ChatView.swift */; };
 		3745994C8545A447D7BBDBD6 /* AppModel+Chat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EEE75E129E211B8C33023E1 /* AppModel+Chat.swift */; };
 		3C26D0CDC6C855BC6723ACAC /* PaneBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 253CC466A0910190D2F51B50 /* PaneBar.swift */; };
+		3C6C69C547A79AFA961C23E6 /* AppLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = C136978AFD5B22F73DFC6E90 /* AppLock.swift */; };
 		43FECD8E2C58269F42D9BF77 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FC842A5EB15D97730233C15 /* ShareViewController.swift */; };
 		458824657E9A9C1DD79259B0 /* ShareInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0121DE058ACD97A7EF0FCC8 /* ShareInbox.swift */; };
 		4A959C38D1B3C023B2DE0592 /* ComActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B26E84C4CC405F5F38A22F8 /* ComActivity.swift */; };
@@ -57,6 +58,7 @@
 		848BB3C81AED479ACCA06199 /* WorkApprovalCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF8322946A23E93B2C652BB /* WorkApprovalCard.swift */; };
 		880C9955C519B1C1F7E2E286 /* ComStatusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5253385C436B81C36BEB3308 /* ComStatusWidget.swift */; };
 		8BDEA72F00A6BEC7F55C538D /* WorkSessionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 809B0769F81E1FE18DA79147 /* WorkSessionModel.swift */; };
+		91E6A7F38D7DB3FA29330CE1 /* PairCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5C0490FDE2C39E79F1FBC44 /* PairCodeView.swift */; };
 		92844A44DDBC7B6A1E5022F7 /* ConversationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EC10A9618B910953C4BB6B5 /* ConversationState.swift */; };
 		932E50DA4B2E1B154A922806 /* ChatMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC19D47D6245D85B1C1DC84 /* ChatMotion.swift */; };
 		93B583A67B77DCFFFC1BA2BC /* AgentStageMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEE32CA35186E717D66E3076 /* AgentStageMachineTests.swift */; };
@@ -72,6 +74,7 @@
 		AEF84FF6F638F8210011DA3E /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B7B594AFDF5566F0807669 /* DesignSystem.swift */; };
 		AFA5DFBEE74E600F1EC19067 /* Checks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EC1160E2848EF111BB78CDA /* Checks.swift */; };
 		B142AA1AE7360863811CE5A0 /* VoiceStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97F94D4079AE66BCDF36F3AF /* VoiceStream.swift */; };
+		B28E2A7A12D5C87D1D19F842 /* VoiceCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D57A98082458D1359BD5F11 /* VoiceCommands.swift */; };
 		B4A285AE15D3B2682377CFDE /* DeviceReceiptsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34B9191AB956E73D298A835A /* DeviceReceiptsView.swift */; };
 		B57595B357ECC6A7D5B8B129 /* ComApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0BAAED9867FADA001EE9EC /* ComApp.swift */; };
 		BA7EBFBF4845F53BEA2B6F5D /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C83DD995EE7E078F527BC73 /* APIClient.swift */; };
@@ -89,6 +92,7 @@
 		EEBADA6156CA0B18C89ABFF5 /* MemoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33572A00E788D17257F98CFA /* MemoryView.swift */; };
 		F0F5631C5C8AD9A5196F08DB /* AgentStageModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 071E80750B7F5BF6407472D3 /* AgentStageModel.swift */; };
 		F58AD998EFE3F30617501345 /* AgentStageState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C64DC3DF802E376DBAD715B /* AgentStageState.swift */; };
+		F59B15EB117C605B46FD434E /* ChatPageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4520FAB9761DDF12FE7C32E4 /* ChatPageTests.swift */; };
 		F6124F716675565C147CEAF5 /* SuggestionChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19D032CDD8DE390325852D00 /* SuggestionChips.swift */; };
 		F70B9107D189B920B3B016E8 /* StatusWidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = E74B5D0C44841D1A97FAEB1A /* StatusWidgetSnapshot.swift */; };
 		FB6D04D23D6E1155B9411313 /* ComUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD70FB106536EB61E8647C65 /* ComUITests.swift */; };
@@ -196,6 +200,7 @@
 		3C83DD995EE7E078F527BC73 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		3E5C680E8821CA9882015CB4 /* ComCoreTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ComCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3EEE75E129E211B8C33023E1 /* AppModel+Chat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+Chat.swift"; sourceTree = "<group>"; };
+		4520FAB9761DDF12FE7C32E4 /* ChatPageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPageTests.swift; sourceTree = "<group>"; };
 		48418D83FEB7029E45E291AC /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
 		4EAB4EF8FD18CCF187B6EB33 /* OpenComVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenComVoice.swift; sourceTree = "<group>"; };
 		5253385C436B81C36BEB3308 /* ComStatusWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComStatusWidget.swift; sourceTree = "<group>"; };
@@ -218,6 +223,7 @@
 		86EE9A2030D82F3CC38D01D9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		89BF4EFAA61400EF7FD768DE /* NextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextView.swift; sourceTree = "<group>"; };
 		8C1947E5F409889B53E4A09D /* VoiceGlow-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "VoiceGlow-LICENSE.txt"; sourceTree = "<group>"; };
+		8D57A98082458D1359BD5F11 /* VoiceCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommands.swift; sourceTree = "<group>"; };
 		8FC354352A0E839AE2201D8D /* Character.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Character.swift; sourceTree = "<group>"; };
 		947F6661953F6A5A925B1B35 /* VoiceGlow-ThirdParty-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "VoiceGlow-ThirdParty-LICENSE.txt"; sourceTree = "<group>"; };
 		96B7B594AFDF5566F0807669 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
@@ -238,6 +244,7 @@
 		BBA4697B21D25BCF148F3737 /* WorkChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkChat.swift; sourceTree = "<group>"; };
 		BC74768845B2BC75145912CD /* BodyViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BodyViews.swift; sourceTree = "<group>"; };
 		C0B567AF2CA7D46CD6A550BC /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		C136978AFD5B22F73DFC6E90 /* AppLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLock.swift; sourceTree = "<group>"; };
 		C18D502E9AD18A7A2145BD4F /* ComPush.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ComPush.entitlements; sourceTree = "<group>"; };
 		C1F3B505991E493E1D75DF50 /* VoiceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceViews.swift; sourceTree = "<group>"; };
 		C8F5EB8CB9136CA16067C014 /* ComCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComCoreTests.swift; sourceTree = "<group>"; };
@@ -250,6 +257,7 @@
 		DEA3EDED0706D4C2FAF05AD7 /* WorkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkView.swift; sourceTree = "<group>"; };
 		E0121DE058ACD97A7EF0FCC8 /* ShareInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareInbox.swift; sourceTree = "<group>"; };
 		E213EFA5C31A69835AF9BFAC /* UtilityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UtilityViews.swift; sourceTree = "<group>"; };
+		E5C0490FDE2C39E79F1FBC44 /* PairCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairCodeView.swift; sourceTree = "<group>"; };
 		E5DA72C92E6F19E7C012A33D /* FlowCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowCards.swift; sourceTree = "<group>"; };
 		E74B5D0C44841D1A97FAEB1A /* StatusWidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusWidgetSnapshot.swift; sourceTree = "<group>"; };
 		E7EB76DCBCE907B0C5EB3F5F /* WorkHome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkHome.swift; sourceTree = "<group>"; };
@@ -260,7 +268,7 @@
 		F9D90C9360DCE4743755E1B6 /* CasesViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CasesViews.swift; sourceTree = "<group>"; };
 		FDDB7C77B7EAB250E94DEFC6 /* ComUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ComUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FEE32CA35186E717D66E3076 /* AgentStageMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageMachineTests.swift; sourceTree = "<group>"; };
-		"TEMP_8E86F249-C29F-4CF6-903B-A7EFDAD7FEE2" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		"TEMP_888A771E-4B87-4B1F-AD79-A521F56AE11E" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -324,6 +332,7 @@
 				33572A00E788D17257F98CFA /* MemoryView.swift */,
 				A53A299B201C54AC30EE395D /* MoonBootPrint.swift */,
 				89BF4EFAA61400EF7FD768DE /* NextView.swift */,
+				E5C0490FDE2C39E79F1FBC44 /* PairCodeView.swift */,
 				253CC466A0910190D2F51B50 /* PaneBar.swift */,
 				D94119968D27D2EE60CC408A /* ProjectBoardViews.swift */,
 				712B229F2ABFC63A9878E594 /* ReplyText.swift */,
@@ -348,6 +357,7 @@
 			isa = PBXGroup;
 			children = (
 				FEE32CA35186E717D66E3076 /* AgentStageMachineTests.swift */,
+				4520FAB9761DDF12FE7C32E4 /* ChatPageTests.swift */,
 				6EC1160E2848EF111BB78CDA /* Checks.swift */,
 				C8F5EB8CB9136CA16067C014 /* ComCoreTests.swift */,
 			);
@@ -357,6 +367,7 @@
 		35895FE2C1C6EFBCC822018D /* Platform */ = {
 			isa = PBXGroup;
 			children = (
+				C136978AFD5B22F73DFC6E90 /* AppLock.swift */,
 				3BC71BEDC33C0638436CFBDC /* ComPush.swift */,
 				0159734FE4B55C3176025D58 /* ContextIntent.swift */,
 				670F9F26FA1CD31E5B51EC75 /* DeviceBridge.swift */,
@@ -364,6 +375,7 @@
 				34755A6B7279A9766E76EFD1 /* LiveActivity.swift */,
 				6BDF0E1DFD41F7167E786627 /* ScrollFrameMonitor.swift */,
 				CD701A1D9C8010A312EDBAA0 /* SecureVault.swift */,
+				8D57A98082458D1359BD5F11 /* VoiceCommands.swift */,
 				6E9957214BC9E301255D4BD8 /* VoiceRecorder.swift */,
 			);
 			path = Platform;
@@ -482,10 +494,10 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		"TEMP_11CC9B4E-C3AC-4CD9-A989-ED5103CC8795" /* ios */ = {
+		"TEMP_F3FA978A-5556-4AC3-BB5E-D27AAD667F67" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_8E86F249-C29F-4CF6-903B-A7EFDAD7FEE2" /* Config.xcconfig */,
+				"TEMP_888A771E-4B87-4B1F-AD79-A521F56AE11E" /* Config.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -694,6 +706,7 @@
 				519DFD50E452B5757B49C65C /* AgencyModel.swift in Sources */,
 				14FED8F5DA80AF043C2E84DC /* AgencyViews.swift in Sources */,
 				F0F5631C5C8AD9A5196F08DB /* AgentStageModel.swift in Sources */,
+				3C6C69C547A79AFA961C23E6 /* AppLock.swift in Sources */,
 				3745994C8545A447D7BBDBD6 /* AppModel+Chat.swift in Sources */,
 				2F41485D5C9FDB431AB23E27 /* AppModel+Memory.swift in Sources */,
 				771DB0FB5E7A9B556289D206 /* AppModel+Pages.swift in Sources */,
@@ -721,6 +734,7 @@
 				C01575DCFA2F77923CDEC9BD /* MoonBootPrint.swift in Sources */,
 				97FE28319E5CD085B1D0560A /* NextView.swift in Sources */,
 				A0997E60BD5611353997F043 /* OpenComVoice.swift in Sources */,
+				91E6A7F38D7DB3FA29330CE1 /* PairCodeView.swift in Sources */,
 				3C26D0CDC6C855BC6723ACAC /* PaneBar.swift in Sources */,
 				5997035B70F8DE666CA4AE90 /* ProjectBoardViews.swift in Sources */,
 				BE405BDC17E7E5129F20214A /* ReplyText.swift in Sources */,
@@ -735,6 +749,7 @@
 				72F5B88AD014405E2CE1C53B /* ThreadsViews.swift in Sources */,
 				BDCC91C656F737DB317BEE99 /* TodayView.swift in Sources */,
 				181E029276B49CDD6329CAB0 /* UtilityViews.swift in Sources */,
+				B28E2A7A12D5C87D1D19F842 /* VoiceCommands.swift in Sources */,
 				6BE3DB4F6927700AA0B40BD1 /* VoiceRecorder.swift in Sources */,
 				FDC8B2CFDE3208F960F3684F /* VoiceViews.swift in Sources */,
 				848BB3C81AED479ACCA06199 /* WorkApprovalCard.swift in Sources */,
@@ -762,6 +777,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				93B583A67B77DCFFFC1BA2BC /* AgentStageMachineTests.swift in Sources */,
+				F59B15EB117C605B46FD434E /* ChatPageTests.swift in Sources */,
 				AFA5DFBEE74E600F1EC19067 /* Checks.swift in Sources */,
 				11B24F7A353D3C31A7CB43CF /* ComCoreTests.swift in Sources */,
 			);
@@ -875,7 +891,7 @@
 		};
 		3090500630AD48E73BFDF9C7 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_8E86F249-C29F-4CF6-903B-A7EFDAD7FEE2" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_888A771E-4B87-4B1F-AD79-A521F56AE11E" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1019,7 +1035,7 @@
 		};
 		77A0C5116CC8A0F0C01DCC13 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_8E86F249-C29F-4CF6-903B-A7EFDAD7FEE2" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_888A771E-4B87-4B1F-AD79-A521F56AE11E" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

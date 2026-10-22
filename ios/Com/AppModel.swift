@@ -69,6 +69,13 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var workJumpMessage: String?
     /// 别处（任务详情、项目看板、派活页）要打开的会话：RootView 接住，切到工作页原地打开。
     var selectedSession: JSON?
+    /// 审批推送的深链：直接打开对应的 Agent 会话，别让用户再自己找。
+    func openApproval(_ url: URL) {
+        let sid = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "sid" })?.value ?? ""
+        tab = .work
+        guard !sid.isEmpty else { return }
+        work.open(.object(["id": .string(sid), "agent": .string("codex")]))
+    }
     /// 10-17 航程：要打开的航程 id（聊天里的航程卡、今天页、推送深链都走这里，RootView 用 sheet 接住）；showCases 打开航程列表。
     var presentedCase: String?
     var showCases = false
@@ -609,6 +616,12 @@ enum SectionTab: String, CaseIterable, Identifiable {
         await voice.transcribe(using: api)
         #endif
         guard voice.phase == .ready, voice.captureID == capture, !voice.transcript.isEmpty else { return }
+        // 口述“停/取消”只结束这次说话，不进消息队列；录音随后清掉，避免下次呼出又带出旧话。
+        if VoiceCommands.isStop(voice.transcript) {
+            voice.cancel(); showQuickVoice = false
+            banner = "已按语音指令停止。"
+            return
+        }
         // Show the glyph reveal before entering the same durable text-message outbox.
         let text = voice.transcript
         // Auto-send is the quick 记账 path: a shorter reveal keeps the round trip snappy.

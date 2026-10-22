@@ -7,6 +7,9 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @AppStorage("appearance") private var appearance = "light"
+    @AppStorage("appLockEnabled") private var appLock = false
+    @AppStorage("voice.pauseToSend") private var voicePause = 0.9
+    @State private var showPairCode = false
     @State private var disconnecting = false
     @State private var notificationNote = ""
     var body: some View {
@@ -21,8 +24,15 @@ struct SettingsView: View {
                     }.buttonStyle(.quiet).rowPadding()
                     if !notificationNote.isEmpty { Text(notificationNote).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).rowPadding() }
                 }
-                settingsGroup(title: "快捷语音", footer: "设置 → 操作按钮 → 快捷指令 → Com 语音。首次使用需解锁并允许麦克风；打开即录音，带音量光效，确认转写后发送。") {
+                settingsGroup(title: "快捷语音", footer: "设置 → 操作按钮 → 快捷指令 → Com 语音。打开即录音；停顿达到设定时长自动转写并发送。说「停 / 取消 / 不用了」只会结束这次录音，不发送。") {
                     Button { dismiss(); model.openVoice(quick: true) } label: { NavigationRowLabel(title: "打开光效语音小窗", symbol: "waveform") }.buttonStyle(.row)
+                    HStack {
+                        Text("停顿多久自动发送").font(TypeScale.callout)
+                        Spacer()
+                        Picker("停顿多久自动发送", selection: $voicePause) {
+                            Text("0.6 秒").tag(0.6); Text("0.9 秒").tag(0.9); Text("1.2 秒").tag(1.2); Text("1.8 秒").tag(1.8)
+                        }.pickerStyle(.menu).tint(Palette.textSecondary)
+                    }.padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
                 }
                 settingsGroup(title: "外观", footer: "大字体、VoiceOver、减少动态效果和降低透明度跟随系统设置。") {
                     HStack {
@@ -32,12 +42,38 @@ struct SettingsView: View {
                             .pickerStyle(.menu).tint(Palette.textSecondary)
                     }.padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
                 }
+                settingsGroup(title: "隐私", footer: "开启后，离开 Com 超过 30 秒回来要先解锁；切到后台时先盖上，任务切换器里不会露出对话。只保护本机界面，不改变服务端权限。") {
+                    Toggle("应用锁（Face ID / 设备密码）", isOn: $appLock)
+                        .font(TypeScale.callout).tint(Palette.accentText)
+                        .padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
+                        .disabled(!AppLock.shared.available)
+                    if appLock {
+                        Button("立即上锁") { AppLock.shared.lockNow(); dismiss() }
+                            .buttonStyle(.quiet).frame(maxWidth: .infinity, alignment: .leading).rowPadding()
+                    }
+                    if !AppLock.shared.available {
+                        Text("这台设备还没有设置设备密码，无法使用应用锁。")
+                            .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).rowPadding()
+                    }
+                }
                 settingsGroup(title: "连接", footer: "手机退到后台后，任务继续在 mini 上执行。重新打开时会补取最新状态。") {
                     settingsRow(label: "服务", value: model.base)
                     settingsRow(label: "实时对话", value: model.streaming ? "已连接" : "缓存模式")
                     settingsRow(label: "手机能力", value: devices.connected ? "已连接" : "未连接")
                     if !devices.note.isEmpty { Text(devices.note).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).frame(maxWidth: .infinity, alignment: .leading).rowPadding() }
                     Button("刷新连接") { Task { await model.setActive(true) } }.buttonStyle(.quiet).frame(maxWidth: .infinity, alignment: .leading).rowPadding()
+                    Button { showPairCode = true } label: { NavigationRowLabel(title: "配对另一台设备", symbol: "qrcode") }.buttonStyle(.row)
+                }
+                settingsGroup(title: "服务器", footer: "只读诊断，不会重启或改动 mini。审批数、运行中会话和可用 Agent 来自 /status；磁盘是 mini 用户目录所在卷。") {
+                    let status = model.datasets["/status"] ?? .null
+                    settingsRow(label: "主机", value: status["host"].string.isEmpty ? "Mac mini" : status["host"].string)
+                    settingsRow(label: "已索引会话", value: "\(status["index"].int) · 运行中 \(status["running"].int)")
+                    settingsRow(label: "等你审批", value: "\(status["approvals"].int)")
+                    settingsRow(label: "可用 Agent", value: [status["agents"]["pi"].bool ? "Pi" : "", status["agents"]["codex"].bool ? "Codex" : ""].filter { !$0.isEmpty }.joined(separator: " / "))
+                    settingsRow(label: "磁盘余量", value: String(format: "%.1f GB", status["disk_free_gb"].double))
+                    settingsRow(label: "通知通道", value: status["push"].string.isEmpty ? "后台刷新" : status["push"].string)
+                    settingsRow(label: "已运行", value: "\(status["uptime"].int / 3600) 小时")
+                    Button("刷新服务器状态") { Task { _ = await model.load("/status") } }.buttonStyle(.quiet).frame(maxWidth: .infinity, alignment: .leading).rowPadding()
                 }
                 settingsGroup(title: "数据来源") {
                     NavigationLink { ConnectionsView() } label: { NavigationRowLabel(title: "管理数据连接", symbol: "link") }.buttonStyle(.row)
@@ -109,6 +145,7 @@ struct SettingsView: View {
                 .toolbarBackground(Palette.background, for: .navigationBar)
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
                 .confirmationDialog("解除配对后本机保留草稿与缓存", isPresented: $disconnecting, titleVisibility: .visible) { Button("解除配对", role: .destructive) { Task { await model.disconnect(); dismiss() } } }
+                .sheet(isPresented: $showPairCode) { PairCodeSheet() }
         }
     }
     @ViewBuilder private func settingsGroup(title: String, footer: String = "", @ViewBuilder content: () -> some View) -> some View {

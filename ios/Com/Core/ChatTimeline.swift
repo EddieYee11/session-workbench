@@ -28,3 +28,29 @@ public enum ChatTimeline {
         }
     }
 }
+
+
+/// 长会话的页：按字符预算取最近的若干行，最少 4 条、最多 60 条。
+/// 与 Redde 的 TranscriptPage 同一思路——内存和每次流式重排的成本跟着页面内容走，而不是条数。
+public enum ChatPage {
+    public static let standardBudget = 30_000
+    public static let minimumRows = 4
+    public static let maximumRows = 60
+
+    public static func weight(of row: ChatTimelineRow) -> Int {
+        row.message["text"].string.utf8.count + 250 + row.message["attachments"].array.count * 1_500
+    }
+
+    public static func weight(of rows: [ChatTimelineRow]) -> Int { rows.reduce(0) { $0 + weight(of: $1) } }
+
+    public static func window(_ rows: [ChatTimelineRow], budget: Int = standardBudget) -> [ChatTimelineRow] {
+        guard rows.count > minimumRows else { return rows }
+        var used = 0, count = 0
+        for row in rows.reversed() {
+            used += weight(of: row); count += 1
+            if count >= maximumRows { break }
+            if used >= budget && count >= minimumRows { break }
+        }
+        return Array(rows.suffix(count))
+    }
+}

@@ -1,8 +1,13 @@
-import os,sys,importlib,asyncio,json,hashlib
+import hashlib
+import importlib
+import json
+import sys
 from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 @pytest.fixture
 def service(tmp_path,monkeypatch):
@@ -274,3 +279,15 @@ def test_task_dismiss_archives_waiting_task_without_touching_worker(service,monk
                                           {'authorized':True,'source':'test','source_quote':'跑'},'dismiss-request-0002')
  app.task_store.change(running['id'],'dismiss-run-0001','dispatching','',status='running')
  assert c.post('/personal/tasks/'+running['id']+'/dismiss',headers=h,json={}).status_code>=400
+
+
+def test_pair_code_needs_auth_and_status_reports_health(service):
+ app,c=service
+ assert c.post('/pair/code').status_code==401
+ h={'Authorization':'Bearer '+app.TOKEN}
+ r=c.post('/pair/code',headers=h,json={})
+ assert r.status_code==200 and r.json()['expires_in']==600
+ saved=json.loads((app.STATE/'pairing.json').read_text())
+ assert saved['code']==r.json()['code'] and saved['expires']>0
+ status=c.get('/status',headers=h).json()
+ assert status['uptime']>=0 and status['running']>=0 and 'pi' in status['agents']

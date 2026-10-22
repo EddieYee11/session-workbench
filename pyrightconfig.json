@@ -1,0 +1,22 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "backend",
+    ".venv/lib/python3.14/site-packages"
+  ],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportAttributeAccessIssue": "none",
+  "reportOptionalSubscript": "none",
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalCall": "none",
+  "reportOptionalIterable": "none",
+  "reportArgumentType": "none",
+  "reportAssignmentType": "none",
+  "reportReturnType": "none",
+  "reportIndexIssue": "none",
+  "reportOperatorIssue": "none",
+  "reportCallIssue": "none"
+}

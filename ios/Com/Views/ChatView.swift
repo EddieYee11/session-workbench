@@ -20,13 +20,14 @@ struct ChatView: View {
     @State private var interacting = false
     @State private var followLatest = true
     @State private var timeline: [ChatTimelineRow] = []
-    @State private var historyWindow = 30
+    /// 分页按字符预算而不是条数：一屏长回复和十条短句不该占同样的内存。
+    @State private var historyBudget = ChatPage.standardBudget
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     @State private var positioned = false
     @State private var viewport = ChatViewport()
     /// r2-chat：点过的建议卡所在消息（点完立刻收起，不等服务端回执）。
     @State private var usedSuggestions: String?
-    private var rows: [ChatTimelineRow] { Array(timeline.suffix(historyWindow)) }
+    private var rows: [ChatTimelineRow] { ChatPage.window(timeline, budget: historyBudget) }
     private var assistants: Set<String> { Set(model.conversation.messages.filter { $0["role"].string == "assistant" }.map(\.id)) }
     var body: some View {
         ScrollViewReader { proxy in
@@ -36,18 +37,17 @@ struct ChatView: View {
             ZStack(alignment: .bottomTrailing) {
             ScrollView {
                 VStack(spacing: Space.xl) {
-                    if (historyWindow < timeline.count || model.moreHistory) && !model.conversation.messages.isEmpty {
+                    if (rows.count < timeline.count || model.moreHistory) && !model.conversation.messages.isEmpty {
                         Button(historyLoading ? "正在读取…" : "更早的对话") {
                             followLatest = false; manuallyReading = true
                             let anchor = rows.first(where: { viewport.visibleRows.contains($0.id) })?.id
                             historyLoading = true
                             Task {
-                                if historyWindow < timeline.count {
-                                    historyWindow += 30
+                                if rows.count < timeline.count {
+                                    historyBudget += ChatPage.standardBudget
                                 } else {
-                                    let count = timeline.count
                                     await model.loadHistory()
-                                    historyWindow += max(0, model.conversation.messages.count - count)
+                                    historyBudget += ChatPage.standardBudget
                                 }
                                 await Task.yield()
                                 if let anchor { proxy.scrollTo(anchor, anchor: .top) }
@@ -201,7 +201,7 @@ struct ChatView: View {
                 followLatest = false; manuallyReading = true
                 rebuildTimeline()
                 if let index = timeline.firstIndex(where: { $0.message.id == id }) {
-                    historyWindow = max(historyWindow, timeline.count - index)
+                    historyBudget = max(historyBudget, ChatPage.weight(of: Array(timeline[index...])))
                 }
                 let target = timeline.first(where: { $0.message.id == id })?.id ?? id
                 Task { @MainActor in
@@ -325,7 +325,7 @@ struct ChatView: View {
             // A new reply must not evict the first rendered row and shift the reader.
             // Grow this mounted page from its stable first identity; older pages load explicitly.
             if let first = rows.first?.id, let index = next.firstIndex(where: { $0.id == first }) {
-                historyWindow = max(historyWindow, next.count - index)
+                historyBudget = max(historyBudget, ChatPage.weight(of: Array(next[index...])))
             }
             timeline = next
         }

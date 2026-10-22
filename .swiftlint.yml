@@ -1,0 +1,5 @@
+# The app follows a compact, long-line house style (see Views/*.swift).
+line_length: 320
+disabled_rules:
+  - todo
+  - trailing_comma
