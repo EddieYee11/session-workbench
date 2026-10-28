@@ -14,6 +14,15 @@ final class ComCoreTests: XCTestCase {
         XCTAssertNil(after.first?.pending)
         XCTAssertEqual(after.first?.message.id, "server-id")
     }
+    func testParallelReplyNamesTheQuestionItAnswers() {
+        func row(_ id: String, _ role: String, _ at: Double, parent: String = "") -> JSON {
+            .object(["id": .string(id), "role": .string(role), "text": .string("问题" + id), "created_at": .number(at), "parent_id": .string(parent)])
+        }
+        let rows = ChatTimeline.rows(messages: [row("a", "user", 1), row("b", "user", 2), row("rb", "assistant", 3, parent: "b"), row("ra", "assistant", 4, parent: "a")], pending: [])
+        XCTAssertEqual(rows.map(\.message.id), ["a", "b", "rb", "ra"])
+        XCTAssertEqual(rows[2].message["answering"].string, "", "紧跟在问题后面的回复不用标")
+        XCTAssertEqual(rows[3].message["answering"].string, "问题a")
+    }
     func testIdenticalMessagesRemainSeparateRequests() {
         let first = PendingMessage(text: "记账 20 元")
         var second = PendingMessage(text: first.text)

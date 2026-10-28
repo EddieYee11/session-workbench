@@ -274,10 +274,9 @@ private struct MenuContent: View {
             row("记忆", "搜索、分类、纠正它记住的事", symbol: "brain") { model.showMemory = true }
             row("账本", ledger, symbol: "creditcard") { model.showFinance = true }
             row("连接器", connectorNote.0, symbol: "link", warning: connectorNote.1) { model.showConnectors = true }
-            // 10-18：原「看她的工作台」换成航程（Com 自己开的 session 和每一步操作）；下拉工作台的手势保留
-            row("航程", voyageNote, symbol: "location.north.line", warning: model.casesData["waiting"].int > 0) { model.showCases = true }
-            // 10-25 活动日志（Muse）：审批只拦删除之后，事后能看、能纠正
-            row("它做过的事", activityNote.0, symbol: "list.bullet.rectangle", warning: activityNote.1) { model.showActivity = true }
+            // 10-28：航程和「它做过的事」合成一页动态（ActivityFeedView）：做过的写操作 + 航程进展，事后能看、能纠正
+            row("动态", model.casesData["waiting"].int > 0 ? voyageNote : activityNote.0, symbol: "list.bullet.rectangle",
+                warning: activityNote.1 || model.casesData["waiting"].int > 0) { model.showActivity = true }
             row("设置", "", symbol: "slider.horizontal.3") { model.showSettings = true }
         }
         .padding(.vertical, Space.sm).padding(.horizontal, Space.sm)

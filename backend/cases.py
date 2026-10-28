@@ -384,7 +384,37 @@ class Cases:
                 'result': task.get('result', '') if task.get('status') in ('execution_finished', 'failed', 'cancelled') else '',
                 'inputs': [{'text': i['text'][:500], 'state': i['state'], 'at': i['updated_at']} for i in task.get('inputs', [])],
                 'todo_path': case.get('todo_path', ''), 'can_send': task.get('status') in ('queued', 'paused', 'running', 'waiting', 'unknown'),
-                'can_cancel': task.get('status') in ('queued', 'paused', 'running', 'waiting', 'unknown', 'dispatching')}
+                'can_cancel': task.get('status') in ('queued', 'paused', 'running', 'waiting', 'unknown', 'dispatching'),
+                'acceptance': self.acceptance(task, case)}
+
+    @staticmethod
+    def acceptance(task, case):
+        """验收工作台（10-28）：每条完成条件有没有真实证据、证据从哪来、哪条只能 Eddie 现场确认，加上语义评审的结论和缺口。
+        证据只认 verification.py 记下的检查（文件 / 测试）和 Pi 用 case_progress 报的 evidence，不认执行者自述。"""
+        result = task.get('structured_result') or {}
+        checks = [e for e in result.get('evidence', []) if isinstance(e, dict)]
+        reported = [e for e in case.get('evidence', []) if isinstance(e, (dict, str))]
+        finished = task.get('status') in ('execution_finished', 'failed', 'cancelled')
+        criteria = []
+        for c in task.get('acceptance_criteria', []) or []:
+            if not isinstance(c, dict) or not c.get('id'):
+                continue
+            proof = [{'reference': str(e.get('reference', ''))[:300], 'check': e.get('check', '')} for e in checks if e.get('criterion_id') == c['id'] and e.get('passed') is not False]
+            text = str(c.get('description') or c.get('text') or c['id'])[:300]
+            # 现场类（上线、重启、授权、看手机）机器验不了，结束后仍没证据就交给他
+            manual = bool(re.search(r'授权|上线|重启|真机|手机上|现场|人工确认|Eddie', text))
+            criteria.append({'id': c['id'], 'text': text, 'covered': bool(proof), 'evidence': proof,
+                             'state': 'covered' if proof else 'manual' if manual and finished else 'missing'})
+        review = task.get('quality_review') or {}
+        return {
+            'completion': str((task.get('work_brief') or {}).get('completion_condition') or case.get('completion') or '')[:400],
+            'status': task.get('verification_status') or ('pending' if not finished else 'unverified'),
+            'criteria': criteria,
+            'reported': [(e if isinstance(e, str) else str(e.get('text') or e.get('reference') or ''))[:200] for e in reported][:12],
+            'review': {'verdict': review.get('verdict', ''), 'reason': str(review.get('reason', ''))[:600],
+                       'gaps': [g.get('missing_evidence', '')[:300] for g in review.get('evidence_gaps', []) if isinstance(g, dict)][:8],
+                       'next_steps': [str(x)[:300] for x in review.get('next_steps', [])][:5]} if review else None,
+        }
 
     # ---------- 中途插话 / 取消 ----------
 

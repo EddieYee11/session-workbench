@@ -52,6 +52,11 @@ import ComCore
         /// 回复：这一轮第一条回复上面挂头像和名字。
         var header = false
         var outgoing: Outgoing?
+        /// 10-28：这一轮 Agent 自己记的 todo 清单（Pi todo / Claude todo-card·TodoWrite / Codex update_plan），挂在这一轮最后一段步骤上，画成时间轴。
+        var plan: TurnPlan?
+        var planLive = false
+        /// 这一轮动用的工具（不含记清单本身），时间轴上挂在进行中那一步下面。
+        var planTools: [WorkGroup] = []
     }
 
     // MARK: 读
@@ -290,12 +295,133 @@ import ComCore
             }
         }
         flush(live: running)
+        attachPlans(&out, running: running)
         for item in outgoing where !echoed.contains(item.requestID) {
             out.append(Row(id: "request:" + item.requestID, kind: .user,
                            message: .object(["id": .string("request:" + item.requestID), "role": .string("user"), "text": .string(item.text), "time": .number(item.createdAt)]),
                            outgoing: item))
         }
         return out
+    }
+
+    // MARK: todo 清单 → 时间轴
+
+    /// 按轮（两句我的话之间）回放 Agent 记清单的工具调用；这一轮动过清单，就把清单快照挂到这一轮最后一段步骤上。
+    /// 清单状态跨轮延续（Pi 的 todo 是整段会话一份），只在动过它的那一轮露出来。
+    static func attachPlans(_ rows: inout [Row], running: Bool) {
+        var board = PlanBoard()
+        var turnStart = 0
+        func close(_ end: Int, last: Bool) {
+            guard end > turnStart else { return }
+            var touched = false, tools: [WorkGroup] = []
+            for index in turnStart..<end where rows[index].kind == .steps {
+                for step in rows[index].steps {
+                    let name = step["title"].string.components(separatedBy: " · ").first ?? ""
+                    if board.apply(name, step["text"].string, at: step["time"].double) { touched = true; continue }
+                    guard step["role"].string == "tool", name != "工具输出", !PlanBoard.isPlanTool(name), let kind = StepKind.of(name) else { continue }
+                    let item = WorkStep(id: step.id, tool: name, kind: kind, status: "done", startedAt: step["time"].double, finishedAt: step["time"].double)
+                    if let tail = tools.last, tail.kind == kind { tools[tools.count - 1].steps.append(item) } else { tools.append(WorkGroup(kind: kind, steps: [item])) }
+                }
+            }
+            guard touched, !board.items.isEmpty, let target = (turnStart..<end).last(where: { rows[$0].kind == .steps }) else { return }
+            let live = last && running
+            if live, let tail = tools.last, var step = tail.steps.last {
+                step = WorkStep(id: step.id, tool: step.tool, kind: step.kind, status: "running", startedAt: step.startedAt, finishedAt: 0)
+                tools[tools.count - 1].steps[tail.steps.count - 1] = step
+            }
+            rows[target].plan = board.plan(live: live)
+            rows[target].planLive = live
+            rows[target].planTools = tools
+        }
+        for index in rows.indices where rows[index].kind == .user {
+            close(index, last: false)
+            turnStart = index + 1
+        }
+        close(rows.count, last: true)
+    }
+
+    /// 回放清单工具调用的小状态机。认得三家的写法：
+    /// Pi `todo` {action: add/start/complete/clear, id, text, activeForm}；Claude `mcp__todo-card__plan` {todos | updates} 与 `TodoWrite` {todos}；Codex `update_plan` {plan:[{step,status}]}。
+    struct PlanBoard {
+        struct Item { var id: String; var text: String; var active: String; var status: String; var added: Double; var startedAt = 0.0; var doneAt = 0.0 }
+        var items: [Item] = []
+
+        static func status(_ raw: String) -> String {
+            ["completed": "done", "complete": "done", "done": "done", "in_progress": "doing", "doing": "doing", "blocked": "blocked", "skipped": "skipped"][raw] ?? "todo"
+        }
+
+        static func isPlanTool(_ tool: String) -> Bool {
+            ["todo", "TodoWrite", "update_plan"].contains(tool) || (tool.contains("todo-card") && tool.hasSuffix("__plan"))
+        }
+
+        /// 是清单调用就吃下并返回 true（同名工具的输出行解析不出参数，返回 false）。
+        mutating func apply(_ tool: String, _ arguments: String, at time: Double) -> Bool {
+            guard Self.isPlanTool(tool), let data = arguments.data(using: .utf8), let args = try? JSON.decode(data), !args.object.isEmpty else { return false }
+            let short = tool.split(separator: "__").last.map(String.init) ?? tool
+            if short == "todo" {
+                let id = args["id"].string
+                switch args["action"].string {
+                case "add":
+                    let next = (items.compactMap { Int($0.id) }.max() ?? 0) + 1
+                    items.append(Item(id: String(next), text: args["text"].string, active: args["activeForm"].string, status: "todo", added: time))
+                case "start": set(id, "doing", at: time)
+                case "complete": set(id, "done", at: time)
+                case "clear": items = []
+                case "list": break
+                default: return false
+                }
+            } else if short == "update_plan" {
+                let plan = args["plan"].array
+                guard !plan.isEmpty else { return false }
+                replace(plan.enumerated().map { index, p in (String(index + 1), p["step"].string, "", Self.status(p["status"].string)) }, at: time)
+            } else if !args["todos"].array.isEmpty {
+                replace(args["todos"].array.enumerated().map { index, t in
+                    (t["id"].isNull ? String(index + 1) : t["id"].string, t["content"].string, t["activeForm"].string, Self.status(t["status"].string))
+                }, at: time)
+            } else if !args["updates"].array.isEmpty {
+                for update in args["updates"].array { set(update["id"].string, Self.status(update["status"].string), at: time) }
+            } else { return false }
+            return true
+        }
+
+        private mutating func set(_ id: String, _ status: String, at time: Double) {
+            guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+            mark(index, status, at: time)
+        }
+
+        /// 整张清单重写（Claude / Codex 的写法）：同一句话的条目保留它原来的起止时间。
+        private mutating func replace(_ list: [(String, String, String, String)], at time: Double) {
+            let old = items
+            items = list.map { id, text, active, status in
+                var item = old.first { $0.text == text } ?? Item(id: id, text: text, active: active, status: "todo", added: time)
+                item.id = id; item.active = active
+                return item
+            }
+            for (index, entry) in list.enumerated() { mark(index, entry.3, at: time) }
+        }
+
+        private mutating func mark(_ index: Int, _ status: String, at time: Double) {
+            let before = items[index].status
+            items[index].status = status
+            if status == "doing" && before != "doing" { items[index].startedAt = time }
+            if status == "done" && before != "done" {
+                // Pi 常常不报 start：从上一步做完（或加进清单）算起
+                if items[index].startedAt == 0 { items[index].startedAt = max(items[index].added, items.filter { $0.doneAt > 0 }.map(\.doneAt).max() ?? 0) }
+                items[index].doneAt = time
+            }
+        }
+
+        /// 当前快照。在跑但谁也没标「进行中」时，把下一条没做的当成进行中（Pi 不报 start 时也有动画）。
+        func plan(live: Bool) -> TurnPlan {
+            var list = items
+            if live, !list.contains(where: { $0.status == "doing" }), let next = list.firstIndex(where: { $0.status == "todo" }) {
+                list[next].status = "doing"
+                list[next].startedAt = max(list[next].added, list.filter { $0.doneAt > 0 }.map(\.doneAt).max() ?? 0)
+            }
+            let steps = list.map { TodoStep(id: $0.id, text: $0.text, status: $0.status, startedAt: $0.startedAt, doneAt: $0.doneAt) }
+            let active = list.first { $0.status == "doing" }.map { $0.active.isEmpty ? $0.text : $0.active } ?? ""
+            return TurnPlan(title: "", steps: steps, active: active)
+        }
     }
 }
 
@@ -330,10 +456,26 @@ extension WorkSessionModel {
         }
         base.append(.object(["id": .string("echo-" + request), "role": .string("user"), "text": .string(text), "request_id": .string(request), "time": .number(Date().timeIntervalSince1970)]))
         publish(base, status: "running")
-        let tools = [("rg", "rg -n \"选题\" work/内容生产"), ("read_file", "work/内容生产/选题管理/README.md")]
+        var tools = [("rg", "rg -n \"选题\" work/内容生产"), ("read_file", "work/内容生产/选题管理/README.md")]
+        // `--ui-work-plan`：Pi 式 todo 清单，验收工作页的时间轴（每步停久一点，方便截帧看动画）
+        let planned = ProcessInfo.processInfo.arguments.contains("--ui-work-plan")
+        if planned {
+            tools = [("todo", #"{"action":"add","text":"盘点本周选题","activeForm":"盘点本周选题"}"#),
+                     ("todo", #"{"action":"add","text":"核对每个选题的素材","activeForm":"核对素材"}"#),
+                     ("todo", #"{"action":"add","text":"整理成一句话清单","activeForm":"整理清单"}"#),
+                     ("todo", #"{"action":"start","id":1}"#), ("rg", "rg -n \"选题\" work/内容生产"),
+                     ("todo", #"{"action":"complete","id":1}"#), ("todo", #"{"action":"start","id":2}"#),
+                     ("read_file", "work/内容生产/选题管理/README.md"), ("ls", "ls work/内容生产/素材"),
+                     ("todo", #"{"action":"complete","id":2}"#), ("todo", #"{"action":"start","id":3}"#)]
+        }
         for (index, tool) in tools.enumerated() {
-            try? await Task.sleep(for: .milliseconds(700))
+            try? await Task.sleep(for: .milliseconds(planned && tool.0 != "todo" ? 6000 : 700))
             base.append(.object(["id": .string("tool-\(request)-\(index)"), "role": .string("tool"), "title": .string(tool.0), "text": .string(tool.1), "time": .number(Date().timeIntervalSince1970)]))
+            publish(base, status: "running")
+        }
+        if planned {
+            try? await Task.sleep(for: .milliseconds(6000))
+            base.append(.object(["id": .string("tool-\(request)-done"), "role": .string("tool"), "title": .string("todo"), "text": .string(#"{"action":"complete","id":3}"#), "time": .number(Date().timeIntervalSince1970)]))
             publish(base, status: "running")
         }
         let reply = "看完了。本周的选题一共 **3 个**，素材都已经在对应目录里：\n\n- **岩馆探馆**：素材齐了，差一段开场口播\n- **AI 调色**：还缺两段对比镜头\n- **川西摩旅**：可以直接剪\n\n要我先把探馆那支的口播稿写出来吗？"

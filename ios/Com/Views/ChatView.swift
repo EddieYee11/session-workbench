@@ -254,7 +254,7 @@ struct ChatView: View {
                         HStack(spacing: Space.xs) {
                             Image(systemName: "stop.circle.fill")
                                 .font(.system(size: 16, weight: .semibold))
-                            Text("中断")
+                            Text(model.activeRuns.count > 1 ? "全部中断 · \(model.activeRuns.count) 件在并行" : "中断")
                                 .font(TypeScale.callout.weight(.semibold))
                         }
                         .foregroundStyle(Palette.coral)
@@ -414,6 +414,15 @@ struct MessageView: View, Equatable {
                     .background(Palette.fill, in: .rect(cornerRadius: Radius.sm, style: .continuous))
                     .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 2).fill(Palette.accent).frame(width: 3).padding(.vertical, Space.sm).padding(.leading, 6) }
             }
+            if !user && !message["answering"].string.isEmpty {
+                // 并行：这条回复对应的是更早那个问题。
+                Label("回复：" + message["answering"].string.split(separator: "\n").joined(separator: " "), systemImage: "arrowshape.turn.up.left")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).lineLimit(1)
+                    .padding(.horizontal, Space.sm + 2).padding(.vertical, Space.xs + 1).background(Palette.fill, in: .capsule)
+                    .onTapGesture { model.jumpMessage = message["parent_id"].string }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityIdentifier("agent-answering-" + message.id)
+            }
             if user {
                 // 我的话：反色气泡。
                 Text(text).font(TypeScale.callout).textSelection(.enabled).userBubble()
@@ -435,6 +444,12 @@ struct MessageView: View, Equatable {
                 }
             }
             if user { deliveryStatus }
+            if user && model.activeRuns.count > 1 && ["sending", "running"].contains(message["status"].string) {
+                // 并行时每件可以单独停，不影响另外在跑的。
+                Button { Task { await model.interrupt(messageID: message.id) } } label: {
+                    Label("停下这件", systemImage: "stop.circle").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.coral)
+                }.buttonStyle(.plain).accessibilityIdentifier("chat-stop-" + message.id)
+            }
             if !message["error"].string.isEmpty { InlineNotice(text: message["error"].string) }
             ForEach(message["linked_tasks"].array.map(RemoteRow.init)) { row in
                 Button { model.selectedTask = row.value } label: { TaskSummary(task: row.value) }.buttonStyle(.plain).detailSource("task-" + row.id)

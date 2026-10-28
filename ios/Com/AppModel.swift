@@ -490,12 +490,12 @@ enum SectionTab: String, CaseIterable, Identifiable {
             banner = "审批没有送达：" + error.localizedDescription
         }
     }
-    func interrupt() async {
-        guard let api, stage.state.isBusy else { return }
+    func interrupt(messageID: String? = nil) async {
+        guard let api, stage.state.isBusy || messageID != nil else { return }
         do {
-            _ = try await api.request("/personal/conversation/interrupt", body: .object([:]))
-            stage.receive("task.progress", .object(["kind": .string("idle")]))
-            banner = "已中断"
+            _ = try await api.request("/personal/conversation/interrupt", body: .object(messageID.map { ["message_id": .string($0)] } ?? [:]))
+            if messageID == nil || activeRuns.count <= 1 { stage.receive("task.progress", .object(["kind": .string("idle")])) }
+            banner = messageID == nil ? "已中断" : "已停下这件，其它的照常进行"
         } catch {
             banner = "中断失败: \(error.localizedDescription)"
         }
@@ -792,10 +792,24 @@ extension AppModel {
             ])])
         datasets["/personal/activity"] = .object([
             "uncertain": .array([.object(["key": .string("eff-1"), "summary": .string("记账 ¥38 餐饮 午饭"), "at": .number(Date().timeIntervalSince1970 - 3600), "source": .string("午饭 38 记一下")])]),
-            "items": .array([
-                .object(["key": .string("eff-1"), "summary": .string("记账 ¥38 餐饮 午饭"), "state": .string("uncertain"), "at": .number(Date().timeIntervalSince1970 - 3600), "source": .string("午饭 38 记一下")]),
-                .object(["key": .string("eff-2"), "summary": .string("日程新建「周会」2026-10-27 10:00"), "state": .string("completed"), "at": .number(Date().timeIntervalSince1970 - 7200), "source": .string("周一十点周会加一下")]),
-                .object(["key": .string("eff-3"), "summary": .string("改文件 报告.md"), "state": .string("failed"), "at": .number(Date().timeIntervalSince1970 - 9000), "source": .string("航程 · 整理周报")])]),
+            "items": .array({
+                // 10-28 动态页验收：带 tool / type / detail / message_id，含一组同一句话里连着的命令（应合成一条）
+                let now = Date().timeIntervalSince1970
+                func eff(_ key: String, _ tool: String, _ type: String, _ summary: String, _ state: String, _ ago: Double, _ source: String, _ msg: String, _ detail: [String: String] = [:]) -> JSON {
+                    .object(["key": .string(key), "tool": .string(tool), "type": .string(type), "summary": .string(summary), "state": .string(state), "at": .number(now - ago),
+                             "source": .string(source), "message_id": .string(msg), "detail": .object(detail.mapValues { JSON.string($0) }), "seq": .number(100 - ago / 60)])
+                }
+                return [
+                    eff("eff-0", "wechat_send", "outbound", "发微信给「大有可攀筹备群」", "completed", 240, "跟群里说展车 7 点出发", "m0", ["to": "大有可攀筹备群", "text": "展车 7 点从 4S 店出发，预计 8 点前到北顶"]),
+                    eff("eff-1", "bookkeeping", "ledger", "记账 ¥38 餐饮 午饭", "uncertain", 3600, "午饭 38 记一下", "m1", ["action": "add", "amount": "38", "category": "餐饮", "note": "午饭"]),
+                    eff("eff-2", "calendar_event", "schedule", "日程新建「周会」2026-10-27 10:00", "completed", 7200, "周一十点周会加一下", "m2", ["action": "add", "title": "周会", "start": "2026-10-27 10:00"]),
+                    eff("eff-3a", "bash", "work", "运行命令 ls work/航程产出", "completed", 9000, "把航程产出整理一下", "m3", ["command": "ls work/航程产出"]),
+                    eff("eff-3b", "bash", "work", "运行命令 mkdir -p work/航程产出/归档", "completed", 9010, "把航程产出整理一下", "m3", ["command": "mkdir -p work/航程产出/归档"]),
+                    eff("eff-3c", "bash", "work", "运行命令 mv 旧产出 归档/", "failed", 9020, "把航程产出整理一下", "m3", ["command": "mv 旧产出 归档/"]),
+                    eff("eff-4", "remind", "schedule", "提醒新建「交八月报销」明天 10:30", "confirmed", 90000, "明天提醒我交报销", "m4", ["action": "add", "title": "交八月报销", "at": "10:30"]),
+                    eff("eff-5", "bookkeeping", "ledger", "记账 ¥72.3 其他收入 手机壳退款", "completed", 100000, "手机壳退款到了 72.3", "m5", ["action": "add", "amount": "72.3", "category": "其他收入"]),
+                ]
+            }()),
             "wechat": .array([.object(["key": .string("next:a"), "text": .string("【Com】现在该做：回复王总的排期邮件"), "at": .number(Date().timeIntervalSince1970 - 1200), "state": .string("sent")])])])
         // 验收用：COM_FIXTURE_DIR 里放后端真实返回（memory.json / sessions.json / projects.json），按真实数据量看排版。
         if let dir = ProcessInfo.processInfo.environment["COM_FIXTURE_DIR"] {

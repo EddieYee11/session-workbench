@@ -144,6 +144,7 @@ project_board = ProjectBoard(STATE)
 agency.project_board = project_board
 from health_insight import HealthInsight
 from news import News
+from aihot import AIHot
 from next_steps import INSTRUCTIONS as NEXT_INSTRUCTIONS
 from next_steps import NextSteps
 
@@ -755,7 +756,14 @@ async def personal_message(request: Request):
 
 
 @app.post("/personal/conversation/interrupt")
-async def interrupt_conversation():
+async def interrupt_conversation(request: Request):
+    # 10-28 并行：带 message_id 只停那一轮（含 Hermes 那边的运行），不带就停全部在跑的轮次。
+    data = await request.json() if int(request.headers.get("content-length") or 0) else {}
+    message_id = data.get("message_id") if isinstance(data, dict) and isinstance(data.get("message_id"), str) else None
+    if conversation.parallel:
+        stopped = await conversation.interrupt(message_id)
+        conversation.wake.set()
+        return {"status": "interrupted", "stopped": stopped, "message": "Agent execution interrupted"}
     await conversation.stop()
     # stop() 取消了投递循环（task/background_task 置空）；不重启的话中断一次之后
     # 主对话不再投递任何消息，直到服务重启。start() 自身幂等，重复调用无副作用。
@@ -2254,8 +2262,9 @@ async def personal_next_refresh():
 
 # 10-25 活动日志：它替你做过的写操作；结果不确定的可以确认「做成了 / 没做成 / 不对」
 @app.get("/personal/activity")
-async def personal_activity(limit: int = 60):
-    return {"items": await asyncio.to_thread(activity.items, max(1, min(limit, 200))), "uncertain": await asyncio.to_thread(activity.uncertain),
+async def personal_activity(limit: int = 60, since: int = 0):
+    # since = 客户端已有的最大 seq：动态页增量拉取（10-28）
+    return {"items": await asyncio.to_thread(activity.items, max(1, min(limit, 200)), max(0, since)), "uncertain": await asyncio.to_thread(activity.uncertain),
             "wechat": notifications.wechat_log(10)}
 
 
@@ -2287,6 +2296,18 @@ async def personal_runsheet(request: Request):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {**entry, "path": str(runsheets.workspace / entry["path"])}
+
+
+aihot = AIHot(STATE)
+
+
+@app.get("/personal/hot")
+async def personal_hot(refresh: bool = False):
+    """热点板块：AIHOT 多源热点 + 24 小时精选（15 分钟缓存，refresh=1 强制重抓）。"""
+    try:
+        return await aihot.snapshot(refresh)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @app.post("/personal/news/{ident}")

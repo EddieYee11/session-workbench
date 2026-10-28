@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from policy import action_is_readonly, assignment, bookkeeping_details, deletion_risk, recoverable_remove, source
-from activity import summarize
+from activity import detail as effect_detail, summarize
 from task_tools import authorized_assignment, record_constraint
 
 REMOVAL = re.compile(r"删|去掉|移除|撤销|撤回|取消|作废|清掉|清除|不要了|重记|重新记|改成|换成|改为|改到|挪到")
@@ -469,6 +469,7 @@ class AgentTools:
                                 # 10-25 活动日志：记下做了什么、什么时候，给 Eddie 事后核对（activity.py）
                                 "tool": tool,
                                 "summary": summarize(tool, params),
+                                "detail": effect_detail(tool, params),
                                 "at": time.time(),
                                 **({"rayneo_expense": True} if glasses and tool == "bookkeeping" and params.get("action") == "add" else {}),
                                 **({"rayneo_creation": tool} if glasses and tool in ("remind", "calendar_event") and params.get("action") in ("add", "create") else {}),

@@ -22,9 +22,23 @@ public enum ChatTimeline {
                 "created_at": .number(entry.createdAt.timeIntervalSince1970), "reference": entry.body["reference"], "attachments": .array(attachments)])
             result.append(ChatTimelineRow(id: "request:" + entry.id, message: message, pending: entry))
         }
-        return result.sorted {
+        let sorted = result.sorted {
             let a = $0.message["created_at"].double, b = $1.message["created_at"].double
             return a == b ? $0.id < $1.id : a < b
+        }
+        return answering(sorted)
+    }
+
+    /// 并行（10-28）：一条回复前面隔着别的消息时，给它带上 answering = 原问题，界面上标「回复：…」。
+    static func answering(_ rows: [ChatTimelineRow]) -> [ChatTimelineRow] {
+        let questions = Dictionary(rows.filter { $0.message["role"].string == "user" }.map { ($0.message.id, $0.message["text"].string) }, uniquingKeysWith: { a, _ in a })
+        return rows.enumerated().map { index, row in
+            let parent = row.message["parent_id"].string
+            guard row.message["role"].string == "assistant", !parent.isEmpty, let question = questions[parent],
+                  index > 0, rows[index - 1].message.id != parent,
+                  case .object(var fields) = row.message else { return row }
+            fields["answering"] = .string(question)
+            return ChatTimelineRow(id: row.id, message: .object(fields), pending: row.pending)
         }
     }
 }

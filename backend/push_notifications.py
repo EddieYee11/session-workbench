@@ -240,13 +240,16 @@ class PushNotifications:
                     since = (str(self.clock()),)
                 devices.append({"id": "bark", "registered": self._number(since[0])})
             with self.conversation.db() as chat:
-                messages = [dict(r) for r in chat.execute("SELECT id,request_id,revision,created_at FROM messages WHERE revision>? AND role='assistant' AND status='completed' ORDER BY revision LIMIT 100", (cursor,))]
+                messages = [dict(r) for r in chat.execute("SELECT m.id,m.request_id,m.revision,m.created_at,m.updated_at,p.created_at AS asked_at FROM messages m LEFT JOIN messages p ON p.id=m.parent_id"
+                                                          " WHERE m.revision>? AND m.role='assistant' AND m.status='completed' ORDER BY m.revision LIMIT 100", (cursor,))]
             for message in messages:
                 for device in devices:
                     if message["created_at"] < device["registered"]:
                         continue
                     # Bark 不知道 App 是否在前台：只推主动消息（简报、提醒、任务回执），不推当面对话的回复。
-                    if device["id"] == "bark" and not str(message["request_id"] or "").startswith("task-result:"):
+                    # 10-28 并行：跑了 2 分钟以上的一轮，人多半已经去干别的了，回复好了也推一下。
+                    long_turn = message["asked_at"] is not None and message["updated_at"] - message["asked_at"] >= 120
+                    if device["id"] == "bark" and not str(message["request_id"] or "").startswith("task-result:") and not long_turn:
                         continue
                     ident = str(uuid.uuid5(uuid.NAMESPACE_URL, device["id"] + ":" + message["id"]))
                     db.execute("INSERT OR IGNORE INTO outbox VALUES (?,?,?,?,?,?,?,?)", (ident, message["id"], device["id"], "queued", 0, self.clock(), self.clock(), ""))

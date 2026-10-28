@@ -157,7 +157,7 @@ private struct WorkRow: View {
         switch row.kind {
         case .user: WorkUserBubble(row: row, flying: flying)
         case .reply: WorkReply(message: row.message, agent: agent, header: row.header)
-        case .steps: WorkStepsRow(steps: row.steps, live: row.live)
+        case .steps: WorkStepsRow(steps: row.steps, live: row.live, plan: row.plan, planLive: row.planLive, planTools: row.planTools)
         }
     }
 }
@@ -256,8 +256,20 @@ private struct WorkMessageActions: View {
 private struct WorkStepsRow: View {
     let steps: [JSON]
     let live: Bool
+    /// 10-28：Agent 这一轮记了 todo 清单 → 和主聊天一样画成时间轴，跑着时摊开、做完折起。
+    var plan: TurnPlan? = nil
+    var planLive = false
+    var planTools: [WorkGroup] = []
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var open = false
+    @State private var open: Bool
+    init(steps: [JSON], live: Bool, plan: TurnPlan? = nil, planLive: Bool = false, planTools: [WorkGroup] = []) {
+        self.steps = steps
+        self.live = live
+        self.plan = plan
+        self.planLive = planLive
+        self.planTools = planTools
+        _open = State(initialValue: planLive && plan != nil)
+    }
     /// 工具的输出行跟着它的调用，不单独算一步。
     private var calls: [JSON] {
         let made = steps.filter { Self.tool($0) != "工具输出" }
@@ -279,8 +291,13 @@ private struct WorkStepsRow: View {
                 .accessibilityHint(open ? "收起步骤" : "展开全部步骤")
             if open {
                 VStack(alignment: .leading, spacing: Space.xs) {
-                    ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
-                        line(group, running: live && index == groups.count - 1)
+                    if let plan {
+                        TodoTimeline(steps: plan.steps, groups: planTools, live: planLive)
+                        Text("动用了 \(calls.count) 次工具").font(.caption2).foregroundStyle(Palette.textTertiary).padding(.leading, 26)
+                    } else {
+                        ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                            line(group, running: live && index == groups.count - 1)
+                        }
                     }
                 }
                 .padding(.leading, 6).padding(.top, Space.sm).padding(.bottom, Space.xs)
@@ -290,10 +307,24 @@ private struct WorkStepsRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Space.xs)
+        .onChange(of: planLive) { _, now in
+            guard plan != nil else { return }
+            withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = now }
+        }
+        .onChange(of: plan != nil) { _, has in
+            if has && planLive { withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = true } }
+        }
     }
     @ViewBuilder private var header: some View {
         HStack(spacing: Space.sm) {
-            if live, let last = calls.last {
+            if planLive, let plan {
+                WorkPulse()
+                Text("\(plan.done)/\(plan.steps.count)").font(.caption2.monospacedDigit()).foregroundStyle(Palette.textTertiary)
+                Text(plan.active.isEmpty ? "接着往下做" : plan.active)
+                    .font(TypeScale.subheadline.weight(.medium)).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                    .contentTransition(.opacity)
+                    .animation(reduce ? nil : .smooth(duration: 0.3), value: plan.active)
+            } else if live, let last = calls.last {
                 WorkPulse()
                 let kind = Self.kind(last)
                 let seed = last.id.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xFFFF }
@@ -301,6 +332,9 @@ private struct WorkStepsRow: View {
                     .font(TypeScale.subheadline.weight(.medium)).foregroundStyle(Palette.textPrimary).lineLimit(1)
                     .contentTransition(.opacity)
                     .animation(reduce ? nil : .smooth(duration: 0.3), value: last.id)
+            } else if let plan {
+                Image(systemName: "checklist").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
+                Text("清单 \(plan.done)/\(plan.steps.count) · " + summary).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
             } else {
                 Image(systemName: "checkmark.circle").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
                 Text(summary).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)

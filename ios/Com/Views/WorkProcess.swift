@@ -369,14 +369,13 @@ struct TodoTimeline: View {
                     if !subs.isEmpty {
                         SubstepBranch(groups: subs)
                     } else if !last {
-                        Color.clear.frame(height: 8)
+                        Color.clear.frame(height: doing ? 14 : 8)
                     }
                 }
                 .background(alignment: .topLeading) {
                     if !last && subs.isEmpty {  // 有分支时由分支线接到下一步
-                        Rectangle().fill(lit ? Palette.accent : Palette.separator)
-                            .frame(width: 1.5).padding(.top, 19).padding(.bottom, -3)
-                            .offset(x: Self.column / 2 - 0.75)
+                        ConnectorLine(lit: lit, flowing: doing, animated: live)
+                            .frame(width: Self.column).padding(.top, 19).padding(.bottom, -3)
                     }
                 }
                 .animation(reduce ? nil : .smooth(duration: 0.3), value: step.status)
@@ -435,20 +434,29 @@ private struct TimelineNode: View {
         ZStack {
             switch status {
             case "done":
-                Circle().fill(Palette.accent).frame(width: 17, height: 17)
-                Image(systemName: "checkmark").font(.system(size: 8.5, weight: .heavy)).foregroundStyle(Palette.onAccent)
+                ZStack {
+                    Circle().fill(Palette.accent).frame(width: 17, height: 17)
+                    Image(systemName: "checkmark").font(.system(size: 8.5, weight: .heavy)).foregroundStyle(Palette.onAccent)
+                }
+                .transition(.scale(scale: 0.55).combined(with: .opacity).animation(.spring(response: 0.42, dampingFraction: 0.62)))
             case "doing" where live:
-                // 参考视频：浅底盘 + 实心中心点 + 外圈约 1/4 圈的弧，0.85 秒转一圈
+                // 参考视频：浅底盘 + 实心中心点 + 外圈一段弧在转。
+                // 10-28 三轮：弧长随呼吸伸缩（1.9 秒一口气）、中心点同步轻轻起伏，转速不变，读起来是「活的」而不是机械转圈。
                 Circle().fill(Palette.accent.opacity(0.32)).frame(width: 18, height: 18)
                 Circle().strokeBorder(Palette.accentText.opacity(0.18), lineWidth: 1.8).frame(width: 18, height: 18)
-                Circle().fill(Palette.accentText).frame(width: 7, height: 7)
                 TimelineView(.animation(paused: reduce)) { context in
-                    let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.85) / 0.85
-                    Circle().inset(by: 0.9).trim(from: 0, to: 0.28)
-                        .stroke(Palette.accentText, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
-                        .frame(width: 18, height: 18)
-                        .rotationEffect(.degrees(reduce ? -90 : turn * 360 - 90))
+                    let now = context.date.timeIntervalSinceReferenceDate
+                    let turn = now.truncatingRemainder(dividingBy: 0.95) / 0.95
+                    let breath = 0.5 - 0.5 * cos(now.truncatingRemainder(dividingBy: 1.9) / 1.9 * 2 * .pi)
+                    ZStack {
+                        Circle().fill(Palette.accentText).frame(width: 7, height: 7).scaleEffect(reduce ? 1 : 0.86 + 0.14 * breath)
+                        Circle().inset(by: 0.9).trim(from: 0, to: reduce ? 0.28 : 0.16 + 0.22 * breath)
+                            .stroke(Palette.accentText, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                            .frame(width: 18, height: 18)
+                            .rotationEffect(.degrees(reduce ? -90 : turn * 360 - 90))
+                    }
                 }
+                .transition(.opacity)
             case "doing":
                 Image(systemName: "circle.dotted").font(.system(size: 15, weight: .medium)).foregroundStyle(Palette.textTertiary)
             case "blocked":
@@ -464,7 +472,7 @@ private struct TimelineNode: View {
     }
 }
 
-/// 文字上一道高光从左扫到右（1.3 秒扫完，停 0.5 秒再来），参考视频里「Writing」的效果。
+/// 文字上一道高光从左扫到右（1.3 秒扫完，停 0.5 秒再来），参考视频里「Writing」的效果。扫的速度两头慢中间快。
 struct ShimmerText: View {
     let text: String
     let font: Font
@@ -476,7 +484,7 @@ struct ShimmerText: View {
             .overlay {
                 if !reduce {
                     TimelineView(.animation) { context in
-                        let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.3
+                        let t = Motion.easeInOutSine(min(1, context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.3))
                         GeometryReader { geo in
                             let band = max(18, geo.size.width * 0.7)
                             LinearGradient(colors: [.white.opacity(0), .white.opacity(0.7), .white.opacity(0)], startPoint: .leading, endPoint: .trailing)
@@ -495,7 +503,6 @@ struct ShimmerText: View {
 private struct SubstepBranch: View {
     let groups: [WorkGroup]
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var flow: CGFloat = 0
     private static let rowHeight: CGFloat = 24
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -518,21 +525,88 @@ private struct SubstepBranch: View {
                 let path = Branch(x0: TodoTimeline.column / 2, x1: TodoTimeline.column - 3.5)
                 ZStack {
                     path.stroke(Palette.separator, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                    if !reduce {
-                        path.trim(from: flow, to: min(1, flow + 0.16))
-                            .stroke(Palette.accentText, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                    }
+                    if !reduce { FlowComet(shape: path, period: 1.7 + Double(geo.size.height) / 140) }
                 }
                 .frame(width: TodoTimeline.column, height: geo.size.height + 8)
                 .offset(y: -3)
             }
         }
         .animation(reduce ? nil : .smooth(duration: 0.3), value: groups.map(\.id))
+    }
+}
+
+/// 步骤之间那段竖线。走过了：青柠色从上往下灌满（不是一下子变色）；正在做的这一步下面：一段亮光往下流。
+private struct ConnectorLine: View {
+    let lit: Bool
+    var flowing = false
+    /// 只在跑着的时候演「灌满」，回看历史直接画成最终样子。
+    var animated = true
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var fill: CGFloat = 0
+    var body: some View {
+        ZStack(alignment: .top) {
+            VLine().stroke(Palette.separator, lineWidth: 1.5)
+            VLine().trim(from: 0, to: fill).stroke(Palette.accent, lineWidth: 1.5)
+            if flowing && !reduce { FlowComet(shape: VLine(), period: 1.9) }
+        }
         .onAppear {
-            guard !reduce else { return }
-            withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) { flow = 0.84 }
+            guard lit else { return }
+            if animated && !reduce { withAnimation(.easeInOut(duration: 0.6).delay(0.05)) { fill = 1 } } else { fill = 1 }
+        }
+        .onChange(of: lit) { _, now in
+            withAnimation(reduce ? nil : .easeInOut(duration: 0.6)) { fill = now ? 1 : 0 }
         }
     }
+}
+
+private struct VLine: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        return p
+    }
+}
+
+/// 沿线流动的一颗「彗星」：头亮尾淡，带一点柔光。
+/// 10-28 三轮重做：原来是定长一段匀速走到底、循环时一下子消失再从顶上冒出来。现在头尾各自走缓动曲线——
+/// 头先出发、尾巴晚一拍跟上，中途被拉长，到终点时尾巴追上头、整段收进下一个节点里渐隐，下一轮的头正好从起点慢慢探出来，
+/// 首尾长度都是 0，所以循环处没有跳变。时间由 TimelineView 驱动（列表里 repeatForever 会失效）。
+private struct FlowComet<S: Shape>: View {
+    let shape: S
+    var period: Double = 1.9
+    var color: Color = Palette.accentText
+    var body: some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
+            let head = Motion.easeInOutCubic(min(1, t / 0.74))
+            let tail = Motion.easeInOutQuart(max(0, (t - 0.2) / 0.8))
+            let length = max(0, head - tail)
+            // 收得很短时整体淡出，避免线头的圆点残留；起步时同样从无到有
+            let alpha = min(1, length / 0.08)
+            ZStack {
+                // 尾巴 → 头：三层叠出渐变，越靠前越亮
+                ForEach(0..<3, id: \.self) { layer in
+                    let from = tail + length * Double(layer) / 3
+                    shape.trim(from: from, to: head)
+                        .stroke(color.opacity(0.34), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                }
+                // 头部柔光
+                shape.trim(from: max(tail, head - 0.06), to: head)
+                    .stroke(color.opacity(0.55), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .blur(radius: 2.2)
+            }
+            .opacity(alpha)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// 时间轴动画用的缓动曲线（输入输出都在 0…1）。
+enum Motion {
+    static func easeInOutSine(_ x: Double) -> Double { 0.5 - 0.5 * cos(.pi * x) }
+    static func easeInOutCubic(_ x: Double) -> Double { x < 0.5 ? 4 * x * x * x : 1 - pow(-2 * x + 2, 3) / 2 }
+    static func easeInOutQuart(_ x: Double) -> Double { x < 0.5 ? 8 * x * x * x * x : 1 - pow(-2 * x + 2, 4) / 2 }
 }
 
 /// 主线 x0 → 弯到 x1 竖直往下 → 弯回 x0 接下一步的节点。

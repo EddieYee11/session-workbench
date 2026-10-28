@@ -67,7 +67,7 @@ private let activeStates: Set<String> = ["running", "queued", "waiting", "attent
 // MARK: - 下一步页入口：航程大卡
 
 /// 下一步页顶上的航程入口（10-18 重做：原来右上角一颗小胶囊，太容易漏掉）。
-/// 有在跑 / 等你的航程时是一张反色大卡：最要紧的那段的标题、它此刻在做什么、进度条，点开进列表；
+/// 有在跑 / 等你的航程时是一张反色大卡：最要紧的那段的标题、它此刻在做什么、进度条，点开进动态页的「电脑上的活」（10-28 航程列表并进动态）；
 /// 没有在跑的但做过一些，缩成一行「航程 · 看做过的 N 段」；从来没有过就不占位（头像菜单里始终有入口）。
 struct VoyageBanner: View {
     @Environment(AppModel.self) private var model
@@ -75,11 +75,11 @@ struct VoyageBanner: View {
         let items = model.casesData["items"].array
         let live = items.filter { activeStates.contains($0["state"].string) }
         if let top = live.first {
-            NavigationLink { CasesListView() } label: { card(top: top, live: live) }
+            NavigationLink { ActivityFeedView(initial: .work) } label: { card(top: top, live: live) }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("voyage-banner")
         } else if !items.isEmpty {
-            NavigationLink { CasesListView() } label: {
+            NavigationLink { ActivityFeedView(initial: .work) } label: {
                 HStack(spacing: Space.sm) {
                     Image(systemName: "location.north.line").font(.system(size: 13, weight: .semibold))
                     Text("航程").font(TypeScale.subheadline.weight(.semibold))
@@ -145,151 +145,6 @@ struct VoyageBanner: View {
 
 // MARK: - 列表（10-25：收件箱式，参考 Mailio inbox——搜索、筛选胶囊、按来源分组的白卡、超过 3 条收起）
 
-/// 10-25 Eddie：航程一多就乱（14 天里对话顺手进来的 65 段、交办的只有 20 段）。
-/// 所以：进行中 / 等你的永远置顶；历史按时间分段、每段露 3 条，「更早」默认整段收起；
-/// 筛选按来源分「交办」（下一步 / 待办 / 每周……）和「对话」，默认看交办；搜索时不看筛选，搜全部。
-private let caseFilters: [(key: String, title: String)] = [("delegated", "交办"), ("chat", "对话"), ("failed", "没做成"), ("all", "全部")]
-
-private func caseIsChat(_ item: JSON) -> Bool { item["kind"].string == "turn" || item["source"].string == "chat" }
-
-private func caseFilterMatch(_ item: JSON, _ key: String) -> Bool {
-    switch key {
-    case "delegated": return !caseIsChat(item)
-    case "chat": return caseIsChat(item)
-    case "failed": return ["failed", "cancelled"].contains(item["state"].string)
-    default: return true
-    }
-}
-
-/// 历史分段：今天 / 昨天 / 本周（7 天内）/ 更早。
-private func caseBucket(_ at: Double) -> String {
-    let calendar = Calendar.current
-    let date = Date(timeIntervalSince1970: at)
-    if calendar.isDateInToday(date) { return "今天" }
-    if calendar.isDateInYesterday(date) { return "昨天" }
-    return Date().timeIntervalSince(date) < 7 * 86400 ? "本周" : "更早"
-}
-
-struct CasesListView: View {
-    @Environment(AppModel.self) private var model
-    @State private var query = ""
-    @State private var filter: String?
-    @State private var expanded: Set<String> = []
-    private var items: [JSON] { model.casesData["items"].array }
-    /// 默认看交办；一段交办都没有时退回全部。
-    private var current: String { filter ?? (items.contains { !caseIsChat($0) } ? "delegated" : "all") }
-    private var live: [JSON] { items.filter { activeStates.contains($0["state"].string) }.sorted { rank($0) < rank($1) } }
-    private var history: [JSON] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        return items.filter { !activeStates.contains($0["state"].string) }
-            .filter { q.isEmpty ? caseFilterMatch($0, current) : [$0["title"], $0["now"], $0["result"], $0["source_label"]].contains { $0.string.localizedCaseInsensitiveContains(q) } }
-            .sorted { $0["updated_at"].double > $1["updated_at"].double }
-    }
-    private func rank(_ item: JSON) -> Int { ["waiting", "attention"].contains(item["state"].string) ? 0 : 1 }
-    var body: some View {
-        ScrollPage(spacing: Space.lg) {
-            if items.isEmpty {
-                EmptyState(title: "还没有航程", description: "在「下一步」或待办里点「交给 Com」，或者在聊天里让它办一件复杂的事，它会单独开一段航程，在这里看它一步步怎么做的。", symbol: "rectangle.stack")
-            } else {
-                SearchField(text: $query, prompt: "搜全部航程：标题、在做的事、结果")
-                if !live.isEmpty && query.isEmpty { section("正在办 · \(live.count)", symbol: "bolt.horizontal", rows: live, limit: .max) }
-                if query.isEmpty { filterBar }
-                let buckets = ["今天", "昨天", "本周", "更早"].compactMap { name -> (String, [JSON])? in
-                    let rows = history.filter { caseBucket($0["updated_at"].double) == name }
-                    return rows.isEmpty ? nil : (name, rows)
-                }
-                if buckets.isEmpty {
-                    Text(query.isEmpty ? "这一类里还没有做过的航程。" : "没有搜到「\(query)」。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-                        .frame(maxWidth: .infinity).padding(.vertical, Space.xl)
-                }
-                ForEach(buckets, id: \.0) { name, rows in
-                    // 搜索时全展开；「更早」默认整段收起，只露标题和条数
-                    section(name, symbol: name == "更早" ? "archivebox" : "clock", rows: rows, limit: !query.isEmpty ? .max : name == "更早" ? 0 : 3)
-                }
-                if query.isEmpty && current != "chat" && items.contains(where: caseIsChat) {
-                    Text("聊天里顺手办的多步任务收在「对话」里。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).padding(.horizontal, Space.xs)
-                }
-            }
-        }
-        .navigationTitle("航程").navigationBarTitleDisplayMode(.large)
-        .toolbarBackground(Palette.background, for: .navigationBar)
-        .refreshable { _ = await model.load("/personal/cases") }
-        .task {
-            // 有进行中的就每 4 秒看一眼，离开页面自动停。
-            while !Task.isCancelled {
-                _ = await model.load("/personal/cases")
-                try? await Task.sleep(for: .seconds(model.casesData["active"].int > 0 ? 4 : 20))
-            }
-        }
-    }
-    /// 筛选胶囊：选中的一颗描边加深；「没做成」的数字用警示色角标（参考图里 All E-mail 的红点数字）。只管下面的历史，正在办的始终在上面。
-    private var filterBar: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: Space.sm) {
-                ForEach(caseFilters, id: \.key) { f in
-                    let count = items.filter { !activeStates.contains($0["state"].string) && caseFilterMatch($0, f.key) }.count
-                    let on = current == f.key
-                    Button { withAnimation(.snappy(duration: 0.25)) { filter = f.key; expanded = [] } } label: {
-                        HStack(spacing: 6) {
-                            Text(f.title).font(TypeScale.footnote.weight(on ? .semibold : .regular))
-                            if count > 0 {
-                                Text("\(count)").font(.caption2.weight(.bold).monospacedDigit())
-                                    .foregroundStyle(f.key == "failed" ? .white : Palette.textSecondary)
-                                    .padding(.horizontal, 6).padding(.vertical, 1)
-                                    .background(f.key == "failed" ? Palette.danger : Palette.fill, in: .capsule)
-                            }
-                        }
-                        .foregroundStyle(on ? Palette.textPrimary : Palette.textSecondary)
-                        .padding(.horizontal, Space.md).padding(.vertical, 8)
-                        .background(Palette.surface, in: .capsule)
-                        .overlay(Capsule().strokeBorder(on ? Palette.textPrimary.opacity(0.75) : Palette.separator, lineWidth: on ? 1.2 : 0.8))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(on ? .isSelected : [])
-                    .accessibilityIdentifier("cases-filter-" + f.key)
-                }
-            }
-            .padding(.horizontal, 1).padding(.vertical, 1)
-        }
-        .scrollIndicators(.hidden)
-    }
-    /// 一段：标题行 + 一张白卡（行间细线），超过 limit 条收起，底部「查看全部（N）」。
-    private func section(_ title: String, symbol: String, rows: [JSON], limit: Int) -> some View {
-        let open = expanded.contains(title) || rows.count <= limit
-        let shown = open ? rows : Array(rows.prefix(limit))
-        return VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol).font(.system(size: 13, weight: .medium))
-                Text(title).font(TypeScale.subheadline)
-                if limit != .max { Text("\(rows.count)").font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textTertiary) }
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(Palette.textSecondary).padding(.horizontal, Space.xs)
-            VStack(spacing: 0) {
-                ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
-                    if index > 0 { Divider().overlay(Palette.separator).padding(.leading, 64) }
-                    NavigationLink { CaseDetailView(id: item.id) } label: { CaseRow(item: item) }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("case-" + item.id)
-                }
-                if !open || expanded.contains(title) && rows.count > limit {
-                    if !shown.isEmpty { Divider().overlay(Palette.separator) }
-                    Button { withAnimation(.snappy(duration: 0.3)) { if open { expanded.remove(title) } else { expanded.insert(title) } } } label: {
-                        HStack(spacing: 4) {
-                            Text(open ? "收起" : "查看全部（\(rows.count)）")
-                            Image(systemName: "chevron.down").rotationEffect(.degrees(open ? 180 : 0))
-                        }
-                        .font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.info)
-                        .frame(maxWidth: .infinity).padding(.vertical, Space.md)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).strokeBorder(Palette.separator, lineWidth: 0.8))
-        }
-    }
-}
 
 /// 头像：标题首字 + 按标题算出的浅色底（参考图里的彩色首字母圆）。
 struct CaseAvatar: View {
@@ -394,6 +249,10 @@ struct CaseDetailView: View {
                 }
                 letter
                 actions
+                // 10-28 验收工作台：完成条件逐条看证据，缺的能一键让它补
+                AcceptancePanel(data: data["acceptance"], canAsk: canReply) { text in
+                    Task { if await model.caseSend(id, text) { _ = await model.load("/personal/cases/" + id) } }
+                }
                 let assumptions = data["assumptions"].array
                 if !assumptions.isEmpty {
                     GroupSection("它自己拿主意的地方", footer: "信息不够时它选了最稳妥的做法继续；不对的话在下面直接说。") {
@@ -600,16 +459,6 @@ struct CaseSheet: View {
     }
 }
 
-struct CasesSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        NavigationStack {
-            CasesListView()
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
-        }
-    }
-}
-
 // MARK: - 明天建议
 
 /// 每晚 21:30 生成的明天清单：勾选后一键放进行动台。日程和进行中的航程只做参考。
@@ -719,6 +568,16 @@ extension AppModel {
             .object(["at": .number(now - 60), "kind": .string("step_doing"), "text": .string("起草回复")])])
         detail["artifacts"] = .array([.object(["id": .string("art_demo1"), "name": .string("Q4排期回复草稿.md"), "path": .string("/tmp/Q4排期回复草稿.md"), "size": .number(12_800), "availability": .string("available")]), .object(["id": .string("art_demo2"), "name": .string("排期对照.pdf"), "path": .string("/tmp/排期对照.pdf"), "size": .number(2_460_000), "availability": .string("available")])]); detail["result"] = .string(""); detail["tool_calls"] = .number(7)
         detail["can_send"] = .bool(true); detail["can_cancel"] = .bool(true); detail["evidence"] = .array([])
+        // 10-28 验收工作台验收数据：一条有证据、一条缺、一条要现场确认，评审说要补
+        func crit(_ id: String, _ text: String, _ state: String, _ ref: String = "") -> JSON {
+            .object(["id": .string(id), "text": .string(text), "state": .string(state), "covered": .bool(state == "covered"),
+                     "evidence": .array(ref.isEmpty ? [] : [.object(["reference": .string(ref), "check": .string("file_exists")])])])
+        }
+        detail["acceptance"] = .object(["completion": .string("回复草稿能直接发，排期和 Q4 日程对得上"), "status": .string("unverified"),
+            "criteria": .array([crit("c1", "草稿写进 work/航程产出", "covered", "work/航程产出/Q4排期回复草稿.md"),
+                                crit("c2", "三个里程碑日期与日程一致", "missing"), crit("c3", "发出前给 Eddie 现场确认措辞", "manual")]),
+            "reported": .array([.string("Q4排期回复草稿.md")]),
+            "review": .object(["verdict": .string("revise"), "reason": .string("草稿在，但没有核对日程的记录。"), "gaps": .array([.string("缺里程碑日期与日历的对照")]), "next_steps": .array([])])])
         datasets["/personal/cases/task_demo_running"] = .object(detail)
         datasets["/personal/plan"] = .object(["day": .string(AppModel.dayString(1)), "weekday": .string("日"), "state": .string("open"), "headline": .string("明天 2 个日程，建议做 3 件事"),
             "items": .array([
@@ -752,3 +611,122 @@ extension AppModel {
     }
 }
 #endif
+
+// MARK: - 验收工作台
+
+/// 航程做完算不算真的做完：每条完成条件 → 有证据（文件 / 测试）/ 缺证据 / 要你现场确认；下面是语义评审的结论和缺口。
+/// 证据只来自后端真实检查（verification.py）和 Pi 报的 evidence，不认它自己说「做好了」。数据：/personal/cases/{id} 的 acceptance。
+struct AcceptancePanel: View {
+    let data: JSON
+    let canAsk: Bool
+    let ask: (String) -> Void
+    var body: some View {
+        let criteria = data["criteria"].array
+        let reported = data["reported"].array
+        let review = data["review"]
+        if !criteria.isEmpty || !data["completion"].string.isEmpty || !review.isNull {
+            let covered = criteria.filter { $0["state"].string == "covered" }.count
+            let missing = criteria.filter { $0["state"].string == "missing" }
+            GroupSection("验收", footer: criteria.isEmpty ? "这段航程没有拆完成条件，只能对照「完成标准」和评审看。" : "证据只认真实的文件和测试检查，不认它自己说做好了。") {
+                VStack(alignment: .leading, spacing: Space.md) {
+                    HStack(spacing: Space.sm) {
+                        Image(systemName: statusSymbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(statusTone.color)
+                        Text(statusText).font(TypeScale.subheadline.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("case-acceptance")
+                    if !criteria.isEmpty { StepProgress(done: covered, total: criteria.count) }
+                    if !data["completion"].string.isEmpty {
+                        Label(data["completion"].string, systemImage: "flag.checkered").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                    }
+                    ForEach(Array(criteria.enumerated()), id: \.offset) { _, c in criterion(c) }
+                    if !reported.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("它报的产出").font(.caption.weight(.semibold)).foregroundStyle(Palette.textTertiary)
+                            ForEach(Array(reported.enumerated()), id: \.offset) { _, r in
+                                Label(r.string, systemImage: "doc").font(.caption).foregroundStyle(Palette.textSecondary).lineLimit(2)
+                            }
+                        }
+                    }
+                    if !review.isNull && !review["verdict"].string.isEmpty { reviewBox(review) }
+                    if canAsk && (!missing.isEmpty || !review["gaps"].array.isEmpty) {
+                        let asks = missing.map { $0["text"].string } + review["gaps"].array.map(\.string)
+                        Button {
+                            Haptics.selection()
+                            ask("请补齐验收证据（文件路径或测试输出），逐条对应：\n" + asks.prefix(6).map { "- " + $0 }.joined(separator: "\n"))
+                        } label: {
+                            Label("让它补证据", systemImage: "arrow.clockwise").font(TypeScale.footnote.weight(.semibold))
+                                .foregroundStyle(Palette.onAccent).padding(.horizontal, Space.md).padding(.vertical, 8)
+                                .background(Palette.accent, in: .capsule)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("acceptance-ask")
+                    }
+                }
+                .padding(Space.lg)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).strokeBorder(Palette.separator, lineWidth: 0.8))
+            }
+        }
+    }
+    private var statusText: String {
+        switch data["status"].string {
+        case "passed": "验收通过"
+        case "pending": "还在做，做完再验"
+        case "failed": "验收没过"
+        case "uncertain": "结果不确定，要核实"
+        default: data["criteria"].array.contains { $0["state"].string == "missing" } ? "还有条件没证据" : "等你看一眼"
+        }
+    }
+    private var statusTone: Tone {
+        switch data["status"].string {
+        case "passed": .success
+        case "pending": .info
+        case "failed": .danger
+        default: .warning
+        }
+    }
+    private var statusSymbol: String {
+        switch data["status"].string {
+        case "passed": "checkmark.seal.fill"
+        case "pending": "hourglass"
+        case "failed": "xmark.octagon"
+        default: "exclamationmark.triangle"
+        }
+    }
+    private func criterion(_ c: JSON) -> some View {
+        let state = c["state"].string
+        let (symbol, tone, label): (String, Tone, String) = state == "covered" ? ("checkmark.circle.fill", .success, "有证据")
+            : state == "manual" ? ("person.crop.circle.badge.questionmark", .info, "要你现场确认") : ("circle.dashed", .warning, "缺证据")
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                Image(systemName: symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(tone.color).frame(width: 18)
+                Text(c["text"].string).font(TypeScale.footnote).foregroundStyle(Palette.textPrimary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: Space.sm)
+                Text(label).font(.caption2.weight(.semibold)).foregroundStyle(tone.color)
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(tone.color.opacity(0.12), in: .capsule)
+            }
+            ForEach(Array(c["evidence"].array.enumerated()), id: \.offset) { _, e in
+                Text((e["check"].string == "tests" ? "测试：" : "文件：") + e["reference"].string)
+                    .font(TypeScale.code).foregroundStyle(Palette.textTertiary).lineLimit(2).padding(.leading, 26).textSelection(.enabled)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+    private func reviewBox(_ r: JSON) -> some View {
+        let verdict = r["verdict"].string
+        let tone: Tone = verdict == "pass" ? .success : verdict == "revise" ? .warning : .neutral
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("评审：" + (verdict == "pass" ? "通过" : verdict == "revise" ? "要补" : "判断不了")).font(.caption.weight(.semibold)).foregroundStyle(tone.color)
+            if !r["reason"].string.isEmpty { Text(r["reason"].string).font(.caption).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true) }
+            ForEach(Array(r["gaps"].array.enumerated()), id: \.offset) { _, g in
+                Label(g.string, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(Palette.warning)
+            }
+        }
+        .padding(Space.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tone.color.opacity(0.08), in: .rect(cornerRadius: Radius.sm, style: .continuous))
+    }
+}

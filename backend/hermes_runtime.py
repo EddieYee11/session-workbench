@@ -51,6 +51,12 @@ class HermesRuntime(HermesClient):
     async def start(self):
         await self.create_session()
 
+    def lane(self, n):
+        """并行的第 n 条线：独立的运行状态和 Hermes 原生会话（历史仍由 Com 每轮带上），工具来源仍记主对话。"""
+        other = HermesRuntime(self.state, self.session_id, self.emit, self.context, self.instructions)
+        other.lane_suffix = '-p' + str(n)
+        return other
+
     def bind(self, context):
         self.context = context
 
@@ -202,7 +208,7 @@ class HermesRuntime(HermesClient):
             with sqlite3.connect(self.path) as db:
                 prior_execution = db.execute("SELECT 1 FROM run_events WHERE run_id=? AND (event LIKE 'tool.%' OR event IN ('message.delta','assistant.delta','assistant.completed')) LIMIT 1", (self.run_id,)).fetchone()
             provider_disabled = 'is switched off in Magpie' in error
-            provider_quota = '429' in error and any(marker in error for marker in ('本周额度已用完', 'weekly quota', 'weekly limit'))
+            provider_quota = '429' in error and any(marker in error for marker in ('本周额度已用完', 'weekly quota', 'weekly limit', 'usage limit exceeded'))
             provider_failed = status == 'failed' and not execution_started and not prior_execution and not output and (error.startswith('⚠️ Provider authentication failed:') or provider_disabled or provider_quota)
             yield 'error', {'run_id': self.run_id, 'status': status, 'uncertain': reason != 'aborted' and not provider_failed,
                             'failure_code': 'provider_unavailable' if provider_failed else '',
@@ -211,7 +217,7 @@ class HermesRuntime(HermesClient):
         yield 'done', {}
 
     async def stream_chat(self, session_id, text):
-        self.session_id = session_id
+        self.session_id = session_id + getattr(self, 'lane_suffix', '')
         from context_builder import build
         from context_working_set import parse_input
         from message_router import MessageRouter

@@ -323,4 +323,23 @@ final class R3WorkUITests: XCTestCase {
         app.buttons["work-send"].tap()
         pause(6)
     }
+
+    /// 10-28：Agent 记了 todo 清单（Pi 式）→ 工作页也画成时间轴，跑着时摊开；做完折成「清单 3/3」。录屏看流光衔接。
+    @MainActor func testRecWorkPlanTimeline() throws {
+        let app = launch(["--ui-work-plan"])
+        openWork(app)
+        let input = app.textFields["work-input"]
+        input.tap()
+        input.typeText("帮我看看这周的选题")
+        app.buttons["work-send"].tap()
+        XCTAssertTrue(element("work-steps-list", in: app).waitForExistence(timeout: 10), "清单出现就摊开成时间轴")
+        capture("work-plan-live", app: app)
+        pause(16)
+        capture("work-plan-step2", app: app)
+        let reply = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "要我先把探馆")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 40))
+        XCTAssertTrue(element("work-steps-list", in: app).waitForNonExistence(timeout: 5), "做完自动折起")
+        XCTAssertTrue(app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "清单 3/3")).firstMatch.exists)
+        capture("work-plan-done", app: app)
+    }
 }

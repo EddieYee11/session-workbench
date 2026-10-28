@@ -138,6 +138,50 @@ final class R3PagesUITests: XCTestCase {
         capture("health-v2-activity", app: app)
     }
 
+    /// 10-28 动态页（替换航程列表 + 它做过的事）：筛选切换、同类合并、点开详情、全部已读。
+    @MainActor func testActivityFeed() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-cases", "-appearance", "light"]
+        app.launchEnvironment["COM_PREVIEW_SHEET"] = "activity"
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["activity-feed"].firstMatch.waitForExistence(timeout: 15))
+        pause(1.2)
+        capture("feed-all", app: app)
+        XCTAssertTrue(app.buttons["feed-row-e:eff-3a"].exists, "同一句话里连着的三条命令合成一条")
+        XCTAssertFalse(app.buttons["feed-row-e:eff-3b"].exists)
+        XCTAssertFalse(app.buttons["feed-row-c:turn:demo"].exists, "聊天里顺手的多步轮次不进动态")
+        app.buttons["feed-filter-ledger"].tap()
+        pause(0.8)
+        XCTAssertTrue(app.buttons["feed-row-e:eff-1"].exists)
+        XCTAssertFalse(app.buttons["feed-row-e:eff-2"].exists)
+        app.buttons["feed-row-e:eff-1"].tap()
+        XCTAssertTrue(app.buttons["feed-verdict-wrong"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["feed-fix"].exists)
+        pause(0.8)
+        capture("feed-ledger-detail", app: app)
+        app.buttons["feed-filter-all"].tap()
+        pause(0.5)
+        app.buttons["feed-mark-read"].tap()
+        pause(1.6)
+        XCTAssertTrue(app.buttons["feed-mark-read"].label.contains("都看过了"))
+        capture("feed-read", app: app)
+    }
+
+    /// 10-28 航程详情的验收工作台：逐条完成条件 + 评审缺口 + 让它补证据。
+    @MainActor func testCaseAcceptance() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-cases", "-appearance", "light"]
+        app.launchEnvironment["COM_PREVIEW_SHEET"] = "case"
+        app.launch()
+        let panel = app.descendants(matching: .any)["case-acceptance"].firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 15))
+        let ask = app.buttons["acceptance-ask"]
+        for _ in 0..<5 where !(ask.exists && ask.isHittable) { app.swipeUp(velocity: 500); pause(0.6) }
+        XCTAssertTrue(ask.isHittable, "有缺证据的条件时能一键让它补")
+        pause(0.8)
+        capture("case-acceptance", app: app)
+    }
+
     /// 顶栏的她：每个 tab 一套造型，切 tab 时跳一下换装。录屏抽帧看；这里每页落定后截一张顶栏。
     @MainActor func testCharacterOutfitPerTab() throws {
         let app = launch()

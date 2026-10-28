@@ -245,7 +245,7 @@ private struct RootSheets: ViewModifier {
             .sheet(isPresented: $model.showFinance) { FinanceDetail(initialPeriod: "本月", initialCurrency: model.datasets["/personal/finance"]?["currencies"].array.first?.id ?? "") }
             .sheet(isPresented: $model.showConnectors) { ConnectorsSheet() }
             .sheet(isPresented: $model.showNewWork) { NewWorkView(initialAgent: "codex") }
-            .sheet(isPresented: $model.showActivity) { ActivityView() }
+            .sheet(isPresented: $model.showActivity) { ActivityFeedSheet() }
             .modifier(RootItemSheets())
     }
 }
@@ -259,7 +259,7 @@ private struct RootItemSheets: ViewModifier {
             .sheet(item: Binding(get: { model.selectedMatter.map(RemoteRow.init) }, set: { model.selectedMatter = $0?.value })) { MatterDetailView(matter: $0.value).presentationDragIndicator(.visible) }
             // 10-17 航程：聊天里的航程卡、今天页、推送深链都从这里打开
             .sheet(item: Binding(get: { model.presentedCase.map { RemoteRow(.object(["id": .string($0)])) } }, set: { model.presentedCase = $0?.id })) { CaseSheet(id: $0.id) }
-            .sheet(isPresented: Binding(get: { model.showCases }, set: { model.showCases = $0 })) { CasesSheet() }
+            .sheet(isPresented: Binding(get: { model.showCases }, set: { model.showCases = $0 })) { ActivityFeedSheet(initial: .work) }  // 10-28 航程列表并进动态，旧入口落到「电脑上的活」
             .sheet(isPresented: Binding(get: { model.showWaiting }, set: { model.showWaiting = $0 })) { WaitingSheet() }
     }
 }

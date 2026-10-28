@@ -199,13 +199,15 @@ struct TodayView: View {
                     .modifier(EnterRise(on: shown, delay: 0.12))
                 ScheduleAdvice()
                     .modifier(EnterRise(on: shown, delay: 0.18))
+                HotBoardCard()
+                    .modifier(EnterRise(on: shown, delay: 0.24))
                 let errors = model.todayData["errors"].object.filter { ["events", "reminders"].contains($0.key) }
                 if !errors.isEmpty {
                     InlineNotice(text: "有来源没读到：" + errors.keys.sorted().map { ["events": "日程", "reminders": "提醒"][$0] ?? $0 }.joined(separator: "、"), tone: .neutral)
                 }
             }
         }
-        .refreshable { await model.refresh(.doing); _ = await model.load("/personal/next") }
+        .refreshable { await model.refresh(.doing); _ = await model.load("/personal/next"); await model.refreshHot() }
         // 每次切回「今天」都重新走一遍进场；切走时复位。
         .onAppear { shown = true }
         .onDisappear { shown = false }
