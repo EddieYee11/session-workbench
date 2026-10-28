@@ -11,6 +11,10 @@ from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo('Asia/Shanghai')
 AT = (21, 30)
+MAX_OVERDUE_DAYS = 3   # 过期超过三天的待办不再往明天带：滚了这么久没做，要么早已作废、要么他不想做，放进清单只会让建议失准
+CARRY_LIMIT = 2        # 同一条在之前两份没被落地的明天建议里都出现过，说明他看过两次都没理，不再提
+CASE_FRESH = 2 * 86400  # 航程两天没动静就不算「进行中」
+HOLIDAY_TODO = re.compile(r'.{1,4}[节節]|.*[补補]假|.*放假')
 
 
 class TomorrowPlan:
@@ -43,10 +47,24 @@ class TomorrowPlan:
         with self.db() as db:
             return not db.execute('SELECT 1 FROM plans WHERE day=?', (start.date().isoformat(),)).fetchone()
 
+    def _carried(self, day):
+        """之前（早于 day）每份没落地的明天建议里出现过的条目 id → 次数。"""
+        count = {}
+        with self.db() as db:
+            rows = db.execute('SELECT data FROM plans WHERE day<?', (day.isoformat(),)).fetchall()
+        for row in rows:
+            plan = json.loads(row['data'])
+            applied = {r.get('id') for r in plan.get('applied', [])}
+            for item in plan.get('items', []):
+                if item.get('checkable') and item['id'] not in applied:
+                    count[item['id']] = count.get(item['id'], 0) + 1
+        return count
+
     def build(self):
         now, start, end = self._days()
         day = start.date()
         items = []
+        carried = self._carried(day)
         for t in self.today.todo_index() if self.today else []:
             try:
                 due = datetime.strptime(t['due'][:10], '%Y-%m-%d').date() if t['due'] else None
@@ -54,14 +72,16 @@ class TomorrowPlan:
                 due = None
             if due and due <= day:
                 overdue = due < now.date()
-                items.append({'id': 'todo:' + t['path'], 'kind': 'todo', 'title': t['name'], 'checked': True, 'checkable': overdue,
+                if HOLIDAY_TODO.fullmatch(t['name']) or (overdue and ((now.date() - due).days > MAX_OVERDUE_DAYS or carried.get('todo:' + t['path'], 0) >= CARRY_LIMIT)):
+                    continue
+                items.append({'id': 'todo:' + t['path'], 'kind': 'todo', 'title': t['name'], 'checked': not overdue, 'checkable': overdue,
                               'why': ('已过期（' + t['due'] + '），勾上改到明天' if overdue else '明天到期' if due == day else '今天到期，还没做'),
                               'path': t['path'], 'overdue': overdue})
         order = {'now': 0, 'today': 1, 'week': 2}
         pending = sorted(self.next_steps.pending() if self.next_steps else [], key=lambda i: (order.get(i.get('urgency'), 1), -i.get('score', 0)))
         for n in pending[:6]:
-            if n.get('in_todo'):
-                continue  # 已经在待办里，上面那组会带出来
+            if n.get('in_todo') or carried.get('next:' + n['id'], 0) >= CARRY_LIMIT:
+                continue  # 已经在待办里，上面那组会带出来；提过两次都没理的不再提
             items.append({'id': 'next:' + n['id'], 'kind': 'next', 'title': n['title'], 'why': n.get('why', ''), 'checked': n.get('urgency') in ('now', 'today'),
                           'checkable': True, 'next_id': n['id']})
         events = []
@@ -78,7 +98,7 @@ class TomorrowPlan:
             items.append({'id': 'event:' + str(e.get('id', e.get('title'))), 'kind': 'event', 'title': e.get('title', '日程'), 'why': at, 'checked': False, 'checkable': False})
         if self.cases:
             for c in self.cases.list()['items']:
-                if c['state'] in ('running', 'queued', 'waiting', 'attention'):
+                if c['state'] in ('running', 'queued', 'waiting', 'attention') and self.clock() - c.get('updated_at', 0) < CASE_FRESH:
                     items.append({'id': 'case:' + c['id'], 'kind': 'case', 'title': c['title'], 'why': c['state_label'] + (' · ' + c['now'] if c['now'] else ''),
                                   'checked': False, 'checkable': False, 'case_id': c['id']})
         todo_n = sum(1 for i in items if i['kind'] in ('todo', 'next') and i['checked'])
@@ -103,7 +123,25 @@ class TomorrowPlan:
             row = db.execute('SELECT * FROM plans ORDER BY day DESC LIMIT 1').fetchone()
         if not row:
             return None
-        return {**json.loads(row['data']), 'state': row['state'], 'applied': json.loads(row['data']).get('applied', [])}
+        plan = json.loads(row['data'])
+        if row['state'] == 'open':
+            plan = self._alive(plan)
+        return {**plan, 'state': row['state'], 'applied': plan.get('applied', [])}
+
+    def _alive(self, plan):
+        """21:30 生成的清单是快照：之后做完、划掉、改期的，读的时候就不再露出来。"""
+        todos = {t['path'] for t in self.today.todo_index()} if self.today else None
+        pending = {n['id'] for n in self.next_steps.pending()} if self.next_steps else None
+        def alive(i):
+            if i['kind'] == 'todo' and todos is not None:
+                return i['path'] in todos
+            if i['kind'] == 'next' and pending is not None:
+                return i['next_id'] in pending
+            return True
+        items = [{**i, 'checked': False} if i['kind'] == 'todo' and i.get('overdue') else i for i in plan['items'] if alive(i)]  # 过期的默认不勾
+        todo_n = sum(1 for i in items if i['kind'] in ('todo', 'next') and i['checked'])
+        event_n = sum(1 for i in items if i['kind'] == 'event')
+        return {**plan, 'items': items, 'headline': f'明天 {event_n} 个日程，建议做 {todo_n} 件事' if items else '明天没什么要紧的，早点休息'}
 
     def apply(self, day, selected):
         """勾选的落到行动台；返回每条的结果。同一天只落一次（再点返回上次结果）。"""

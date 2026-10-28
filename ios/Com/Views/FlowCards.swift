@@ -149,7 +149,7 @@ extension AppModel {
         case .delivered: return "已送达，在下面"
         case .review: return "这一步等你点头"
         case .idle, .waiting:
-            if waitingCount > 0 { return "\(waitingCount) 件等你" }
+            if decisionCount > 0 { return "\(decisionCount) 件等你点头" }
             if let broken = brokenSources.first { return "读不到 " + sourceName(broken["name"].string) + " 了" }
             if stage.state == .waiting { return "还在等新进展" }
             if nextUrgentCount > 0 { return "有 \(nextUrgentCount) 件现在就该做" }

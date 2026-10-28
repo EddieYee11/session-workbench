@@ -201,3 +201,85 @@ def test_open_items_are_kept_instead_of_rewritten_and_decay_after_four_rounds(tm
     assert len(items)==1 and items[0]['title']=='回复王总的排期邮件' and items[0]['shown']==4
     assert items[0]['urgency']=='week' and items[0]['score']==50
     assert seen['current'][0]['shown']==3
+
+def test_same_evidence_rewritten_by_model_keeps_the_open_item(tmp_path):
+    titles=iter(['回复王总的排期邮件','给王总回排期'])
+    async def model(data):
+        return {'items':[{'title':next(titles),'why':'他在等','refs':['mail:m1'],'prompt':'起草回复','urgency':'today','score':70}]}
+    engine=NextSteps(tmp_path,Hub(),model=model,clock=lambda:NOW)
+    run(engine); run(engine)
+    items=engine.snapshot()['items']
+    assert [i['title'] for i in items]==['回复王总的排期邮件'] and items[0]['shown']==2
+
+def test_overdue_todos_become_one_cleanup_item(tmp_path):
+    folder=tmp_path/'vault'/'任务'/'待处理'; folder.mkdir(parents=True)
+    for name,due in [('霜降','2026-10-08'),('签到接待','2026-10-09'),('催串词','2026-10-07'),('明天的事','2026-10-11')]:
+        (folder/(name+'.md')).write_text(f'---\nflow: 任务\n状态: 待处理\n计划结束: {due}\n---\n# {name}\n',encoding='utf-8')
+    async def model(data):return {'items':[]}
+    engine=NextSteps(tmp_path/'state',Hub(),model=model,clock=lambda:NOW,vault=tmp_path/'vault')
+    run(engine)
+    item=next(i for i in engine.snapshot()['items'] if i['title']=='清掉过期待办')
+    assert sorted(item['cleanup'])==['催串词','签到接待','霜降'] and '3 条' in item['why']
+    assert engine.act(item['id'],'done')['cleanup']==item['cleanup']
+
+
+def test_items_are_tracked_until_closed_with_evidence_and_progress_is_recorded(tmp_path):
+    rounds=iter([
+        lambda c:{'items':[{'title':'回复王总的排期邮件','why':'他在等','refs':['mail:m1'],'prompt':'起草回复','urgency':'today','score':70,
+                            'action':{'type':'reply_mail','draft':'王总，排期下周一给您。'}}]},
+        lambda c:{'items':[{'keep':c[0]['id'],'phase':'waiting','update':'已答应周一给','refs':['mail:m1']}]},
+        lambda c:{'items':[{'close':c[0]['id'],'reason':'没有依据的关闭'}]},
+        lambda c:{'items':[{'close':next(x['id'] for x in c if x['title']=='回复王总的排期邮件'),'reason':'王总回信说收到','refs':['mail:m1']}]},
+    ])
+    async def model(data):return next(rounds)(data['current'])
+    engine=NextSteps(tmp_path,Hub(),model=model,clock=lambda:NOW)
+    run(engine)
+    item=engine.snapshot()['items'][0]
+    assert item['phase']=='new' and item['action']['type']=='reply_mail' and item['action']['subject']=='Re: Q4 排期确认'
+    run(engine)
+    item=engine.snapshot()['items'][0]
+    assert item['phase']=='waiting' and item['history'][-1]['text']=='已答应周一给' and item['action']['draft'].startswith('王总')
+    run(engine)
+    assert engine.get(item['id'])['state']=='open', '没有依据的 close 不算办完'
+    run(engine)
+    assert item['id'] not in [i['id'] for i in engine.snapshot()['items']] and engine.get(item['id'])['state']=='resolved'
+    assert engine.snapshot()['week']['resolved']==1
+
+
+def test_unmentioned_items_survive_two_rounds_and_action_must_match_evidence(tmp_path):
+    first=[True]
+    async def model(data):
+        if first[0]:
+            first[0]=False
+            return {'items':[{'title':'回复王总的排期邮件','why':'他在等','refs':['mail:m1'],'prompt':'起草回复','urgency':'today','score':70,
+                              'action':{'type':'reply_wechat','draft':'没有微信依据'}}]}
+        return {'items':[{'title':'准备周会','why':'x','refs':['event:m3'],'prompt':'x','urgency':'today','score':50}]}
+    engine=NextSteps(tmp_path,Hub(),model=model,clock=lambda:NOW)
+    run(engine)
+    assert 'action' not in engine.snapshot()['items'][0], '回微信的动作必须引用微信'
+    run(engine); run(engine)
+    assert '回复王总的排期邮件' in [i['title'] for i in engine.snapshot()['items']]
+    run(engine)
+    assert [i['title'] for i in engine.snapshot()['items']]==['准备周会']
+
+
+def test_dismiss_reasons_feed_back_and_others_do_not_mute_the_topic(tmp_path):
+    class Mails(Hub):
+        def matters(self):
+            return [{'id':f'x{n}','source':'work_mail','title':f'邮件{n}','facts':{'from':'a@b.com'},'source_updated_at':NOW,'changed_at':NOW,'feedback':{}} for n in range(5)]
+    seen={}
+    plan=iter([('落实大有可攀拖车','x0'),('确认大有可攀计时牌','x1'),('确认大有可攀裁判','x2'),('删掉旧素材','x3'),('整理旧素材','x4')])
+    async def model(data):
+        seen['dismissed']=data['dismissed']
+        title,ref=next(plan)
+        return {'items':[{'title':title,'why':'x','refs':['mail:'+ref],'prompt':'x','urgency':'today','score':60}]}
+    t=[NOW]
+    engine=NextSteps(tmp_path,Mails(),model=model,clock=lambda:t[0])
+    for reason in ('others','others'):
+        run(engine); engine.act(engine.snapshot()['items'][0]['id'],'dismiss',reason=reason); t[0]+=10
+    run(engine)
+    assert '确认大有可攀裁判' in [i['title'] for i in engine.snapshot()['items']], '「别人在负责」不静音整个项目话题'
+    assert seen['dismissed']==['确认大有可攀计时牌（别人在负责）','落实大有可攀拖车（别人在负责）']
+    engine.act(engine.snapshot()['items'][0]['id'],'dismiss',reason='elsewhere')
+    week=engine.snapshot()['week']
+    assert week['reasons']=={'别人在负责':2,'已经办了':1} and week['dismissed']==2 and week['acted']==1 and week['precision']==0.33

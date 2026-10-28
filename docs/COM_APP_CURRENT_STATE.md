@@ -591,6 +591,17 @@ Com 里的“最高 Agent 操作权限”作用于 mini 执行器，不能替代
 
 不要把这条写成「Com 能收发微信」：当前是**只读汇总**，一条消息都发不出去，图片和语音也读不到正文（缺 `image_aes_key`，见知识库《微信数据 - 本地解密与 MCP 读取》）。MBP 睡眠期间不采集，醒来按消息时间戳窗口自动补上断档。
 
+### 10.7 微信按需查询（2026-10-22 新增）
+
+摘要有一小时延迟，且 Pi 侧原本没有微信工具，问「群里刚说了什么」只能答读不到。为此加了一条**按需只读**通道：
+
+- MBP：`backend/probes/wechat_bridge.py` 在本机 `127.0.0.1:18771` 提供 `chat` / `search` / `recent` 三种查询，复用 `wechat_digest.py` 的 `mcp_server` 解密与解析；`wechat_bridge_tunnel.sh` 用 `ssh -N -R 18771:127.0.0.1:18771 mini` 把 mini 的 loopback 接回本机；`com.eddie.wechat-bridge.plist` 常驻保活（plist 在仓库里，`launchctl bootstrap gui/$(id -u) <plist>` 加载）。
+- mini：`AgentTools.wechat_query` 调 `127.0.0.1:18771/query`，Pi 侧工具名同为 `wechat_query`（`com-pi.ts`，超时 60 秒）。
+- 为什么用反向隧道：mini 到 MBP 的 Tailscale 节点离线，两台也不在同一网段；只有 MBP→mini 的 SSH 是通的，所以由 MBP 主动建隧道。
+- 鉴权：复用 Com 的 API token（bridge 启动时经 SSH 从 mini 读一次并缓存），两端都只绑 127.0.0.1。
+- 事实边界：只读，一条消息都发不出去；图片/语音只有 `[图片]`/`[语音]` 占位符；`search` 要扫全部消息库，冷启动 30–50 秒，`chat`/`recent` 一般 1–10 秒。
+- 失败语义：MBP 睡眠、隧道断开时工具返回「MBP 上的微信桥连不上」，模型必须说不可用并给出摘要截止时间，不得编造内容。
+
 ## 11. 快捷语音与专门记账小窗
 
 主要实现：`QuickVoiceActivity.kt`、`QuickVoiceDelivery.kt`、`ExpenseParse.kt`、`UnifiedVoice`、`voice.py`。

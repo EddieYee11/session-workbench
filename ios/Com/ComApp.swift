@@ -26,7 +26,7 @@ import ComCore
                     if url.host == "tasks" { model.tab = .doing }
                     if url.host == "cases" { model.tab = .next; model.showCases = true }  // 10-17：航程回执/等你批准
                     if url.host == "plan" { model.tab = .next }
-                    if url.host == "waiting" { model.showWaiting = true }  // 明天建议卡在下一步页顶上
+                    if url.host == "waiting" { model.tab = .next }  // 10-25：「等你」入口收掉，旧链接落到下一步
                     if url.host == "approval" { model.openApproval(url) }
                     if url.host == "pair" {
                         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems

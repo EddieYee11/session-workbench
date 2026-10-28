@@ -218,13 +218,22 @@ struct SearchView: View {
 struct ArtifactList: View {
     @Environment(AppModel.self) private var model
     let artifacts: [JSON]
+    /// 10-25 附件片（参考 Mailio 邮件底部的 Brief.pdf 片）：两列小卡，类型色块 + 名字 + 类型 · 大小 + 下载记号。
+    var chips = false
     @State private var preview: PreviewFile?
     @State private var page: PreviewFile?
     @State private var loading: String?
     @State private var error = ""
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            if !artifacts.isEmpty {
+            if chips && !artifacts.isEmpty {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.sm), GridItem(.flexible(), spacing: Space.sm)], spacing: Space.sm) {
+                    ForEach(Array(artifacts.enumerated()), id: \.offset) { _, artifact in
+                        Button { Task { await open(artifact) } } label: { AttachmentChip(artifact: artifact, loading: loading == artifact.id) }
+                            .buttonStyle(.plain).disabled(loading != nil)
+                    }
+                }
+            } else if !artifacts.isEmpty {
                 GroupedCard(dividerInset: Layout.rowInset) {
                     ForEach(Array(artifacts.enumerated()), id: \.offset) { _, artifact in
                         Button {
@@ -241,7 +250,7 @@ struct ArtifactList: View {
             }
             if !error.isEmpty { InlineNotice(text: error) }
         }
-        .fullScreenCover(item: $page) { file in NavigationStack { HTMLPreview(url: file.url).ignoresSafeArea(edges: .bottom).navigationTitle(file.url.deletingPathExtension().lastPathComponent).navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .topBarLeading) { Button("完成") { page = nil } }; ToolbarItem(placement: .topBarTrailing) { ShareLink(item: file.url) { Image(systemName: "square.and.arrow.up") } } } } }
+        .fullScreenCover(item: $page) { file in NavigationStack { HTMLPreview(url: file.url, initialState: file.state, save: saveState(file.url)).ignoresSafeArea(edges: .bottom).navigationTitle(file.url.deletingPathExtension().lastPathComponent).navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .topBarLeading) { Button("完成") { page = nil } }; ToolbarItem(placement: .topBarTrailing) { ShareLink(item: file.url) { Image(systemName: "square.and.arrow.up") } } } } }
         .sheet(item: $preview) { file in NavigationStack { FilePreview(url: file.url).navigationTitle(file.url.lastPathComponent).navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .topBarLeading) { Button("完成") { preview = nil } }; ToolbarItem(placement: .topBarTrailing) { ShareLink(item: file.url) { Image(systemName: "square.and.arrow.up") } } } } }
     }
     private func open(_ item: JSON) async {
@@ -256,18 +265,68 @@ struct ArtifactList: View {
             }
             let file = try await api.download(record.id, name: record["name"].string, into: SecureVault.directory.appendingPathComponent("Previews"))
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: file.path)
-            if file.pathExtension.lowercased() == "html" { page = PreviewFile(url: file) } else { preview = PreviewFile(url: file) }
+            if file.pathExtension.lowercased() == "html" {
+                let saved = try? await api.request("/personal/artifact-state/" + file.lastPathComponent.pathEncoded)
+                let state = (saved?["state"]).flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                page = PreviewFile(url: file, state: state)
+            } else { preview = PreviewFile(url: file) }
         } catch { self.error = error.localizedDescription }
     }
+    private func saveState(_ file: URL) -> (String) -> Void {
+        let client = model.client
+        return { text in
+            guard let client, let data = text.data(using: .utf8), let state = try? JSONDecoder().decode(JSON.self, from: data) else { return }
+            Task { _ = try? await client.request("/personal/artifact-state/" + file.lastPathComponent.pathEncoded, body: .object(["state": state])) }
+        }
+    }
 }
-private struct PreviewFile: Identifiable { let url: URL; var id: String { url.path } }
+private struct AttachmentChip: View {
+    let artifact: JSON
+    let loading: Bool
+    var body: some View {
+        let name = artifact["name"].string.isEmpty ? URL(fileURLWithPath: artifact["path"].string).lastPathComponent : artifact["name"].string
+        let ext = (URL(fileURLWithPath: name).pathExtension.uppercased()).prefix(4)
+        let tint: Color = switch ext { case "PDF": Palette.danger; case "PNG", "JPG", "JPEG", "WEBP", "GIF": Palette.info; case "HTML": Palette.success; case "XLSX", "CSV": Color(red: 0.2, green: 0.6, blue: 0.35); default: Palette.textSecondary }
+        let size = artifact["size"].double > 0 ? ByteCountFormatter.string(fromByteCount: Int64(artifact["size"].double), countStyle: .file) : ""
+        HStack(spacing: Space.sm) {
+            Text(ext.isEmpty ? "FILE" : String(ext)).font(.system(size: 9, weight: .heavy)).foregroundStyle(.white)
+                .frame(width: 30, height: 36).background(tint, in: .rect(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                Text(artifact["availability"].string == "missing" ? "已移动或不存在" : [String(ext), size].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption2).foregroundStyle(Palette.textTertiary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if loading { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.down.to.line").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.textTertiary) }
+        }
+        .padding(Space.sm)
+        .background(Palette.fill, in: .rect(cornerRadius: Radius.md, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(name)
+    }
+}
+private struct PreviewFile: Identifiable { let url: URL; var state = "{}"; var id: String { url.path } }
 /// 航程产出的 HTML：自包含单文件，直接在 App 里交互；只读本文件所在目录，外部链接一律不跳转。
+/// 勾选、展开、输入按元素顺序存到后端（和网页共用），下次打开照原样恢复。
 struct HTMLPreview: UIViewRepresentable {
     let url: URL
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    var initialState: String = "{}"
+    var save: (String) -> Void = { _ in }
+    func makeCoordinator() -> Coordinator { Coordinator(save) }
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        let script = """
+        (function(){var S=\(initialState);var els=[].slice.call(document.querySelectorAll('input,textarea,details')).filter(function(e){return e.type!=='file'&&e.type!=='password'});
+        function box(e){return e.type==='checkbox'||e.type==='radio'}
+        function k(e,i){return e.id||i}
+        els.forEach(function(e,i){var v=S[k(e,i)];if(v===undefined)return;if(e.tagName==='DETAILS')e.open=!!v;else if(box(e))e.checked=!!v;else e.value=v});
+        function snap(){var o={};els.forEach(function(e,i){o[k(e,i)]=e.tagName==='DETAILS'?e.open:box(e)?e.checked:e.value});window.webkit.messageHandlers.comState.postMessage(JSON.stringify(o))}
+        document.addEventListener('change',snap,true);document.addEventListener('input',snap,true);
+        els.forEach(function(e){if(e.tagName==='DETAILS')e.addEventListener('toggle',snap)})})();
+        """
+        config.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        config.userContentController.add(context.coordinator, name: "comState")
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = context.coordinator
         view.isOpaque = false; view.backgroundColor = .clear
@@ -275,7 +334,15 @@ struct HTMLPreview: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: WKWebView, context: Context) {}
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "comState")
+    }
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        let save: (String) -> Void
+        init(_ save: @escaping (String) -> Void) { self.save = save }
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            if let text = message.body as? String { save(text) }
+        }
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             decisionHandler(action.request.url?.isFileURL == true || action.request.url?.scheme == "about" ? .allow : .cancel)
         }
@@ -410,4 +477,74 @@ private func connectionSymbol(_ name: String) -> String {
     case "weather": "cloud.sun"
     default: "link"
     }
+}
+
+
+/// 10-25 活动日志（借鉴 Muse）：它替你做过的每个写操作。审批只拦删除之后，这里是事后那道闸：
+/// 能看到做了什么、凭哪句话做的，结果不确定的可以说一句做成了没有。微信通道发过的提醒也列在最后。
+struct ActivityView: View {
+    @Environment(AppModel.self) private var model
+    private var data: JSON { model.activityData }
+    var body: some View {
+        DetailPage(title: "它做过的事") {
+            Text("记账、日程、提醒、改文件……每一步都在这。结果不确定的点一下告诉它，做错的标出来，它会记住。")
+                .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+            let items = data["items"].array
+            if items.isEmpty {
+                EmptyState(title: "还没有记录", description: "它替你动手做过的事会按时间列在这里。", symbol: "list.bullet.rectangle")
+            } else {
+                GroupedCard(dividerInset: Layout.rowInset) {
+                    ForEach(items.map { RemoteRow(.object(["id": $0["key"], "entry": $0])) }) { row in
+                        ActivityRow(entry: row.value["entry"])
+                    }
+                }
+            }
+            let pushes = data["wechat"].array
+            if !pushes.isEmpty {
+                GroupSection("发到微信的提醒") {
+                    GroupedCard(dividerInset: Layout.rowInset) {
+                        ForEach(pushes.map { RemoteRow(.object(["id": $0["key"], "push": $0])) }) { row in
+                            let push = row.value["push"]
+                            ListRow(symbol: "bubble.left", tone: push["state"].string == "sent" ? .success : .warning,
+                                    title: push["text"].string.components(separatedBy: "\n").first ?? "", subtitle: relativeTime(push["at"].double) + (push["state"].string == "sent" ? "" : " · 没发出去"), subtitleLines: 1) { EmptyView() }
+                        }
+                    }
+                }
+            }
+        }
+        .task { _ = await model.load("/personal/activity") }
+        .refreshable { _ = await model.load("/personal/activity") }
+    }
+}
+
+private struct ActivityRow: View {
+    @Environment(AppModel.self) private var model
+    let entry: JSON
+    private var state: (String, Tone, String) {
+        switch entry["state"].string {
+        case "completed": ("checkmark.circle", .success, "做成了")
+        case "confirmed": ("checkmark.seal", .success, "你确认做成了")
+        case "failed": ("xmark.circle", .danger, "失败")
+        case "not_done": ("minus.circle", .neutral, "你说没做成")
+        case "disputed": ("exclamationmark.bubble", .danger, "你标了做错")
+        default: ("questionmark.circle", .warning, "结果不确定")
+        }
+    }
+    var body: some View {
+        let (symbol, tone, label) = state
+        let when = entry["at"].double > 0 ? relativeTime(entry["at"].double) : ""
+        let source = entry["source"].string
+        Menu {
+            Section(source.isEmpty ? "没有记下来源" : "来自：" + source) {
+                Button("做成了", systemImage: "checkmark") { verdict("done") }
+                Button("没做成", systemImage: "minus") { verdict("not_done") }
+                Button("做错了", systemImage: "exclamationmark.bubble") { verdict("wrong") }
+            }
+        } label: {
+            ListRow(symbol: symbol, tone: tone, title: entry["summary"].string, status: label, statusTone: tone,
+                    subtitle: [when, source].filter { !$0.isEmpty }.joined(separator: " · "), subtitleLines: 1) { EmptyView() }
+        }
+        .buttonStyle(.row)
+    }
+    private func verdict(_ value: String) { Task { await model.activityVerdict(entry["key"].string, value) } }
 }

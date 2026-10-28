@@ -10,7 +10,7 @@ extension AppModel {
     /// 「现在就该做」的条数，给 Dock 徽标用。
     var nextUrgentCount: Int { nextItems.filter { $0["urgency"].string == "now" }.count }
 
-    func nextAction(_ item: JSON, _ action: String) async {
+    func nextAction(_ item: JSON, _ action: String, reason: String? = nil) async {
         #if DEBUG
         if isUITesting {
             var value = nextData
@@ -23,11 +23,47 @@ extension AppModel {
         }
         #endif
         do {
-            _ = try await mutate("/personal/next/" + item.id.pathEncoded, fields: ["action": .string(action)])
+            var fields: [String: JSON] = ["action": .string(action)]
+            if let reason { fields["reason"] = .string(reason) }
+            _ = try await mutate("/personal/next/" + item.id.pathEncoded, fields: fields)
             _ = await load("/personal/next")
             if action == "discuss" { tab = .chat; await refresh(.chat) }
             Haptics.success()
         } catch { banner = error.localizedDescription }
+    }
+    var activityData: JSON { datasets["/personal/activity"] ?? .null }
+    func activityVerdict(_ key: String, _ verdict: String) async {
+        do {
+            _ = try await mutate("/personal/activity/" + key.pathEncoded, fields: ["verdict": .string(verdict)])
+            _ = await load("/personal/activity"); Haptics.success()
+        } catch { banner = error.localizedDescription }
+    }
+    /// 10-25 一卡一动作：回复类复制草稿、打开微信 / 邮件，事项转「等对方」（下一轮看到回了再收）；
+    /// 记账、加日程用他的口吻发进 Com 对话，走对话原本的确认和授权，不在这里另开写入口。
+    func runNextAction(_ item: JSON, open: (URL) -> Void) async {
+        let action = item["action"]
+        switch action["type"].string {
+        case "reply_wechat":
+            UIPasteboard.general.string = action["draft"].string
+            if let url = URL(string: "weixin://") { open(url) }
+            await nextAction(item, "drafted")
+        case "reply_mail":
+            var parts = URLComponents(); parts.scheme = "mailto"; parts.path = action["to"].string
+            parts.queryItems = [URLQueryItem(name: "subject", value: action["subject"].string), URLQueryItem(name: "body", value: action["draft"].string)]
+            if let url = parts.url { open(url) }
+            await nextAction(item, "drafted")
+        case "bookkeep":
+            let note = action["note"].string
+            await send(textOverride: "记一笔 " + nextAmount(action["amount"].double) + " 元" + (note.isEmpty ? "" : " " + note))
+            tab = .chat
+            await nextAction(item, "done")
+        case "calendar":
+            let end = action["end"].string
+            await send(textOverride: "加个日程：" + action["title"].string + " " + action["start"].string + (end.isEmpty ? "" : " 到 " + end))
+            tab = .chat
+            await nextAction(item, "done")
+        default: break
+        }
     }
     func refreshNext() async {
         #if DEBUG
@@ -57,19 +93,32 @@ extension AppModel {
     }
 }
 
+func nextAmount(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...2)).grouping(.never)) }
+
+/// 划掉的理由（后端 REASONS）：「已经办了」算做完；「别人在负责」不拿来静音整个项目。
+let nextDismissReasons: [(String, String)] = [("elsewhere", "已经办了"), ("others", "别人在负责"), ("unimportant", "不重要"), ("not_mine", "不是我的事")]
+
 struct NextView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @Environment(\.dockOnSide) private var outer
     private var data: JSON { model.nextData }
+    /// 10-25 Duo 合上（外屏竖拿，Dock 在右）：最要紧的那件放大成速览卡，下面的列表不再重复它。
+    private var glance: JSON? { outer && !model.splitView ? model.nextItems.first : nil }  // 双栏右栏也贴边，但不是外屏
     private var groups: [(String, [JSON])] {
         [("现在", "now"), ("今天", "today"), ("这周", "week")].compactMap { title, key in
-            let rows = model.nextItems.filter { $0["urgency"].string == key }
+            let rows = model.nextItems.filter { $0["urgency"].string == key && $0.id != glance?.id }
             return rows.isEmpty ? nil : (title, rows)
         }
     }
     var body: some View {
         ScreenScaffold(title: "下一步") {
             header
+            if let glance, !data["running"].bool { NextGlanceCard(item: glance) }
+            let uncertain = model.activityData["uncertain"].array
+            if !uncertain.isEmpty {
+                GroupSection("结果待核对") { ForEach(uncertain.map(RemoteRow.init)) { UncertainCard(entry: $0.value) } }
+            }
             VoyageBanner()
             TomorrowPlanCard()
             let broken = model.brokenSources
@@ -99,7 +148,8 @@ struct NextView: View {
         }
         .animation(reduce ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: model.nextItems.map(\.id))
         .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: data["running"].bool)
-        .refreshable { await model.refreshNext() }
+        .refreshable { await model.refreshNext(); _ = await model.load("/personal/activity") }
+        .task { _ = await model.load("/personal/activity") }
     }
     private var header: some View {
         HStack(alignment: .center, spacing: Space.md) {
@@ -115,10 +165,18 @@ struct NextView: View {
     }
     @ViewBuilder private var footer: some View {
         let week = data["week"]
-        if week["shown"].int > 0 {
-            Text("这周提了 \(week["shown"].int) 件，你做了 \(week["acted"].int) 件、划掉 \(week["dismissed"].int) 件。划掉的我会少提。")
-                .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).padding(.horizontal, Space.xs)
+        VStack(alignment: .leading, spacing: Space.sm) {
+            if week["shown"].int > 0 {
+                let precision = week["precision"].isNull ? "" : "，准确率 \(Int((week["precision"].double * 100).rounded()))%"
+                let resolved = week["resolved"].int > 0 ? "；群里已经办完、我自动收起 \(week["resolved"].int) 件" : ""
+                let reasons = week["reasons"].object.sorted { $0.value.int > $1.value.int }.map { "\($0.key) \($0.value.int)" }.joined(separator: " · ")
+                Text("这周提了 \(week["shown"].int) 件，你用上 \(week["acted"].int) 件、划掉 \(week["dismissed"].int) 件\(precision)\(resolved)。" + (reasons.isEmpty ? "" : "划掉的理由：" + reasons + "。"))
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            }
+            Button { model.showActivity = true } label: { Label("看它替你做过的事", systemImage: "list.bullet.rectangle").font(TypeScale.footnote) }
+                .buttonStyle(.quiet).accessibilityIdentifier("next-open-activity")
         }
+        .padding(.horizontal, Space.xs)
     }
 }
 
@@ -127,17 +185,28 @@ private struct NextCard: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
     let item: JSON
+    @Environment(\.openURL) private var openURL
     @State private var offset: CGFloat = 0
     @State private var busy = false
+    @State private var askReason = false
+    private var hasAction: Bool { !item["action"]["type"].string.isEmpty }
     var body: some View {
         Card(item["urgency"].string == "now" ? .highlighted(.accent) : .standard, padding: Space.lg) {
             VStack(alignment: .leading, spacing: Space.md) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                     Text(item["title"].string).font(TypeScale.headline).foregroundStyle(Palette.textPrimary).lineLimit(2)
                     Spacer(minLength: Space.sm)
-                    if item["urgency"].string == "now" { Stamp(text: "现在", tone: .warning) }
+                    if item["phase"].string == "waiting" { Stamp(text: "等对方", tone: .info) }
+                    else if item["phase"].string == "progress" { Stamp(text: "进展中", tone: .accent) }
+                    else if item["urgency"].string == "now" { Stamp(text: "现在", tone: .warning) }
                 }
                 if !item["why"].string.isEmpty { Text(item["why"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary).lineSpacing(2) }
+                if let last = item["history"].array.last {
+                    // 10-25 事项持续追踪：最新一步进展（谁回了、改了什么），不再每小时换个说法重写
+                    Label(last["text"].string + " · " + relativeTime(last["at"].double), systemImage: "arrow.turn.down.right")
+                        .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                }
+                if hasAction { NextActionDraft(action: item["action"]) }
                 let evidence = item["evidence"].array
                 if !evidence.isEmpty {
                     // 依据只用依据袋表达：点开纸片从袋口飞出来停住，点哪张纸就打开哪份原始来源（轨道 r2-pages：去掉了卡片里的列表）。
@@ -149,8 +218,15 @@ private struct NextCard: View {
                         .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
                 }
                 HStack(spacing: Space.sm) {
-                    Button("交给 Com") { delegate() }.buttonStyle(.primaryCompact).disabled(busy).accessibilityIdentifier("next-discuss-" + item.id)
-                    if item["in_todo"].isNull {
+                    if hasAction {
+                        Button(nextActionTitle(item["action"])) { runAction() }.buttonStyle(.primaryCompact).disabled(busy).accessibilityIdentifier("next-action-" + item.id)
+                        Button("交给 Com") { delegate() }.buttonStyle(.secondaryCompact).disabled(busy).accessibilityIdentifier("next-discuss-" + item.id)
+                    } else {
+                        Button("交给 Com") { delegate() }.buttonStyle(.primaryCompact).disabled(busy).accessibilityIdentifier("next-discuss-" + item.id)
+                    }
+                    if hasAction {
+                        EmptyView()
+                    } else if item["in_todo"].isNull {
                         Menu {
                             Button("今天", systemImage: "sun.max") { todo(0) }
                             Button("明天", systemImage: "sunrise") { todo(1) }
@@ -164,7 +240,7 @@ private struct NextCard: View {
                         Button("已经做了") { act("done") }.buttonStyle(.secondaryCompact).disabled(busy)
                     }
                     Spacer(minLength: 0)
-                    Button("不用") { act("dismiss") }.buttonStyle(.quiet).disabled(busy).accessibilityIdentifier("next-dismiss-" + item.id)
+                    Button("不用") { askReason = true }.buttonStyle(.quiet).disabled(busy).accessibilityIdentifier("next-dismiss-" + item.id)
                 }
             }
         }
@@ -174,14 +250,20 @@ private struct NextCard: View {
             offset = max(-110, min(0, value.translation.width * 0.6))
         }.onEnded { value in
             withAnimation(reduce ? nil : .spring(response: 0.3, dampingFraction: 0.85)) { offset = 0 }
-            if value.translation.width < -80 { act("dismiss") }
+            if value.translation.width < -80 { askReason = true }
         })
+        .confirmationDialog("为什么不用？我按理由调整以后提什么", isPresented: $askReason, titleVisibility: .visible) {
+            ForEach(nextDismissReasons, id: \.0) { key, label in Button(label) { dismiss(key) } }
+            Button("只是划掉") { act("dismiss") }
+            Button("取消", role: .cancel) {}
+        }
         .contextMenu {
+            if hasAction { Button(nextActionTitle(item["action"]), systemImage: "bolt") { runAction() } }
             Button("交给 Com", systemImage: "paperplane") { delegate() }
             Button("加到明天的待办", systemImage: "checklist") { todo(1) }
             Button("稍后再说（明天再提）", systemImage: "clock.arrow.circlepath") { act("snooze") }
             Button("已经做了", systemImage: "checkmark") { act("done") }
-            Button("不用，少提这类", systemImage: "xmark") { act("dismiss") }
+            Button("不用…", systemImage: "xmark") { askReason = true }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("next-" + item.id)
@@ -189,6 +271,14 @@ private struct NextCard: View {
     private func act(_ action: String) {
         busy = true
         Task { await model.nextAction(item, action); busy = false }
+    }
+    private func dismiss(_ reason: String) {
+        busy = true
+        Task { await model.nextAction(item, "dismiss", reason: reason); busy = false }
+    }
+    private func runAction() {
+        busy = true
+        Task { await model.runNextAction(item) { openURL($0) }; busy = false }
     }
     /// 交给 Com：建航程并直接打开它，能马上看到拆出来的步骤；关掉就回到这里。
     private func delegate() {
@@ -777,5 +867,112 @@ private struct Rise: ViewModifier {
             .opacity(on ? 1 : 0)
             .offset(y: on || reduce ? 0 : 18)
             .animation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 0.86).delay(delay), value: on)
+    }
+}
+
+
+func nextActionTitle(_ action: JSON) -> String {
+    switch action["type"].string {
+    case "reply_wechat": "复制去微信回"
+    case "reply_mail": "用邮件回"
+    case "bookkeep": "记这笔 ¥" + nextAmount(action["amount"].double)
+    case "calendar": "加到日程"
+    default: "去办"
+    }
+}
+
+/// 回复草稿：替他写好的那段话，先露三行，点开看全文。记账 / 日程只显示参数。
+private struct NextActionDraft: View {
+    let action: JSON
+    @State private var expanded = false
+    var body: some View {
+        let type = action["type"].string
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: type == "reply_mail" ? "envelope" : type == "reply_wechat" ? "bubble.left" : type == "bookkeep" ? "creditcard" : "calendar")
+                Text(type == "reply_wechat" ? "回「\(action["to"].string)」的草稿" : type == "reply_mail" ? "回 \(action["to_name"].string.isEmpty ? action["to"].string : action["to_name"].string) 的草稿" : type == "bookkeep" ? "要记的账" : "要加的日程")
+            }
+            .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary)
+            switch type {
+            case "bookkeep":
+                Text("¥" + nextAmount(action["amount"].double) + (action["note"].string.isEmpty ? "" : " · " + action["note"].string)).font(TypeScale.subheadline)
+            case "calendar":
+                Text(action["title"].string + " · " + action["start"].string + (action["end"].string.isEmpty ? "" : "–" + String(action["end"].string.suffix(5)))).font(TypeScale.subheadline)
+            default:
+                Text(action["draft"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary).lineLimit(expanded ? nil : 3)
+                    .onTapGesture { withAnimation(.snappy) { expanded.toggle() } }
+            }
+        }
+        .padding(Space.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.fill, in: .rect(cornerRadius: Radius.md, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// 10-25 结果不确定（Muse 的「未知结果」卡）：执行了但没收到回音的写操作，让他说一句做成了没有，免得记账重记或漏记。
+private struct UncertainCard: View {
+    @Environment(AppModel.self) private var model
+    let entry: JSON
+    @State private var busy = false
+    var body: some View {
+        Card(.highlighted(.warning), padding: Space.lg) {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(entry["summary"].string).font(TypeScale.headline).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                    Spacer(minLength: Space.sm)
+                    Text(relativeTime(entry["at"].double)).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                }
+                Text("执行了但没收到结果" + (entry["source"].string.isEmpty ? "" : "（来自：" + entry["source"].string + "）")).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).lineLimit(2)
+                HStack(spacing: Space.sm) {
+                    Button("做成了") { verdict("done") }.buttonStyle(.secondaryCompact)
+                    Button("没做成") { verdict("not_done") }.buttonStyle(.secondaryCompact)
+                    Spacer(minLength: 0)
+                    Button("做错了") { verdict("wrong") }.buttonStyle(.quiet)
+                }
+                .disabled(busy)
+            }
+        }
+        .accessibilityIdentifier("uncertain-" + entry["key"].string)
+    }
+    private func verdict(_ value: String) {
+        busy = true
+        Task { await model.activityVerdict(entry["key"].string, value); busy = false }
+    }
+}
+
+/// 10-25 Duo 外屏速览：合上竖拿时只看「下一件事 + 一个按钮」。
+private struct NextGlanceCard: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
+    let item: JSON
+    @State private var busy = false
+    var body: some View {
+        let action = item["action"]
+        VStack(alignment: .leading, spacing: Space.md) {
+            Text("下一件事").font(.caption.weight(.bold)).foregroundStyle(Palette.onInkSecondary)
+            Text(item["title"].string).font(.system(size: 26, weight: .bold)).foregroundStyle(Palette.onInk).fixedSize(horizontal: false, vertical: true)
+            if !item["why"].string.isEmpty {
+                Text(item["why"].string).font(TypeScale.subheadline).foregroundStyle(Palette.onInkSecondary).lineLimit(3)
+            }
+            HStack(spacing: Space.sm) {
+                Button {
+                    busy = true
+                    Task {
+                        if action["type"].string.isEmpty { await model.nextAction(item, "discuss") } else { await model.runNextAction(item) { openURL($0) } }
+                        busy = false
+                    }
+                } label: {
+                    Text(action["type"].string.isEmpty ? "交给 Com" : nextActionTitle(action)).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.primaryCompact)
+                Button("做完了") { busy = true; Task { await model.nextAction(item, "done"); busy = false } }.buttonStyle(.secondaryCompact)
+            }
+            .disabled(busy)
+        }
+        .padding(Space.lg)
+        .background(Palette.ink, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("next-glance")
     }
 }

@@ -357,40 +357,19 @@ final class ComUITests: XCTestCase {
         let app = app()
         XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
         app.buttons["tab-今天"].tap()
-        // 大日期下面一行灰字（轨道 r2-pages）：4 个日程；待办 = 2 条提醒 + 2 条行动台待办 + 1 件等你回应的任务。
-        XCTAssertTrue(app.staticTexts["4 个日程 · 5 个待办"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["today-now-banner"].firstMatch.exists, "下一件 + 身体横幅")
-        XCTAssertFalse(app.descendants(matching: .any)["today-tip"].firstMatch.exists, "深色提示条已并进简报")
-        app.buttons["today-deck-timeline"].tap()
-        sleep(2)
-        capture("today-top", app: app)
-        // 横向时间轴：有「现在」线，卡片点进详情。
-        app.swipeUp()
-        XCTAssertTrue(app.descendants(matching: .any)["today-now"].firstMatch.waitForExistence(timeout: 3))
+        // 标题下面一行灰字：只数日程（11-02 起今天页只放日程和日程建议）。
+        XCTAssertTrue(app.staticTexts["4 个日程"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["today-timeline"].firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["today-now"].firstMatch.exists, "「现在」标记")
         sleep(1)
-        capture("today-timeline", app: app)
+        capture("today-top", app: app)
         let week = app.buttons["today-event:ev-week"]
-        let timeline = app.descendants(matching: .any)["today-timeline"].firstMatch
-        // 上面多了简报、表盘和身体卡，时间线更靠下：滚到它整块进屏幕。
-        for _ in 0..<12 where !(timeline.exists && timeline.frame.minY > 140 && timeline.frame.maxY < app.frame.maxY - 120) {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)).press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)))
-            sleep(1)
-        }
-        if !week.isHittable { timeline.swipeRight() }
+        for _ in 0..<6 where !week.isHittable { app.swipeUp(); sleep(1) }
         week.tap()
         XCTAssertTrue(app.navigationBars["日程"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["3F 会议室"].exists)
         capture("today-event-detail", app: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        // 待办那一段里的过期提醒：切回待办，点进去完成，回来灰字跟着少一件。
-        app.buttons["today-deck-todo"].tap()
-        let reminder = app.buttons["today-reminder:rm-late"]
-        XCTAssertTrue(reminder.waitForExistence(timeout: 5))
-        if !reminder.isHittable { app.swipeDown() }
-        reminder.tap()
-        app.buttons["reminder-confirm"].tap()
-        if !app.staticTexts["4 个日程 · 4 个待办"].exists { app.swipeDown() }
-        XCTAssertTrue(app.staticTexts["4 个日程 · 4 个待办"].waitForExistence(timeout: 5))
         // 10-17 黄色拍板卡拿掉了：等你回应的任务从标题旁的小按钮进「任务与目标」。
         app.buttons["today-task-hub"].tap()
         XCTAssertTrue(app.buttons["管理"].waitForExistence(timeout: 5))

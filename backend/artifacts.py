@@ -6,8 +6,13 @@ from contextlib import closing
 import os
 import hashlib
 import mimetypes
+import re
 from pathlib import Path
 
+# 回复正文里提到的工作区文件（`work/航程产出/…html`、`~/AI_Work_System/work/…`）：自动登记成可点开的成果。
+TEXT_PATH = re.compile(r'(?:~/AI_Work_System/|/Users/[^/\s]+/AI_Work_System/)?((?:work|research|life|projects)/[^\s`\'"“”「」（）()，。、；]+?\.(?:html|md|pdf|png|jpe?g|csv|xlsx|docx|pptx))')
+OUTPUTS = Path('work') / '航程产出'
+SHELF = {'.html', '.md', '.pdf', '.png', '.jpg', '.jpeg'}
 ALLOWED = {'.pdf','.png','.jpg','.jpeg','.webp','.gif','.md','.html','.txt','.csv','.docx','.xlsx','.pptx','.mov','.mp4','.patch'}
 class ArtifactAccess:
     def __init__(self, tasks, workspace, state=None):
@@ -15,7 +20,9 @@ class ArtifactAccess:
         self.path=Path(state)/'artifacts.sqlite' if state else None
         if self.path:
             with closing(sqlite3.connect(self.path)) as db:
-                db.execute('CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, data TEXT NOT NULL)');db.commit()
+                db.execute('CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+                # 10-25：可交互产出（勾选、展开）的状态，按文件名存，手机和网页共用
+                db.execute('CREATE TABLE IF NOT EXISTS artifact_state(key TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at REAL NOT NULL)');db.commit()
             self.path.chmod(0o600)
 
     def register(self, message_id, relative_path):
@@ -31,6 +38,32 @@ class ArtifactAccess:
             else:db.execute('INSERT INTO artifacts VALUES (?,?)',(aid,json.dumps(value,ensure_ascii=False)));db.commit()
         return self._record({'id':'','message_id':message_id,'created_at':value['created_at']}, {'path':str(path)},path,aid)
 
+
+    def link_text(self, message_id, text):
+        """正文里提到的文件逐个登记；不在工作区、不存在、类型不允许的跳过。"""
+        out, seen = [], set()
+        for rel in TEXT_PATH.findall(text or ''):
+            if rel in seen:
+                continue
+            seen.add(rel)
+            try:
+                out.append(self.register(message_id, rel))
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+        return out
+
+    def state(self, key):
+        with closing(sqlite3.connect(self.path)) as db:
+            row = db.execute('SELECT data, updated_at FROM artifact_state WHERE key=?', (key,)).fetchone()
+        return {'key': key, 'state': json.loads(row[0]) if row else {}, 'updated_at': row[1] if row else 0}
+
+    def save_state(self, key, state):
+        if not key or len(key) > 300 or not isinstance(state, dict) or len(json.dumps(state)) > 64 * 1024:
+            raise ValueError('状态无效')
+        now = time.time()
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute('INSERT OR REPLACE INTO artifact_state VALUES (?,?,?)', (key, json.dumps(state, ensure_ascii=False), now)); db.commit()
+        return {'key': key, 'state': state, 'updated_at': now}
 
     def _entries(self):
         if self.path:
@@ -49,6 +82,14 @@ class ArtifactAccess:
                     raw=Path(task.get('cwd') or self.workspace)/raw
                 identity=str(task['id'])+'\0'+str(task.get('run_id',''))+'\0'+str(raw)
                 yield task,item,raw,'art_'+hashlib.sha256(identity.encode()).hexdigest()[:32]
+        # 航程产出目录里的成品，不管有没有被哪条消息提到，都进产出库
+        folder=self.workspace/OUTPUTS
+        if folder.is_dir():
+            for path in folder.iterdir():
+                if path.suffix.lower() not in SHELF or path.name.startswith(('.','_')) or not path.is_file():
+                    continue
+                mtime=path.stat().st_mtime
+                yield {'id':'','created_at':mtime},{'path':str(path)},path,'art_'+hashlib.sha256(('outputs:'+str(path)).encode()).hexdigest()[:32]
 
     def _safe(self, raw):
         path=raw.resolve()
@@ -76,7 +117,15 @@ class ArtifactAccess:
                 'availability':status,'download_path':'/personal/artifacts/'+aid}
 
     def index(self):
-        return [self._record(*entry) for entry in self._entries()]
+        """同一个文件只列一次（先登记到消息/任务上的那条优先，点开能回到出处），新的在前。"""
+        out, seen = [], set()
+        for entry in self._entries():
+            key = str(entry[2])  # 不 resolve：软链接和它指向的文件要分开判（前者必须被拒）
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(self._record(*entry))
+        return sorted(out, key=lambda r: -(r['created_at'] or 0))
 
     def resolve(self, aid):
         for entry in self._entries():

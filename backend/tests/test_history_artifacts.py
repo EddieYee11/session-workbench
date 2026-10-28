@@ -103,3 +103,21 @@ def test_main_deliverable_registration_is_durable_and_attached_once(tmp_path):
     record,file,size=a.open(artifact['id'])
     with file:assert file.read().decode()=='实际结果'
     assert size==report.stat().st_size
+
+
+def test_text_paths_link_and_outputs_shelf_and_state(tmp_path):
+    from artifacts import ArtifactAccess
+    class Tasks:
+        def list(self): return []
+    ws = tmp_path / 'ws'; out = ws / 'work' / '航程产出'; out.mkdir(parents=True)
+    (out / '2026-10-25-清单.html').write_text('<input type=checkbox data-id=a>')
+    (out / '_probe.py').write_text('x')
+    (ws / 'work' / '周报.md').write_text('# x')
+    access = ArtifactAccess(Tasks(), ws, tmp_path)
+    linked = access.link_text('m1', '页面在 `work/航程产出/2026-10-25-清单.html`，详细版 ~/AI_Work_System/work/周报.md，不存在的 work/无.html')
+    assert [a['name'] for a in linked] == ['2026-10-25-清单.html', '周报.md']
+    names = [a['name'] for a in access.index()]
+    assert names.count('2026-10-25-清单.html') == 1 and '_probe.py' not in names
+    assert access.state('2026-10-25-清单.html')['state'] == {}
+    access.save_state('2026-10-25-清单.html', {'checks': {'a': True}})
+    assert access.state('2026-10-25-清单.html')['state'] == {'checks': {'a': True}}

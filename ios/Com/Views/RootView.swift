@@ -12,6 +12,8 @@ struct RootView: View {
     /// 折痕（官方：向 GeometryProxy 要 reservedRegions(kind: .division)）：半折叠时是内屏上一条有宽度的活动区域，摊平 / 合上时没有。
     @State private var crease: CGRect?
     @State private var hingeTick = 0
+    /// 系统在右边缘留出的一列（Duo 外屏、展开横屏都有）：宽度 = 右安全区。Dock 放进这一列的底部。
+    @State private var rail = SideRail()
     @Namespace private var details
     @AppStorage("appearance") private var appearance = "light"
     @State private var lock = AppLock.shared
@@ -49,7 +51,8 @@ struct RootView: View {
         let sidebar = wide ? min(340, leftWidth - 40) + 40 : WorkSidebarLayer.width(for: screenWidth)
         let base: CGFloat = model.showWorkSidebar ? sidebar : 0
         let open = min(1, max(0, (base + model.workSidebarDrag) / sidebar))
-        let barHidden = pushed.contains(wide ? .chat : model.tab)
+        // 双栏时左栏是聊天根页、不会推详情；它的 onDisappear 只会在旋转/折叠重建时误触发，不能拿来藏顶栏。
+        let barHidden = !wide && pushed.contains(model.tab)
         let rightBarHidden = pushed.contains(model.rightTab)
         return ZStack(alignment: .top) {
             // 主内容：页面 + Dock + 工作台 + 顶栏。工作页开侧栏时整块往右推走，Dock 跟着淡出。
@@ -57,13 +60,27 @@ struct RootView: View {
                 if wide {
                     splitContent(leftWidth: leftWidth, gap: gap, rightBarHidden: rightBarHidden)
                 } else {
-                    tabHost(SectionTab.dock, selection: $model.tab)
+                    // 系统在右边缘留了一列（Duo 外屏竖拿也有）：Dock 进那一列，和双栏右侧同一套。
+                    let side = rail.trailing > 0
+                    tabHost(SectionTab.dock, selection: $model.tab, sideDock: side)
                         .onChange(of: model.tab) { _, tab in
                             Task { await model.refresh(tab) }; model.showMenu = false
                             if tab != .work { model.showWorkSidebar = false; model.workSidebarDrag = 0; model.workSidebarMounted = false }
                         }
                         // Dock 只有一条，放在 TabView 外面：放进每个 tab 的话，切页时旧 Dock 和新 Dock 会一起淡入淡出，胶囊撑开的动画就看不到了。
-                        .overlay(alignment: .bottom) { if !SectionTab.typing.contains(model.tab) || !keyboardVisible { ComDock().opacity(Double(1 - open)) } }
+                        .overlay(alignment: .bottom) { if !side && (!SectionTab.typing.contains(model.tab) || !keyboardVisible) { ComDock().opacity(Double(1 - open)) } }
+                        .environment(\.dockOnSide, side)
+                    // 单栏的 TabView 铺满整屏（不按安全区收），Dock 不能挂在它身上再往右偏：单独一层，右边伸进系统那一列。
+                    if side && (!SectionTab.typing.contains(model.tab) || !keyboardVisible) {
+                        ComDock(tabs: SectionTab.dock)
+                            .frame(width: max(rail.trailing, ComDock.sideWidth))
+                            .padding(.bottom, rail.bottom)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                            .ignoresSafeArea(edges: .trailing)
+                            .environment(\.dockOnSide, true)
+                            .opacity(Double(1 - open))
+                            .zIndex(1)
+                    }
                 }
                 // 工作台在顶栏下面一层：没拉开时完全透明、不接触摸；拉开的过程跟着手指长出来。
                 StagePanel().zIndex(2)
@@ -106,6 +123,7 @@ struct RootView: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { screenWidth = $0; model.splitView = $0 >= Self.splitMinWidth }
         .background { CreaseProbe(tick: hingeTick) { crease = $0 } }
+        .background { SideRailProbe(tick: hingeTick) { rail = $0 } }
         .modifier(HingeWatch { hingeTick += 1 })
         // 折痕上不放交互元素：不管下面是什么，这一条不接触摸（官方只给了区域，怎么避开由 App 定）。
         .overlay(alignment: .topLeading) {
@@ -133,12 +151,12 @@ struct RootView: View {
     static func leftPaneWidth(for screen: CGFloat) -> CGFloat { min(420, max(360, (screen * 0.42).rounded())) }
 
     /// 一组页面各自带导航栈，切页保留各自的状态；Dock 另外画在外面。
-    private func tabHost(_ tabs: [SectionTab], selection: Binding<SectionTab>) -> some View {
+    private func tabHost(_ tabs: [SectionTab], selection: Binding<SectionTab>, sideDock: Bool = false) -> some View {
         TabView(selection: selection) {
             ForEach(tabs) { tab in
                 Tab(tab.rawValue, systemImage: tab.symbol, value: tab) {
                     NavigationStack {
-                        page(tab)
+                        page(tab, sideDock: sideDock)
                             // 根页被推走（还停在这个 tab）= 进了详情；回到根页再把顶栏请回来。
                             .onAppear { pushed.remove(tab) }
                             .onDisappear { if selection.wrappedValue == tab { pushed.insert(tab) } }
@@ -155,13 +173,11 @@ struct RootView: View {
         return HStack(spacing: 0) {
             NavigationStack {
                 page(.chat, dock: false)
-                    .onAppear { pushed.remove(.chat) }
-                    .onDisappear { pushed.insert(.chat) }
             }
             .frame(width: leftWidth)
             // 半折叠时这里是折痕：不画线、不放任何东西；摊平时是一条分隔线。
             if gap > 0 { Color.clear.frame(width: gap) } else { Rectangle().fill(Palette.separator).frame(width: 1).ignoresSafeArea() }
-            tabHost(SectionTab.workspace, selection: Binding(get: { model.rightTab }, set: { model.tab = $0 }))
+            tabHost(SectionTab.workspace, selection: Binding(get: { model.rightTab }, set: { model.tab = $0 }), sideDock: true)
                 .onChange(of: model.rightTab) { _, tab in
                     Task { await model.refresh(tab) }; model.showMenu = false
                     if tab != .work { model.showWorkSidebar = false; model.workSidebarDrag = 0; model.workSidebarMounted = false }
@@ -171,10 +187,20 @@ struct RootView: View {
                         .opacity(rightBarHidden ? 0 : 1).allowsHitTesting(!rightBarHidden)
                         .animation(reduce ? .easeOut(duration: 0.2) : .easeInOut(duration: 0.32), value: rightBarHidden)
                 }
-                .overlay(alignment: .bottom) {
-                    if !SectionTab.typing.contains(model.rightTab) || !keyboardVisible { ComDock(tabs: SectionTab.workspace) }
+                // 横屏：工具栏进系统右边缘那一列的底部（列在右安全区里，所以整体往右偏一个安全区宽度）。
+                .overlay(alignment: .bottomTrailing) {
+                    if !SectionTab.typing.contains(model.rightTab) || !keyboardVisible { sideDock(SectionTab.workspace) }
                 }
+                .environment(\.dockOnSide, true)
         }
+    }
+
+    /// 竖排 Dock：放进系统右边缘那一列的底部（列在右安全区里，所以整体往右偏一个安全区宽度）。
+    private func sideDock(_ tabs: [SectionTab]) -> some View {
+        ComDock(tabs: tabs)
+            .frame(width: max(rail.trailing, ComDock.sideWidth))
+            .padding(.bottom, rail.bottom)
+            .offset(x: rail.trailing)
     }
 
     /// 拖侧栏：开着时往左拖收起，关着时（左边缘）往右拉出来；跟手，松手按速度和位置决定。
@@ -192,14 +218,16 @@ struct RootView: View {
                 DispatchQueue.main.async { model.settleWorkSidebar(predicted: predicted, width: width, reduce: reduce) }
             }
     }
-    @ViewBuilder private func page(_ tab: SectionTab, dock: Bool = true) -> some View {
+    @ViewBuilder private func page(_ tab: SectionTab, dock: Bool = true, sideDock: Bool = false) -> some View {
         Group {
             switch tab { case .chat: ChatView(); case .next: NextView(); case .doing: TodayView(); case .health: HealthView(); case .work: WorkView() }
         }
         // 顶栏在 RootView 最上层只有一条（r3-work）：这里只给它让出高度，内容从它下面滑过。
         .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: Layout.topBar) }
         // 给上面那条 Dock 留位置；聊天页和工作页打字时让位给键盘。
-        .safeAreaInset(edge: .bottom, spacing: 0) { if dock && (!SectionTab.typing.contains(tab) || !keyboardVisible) { Color.clear.frame(height: ComDock.height) } }
+        .safeAreaInset(edge: .bottom, spacing: 0) { if dock && (!SectionTab.typing.contains(tab) || !keyboardVisible) { DockSpacer() } }
+        // 横屏双栏：Dock 在系统右边缘那一列；那一列不够宽（没有系统列）时内容自己让出。
+        .safeAreaInset(edge: .trailing, spacing: 0) { if sideDock { Color.clear.frame(width: max(0, ComDock.sideWidth - rail.trailing)) } }
     }
 }
 
@@ -217,6 +245,7 @@ private struct RootSheets: ViewModifier {
             .sheet(isPresented: $model.showFinance) { FinanceDetail(initialPeriod: "本月", initialCurrency: model.datasets["/personal/finance"]?["currencies"].array.first?.id ?? "") }
             .sheet(isPresented: $model.showConnectors) { ConnectorsSheet() }
             .sheet(isPresented: $model.showNewWork) { NewWorkView(initialAgent: "codex") }
+            .sheet(isPresented: $model.showActivity) { ActivityView() }
             .modifier(RootItemSheets())
     }
 }
@@ -348,6 +377,28 @@ struct PairingView: View {
                 }
             }
         }
+    }
+}
+
+struct SideRail: Equatable {
+    var trailing: CGFloat = 0
+    /// Dock 底边离屏幕底的距离：下安全区（Home 指示条）。
+    var bottom: CGFloat = 0
+}
+
+/// 读右边缘系统列。10-25 实测（Duo 模拟器）：状态栏不是 reserved region、statusBarFrame 只回 2pt 横条，
+/// 拿不到状态图标那一列有多高（勿扰、定位多一个就更长）；系统自己的竖排标签栏也是贴这一列的底部。
+/// 所以 Dock 不再按图标下沿往下排，改成贴底：宽度 = 右安全区，底边 = 下安全区。
+private struct SideRailProbe: View {
+    let tick: Int
+    let update: (SideRail) -> Void
+    var body: some View {
+        Color.clear.ignoresSafeArea()
+            .onGeometryChange(for: SideRail.self) { proxy in
+                // 不看横竖：Duo 外屏竖拿时系统也把时间 / Wi-Fi 放在右边一列。普通 iPhone 竖拿右安全区是 0，不受影响。
+                SideRail(trailing: proxy.safeAreaInsets.trailing, bottom: proxy.safeAreaInsets.bottom + Space.sm)
+            } action: { update($0) }
+            .id(tick)
     }
 }
 

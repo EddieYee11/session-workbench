@@ -93,6 +93,7 @@ inspector = SignalInspector(
 work_proposals = WorkProposalStore(STATE, HOME / "AI_Work_System")
 task_store = TaskStore(STATE)
 artifact_access = ArtifactAccess(task_store, HOME / "AI_Work_System", STATE)
+conversation.artifact_linker = artifact_access.link_text
 attachment_store = AttachmentStore(STATE)
 task_controller = TaskController(task_store, runtime, conversation)
 heartbeat = Heartbeat(
@@ -168,6 +169,39 @@ next_steps = NextSteps(
         profile=HOME / "AI_Work_System/_global/本体画像/00-核心身份.md",
     ),
 )
+from runsheet import INSTRUCTIONS as RUNSHEET_INSTRUCTIONS
+from runsheet import RunSheets
+
+
+async def runsheet_model(payload):
+    from hermes_review import review_json
+
+    return await review_json(STATE, "runsheet-" + str(time.time_ns()), RUNSHEET_INSTRUCTIONS, payload, timeout=120)
+
+
+runsheets = RunSheets(STATE, HOME / "AI_Work_System", runsheet_model)
+next_steps.runsheets = runsheets
+from activity import Activity
+
+activity = Activity(STATE / "tool-effects.sqlite", conversation, task_store)
+
+
+def wechat_candidates():
+    """10-25 微信推送候选：审批 → 结果不确定的操作 → 刚冒出来的「现在就该做」（分数 ≥ 80、头一次出现、两小时内）。"""
+    out = []
+    for a in list(runtime.approvals.values()):
+        reason = " ".join(str((a.get("params") or {}).get("reason") or "有一项操作等你决定").split())[:100]
+        out.append({"key": "approval:" + str(a.get("id")), "kind": "approval", "text": "【Com】有一步等你决定：" + reason + "\n打开 Com → 工作页处理"})
+    for e in activity.uncertain(within=86400):
+        if not e["tool"]:
+            continue  # 10-25 之前的旧记录没记动作，只在 App 里核对，不往微信推
+        out.append({"key": "effect:" + e["key"], "kind": "effect", "text": "【Com】有个操作没确认结果：" + e["summary"] + "\n到 Com「下一步」顶上点一下做成了没有"})
+    now = time.time()
+    for item in next_steps.snapshot()["items"]:
+        if item.get("urgency") == "now" and item.get("score", 0) >= 80 and item.get("shown", 1) == 1 and now - item.get("created_at", 0) < 7200:
+            draft = "\n草稿已备好，打开 Com「下一步」一键复制" if (item.get("action") or {}).get("draft") else ""
+            out.append({"key": "next:" + item["id"], "kind": "next", "text": "【Com】现在该做：" + item["title"] + "\n" + item.get("why", "") + draft})
+    return out
 agent_tools.heartbeat = heartbeat
 agent_tools.inspector = inspector
 from device_nodes import DeviceNodes
@@ -251,10 +285,15 @@ async def lifespan(app):
     agency_task = asyncio.create_task(agency_loop())
 
     async def notification_loop():
+        tick = 0
         while True:
             with contextlib.suppress(Exception):
                 notifications.enqueue_approvals(list(runtime.approvals.values()))
                 await notifications.process()
+            tick += 1
+            if tick % 12 == 0:  # 微信通道一分钟看一次
+                with contextlib.suppress(Exception):
+                    await notifications.push_wechat(await asyncio.to_thread(wechat_candidates))
             await asyncio.sleep(5)
 
     notification_task = asyncio.create_task(notification_loop())
@@ -342,6 +381,7 @@ async def lifespan(app):
 
     hub_task = asyncio.create_task(hub_loop())
     agent_task = asyncio.create_task(agent_track_loop())  # 轨道 agent：滚动摘要 + 主动提醒，定义见文件末尾
+    asyncio.get_running_loop().run_in_executor(None, conversation.backfill_artifacts)  # 10-25：近两周回复里的产出路径补挂卡片
     quick_voice.start()
     conversation.start()
     inspector.start()
@@ -593,6 +633,22 @@ async def personal_search(q: str = "", date: str = ""):
 @app.get("/personal/artifacts")
 async def artifact_list():
     return {"items": artifact_access.index()}
+
+
+# 10-25：可交互产出的勾选 / 展开状态（按文件名），App 和网页共用，下次打开照原样恢复
+@app.get("/personal/artifact-state/{key}")
+async def artifact_state_get(key: str):
+    return artifact_access.state(key)
+
+
+@app.post("/personal/artifact-state/{key}")  # iOS 客户端只会 POST
+@app.put("/personal/artifact-state/{key}")
+async def artifact_state_put(key: str, request: Request):
+    data = await request.json()
+    try:
+        return artifact_access.save_state(key, data.get("state"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/personal/artifacts/{artifact_id}")
@@ -2196,6 +2252,43 @@ async def personal_next_refresh():
     return {"status": "started"}
 
 
+# 10-25 活动日志：它替你做过的写操作；结果不确定的可以确认「做成了 / 没做成 / 不对」
+@app.get("/personal/activity")
+async def personal_activity(limit: int = 60):
+    return {"items": await asyncio.to_thread(activity.items, max(1, min(limit, 200))), "uncertain": await asyncio.to_thread(activity.uncertain),
+            "wechat": notifications.wechat_log(10)}
+
+
+@app.post("/personal/activity/{key}")
+async def personal_activity_verdict(key: str, request: Request):
+    try:
+        return activity.verdict(key, (await request.json()).get("verdict"))
+    except KeyError as exc:
+        raise HTTPException(404, "这条记录不在了") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+# 10-25 当日流程表：焦点项目活动前一天 / 当天自动出；这里是手动重排（拿最新的群聊和日程）
+@app.get("/personal/runsheets")
+async def personal_runsheets():
+    return {"items": list(runsheets.index().values())}
+
+
+@app.post("/personal/runsheet")
+async def personal_runsheet(request: Request):
+    name = (await request.json()).get("project")
+    data, _ = await next_steps.digest()
+    focus = next((f for f in data["focus"] if f["project"] == name), None)
+    if not focus:
+        raise HTTPException(404, "这个项目现在不是焦点项目")
+    try:
+        entry = await runsheets.generate(focus, data)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {**entry, "path": str(runsheets.workspace / entry["path"])}
+
+
 @app.post("/personal/news/{ident}")
 async def personal_news_feedback(ident: str, request: Request):
     action = (await request.json()).get("action")
@@ -2212,7 +2305,15 @@ async def personal_next_action(ident: str, request: Request):
         return await delegate_next(ident, _case_request_id(data))
     if action == "todo":
         return await next_to_todo(ident, data.get("day"), data.get("remind_at"))
-    next_steps.act(ident, action)
+    item = next_steps.act(ident, action, reason=data.get("reason"))
+    # 10-25「清掉过期待办」：点「已经做了」= 把列出的过期待办全部标完成（按 path 打勾，已不在待处理的跳过）。
+    if action == "done" and item.get("cleanup"):
+        closed = 0
+        for name in item["cleanup"]:
+            with contextlib.suppress(ValueError):
+                if (await asyncio.to_thread(today_view.todo_done, "任务/待处理/" + name + ".md")).get("changed"):
+                    closed += 1
+        return {"status": "completed", "id": ident, "action": action, "closed": closed}
     return {"status": "completed", "id": ident, "action": action}
 
 
@@ -2623,11 +2724,14 @@ def waiting_items():
                 }
             )
     for t in today_view.todo_index():
+        if t["event_id"]:  # 日程同步来的：日子过了，事情也就过去了，不算在等你
+            continue
         try:
             due = datetime.strptime(t["due"][:10], "%Y-%m-%d").date() if t["due"] else None
         except ValueError:
             due = None
-        if due and due < start.date():
+        # 只算近 3 天过期的；更早的交给下一步的「清掉过期待办」，不让这个数只涨不跌（10-25）
+        if due and start.date() - timedelta(days=3) <= due < start.date():
             items.append(
                 {
                     "id": "todo:" + t["path"],

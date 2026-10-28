@@ -58,7 +58,7 @@ export function menuHTML() {
   const broken = brokenSources();
   const conn = broken.length ? [(broken.length > 1 ? `${broken.length} 个来源` : sourceName(broken[0].name)) + '需要重新授权', true] : ['邮件、日历、账本都在读', false];
   const row = (a, ic, t, sub, warn) => html`<button class="menu-row" data-act="${a}"><i class="badge ${warn ? 'warning' : ''}">${icon(ic)}</i><span><b>${t}</b>${sub ? html`<small class="${warn ? 'warn-text' : ''}">${sub}</small>` : ''}</span></button>`;
-  return html`${row('open-memory', 'brain', '记忆', '搜索、分类、纠正它记住的事')}${row('open-finance', 'card', '账本', ledger)}${row('open-connectors', 'link', '连接器', conn[0], conn[1])}${row('cases-open', 'route', '航程', voyageNote(), ((D('/personal/cases') || {}).waiting || 0) > 0)}${row('open-settings', 'sliders', '设置', '')}`;
+  return html`${row('open-memory', 'brain', '记忆', '搜索、分类、纠正它记住的事')}${row('open-finance', 'card', '账本', ledger)}${row('open-connectors', 'link', '连接器', conn[0], conn[1])}${row('cases-open', 'route', '航程', voyageNote(), ((D('/personal/cases') || {}).waiting || 0) > 0)}${row('open-activity', 'checklist', '它做过的事', '记账、日程、提醒…每一步都在这')}${row('open-settings', 'sliders', '设置', '')}`;
 }
 
 // ─── 任务详情（TaskDetailView） ───
@@ -483,3 +483,26 @@ act('open-board-item', (b) => ACT['work-open-item']?.(b));
 
 onChange((keys) => { if (keys.has('/personal/memory') || keys.has('/personal/memory-inbox')) recomputeFlow; });
 export { esc, uuid, raw, nextData, decisionCount, agencyCards };
+
+// ─── 它做过的事（ActivityView）：结果不确定的点一下告诉它 ───
+const ACT_STATE = { completed: ['checkCircle', 'success', '做成了'], confirmed: ['checkCircle', 'success', '你确认做成了'], failed: ['x', 'danger', '失败'], not_done: ['warning', 'neutral', '你说没做成'], disputed: ['warning', 'danger', '你标了做错'] };
+function activityView() {
+  return {
+    title: '它做过的事',
+    render: () => {
+      const d = D('/personal/activity') || {}, items = d.items || [], pushes = d.wechat || [];
+      return html`<p class="muted small">记账、日程、提醒、改文件……每一步都在这。结果不确定的点一下告诉它，做错的标出来，它会记住。</p>
+        ${!D('/personal/activity') ? html`<div class="skeleton"></div>` : items.length ? html`<div class="card list">${items.map((e) => {
+          const [ic, tone, label] = ACT_STATE[e.state] || ['hourglass', 'warning', '结果不确定'];
+          return html`<div class="list-row act-row"><i class="badge ${tone}">${icon(ic)}</i><span class="grow"><b>${e.summary}</b><small>${[e.at > 0 ? relativeTime(e.at) : '', e.source ? '来自：' + e.source : ''].filter(Boolean).join(' · ')}</small>
+            <span class="row actions">${[['done', '做成了'], ['not_done', '没做成'], ['wrong', '做错了']].map(([v, t]) => html`<button class="btn quiet compact" data-act="activity-verdict" data-key="${e.key}" data-v="${v}">${t}</button>`)}</span></span>${stamp(label, tone)}</div>`;
+        })}</div>` : empty('还没有记录', '它替你动手做过的事会按时间列在这里。', 'checklist')}
+        ${pushes.length ? section('发到微信的提醒', html`<div class="card list">${pushes.map((p) => html`<div class="list-row"><i class="badge ${p.state === 'sent' ? 'success' : 'warning'}">${icon('message')}</i><span class="grow"><b>${String(p.text || '').split('\n')[0]}</b><small>${relativeTime(p.at)}${p.state === 'sent' ? '' : ' · 没发出去'}</small></span></div>`)}</div>`) : ''}`;
+    },
+  };
+}
+act('open-activity', () => { closeSheets(); setTimeout(() => { openSheet(activityView()); load('/personal/activity'); }, 280); });
+act('activity-verdict', async (b) => {
+  b.disabled = true;
+  try { await mutate('/personal/activity/' + encodeURIComponent(b.dataset.key), { verdict: b.dataset.v }); await load('/personal/activity'); toast('记下了'); } catch { b.disabled = false; }
+});

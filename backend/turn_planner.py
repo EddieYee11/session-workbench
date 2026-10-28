@@ -45,6 +45,7 @@ def clean_plan(raw, clock=time.time):
     if not todos:
         return None
     todos[0]['status'] = 'in_progress'
+    todos[0]['started_at'] = clock()
     return {'title': _text(raw.get('title'), 16) or todos[0]['content'][:12], 'todos': todos, 'auto': True,
             'started_at': clock(), 'updated_at': clock()}
 
@@ -63,6 +64,7 @@ def _move_to(plan, index, clock):
         want = 'completed' if i < index else 'in_progress' if i == index else t['status']
         if i <= index and t['status'] != want and t['status'] not in ('skipped', 'blocked'):
             t['status'] = want
+            t['done_at' if want == 'completed' else 'started_at'] = clock()  # 每步用时：iOS 时间轴右侧显示
             changed = True
     if changed:
         plan['updated_at'] = clock()
@@ -102,6 +104,7 @@ def finish(plan, ok=True, clock=time.time):
     for t in plan['todos']:
         if ok and t['status'] in ('pending', 'in_progress'):
             t['status'] = 'completed'
+            t['done_at'] = clock()
         elif not ok and t['status'] == 'in_progress':
             t['status'] = 'blocked'
     plan['updated_at'] = clock()

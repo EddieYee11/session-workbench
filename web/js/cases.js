@@ -40,27 +40,53 @@ export function voyageBanner() {
 }
 
 // ─── 列表 ───
+const isChat = (c) => c.kind === 'turn' || c.source === 'chat';
+const FILTERS = [['delegated', '交办', (c) => !isChat(c)], ['chat', '对话', isChat], ['failed', '没做成', (c) => ['failed', 'cancelled'].includes(c.state)], ['all', '全部', () => true]];
+const caseUI = { query: '', filter: '', expanded: new Set() };
+const AVATAR = ['#6B9EF2', '#EE7389', '#9E73EE', '#4DB88C', '#F59E4D', '#59B3D9'];
+const bucketOf = (at) => { const d = new Date(at * 1000), t = new Date(), y = new Date(); y.setDate(t.getDate() - 1); return d.toDateString() === t.toDateString() ? '今天' : d.toDateString() === y.toDateString() ? '昨天' : Date.now() / 1000 - at < 7 * 86400 ? '本周' : '更早'; };
+// 一行航程：等你的左边一颗点 · 首字头像 · 标题和时间 · 状态行 · 一句在做什么 / 等你的问题（iOS CaseRow）
 function caseRow(c) {
-  const live = ACTIVE.has(c.state);
-  const line = c.waiting && c.waiting.question ? '等你：' + c.waiting.question : c.now || `${c.source_label} · ${relativeTime(c.updated_at)}`;
-  return html`<button class="card case-row ${c.state === 'waiting' ? 'hl warning' : ''}" data-act="case-open" data-id="${c.id}">
-    <div class="row between top"><h3>${c.title}</h3>${stamp(c.state_label, TONE[c.state] || 'neutral')}</div>
-    <div class="row">${progressBar(c.progress, live)}</div>
-    <small class="${c.state === 'waiting' ? 'warn-text' : 'muted'} row">${c.state === 'running' ? raw('<i class="pulse"></i>') : ''}${line}</small></button>`;
+  const waiting = ['waiting', 'attention'].includes(c.state), p = c.progress || {};
+  const status = (c.state_label || '') + (p.total > 0 ? ` · ${p.done}/${p.total} 步` : '') + (c.source_label ? ' · 来自' + c.source_label : '');
+  const line = waiting && c.waiting && c.waiting.question ? '等你：' + c.waiting.question : c.now || relativeTime(c.created_at) + '开始';
+  const title = (c.title || '').trim(), tint = AVATAR[[...title].reduce((n, ch) => n + ch.codePointAt(0), 0) % AVATAR.length];
+  return html`<button class="case-line" data-act="case-open" data-id="${c.id}"><i class="dot ${waiting ? 'warn' : c.state === 'running' ? 'run' : ''}"></i>
+    <span class="avatar" style="background:${tint}">${[...title][0] || ''}</span>
+    <span class="grow"><span class="row between"><b>${title}</b><small class="faint mono">${relativeTime(c.updated_at)}</small></span>
+      <small class="st ${TONE[c.state] || ''}">${c.state === 'running' ? raw('<i class="pulse"></i>') : ''}${status}</small><small class="muted clip">${line}</small></span></button>`;
+}
+function caseGroup(title, ic, rows, limit) {
+  const open = caseUI.expanded.has(title) || rows.length <= limit, shown = open ? rows : rows.slice(0, limit);
+  return html`<section class="case-group"><div class="group-head sm">${icon(ic)}<span>${title}</span>${limit !== Infinity ? html`<small class="faint mono">${rows.length}</small>` : ''}</div>
+    <div class="card list tight">${shown.map(caseRow)}${!open || (caseUI.expanded.has(title) && rows.length > limit) ? html`<button class="link more" data-act="case-more" data-t="${title}">${open ? '收起' : `查看全部（${rows.length}）`}</button>` : ''}</div></section>`;
+}
+function casesBody() {
+  const items = casesData().items || [];
+  if (!items.length) return empty('还没有航程', '在「下一步」或待办里点「交给 Com」，或者在聊天里让它办一件复杂的事，它会单独开一段航程，在这里看它一步步怎么做的。', 'layers');
+  const cur = caseUI.filter || (items.some((c) => !isChat(c)) ? 'delegated' : 'all'), q = caseUI.query.trim().toLowerCase();
+  const live = items.filter((c) => ACTIVE.has(c.state)).sort((a, b) => (['waiting', 'attention'].includes(a.state) ? 0 : 1) - (['waiting', 'attention'].includes(b.state) ? 0 : 1));
+  const match = FILTERS.find((f) => f[0] === cur)[2];
+  const history = items.filter((c) => !ACTIVE.has(c.state)).filter((c) => (q ? [c.title, c.now, c.result, c.source_label].some((t) => String(t || '').toLowerCase().includes(q)) : match(c))).sort((a, b) => b.updated_at - a.updated_at);
+  const buckets = ['今天', '昨天', '本周', '更早'].map((n) => [n, history.filter((c) => bucketOf(c.updated_at) === n)]).filter(([, r]) => r.length);
+  return html`${live.length && !q ? caseGroup(`正在办 · ${live.length}`, 'bolt', live, Infinity) : ''}
+    ${q ? '' : html`<div class="filters">${FILTERS.map(([k, t, fn]) => { const n = items.filter((c) => !ACTIVE.has(c.state) && fn(c)).length; return html`<button class="chip ${cur === k ? 'on' : ''}" data-act="case-filter" data-k="${k}">${t}${n ? html`<em class="${k === 'failed' ? 'bad' : ''}">${n}</em>` : ''}</button>`; })}</div>`}
+    ${buckets.length ? buckets.map(([n, r]) => caseGroup(n, n === '更早' ? 'tray' : 'clock', r, q ? Infinity : n === '更早' ? 0 : 3)) : html`<p class="foot">${q ? `没有搜到「${caseUI.query}」。` : '这一类里还没有做过的航程。'}</p>`}
+    ${!q && cur !== 'chat' && items.some(isChat) ? html`<p class="foot">聊天里顺手办的多步任务收在「对话」里。</p>` : ''}`;
 }
 function casesView() {
   return {
     title: '航程', wide: true,
-    render: () => {
-      const items = casesData().items || [];
-      const active = items.filter((c) => ACTIVE.has(c.state)), done = items.filter((c) => !ACTIVE.has(c.state));
-      return html`${!items.length ? empty('还没有航程', '在「下一步」或待办里点「交给 Com」，或者在聊天里让它办一件复杂的事，它会单独开一段航程，在这里看它一步步怎么做的。', 'layers') : ''}
-        ${active.length ? section(`进行中 · ${active.length}`, html`<div class="stack">${active.map(caseRow)}</div>`) : ''}
-        ${done.length ? section('做过的', html`<div class="stack">${done.slice(0, 40).map(caseRow)}</div><p class="foot">简单的事不进这里，只留在聊天里。</p>`) : ''}`;
-    },
+    render: () => html`${(casesData().items || []).length ? html`<label class="search-field">${icon('search')}<input id="caseSearch" type="search" placeholder="搜全部航程：标题、在做的事、结果" value="${caseUI.query}" autocomplete="off"></label>` : ''}<div id="caseBody">${casesBody()}</div>`,
     mounted: () => poll('/personal/cases', () => (casesData().active || 0) > 0 ? 4000 : 20000),
   };
 }
+document.addEventListener('input', (e) => {
+  if (e.target.id !== 'caseSearch') return;
+  caseUI.query = e.target.value; const body = document.getElementById('caseBody'); if (body) body.innerHTML = casesBody().s;
+});
+act('case-filter', (b) => { caseUI.filter = b.dataset.k; caseUI.expanded = new Set(); document.getElementById('caseBody').innerHTML = casesBody().s; });
+act('case-more', (b) => { const t = b.dataset.t; caseUI.expanded.has(t) ? caseUI.expanded.delete(t) : caseUI.expanded.add(t); document.getElementById('caseBody').innerHTML = casesBody().s; });
 let pollTimer = 0;
 function poll(path, every) {
   clearTimeout(pollTimer);
@@ -190,6 +216,16 @@ export async function delegateNext(item) {
     if (r.task_id) openCase(r.task_id);
   } catch { /* toast */ }
 }
+act('next-run', async (b) => {
+  const item = ((D('/personal/next') || {}).items || []).find((i) => i.id === b.dataset.id); if (!item || !item.action) return;
+  const a = item.action, card = b.closest('.next-card');
+  card?.querySelectorAll('button').forEach((x) => (x.disabled = true));
+  const done = async (kind) => { try { await mutate('/personal/next/' + encodeURIComponent(item.id), { action: kind }); await load('/personal/next'); } catch { card?.querySelectorAll('button').forEach((x) => (x.disabled = false)); } };
+  if (a.type === 'reply_wechat') { try { await navigator.clipboard.writeText(a.draft || ''); toast('草稿已复制，去微信粘贴发送'); } catch { toast('复制失败，请在草稿里手动复制'); card?.querySelectorAll('button').forEach((x) => (x.disabled = false)); return; } await done('drafted'); }
+  else if (a.type === 'reply_mail') { const q = new URLSearchParams({ subject: a.subject || '', body: a.draft || '' }).toString().replace(/\+/g, '%20'); window.open('mailto:' + encodeURIComponent(a.to || '') + '?' + q, '_blank'); await done('drafted'); }
+  else if (a.type === 'bookkeep') { await send({ textOverride: '记一笔 ' + amount(a.amount) + ' 元' + (a.note ? ' ' + a.note : '') }); setTab('chat'); await done('done'); }
+  else if (a.type === 'calendar') { await send({ textOverride: '加个日程：' + a.title + ' ' + a.start + (a.end ? ' 到 ' + a.end : '') }); setTab('chat'); await done('done'); }
+});
 act('next-delegate', async (b) => {
   const item = ((D('/personal/next') || {}).items || []).find((i) => i.id === b.dataset.id); if (!item) return;
   b.closest('.next-card')?.querySelectorAll('button').forEach((x) => (x.disabled = true));
@@ -222,12 +258,27 @@ act('todo-delegate', async (b) => {
 export function nextActions(item) {
   const inTodo = item.in_todo;
   return html`${inTodo ? html`<small class="muted row in-todo">${icon('checklist')}已在待办 · ${inTodo.due ? inTodo.due.slice(5) : '未定日期'}</small>` : ''}
-    <div class="row actions"><button class="btn primary compact" data-act="next-delegate" data-id="${item.id}">交给 Com</button>
+    ${nextDraft(item.action)}
+    <div class="row actions">${item.action && item.action.type ? html`<button class="btn primary compact" data-act="next-run" data-id="${item.id}">${nextActionTitle(item.action)}</button><button class="btn secondary compact" data-act="next-delegate" data-id="${item.id}">交给 Com</button>` : html`<button class="btn primary compact" data-act="next-delegate" data-id="${item.id}">交给 Com</button>`}
     ${inTodo ? html`<button class="btn secondary compact" data-act="next-do" data-a="done" data-id="${item.id}">已经做了</button>` : html`<details class="menu"><summary class="btn secondary compact">加到待办</summary><div class="menu-pop">
       <button data-act="next-todo" data-day="0" data-id="${item.id}">今天</button><button data-act="next-todo" data-day="1" data-id="${item.id}">明天</button><button data-act="next-todo" data-day="2" data-id="${item.id}">后天</button>
       <hr><button data-act="next-todo" data-day="1" data-remind="09:00" data-id="${item.id}">明天 9:00 提醒我</button><button data-act="next-todo" data-day="0" data-remind="20:00" data-id="${item.id}">今晚 20:00 提醒我</button></div></details>`}
     <span class="grow"></span><button class="btn quiet" data-act="next-snooze" data-id="${item.id}" title="今天不提，明天再出现">稍后再说</button>
-    <button class="btn quiet" data-act="next-do" data-a="dismiss" data-id="${item.id}">不用</button></div>`;
+    <details class="menu"><summary class="btn quiet" title="告诉我为什么，以后少提">不用</summary><div class="menu-pop">
+      ${DISMISS_REASONS.map(([k, t]) => html`<button data-act="next-do" data-a="dismiss" data-reason="${k}" data-id="${item.id}">${t}</button>`)}<hr><button data-act="next-do" data-a="dismiss" data-id="${item.id}">只是划掉</button></div></details></div>`;
+}
+// 划掉的理由（后端 next_steps.REASONS）：「已经办了」算做完；「别人在负责」不静音整个项目话题
+const DISMISS_REASONS = [['elsewhere', '已经办了'], ['others', '别人在负责'], ['unimportant', '不重要'], ['not_mine', '不是我的事']];
+const amount = (v) => String(Math.round(Number(v || 0) * 100) / 100);
+export function nextActionTitle(a) {
+  return ({ reply_wechat: '复制去微信回', reply_mail: '用邮件回', bookkeep: '记这笔 ¥' + amount(a.amount), calendar: '加到日程' })[a.type] || '去办';
+}
+// 替他写好的回复草稿 / 要记的账 / 要加的日程，点开看全文
+function nextDraft(a) {
+  if (!a || !a.type) return '';
+  const label = a.type === 'reply_wechat' ? `回「${a.to || ''}」的草稿` : a.type === 'reply_mail' ? `回 ${a.to_name || a.to || ''} 的草稿` : a.type === 'bookkeep' ? '要记的账' : '要加的日程';
+  const body = a.type === 'bookkeep' ? `¥${amount(a.amount)}${a.note ? ' · ' + a.note : ''}` : a.type === 'calendar' ? `${a.title || ''} · ${a.start || ''}${a.end ? '–' + String(a.end).slice(-5) : ''}` : (a.draft || '');
+  return html`<details class="draft"><summary>${icon(a.type === 'bookkeep' ? 'card' : a.type === 'calendar' ? 'calendar' : a.type === 'reply_mail' ? 'envelope' : 'message')}<b>${label}</b></summary><p>${body}</p></details>`;
 }
 
 // ─── 明天建议 ───

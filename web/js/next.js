@@ -65,8 +65,9 @@ function pocket(item) {
 }
 function nextCard(item, i) {
   return html`<div class="card ${item.urgency === 'now' ? 'hl accent' : ''} next-card rise" style="--d:${i * 50}ms" data-next="${item.id}">
-    <div class="row between top"><h3>${item.title}</h3>${item.urgency === 'now' ? stamp('现在', 'warning') : ''}</div>
+    <div class="row between top"><h3>${item.title}</h3>${item.phase === 'waiting' ? stamp('等对方', 'info') : item.phase === 'progress' ? stamp('进展中', 'accent') : item.urgency === 'now' ? stamp('现在', 'warning') : ''}</div>
     ${item.why ? html`<p class="sub">${item.why}</p>` : ''}
+    ${(item.history || []).length ? (() => { const h = item.history[item.history.length - 1]; return html`<small class="muted row">${icon('right')}${h.text} · ${relativeTime(h.at)}</small>`; })() : ''}
     ${(item.evidence || []).length ? pocket(item) : ''}
     ${nextActions(item)}</div>`;
 }
@@ -89,7 +90,8 @@ export function renderNext(root) {
     ${!D('/personal/next') && !S.errors['/personal/next'] ? html`<div class="skeleton"></div><div class="skeleton"></div>` : ''}
     ${groups.map(([t, rows]) => section(t, html`${rows.map((r) => nextCard(r, n++))}`))}
     ${fin && fin.available ? section('账本', ledgerNote(fin)) : ''}
-    ${week.shown > 0 ? html`<p class="foot">这周提了 ${week.shown} 件，你做了 ${week.acted || 0} 件、划掉 ${week.dismissed || 0} 件。划掉的我会少提。</p>` : ''}
+    ${week.shown > 0 ? html`<p class="foot">这周提了 ${week.shown} 件，你用上 ${week.acted || 0} 件、划掉 ${week.dismissed || 0} 件${week.precision != null ? '，准确率 ' + Math.round(week.precision * 100) + '%' : ''}${week.resolved > 0 ? '；群里已经办完、我自动收起 ' + week.resolved + ' 件' : ''}。${Object.keys(week.reasons || {}).length ? '划掉的理由：' + Object.entries(week.reasons).sort((a, b) => b[1] - a[1]).map(([k, n]) => k + ' ' + n).join(' · ') + '。' : ''}</p>` : ''}
+    <button class="btn quiet" data-act="open-activity">${icon('list')}看它替你做过的事</button>
   </div>`.s;
   for (const id of open) root.querySelector(`.pocket[data-pocket="${CSS.escape(id)}"]`)?.classList.add('open', 'instant');
 }
@@ -100,7 +102,7 @@ act('next-do', async (b) => {
   const card = b.closest('.next-card');
   card?.querySelectorAll('button').forEach((x) => (x.disabled = true));
   if (b.dataset.a !== 'discuss') card?.classList.add('leaving');
-  await nextAction(item, b.dataset.a);
+  await nextAction(item, b.dataset.a, b.dataset.reason);
 });
 act('pocket-toggle', (b) => { const p = b.closest('.pocket'); p.classList.remove('instant'); p.classList.toggle('open'); });
 act('next-refresh', () => refreshNext());

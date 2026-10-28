@@ -381,3 +381,31 @@ def test_failed_without_pi_outcome_is_rescued_but_reasoned_failure_is_not(tmp_pa
     store.finish(tid, 'failed', '没做成')
     asyncio.run(cases.rescue())
     assert next(t for t in store.list() if t['id'] == tid)['status'] == 'failed'
+
+
+def test_tomorrow_plan_drops_stale_and_ignored(tmp_path):
+    steps, store, chat, today, cases = setup(tmp_path)
+    folder = steps.vault / '任务' / '待处理'
+    for name, due in [('刚过期的事', '2026-10-15'), ('过期很久的事', '2026-10-01'), ('台灣光復節 補假', '2026-10-16'), ('一直不理的事', '2026-10-16')]:
+        (folder / (name + '.md')).write_text(f'---\nflow: 任务\n状态: 待处理\n计划结束: {due}\n---\n', encoding='utf-8')
+    plan = TomorrowPlan(tmp_path, steps, today, cases, chat, clock=lambda: NOW)
+    # 前两天的建议里「一直不理的事」都提过、没落地
+    old = {'items': [{'id': 'todo:' + str(Path('任务/待处理/一直不理的事.md')), 'kind': 'todo', 'checkable': True}]}
+    with plan.db() as db:
+        for day in ('2026-10-16', '2026-10-17'):
+            db.execute('INSERT INTO plans VALUES (?,?,?,?,?)', (day, json.dumps(old, ensure_ascii=False), 'open', 0, 0))
+    titles = {i['title']: i for i in plan.generate()['items']}
+    assert '刚过期的事' in titles and not titles['刚过期的事']['checked']
+    assert not {'过期很久的事', '台灣光復節 補假', '一直不理的事'} & set(titles)
+
+
+def test_tomorrow_plan_hides_items_handled_after_generation(tmp_path):
+    steps, store, chat, today, cases = setup(tmp_path)
+    folder = steps.vault / '任务' / '待处理'
+    (folder / '会被做掉的事.md').write_text('---\nflow: 任务\n状态: 待处理\n计划结束: 2026-10-16\n---\n', encoding='utf-8')
+    plan = TomorrowPlan(tmp_path, steps, today, cases, chat, clock=lambda: NOW)
+    made = plan.generate()
+    nid = next(i['next_id'] for i in made['items'] if i['kind'] == 'next')
+    (folder / '会被做掉的事.md').write_text('---\nflow: 任务\n状态: 已完成\n计划结束: 2026-10-16\n---\n', encoding='utf-8')
+    steps.act(nid, 'dismiss')
+    assert [i for i in plan.latest()['items'] if i['kind'] in ('todo', 'next')] == []

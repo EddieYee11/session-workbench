@@ -18,6 +18,7 @@ const I = {
   check: '<path d="m5 12 5 5 9-10"/>', checkCircle: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
   bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  bolt: '<path d="M13 3 5 14h6l-1 7 8-11h-6z"/>',
   checklist: '<path d="m4 6 2 2 3-3M4 13l2 2 3-3M12 7h8M12 14h8M12 20h8"/>',
   hand: '<path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4a1.5 1.5 0 0 1 3 0v7M14 11V5.5a1.5 1.5 0 0 1 3 0V14c0 4-3 7-6.5 7S5 19 4 16l-1-3a1.5 1.5 0 0 1 2.7-1.2L8 15"/>',
   desktop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',

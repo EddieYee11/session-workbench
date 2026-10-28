@@ -41,6 +41,17 @@ extension AppModel {
 
         > 如果月卡要跟朋友 AA，告诉我一声，我把这笔拆开记。
         """
+        // 10-28 todo 时间轴验收：第三步进行中，它下面挂着从 now-12 起的工具
+        func todo(_ id: String, _ text: String, _ status: String, _ start: Double = 0, _ done: Double = 0) -> JSON {
+            .object(["id": .string(id), "content": .string(text), "active": .string("正在" + text), "status": .string(status),
+                     "started_at": .number(start), "done_at": .number(done)])
+        }
+        let wpPlan: JSON = .object(["id": .string("plan"), "kind": .string("plan"), "title": .string("查聊天页排版"), "todos": .array([
+            todo("1", "找到聊天页代码", "completed", now - 30, now - 18),
+            todo("2", "翻排版相关样式", "completed", now - 18, now - 12),
+            todo("3", "定位挤的原因", "in_progress", now - 12),
+            todo("4", "核对改法会不会误伤", "pending"),
+            todo("5", "写结论给你", "pending")])])
         conversation.messages = [
             .object(["id": .string("wp-0"), "role": .string("assistant"), "text": .string("早上好。今天日程不多，下午三点有个会。"), "status": .string("completed"), "created_at": .number(now - 900)]),
             .object(["id": .string("wp-1"), "role": .string("user"), "text": .string("上周在攀岩上花了多少钱？顺便帮我记一笔今天的岩馆月卡 480"), "status": .string("completed"),
@@ -51,7 +62,7 @@ extension AppModel {
             .object(["id": .string("wp-2"), "role": .string("assistant"), "parent_id": .string("wp-1"), "text": .string(reply), "status": .string("completed"), "created_at": .number(now - 585)]),
             .object(["id": .string("wp-3"), "role": .string("user"), "text": .string("帮我看看 Com 聊天页的代码，排版为什么这么挤"), "status": .string("running"), "phase": .string("executing"),
                      "created_at": .number(now - 20), "received_at": .number(now - 20),
-                     "tasks": .array((1...6).map { step($0, $0 % 2 == 0 ? "find" : "grep", "done", at: now - 19 + Double($0) * 1.5) } + [step(7, "read", "running", at: now - 6)])])
+                     "tasks": .array([wpPlan] + (1...6).map { step($0, $0 % 2 == 0 ? "find" : "grep", "done", at: now - 19 + Double($0) * 1.5) } + [step(7, "read", "running", at: now - 6)])])
         ]
         conversation.runs = [.object(["message_id": .string("wp-3"), "status": .string("running"), "phase": .string("executing"), "active_tool": .string("read")])]
         // init 在 seed 之后会用 idle 快照打底，等它跑完再告诉舞台她在翻资料。

@@ -21,7 +21,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
 @MainActor @Observable final class AppModel {
     var tab: SectionTab = .chat { didSet { if tab != .chat { rightTab = tab } } }
     /// 展开的折叠屏（宽屏）双栏：左栏常驻 Com 主对话，右栏显示这一页；任何「跳到某页」仍然只写 tab。
-    var rightTab: SectionTab = .doing
+    var rightTab: SectionTab = .next  // 10-25：展开后右栏先给下一步（用得最多）
     var splitView = false
     /// 这一页此刻在屏幕上：单栏时是当前 tab，双栏时是左栏的聊天和右栏的 rightTab。
     func isShown(_ page: SectionTab) -> Bool { splitView ? (page == .chat || page == rightTab) : tab == page }
@@ -55,6 +55,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var showFinance = false
     var showConnectors = false
     var showNewWork = false
+    var showActivity = false  // 10-25 活动日志：它替你做过的写操作
     var showWorkSidebar = false // 工作页历史侧栏，顶栏左上按钮开（r3-work）
     /// 拖侧栏时手指走了多远（往右正、往左负）；松手归零。
     var workSidebarDrag: CGFloat = 0
@@ -773,15 +774,29 @@ extension AppModel {
                 .object(["id": .string("evening-review"), "at": .string("21:00"), "enabled": .bool(true)])])])]) }
         seedDashboardPreview(chatOnly: chatOnly)
         datasets["/personal/next"] = .object(["running": .bool(false), "updated_at": .number(Date().timeIntervalSince1970 - 600), "source": .string("model"),
-            "week": .object(["shown": .number(6), "acted": .number(3), "dismissed": .number(1)]),
+            "week": .object(["shown": .number(6), "acted": .number(3), "dismissed": .number(1), "resolved": .number(2), "precision": .number(0.75),
+                             "reasons": .object(["别人在负责": .number(1)])]),
             "items": .array([
                 .object(["id": .string("next-reply"), "title": .string("回复王总的排期邮件"), "why": .string("王总上午问 Q4 排期，今天下班前要给答复。"), "urgency": .string("now"), "score": .number(90),
+                         "phase": .string("new"), "action": .object(["type": .string("reply_mail"), "to": .string("wang@example.com"), "to_name": .string("王总"), "subject": .string("Re: Q4 排期确认"),
+                                                                         "draft": .string("王总，Q4 排期我今晚整理好，明早 10 点前发您；有两处要跟您确认，见附件标黄部分。")]),
                          "prompt": .string("起草一封回复王总排期邮件的草稿给我确认。"), "evidence": .array([.object(["ref": .string("mail:m1"), "label": .string("工作邮箱 · Q4 排期确认"), "kind": .string("mail")]), .object(["ref": .string("event:m3"), "label": .string("日程 · 排期评审"), "kind": .string("event")])])]),
+                .object(["id": .string("next-wechat"), "title": .string("回小倩展车进场时间"), "why": .string("小倩在筹备群问秦MAX展车几点进场，等你一句话。"), "urgency": .string("today"), "score": .number(75),
+                         "phase": .string("waiting"), "history": .array([.object(["at": .number(Date().timeIntervalSince1970 - 1800), "text": .string("老马说车 7 点从 4S 店出发"), "phase": .string("waiting")])]),
+                         "action": .object(["type": .string("reply_wechat"), "to": .string("大有可攀筹备群"), "draft": .string("展车 7 点从 4S 店出发，预计 8 点前到北顶，到了我在群里说。")]),
+                         "prompt": .string("回小倩"), "evidence": .array([.object(["ref": .string("wechat:m9:g1"), "label": .string("微信 · 大有可攀筹备群"), "kind": .string("wechat")])])]),
                 .object(["id": .string("next-meeting"), "title": .string("会前过一遍周会议题"), "why": .string("11:00 周会，上周的两个待办还没收尾。"), "urgency": .string("today"), "score": .number(70),
                          "prompt": .string("帮我准备 11 点的周会。"), "evidence": .array([.object(["ref": .string("event:m3"), "label": .string("日程 · 周会"), "kind": .string("event")])])]),
                 .object(["id": .string("next-project"), "title": .string("推进 Com 语音小窗验收"), "why": .string("光效和入口已完成，还差一次真机录音。"), "urgency": .string("week"), "score": .number(50),
                          "prompt": .string("提醒我用操作按钮录一次音并检查发送结果。"), "evidence": .array([.object(["ref": .string("project:p1"), "label": .string("项目 · Com · 个人 Agent"), "kind": .string("project")])])])
             ])])
+        datasets["/personal/activity"] = .object([
+            "uncertain": .array([.object(["key": .string("eff-1"), "summary": .string("记账 ¥38 餐饮 午饭"), "at": .number(Date().timeIntervalSince1970 - 3600), "source": .string("午饭 38 记一下")])]),
+            "items": .array([
+                .object(["key": .string("eff-1"), "summary": .string("记账 ¥38 餐饮 午饭"), "state": .string("uncertain"), "at": .number(Date().timeIntervalSince1970 - 3600), "source": .string("午饭 38 记一下")]),
+                .object(["key": .string("eff-2"), "summary": .string("日程新建「周会」2026-10-27 10:00"), "state": .string("completed"), "at": .number(Date().timeIntervalSince1970 - 7200), "source": .string("周一十点周会加一下")]),
+                .object(["key": .string("eff-3"), "summary": .string("改文件 报告.md"), "state": .string("failed"), "at": .number(Date().timeIntervalSince1970 - 9000), "source": .string("航程 · 整理周报")])]),
+            "wechat": .array([.object(["key": .string("next:a"), "text": .string("【Com】现在该做：回复王总的排期邮件"), "at": .number(Date().timeIntervalSince1970 - 1200), "state": .string("sent")])])])
         // 验收用：COM_FIXTURE_DIR 里放后端真实返回（memory.json / sessions.json / projects.json），按真实数据量看排版。
         if let dir = ProcessInfo.processInfo.environment["COM_FIXTURE_DIR"] {
             for (file, path) in [("memory", "/personal/memory"), ("sessions", "/sessions"), ("projects", "/personal/projects")] {
@@ -795,6 +810,7 @@ extension AppModel {
         case "finance": showFinance = true
         case "connectors": showConnectors = true
         case "share": showShareInbox = true
+        case "activity": showActivity = true
         case "task": selectedTask = datasets["/personal/tasks"]?["items"].array.first
         default: break
         }

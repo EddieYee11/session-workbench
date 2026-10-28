@@ -311,24 +311,6 @@ final class R3WorkUITests: XCTestCase {
         pause(2)
     }
 
-    /// 今天页推进详情：顶栏往左淡出让位给系统导航栏；返回时回来。
-    @MainActor func testRecTodayPush() throws {
-        let app = launch(["--ui-today-dial"])
-        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
-        app.buttons["tab-今天"].tap()
-        // 今天页归 pages 轨道（10-17）：「下一件」那一行在横幅展开的表盘下面，滚到它能点。
-        let row = app.buttons["today-next-row"]
-        XCTAssertTrue(app.buttons["today-next-toggle"].waitForExistence(timeout: 5))
-        for _ in 0..<5 where !(row.exists && row.isHittable && row.frame.maxY < app.frame.maxY - 140) { app.swipeUp(); pause(0.8) }
-        pause(1.2)
-        row.tap()
-        pause(1.8)
-        XCTAssertFalse(element("agent-stage-pull-zone", in: app).isHittable, "详情页里顶栏让位")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        pause(1.8)
-        XCTAssertTrue(element("agent-stage-pull-zone", in: app).isHittable, "回到根页顶栏回来")
-    }
-
     /// 工作页：首页发出去 → 原地变聊天，回复流出来。
     @MainActor func testRecHomeSend() throws {
         let app = launch()

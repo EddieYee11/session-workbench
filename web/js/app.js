@@ -185,7 +185,7 @@ setTodayRender(() => { if (S.tab === 'today') renderPage('today'); });
 onChange((keys) => {
   if (!S.token) return;
   renderTop(); renderDock();
-  if (S.tab === 'health' && [...keys].some((k) => k.startsWith('/personal/health'))) renderPage('health');
+  if (S.tab === 'health' && [...keys].some((k) => k.startsWith('/personal/health') || k === '/personal/today' || k === '/personal/next')) renderPage('health');
   if (S.tab === 'next' || S.tab === 'today') {
     const relevant = ['/personal/next', '/personal/today', '/personal/connectors', '/personal/finance', '/personal/agency', '/personal/tasks', '/personal/work/proposals?limit=20', '/personal/automations', '/personal/cases', '/personal/plan', '/personal/waiting', 'stage', '*'];
     if (relevant.some((k) => keys.has(k))) renderPage(S.tab);

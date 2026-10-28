@@ -1,7 +1,7 @@
 // 「健康」Tab：与 iOS HealthView.swift 同一结构——恢复环 + 四个维度小环 → 建议卡堆 → 六格指标 → 最近活动。
 // 数据：/personal/health?days=30（Garmin 每天一条）、/personal/health/insight（模型评估，恢复分是 Garmin 准备度）。
 import { S, html, raw, D, load, clockTime, relativeTime, onChange } from './core.js';
-import { icon, act, stamp, empty, notice, section, openSheet } from './ui.js';
+import { icon, act, stamp, empty, notice, section, openSheet, countUp } from './ui.js';
 
 const HEALTH = '/personal/health?days=30';
 const INSIGHT = '/personal/health/insight';
@@ -108,10 +108,70 @@ export function renderHealth(root) {
     ${actionStack(insight)}
     ${metricGrid(mm)}
     ${activityStrip()}
+    ${healthBrief()}
+    ${bodyCard()}
     ${S.errors[HEALTH] ? notice(S.errors[HEALTH]) : ''}
   </div>`.s;
+  countUp(root);
+}
+
+// ─── 身体卡（10-27 起从「今天」搬来，iOS BodyCard） ───
+const METRICS = [
+  ['sleep', '睡眠', 'h', 'lavender', true, (m) => (m.sleep_seconds == null ? null : m.sleep_seconds / 3600)],
+  ['hrv', 'HRV', 'ms', 'mint', true, (m) => m.hrv_last_night ?? null], ['readiness', '准备度', '', 'sky', true, (m) => m.readiness_score ?? null],
+  ['rhr', '静息心率', 'bpm', 'pink', false, (m) => m.resting_heart_rate ?? null], ['stress', '压力', '', 'butter', false, (m) => m.avg_stress ?? null],
+  ['steps', '步数', '', 'mint', true, (m) => m.steps ?? null],
+];
+const batteryWord = (v) => (v >= 76 ? '精力充沛' : v >= 51 ? '还行' : v >= 26 ? '偏低' : '快没电了');
+function spark(series) {
+  if (series.length < 2) return '';
+  const min = Math.min(...series), max = Math.max(...series), span0 = max - min || 1;
+  const pts = series.map((v, i) => `${(i / (series.length - 1)) * 60},${18 - ((v - min) / span0) * 16}`).join(' ');
+  return raw(`<svg class="spark" viewBox="0 0 60 20"><polyline points="${pts}"/></svg>`);
+}
+function bodyCard() {
+  const h = (D('/personal/today') || {}).health || {};
+  const m = (h.today || {}).measurements;
+  if (h.today && m) {
+    const bb = m.body_battery;
+    const curve = (h.today.body_battery_curve || []);
+    let curveSVG = '';
+    if (curve.length > 2) {
+      const t0 = curve[0][0], t1 = curve[curve.length - 1][0] || t0 + 1;
+      const pts = curve.map(([t, v]) => `${(((t - t0) / (t1 - t0)) * 300).toFixed(1)},${(52 - (v / 100) * 50).toFixed(1)}`).join(' ');
+      curveSVG = raw(`<svg class="bb-curve draw" viewBox="0 0 300 54" preserveAspectRatio="none"><polyline points="${pts}" pathLength="1"/></svg>`);
+    }
+    const parts = [m.body_battery_at_wake != null ? `起床时 ${Math.round(m.body_battery_at_wake)}` : '', m.body_battery_charged != null ? `充了 ${Math.round(m.body_battery_charged)}` : '', m.body_battery_drained != null ? `用了 ${Math.round(m.body_battery_drained)}` : ''].filter(Boolean).join(' · ');
+    const sleep = m.sleep_seconds ? (() => {
+      const segs = [['deep_seconds', '深睡', 'lav'], ['light_seconds', '浅睡', 'sky'], ['rem_seconds', 'REM', 'mint'], ['awake_seconds', '清醒', 'pink']].filter(([k]) => m[k] > 0);
+      const tot = segs.reduce((n, [k]) => n + m[k], 0) || 1;
+      return html`<div class="sleepbar"><div class="bar">${segs.map(([k, , c]) => raw(`<i class="${c}" style="width:${(m[k] / tot) * 100}%"></i>`))}</div>
+        <small>${segs.map(([k, n]) => `${n} ${(m[k] / 3600).toFixed(1)}h`).join(' · ')}${m.sleep_score != null ? ` · 睡眠分 ${Math.round(m.sleep_score)}` : ''}</small></div>`;
+    })() : '';
+    const days = h.days || [];
+    return html`<button class="card body-card rise" style="--d:160ms" data-act="open-health">
+      <div class="row"><div class="ring" style="--v:${bb == null ? 0 : bb}"><b>${bb == null ? '—' : html`<span data-count="${Math.round(bb)}">${Math.round(bb)}</span>`}</b></div>
+        <div class="grow"><small class="muted">身体电量</small>${bb != null ? html`<h3>${batteryWord(bb)}</h3>` : ''}<small class="faint">${parts}</small></div></div>
+      ${curveSVG}${sleep}
+      <div class="tiles">${METRICS.filter((x) => x[5](m) != null).map(([id, title, unit, hu, , get], i) => {
+        const v = get(m); const series = days.map((d) => get(d.measurements || {})).filter((x) => x != null);
+        return html`<div class="tile ${hu}" style="--d:${450 + i * 50}ms"><small>${title}</small><b>${id === 'sleep' ? v.toFixed(1) : Math.round(v).toLocaleString()}<em>${unit}</em></b>${spark(series)}</div>`;
+      })}</div></button>`;
+  }
+  if (h.phone) {
+    const p = h.phone;
+    return html`<div class="card rise" style="--d:160ms"><small class="label">手机健康 · 最近 7 天</small><div class="tiles">${[['步数', 'steps', ''], ['睡眠', 'sleep_hours', 'h'], ['静息心率', 'resting_heart_rate', 'bpm']].map(([t, k, u]) => html`<div class="tile"><small>${t}</small><b>${p[k] == null ? '—' : k === 'sleep_hours' ? Number(p[k]).toFixed(1) : Math.round(p[k])}<em>${u}</em></b></div>`)}</div><small class="faint">今天还没有 Garmin 数据，先看手机健康。</small></div>`;
+  }
+  const g = (h.sources || {}).garmin || {};
+  return html`<div class="card row rise" style="--d:160ms"><i class="hue pink big">${icon('heart')}</i><span class="grow"><b>身体状态还没同步</b><small class="faint">${g.error ? 'Garmin：' + g.error : 'Garmin 每半小时同步一次'}</small></span></div>`;
+}
+
+// 简报里的身体要点（「下一步」整理时顺手写的，kind = health）
+function healthBrief() {
+  const pts = ((D('/personal/next') || {}).brief || []).filter((x) => x.kind === 'health' && x.text);
+  return pts.length ? html`<div class="health-brief">${pts.map((p) => html`<div class="card advice"><i class="hue pink big">${icon('heart')}</i><p>${p.text}</p></div>`)}</div>` : '';
 }
 
 /** 切到「健康」时拉数据；数据变了就重画。 */
-export function refreshHealth() { load(HEALTH); load(INSIGHT); }
+export function refreshHealth() { load(HEALTH); load(INSIGHT); load('/personal/today'); load('/personal/next'); }
 export { icon, empty };

@@ -39,10 +39,24 @@ INSTRUCTIONS = (
     '14. focus 是他当下的焦点项目（名称、场地、日期、days_left 距活动还有几天）；wechat 里 project 与之同名的聊天，recent 是这件事最近两天的完整对话。\n'
     '    这类项目要当主线：先从所有 recent 里拼出全貌，再判断。items 里和它有关的建议排在最前（score 80 以上，距活动 7 天内 urgency 用 now 或 today），要具体到人、物、时间点（例如「确认秦MAX展车 24 日进场时间」「催物料设计出搭建图」），不要写「跟进活动进展」这种空话；已经有人说搞定、或只是闲聊的不要提。\n'
     '    focus 输出：每个焦点项目一条 {"project":与输入同名,"status":"一句话说现在到哪一步（60 字内）","open":["还没定/还差的事，最多 4 条，每条 24 字内，带负责人"],"risks":["可能出岔子的地方，最多 2 条"],"refs":[引用的 wechat ref]}。没有依据的项目不要输出。\n'
-    '15. current 是他列表上现在还开着的建议（shown 是已经连着出现了几轮）。还成立、也没有新进展的，原样返回 {"keep":"那条的 id"} 即可，不要换个说法重写；已经过时或被新情况取代的就不返回；只有出现新事情才新增。整张列表要稳定，别每小时大换血。\n'
+    '15. current 是他列表上还开着的事项（phase 阶段：new 刚提出 / progress 进展中 / waiting 等别人；shown 已挂了几轮；refs 当初的依据；history 最近的进展）。每件事要一直跟到办完，不要换说法重写：\n'
+    '    还成立、没新进展 → {"keep":"id"}；有新进展（对方回了、有人接手、时间改了）→ {"keep":"id","phase":"progress 或 waiting","update":"30 字内说新进展","refs":[新依据]}；\n'
+    '    已经办完（群里有人说搞定 / 已发 / 已安排，或他本人已经回了）→ {"close":"id","reason":"30 字内说凭什么算办完","refs":[能证明的依据]}，close 必须引用依据。已经过时的就不返回；只有出现新事情才新增。整张列表要稳定，别每小时大换血。\n'
     '16. recent_headlines 是最近几轮的简报标题。同一件事已经当过两次主句、又没有新变化，就换成今天别的重点，别一整天反复念同一件事。\n'
-    '只返回 JSON：{"headline":"","focus":[],"brief":[{"text":"","refs":[""]}],"items":[{"keep":""},{"title":"","why":"","refs":[""],"prompt":"","urgency":"today","score":60}]}'
+    '17. 新建议尽量带 action，让他点一下就能办：回微信 {"type":"reply_wechat","draft":"替他写好的回复"}（依据里必须有那条微信）；回邮件 {"type":"reply_mail","subject":"Re: …","draft":"…"}（依据里必须有那封邮件）；'
+    '记账 {"type":"bookkeep","amount":38.5,"note":"午饭"}；加日程 {"type":"calendar","title":"","start":"YYYY-MM-DD HH:MM","end":"YYYY-MM-DD HH:MM"}。'
+    '草稿用他的口吻：简短、口语、直接，120 字内，不寒暄、不署名；拿不准的事实留空让他填（写成「【时间】」），不要编。没有合适的动作就不写 action。\n'
+    '18. dismissed 每条括号里是他划掉的理由：「别人在负责」= 这类执行细节有人在推，除非群里 @他 或要他拍板，同项目同类的事别再提；「已经办了」= 他线下办掉了，同类事先看群里有没有说办完；「不重要」「不是我的事」= 同类的少提。\n'
+    '只返回 JSON：{"headline":"","focus":[],"brief":[{"text":"","refs":[""]}],"items":[{"keep":""},{"keep":"","phase":"waiting","update":"","refs":[""]},{"close":"","reason":"","refs":[""]},'
+    '{"title":"","why":"","refs":[""],"prompt":"","urgency":"today","score":60,"action":{"type":"reply_wechat","draft":""}}]}'
 )
+
+
+# 划掉时可选的理由（10-25）：「已经办了」算做完；「别人在负责」不拿来静音整个话题（项目执行项常是别人在推）。
+REASONS = {'elsewhere': '已经办了', 'others': '别人在负责', 'unimportant': '不重要', 'not_mine': '不是我的事'}
+HANDLED = "'dismissed','acted','done','todo','resolved'"
+CARRY = ('id', 'title', 'why', 'prompt', 'urgency', 'score', 'evidence', 'phase', 'history', 'action')
+STAMP = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
 
 
 def _key(title):
@@ -157,6 +171,8 @@ class NextSteps:
         self.path = self.state / 'next-steps.sqlite'
         self.running = False
         self.progress = None  # 整理进行中给 App 看的真实阶段：collect → think → store
+        self._refs = {}
+        self.runsheets = None  # runsheet.RunSheets：焦点项目活动前一天 / 当天的当日流程表
 
     def db(self):
         self.state.mkdir(parents=True, exist_ok=True)
@@ -332,10 +348,12 @@ class NextSteps:
                 pass
         with self.db() as db:
             week = now - 7 * 86400
-            data['recent_handled'] = [json.loads(r['data'])['title'] for r in db.execute("SELECT data FROM items WHERE state IN ('dismissed','done','acted','todo') AND updated_at>? ORDER BY updated_at DESC LIMIT 30", (week,))]
-            data['dismissed'] = [json.loads(r['data'])['title'] for r in db.execute("SELECT data FROM items WHERE state='dismissed' ORDER BY updated_at DESC LIMIT 60")]
+            data['recent_handled'] = [json.loads(r['data'])['title'] for r in db.execute(f"SELECT data FROM items WHERE state IN ({HANDLED}) AND updated_at>? ORDER BY updated_at DESC LIMIT 30", (week,))]
+            data['dismissed'] = [d['title'] + (f"（{REASONS[d['dismiss_reason']]}）" if d.get('dismiss_reason') in REASONS else '')
+                                 for r in db.execute("SELECT data FROM items WHERE state='dismissed' ORDER BY updated_at DESC LIMIT 60") for d in [json.loads(r['data'])]]
             # 10-21：上一轮还开着的建议交给模型「保留或撤下」，别每小时整批重写（7 天 546 条里 471 条下一轮就被换掉）。
-            data['current'] = [{'id': r['id'], 'title': d['title'], 'why': d.get('why', ''), 'shown': d.get('shown', 1)}
+            data['current'] = [{'id': r['id'], 'title': d['title'], 'why': d.get('why', ''), 'shown': d.get('shown', 1), 'phase': d.get('phase', 'new'),
+                                'refs': [e['ref'] for e in d.get('evidence', [])], 'history': [h['text'] for h in (d.get('history') or [])[-2:]]}
                                for r in db.execute("SELECT id, data FROM items WHERE state='open'") for d in [json.loads(r['data'])]]
             data['recent_headlines'] = [r['headline'] for r in db.execute("SELECT headline FROM runs WHERE headline<>'' ORDER BY id DESC LIMIT 3")]
         return data, refs
@@ -445,6 +463,23 @@ class NextSteps:
                           'prompt': f"帮我看这封工作邮件：发件人 {mail['from']}，主题「{mail['subject']}」。判断需不需要我回复，需要就起草一版给我确认。", 'urgency': 'today', 'score': 55})
         return items
 
+    def cleanup(self, data, refs, items):
+        """过期待办攒多了（日程同步来的、活动现场的小事，过了就没人打勾）：出一条「清掉过期待办」，点「已经做了」一次全部标完成。"""
+        today = datetime.fromtimestamp(self.clock(), TZ).date().isoformat()
+        stale = [t for t in data['board'] if t['due'] and t['due'][:10] < today]
+        if len(stale) < 3:
+            return items
+        names = [t['ref'][5:] for t in stale]
+        item = self.clean({'items': [{'title': '清掉过期待办', 'why': f"行动台有 {len(stale)} 条已过期没打勾，最早 {min(t['due'][:10] for t in stale)[5:]}，多是过去的日程和现场小事。",
+                                      'refs': [t['ref'] for t in stale[:5]], 'urgency': 'today', 'score': 58,
+                                      'prompt': '这些行动台待办已经过期：' + '、'.join(names) + '。帮我看看哪些还要做，其余标成已完成。'}]}, refs)
+        if not item:
+            return items
+        # 每天一个 id：今天点过「已经做了」，明天再攒多了还能再出来。
+        item = item[0] | {'id': _key('清掉过期待办' + today), 'cleanup': names}
+        item.pop('kept', None)
+        return [i for i in items if i['id'] != item['id']][:7] + [item]
+
     def clean(self, raw, refs):
         out, seen = [], set()
         with self.db() as db:
@@ -454,13 +489,21 @@ class NextSteps:
                 continue
             kept = current.get(item.get('keep'))
             if kept and kept['id'] not in seen:
-                # 保留：原条原样留下（标题、依据、交办要求都不变），只记它又出现了一轮
+                # 保留：原条原样留下（标题、依据、交办要求都不变），只记它又出现了一轮；有新进展就记进 history
                 seen.add(kept['id'])
-                out.append({k: kept[k] for k in ('id', 'title', 'why', 'prompt', 'urgency', 'score', 'evidence') if k in kept} | {'kept': True})
+                out.append(self.carry(kept, item, refs))
                 continue
             title, why, prompt = _text(item.get('title'), 30), _text(item.get('why'), 160), _text(item.get('prompt'), 400)
             cited = [r for r in item.get('refs', []) if isinstance(r, str) and r in refs][:5]
             if not title or not cited or not prompt:
+                continue
+            # 10-25：模型没写 keep、却换了个说法重写同一件事（依据完全相同）：留原条，不让列表每小时大换血。
+            mine = {_sig(r, refs[r]) for r in cited}
+            same = None if '' in mine else next((c for c in current.values() if c['id'] not in seen
+                                                  and {_sig(e['ref'], e) for e in c.get('evidence', [])} == mine), None)
+            if same:
+                seen.add(same['id'])
+                out.append(self.carry(same, {}, refs))
                 continue
             key = _key(title)
             if key in seen:
@@ -476,8 +519,74 @@ class NextSteps:
             for r in cited:
                 if refs[r]['label'] not in labels:
                     labels.add(refs[r]['label']); evidence.append({'ref': r, **refs[r]})
-            out.append({'id': key, 'title': title, 'why': why, 'prompt': prompt, 'urgency': urgency, 'score': score, 'evidence': evidence})
+            fresh = {'id': key, 'title': title, 'why': why, 'prompt': prompt, 'urgency': urgency, 'score': score, 'evidence': evidence, 'phase': 'new'}
+            action = self.clean_action(item.get('action'), cited, refs)
+            out.append(fresh | ({'action': action} if action else {}))
         return out[:8]
+
+    def carry(self, kept, item, refs):
+        """10-25 事项持续追踪：保留的那条原样留下；模型报了新进展（phase / update）就记进 history，新依据补进来。"""
+        out = {k: kept[k] for k in CARRY if k in kept} | {'kept': True}
+        phase = item.get('phase') if item.get('phase') in ('progress', 'waiting') else None
+        update = _text(item.get('update'), 60)
+        if not (phase or update):
+            return out
+        cited = [r for r in item.get('refs', []) if isinstance(r, str) and r in refs][:3]
+        out['phase'] = phase or out.get('phase', 'new')
+        history = list(out.get('history') or [])
+        if update and update not in [h.get('text') for h in history]:
+            history.append({'at': self.clock(), 'text': update, 'phase': out['phase'], 'refs': cited})
+        out['history'] = history[-6:]
+        labels = {e['label'] for e in out.get('evidence', [])}
+        for r in cited:
+            if refs[r]['label'] not in labels and len(out.get('evidence', [])) < 5:
+                labels.add(refs[r]['label']); out['evidence'] = list(out.get('evidence', [])) + [{'ref': r, **refs[r]}]
+        return out
+
+    def closures(self, raw):
+        """模型判定已经办完的事项：必须引用依据（群里说搞定 / 他本人回了），才自动收起为 resolved。"""
+        out = {}
+        refs = self._refs
+        for item in (raw or {}).get('items', []) if isinstance(raw, dict) else []:
+            if not isinstance(item, dict) or not item.get('close'):
+                continue
+            cited = [r for r in item.get('refs', []) if isinstance(r, str) and r in refs][:3]
+            reason = _text(item.get('reason'), 60)
+            if cited and reason:
+                out[str(item['close'])] = {'reason': reason, 'evidence': [{'ref': r, **refs[r]} for r in cited]}
+        return out
+
+    @staticmethod
+    def clean_action(raw, cited, refs):
+        """10-25 一卡一动作（Hark）：回微信 / 回邮件带草稿，记账 / 加日程带参数；依据对不上、参数不全的丢掉，不让模型编。"""
+        if not isinstance(raw, dict):
+            return None
+        kind = raw.get('type')
+        if kind == 'reply_wechat':
+            chat = next((refs[r] for r in cited if refs[r]['kind'] == 'wechat'), None)
+            draft = _text(raw.get('draft'), 300)
+            return {'type': kind, 'draft': draft, 'to': chat['detail'].get('title', '')} if chat and draft else None
+        if kind == 'reply_mail':
+            mail = next((refs[r] for r in cited if refs[r]['kind'] == 'mail'), None)
+            draft = _text(raw.get('draft'), 600)
+            if not mail or not draft:
+                return None
+            sender = mail['detail'].get('sender', '')
+            address = re.search(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+', sender)
+            return {'type': kind, 'draft': draft, 'to': address.group(0) if address else '', 'to_name': _text(sender.split('<')[0].strip(' "'), 40),
+                    'subject': _text(raw.get('subject'), 120) or 'Re: ' + mail['detail'].get('title', '')}
+        if kind == 'bookkeep':
+            try:
+                amount = round(float(raw.get('amount')), 2)
+            except (TypeError, ValueError):
+                return None
+            return {'type': kind, 'amount': amount, 'note': _text(raw.get('note'), 30)} if 0 < amount < 100000 else None
+        if kind == 'calendar':
+            title, start, end = _text(raw.get('title'), 40), _text(raw.get('start'), 16), _text(raw.get('end'), 16)
+            if not title or not STAMP.match(start):
+                return None
+            return {'type': kind, 'title': title, 'start': start, 'end': end if STAMP.match(end) else ''}
+        return None
 
     async def refresh(self, force=False):
         if self.lock.locked():
@@ -487,6 +596,7 @@ class NextSteps:
             self.progress = {'stage': 'collect', 'counts': {}, 'started_at': self.clock()}
             try:
                 data, refs = await self.digest(force)
+                self._refs, closes = refs, {}
                 self.progress['counts'] = {'mail': len(data['mail']), 'calendar': len(data['calendar']), 'projects': len(data['projects']),
                                            'tasks': len(data['tasks']), 'goals': len(data['goals']), 'finance': 1 if data['finance'] else 0,
                                            'wechat': len(data['wechat']), 'board': len(data['board']), 'reminders': len(data['reminders']),
@@ -497,22 +607,32 @@ class NextSteps:
                     try:
                         raw = await self.model(data)
                         items = self.clean(raw, refs)
+                        closes = self.closures(raw)
                         headline = _text(raw.get('headline'), 120) if isinstance(raw, dict) else ''
                         brief = self.clean_focus(raw, refs, data) + self.clean_brief(raw, refs)
                         source = 'model'
                     except Exception as exc:
                         error = _text(f'{type(exc).__name__}: {exc}', 200)
-                if not items:
+                if not items and not closes:  # 模型只报了「办完」也算正常一轮，不拿规则凑数
                     items = self.clean({'items': self.rules(data, refs)}, refs)
                     source = 'rule'
+                items = self.cleanup(data, refs, items)
                 headline = headline or self.rule_headline(data)
                 brief = brief or self.rule_brief(data, refs)
                 self.progress['stage'] = 'store'
-                self.store(items, source, error, headline, brief)
+                self.store(items, source, error, headline, brief, closes)
+                if self.runsheets and data.get('focus'):
+                    asyncio.create_task(self.sheets(data))
                 return {'status': 'completed', 'count': len(items), 'source': source, 'error': error}
             finally:
                 self.running = False
                 self.progress = None
+
+    async def sheets(self, data):
+        try:
+            await self.runsheets.ensure(data)
+        except Exception:
+            pass  # 流程表是附加件：模型没接上、资料不够都不影响下一步
 
     def rule_headline(self, data):
         """模型没给简报时拼一句：身体 + 今天几个日程 + 最先要回的人。"""
@@ -605,11 +725,12 @@ class NextSteps:
             out.append(item)
         return out
 
-    def store(self, items, source, error, headline='', brief=()):
+    def store(self, items, source, error, headline='', brief=(), closes=None):
         now = self.clock()
+        proposed = {i['id'] for i in items}
         items = self.todo_match(items)
         with self.db() as db:
-            handled = db.execute("SELECT id, data FROM items WHERE state IN ('dismissed','acted','done','todo') AND updated_at>?", (now - 7 * 86400,)).fetchall()
+            handled = db.execute(f"SELECT id, data FROM items WHERE state IN ({HANDLED}) AND updated_at>?", (now - 7 * 86400,)).fetchall()
             snoozed = [r for r in db.execute("SELECT id, data FROM items WHERE state='snoozed'").fetchall() if json.loads(r['data']).get('snooze_until', 0) > now]
             handled = list(handled) + snoozed
             # 点过「不用」的永久算数（10-18 Eddie：说过不用的不要再出现）：同一条、同依据、几乎同一句、同话题都不再出。
@@ -617,7 +738,8 @@ class NextSteps:
             handled = list(handled) + [r for r in db.execute("SELECT id, data FROM items WHERE state='dismissed'")]
             blocked = {r['id'] for r in handled} | {r['id'] for r in db.execute("SELECT id FROM items WHERE state IN ('done','todo')")}
             settled = {sig for r in handled for e in json.loads(r['data']).get('evidence', []) if (sig := _sig(e['ref'], e))}
-            no_titles = [d.get('title', '') for _, d in dismissed]
+            # 「别人在负责」只挡同一条、同依据：项目执行项标题都长一个样（确认大有可攀××），按近似句和话题挡会把整个项目挡掉
+            no_titles = [d.get('title', '') for _, d in dismissed if d.get('dismiss_reason') != 'others']
             muted = muted_topics(no_titles)
 
             def repeat(item):
@@ -626,10 +748,22 @@ class NextSteps:
                         or any(_near(item['title'], t) for t in no_titles) or bool(_cjk_runs(item['title']) & muted))
             fresh = [i for i in items if not repeat(i)]
             ids = {i['id'] for i in fresh}
-            # 上一轮还开着、这一轮没再提的：收起，不删。
-            for row in db.execute("SELECT id FROM items WHERE state='open'").fetchall():
+            # 10-25：模型判定办完的（有依据）→ resolved，算办完、不再提。
+            for ident, close in (closes or {}).items():
+                row = db.execute("SELECT data FROM items WHERE id=? AND state='open'", (ident,)).fetchone()
+                if row and ident not in ids:
+                    d = json.loads(row['data'])
+                    d['resolved'] = {'at': now, **close}
+                    d['history'] = (d.get('history') or [])[-5:] + [{'at': now, 'text': close['reason'], 'phase': 'done', 'refs': [e['ref'] for e in close['evidence']]}]
+                    db.execute("UPDATE items SET state='resolved', data=?, updated_at=? WHERE id=?", (json.dumps(d, ensure_ascii=False), now, ident))
+            # 上一轮还开着、这一轮没再提的：先留着（模型偶尔漏一条），连着三轮没提才收起，不删。
+            for row in db.execute("SELECT id, data FROM items WHERE state='open'").fetchall():
                 if row['id'] not in ids:
-                    db.execute("UPDATE items SET state='stale', updated_at=? WHERE id=?", (now, row['id']))
+                    d = json.loads(row['data'])
+                    d['missed'] = d.get('missed', 0) + 1
+                    # 这一轮提了、但已进待办或已处理而被拦下的：直接收起，不给宽限
+                    state = 'stale' if d['missed'] >= 3 or row['id'] in proposed else 'open'
+                    db.execute("UPDATE items SET state=?, data=?, updated_at=? WHERE id=?", (state, json.dumps(d, ensure_ascii=False), now, row['id']))
             # 「稍后再说」到期：第二天重新回到下一步（就算这一轮模型没再提）。
             for row in db.execute("SELECT id, data FROM items WHERE state='snoozed'").fetchall():
                 if json.loads(row['data']).get('snooze_until', 0) <= now and row['id'] not in ids:
@@ -643,6 +777,10 @@ class NextSteps:
                 if shown >= 4 and item['urgency'] != 'now':
                     item['urgency'], item['score'] = 'week', max(10, item['score'] - 20)
                 db.execute('INSERT OR REPLACE INTO items VALUES (?,?,?,?,?)', (item['id'], json.dumps({**item, 'source': source}, ensure_ascii=False), 'open', created, now))
+            # 列表最多 10 条：超出时先收起连着没被提到、分数最低的
+            rows = [(r['id'], json.loads(r['data'])) for r in db.execute("SELECT id, data FROM items WHERE state='open'")]
+            for ident, _ in sorted(((i, d) for i, d in rows if d.get('missed')), key=lambda x: x[1].get('score', 0))[:max(0, len(rows) - 10)]:
+                db.execute("UPDATE items SET state='stale', updated_at=? WHERE id=?", (now, ident))
             db.execute('INSERT INTO runs(at,source,count,error,headline,brief) VALUES (?,?,?,?,?,?)', (now, source, len(fresh), error, headline, json.dumps(list(brief), ensure_ascii=False)))
 
     # ---------- 读写 ----------
@@ -654,15 +792,33 @@ class NextSteps:
             last = db.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 1').fetchone()
             week = now - 7 * 86400
             stats = {r['state']: r['n'] for r in db.execute('SELECT state, count(*) n FROM items WHERE created_at>? GROUP BY state', (week,))}
+            reasons = {}
+            for r in db.execute("SELECT data FROM items WHERE state IN ('dismissed','done') AND created_at>?", (week,)):
+                d = json.loads(r['data'])
+                key = d.get('dismiss_reason') or ('elsewhere' if d.get('done_via') == 'elsewhere' else '')
+                if key:
+                    reasons[key] = reasons.get(key, 0) + 1
         self.backfill(items)
         order = {'now': 0, 'today': 1, 'week': 2}
         items.sort(key=lambda i: (order.get(i['urgency'], 1), -i['score']))
-        shown = sum(stats.values())
         muted = self.news.dismissed() if self.news else set()
         brief = [p for p in json.loads((last['brief'] or '[]') if last else '[]') if p.get('news_id') not in muted]
+        for point in brief:
+            sheet = self.runsheets.get(point['title'], point.get('date', '')) if self.runsheets and point.get('kind') == 'project' else None
+            if sheet:
+                point['runsheet'] = {'name': sheet['name'], 'path': str(self.runsheets.workspace / sheet['path']), 'generated_at': sheet['generated_at']}
         return {'brief': brief, 'items': items, 'running': self.running, 'progress': self.progress, 'updated_at': last['at'] if last else 0,
                 'source': last['source'] if last else '', 'error': last['error'] if last else '', 'headline': (last['headline'] or '') if last else '',
-                'week': {'shown': shown, 'acted': stats.get('acted', 0) + stats.get('done', 0) + stats.get('todo', 0), 'dismissed': stats.get('dismissed', 0)}}
+                'week': self.week_report(stats, reasons)}
+
+    @staticmethod
+    def week_report(stats, reasons):
+        """打扰精度：做了 / 交给 Com / 加待办的，占（这些 + 划掉的）的比例；自动办完的单独算，不进分母。"""
+        useful = stats.get('acted', 0) + stats.get('done', 0) + stats.get('todo', 0)
+        dismissed = stats.get('dismissed', 0)
+        return {'shown': sum(stats.values()) - stats.get('stale', 0), 'acted': useful, 'dismissed': dismissed, 'resolved': stats.get('resolved', 0),
+                'precision': round(useful / (useful + dismissed), 2) if useful + dismissed else None,
+                'reasons': {REASONS[k]: n for k, n in reasons.items() if k in REASONS}}
 
     def backfill(self, items):
         """早先存下的建议没有 detail：邮件和日程按 matter 现查一次补上，查不到就保持原样。"""
@@ -689,14 +845,25 @@ class NextSteps:
 
     def act(self, ident, action, **extra):
         """discuss/delegate=交给 Com（建航程），todo=已加到待办（extra: todo 路径与日期），snooze=稍后再说（明天回来）。"""
-        if action not in ('discuss', 'delegate', 'dismiss', 'done', 'todo', 'snooze'):
+        if action not in ('discuss', 'delegate', 'dismiss', 'done', 'todo', 'snooze', 'drafted'):
             raise ValueError('不支持的操作')
         with self.db() as db:
             row = db.execute('SELECT * FROM items WHERE id=?', (ident,)).fetchone()
             if not row:
                 raise ValueError('这条建议已经不在了，下拉刷新一下')
             item = json.loads(row['data'])
-            state = {'discuss': 'acted', 'delegate': 'acted', 'dismiss': 'dismissed', 'done': 'done', 'todo': 'todo', 'snooze': 'snoozed'}[action]
+            state = {'discuss': 'acted', 'delegate': 'acted', 'dismiss': 'dismissed', 'done': 'done', 'todo': 'todo', 'snooze': 'snoozed', 'drafted': 'open'}[action]
+            if action == 'dismiss' and extra.get('reason') in REASONS:
+                # 「已经办了」= 他线下办掉了：算做完（建议是对的），不算打扰
+                if extra['reason'] == 'elsewhere':
+                    state, item['done_via'] = 'done', 'elsewhere'
+                else:
+                    item['dismiss_reason'] = extra['reason']
+            if action == 'drafted':
+                # 草稿已复制去回：事项还开着，转「等对方」，下一轮看到他回了 / 对方回了再收
+                item['phase'] = 'waiting'
+                note = '已回复，等对方' if (item.get('action') or {}).get('type', '').startswith('reply') else '已处理，等结果'
+                item['history'] = (item.get('history') or [])[-5:] + [{'at': self.clock(), 'text': note, 'phase': 'waiting', 'refs': []}]
             if action == 'snooze':
                 tomorrow = datetime.fromtimestamp(self.clock(), TZ).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
                 item['snooze_until'] = tomorrow.timestamp()

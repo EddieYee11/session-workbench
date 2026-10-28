@@ -265,6 +265,10 @@ private struct MenuContent: View {
         if let first = broken.first { return ((broken.count > 1 ? "\(broken.count) 个来源" : sourceName(first["name"].string)) + "需要重新授权", true) }
         return ("邮件、日历、账本都在读", false)
     }
+    private var activityNote: (String, Bool) {
+        let n = model.activityData["uncertain"].array.count
+        return n > 0 ? ("\(n) 个操作结果待核对", true) : ("记账、日程、改文件，一条条可核对", false)
+    }
     var body: some View {
         VStack(spacing: 0) {
             row("记忆", "搜索、分类、纠正它记住的事", symbol: "brain") { model.showMemory = true }
@@ -272,6 +276,8 @@ private struct MenuContent: View {
             row("连接器", connectorNote.0, symbol: "link", warning: connectorNote.1) { model.showConnectors = true }
             // 10-18：原「看她的工作台」换成航程（Com 自己开的 session 和每一步操作）；下拉工作台的手势保留
             row("航程", voyageNote, symbol: "location.north.line", warning: model.casesData["waiting"].int > 0) { model.showCases = true }
+            // 10-25 活动日志（Muse）：审批只拦删除之后，事后能看、能纠正
+            row("它做过的事", activityNote.0, symbol: "list.bullet.rectangle", warning: activityNote.1) { model.showActivity = true }
             row("设置", "", symbol: "slider.horizontal.3") { model.showSettings = true }
         }
         .padding(.vertical, Space.sm).padding(.horizontal, Space.sm)
@@ -304,26 +310,52 @@ private func monthName() -> String { "\(Calendar.current.component(.month, from:
 struct ComDock: View {
     /// 胶囊 48 + 上 8 + 下 4；页面按这个高度留底部空白。
     static let height: CGFloat = 48 + Space.sm + Space.xs
+    /// 横屏侧边栏：胶囊 48 + 左 8 + 右 8（选中项要放得下名字的小字）。
+    static let sideWidth: CGFloat = 48 + Space.sm * 2
     @Environment(AppModel.self) private var model
+    @Environment(\.dockOnSide) private var side
     /// 双栏时右栏的 Dock 只放工作页面（Com 主对话常驻左栏）。
     var tabs: [SectionTab] = SectionTab.dock
     var body: some View {
         // 不包 GlassEffectContainer：每颗各自一块玻璃，徽标才能压在玻璃上面。
-        HStack(spacing: Space.sm) {
-            ForEach(tabs) { tab in
-                DockItem(tab: tab, selected: (model.splitView ? model.rightTab : model.tab) == tab,
-                         badge: tab == .doing ? model.waitingCount : tab == .next ? model.nextUrgentCount : 0)
+        let items = ForEach(tabs) { tab in
+            DockItem(tab: tab, selected: (model.splitView ? model.rightTab : model.tab) == tab,
+                     badge: tab == .doing ? model.decisionCount : tab == .next ? model.nextUrgentCount : 0)
+        }
+        // 横屏（Duo 展开）：工具栏贴右边缘竖着排；竖屏仍是底部横排。
+        Group {
+            if side {
+                VStack(spacing: Space.sm) { items }
+                    .padding(.horizontal, Space.sm).padding(.vertical, Space.sm)
+            } else {
+                HStack(spacing: Space.sm) { items }
+                    .padding(.horizontal, Space.xl).padding(.top, Space.sm).padding(.bottom, Space.xs)
             }
         }
         .sensoryFeedback(.selection, trigger: model.tab)
         .dynamicTypeSize(...DynamicTypeSize.xxLarge)
-        .padding(.horizontal, Space.xl).padding(.top, Space.sm).padding(.bottom, Space.xs)
     }
+}
+
+private struct DockOnSideKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// Dock 是否贴在右边缘（横屏双栏）。页面据此把底部留白换成右侧留白。
+    var dockOnSide: Bool {
+        get { self[DockOnSideKey.self] }
+        set { self[DockOnSideKey.self] = newValue }
+    }
+}
+
+/// 页面给 Dock 留的底部空白；Dock 在右边时不需要（右侧留白由 RootView 统一给）。
+struct DockSpacer: View {
+    @Environment(\.dockOnSide) private var side
+    var body: some View { Color.clear.frame(height: side ? 0 : ComDock.height) }
 }
 
 private struct DockItem: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @Environment(\.dockOnSide) private var side
     let tab: SectionTab
     let selected: Bool
     let badge: Int
@@ -338,7 +370,30 @@ private struct DockItem: View {
         .accessibilityIdentifier("tab-" + tab.id)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
-    private var label: some View {
+    @ViewBuilder private var label: some View {
+        if side { sideLabel } else { bottomLabel }
+    }
+    /// 右侧竖排：选中的那颗向下撑开，图标下面露出名字。
+    private var sideLabel: some View {
+        VStack(spacing: 3) {
+            TabGlyph(tab: tab, selected: selected)
+                .font(.system(size: 18, weight: .semibold))
+            if selected {
+                Text(tab.rawValue).font(.system(size: 11, weight: .semibold)).lineLimit(1).fixedSize()
+                    .transition(reduce ? AnyTransition.opacity : AnyTransition(BlurReplaceTransition(configuration: .downUp)))
+            }
+        }
+        .foregroundStyle(selected ? tab.tint : Palette.textPrimary)
+        .padding(.vertical, selected ? Space.sm : 0)
+        .frame(width: 48).frame(minHeight: 48)
+        .clipShape(.capsule)
+        .contentShape(.capsule)
+        .background { Color.clear.glassEffect(.regular, in: .capsule) }
+        .overlay(alignment: .topTrailing) {
+            if !selected { CountBadge(count: badge).offset(x: 4, y: -3) }
+        }
+    }
+    private var bottomLabel: some View {
         HStack(spacing: 7) {
             // 图标不换实心/空心，只变颜色：换图形会先淡出再淡入，切换瞬间图标会闪没。
             TabGlyph(tab: tab, selected: selected)  // 轨道 r2-pages：「下一步」换成自绘宇航员靴印（MoonBootPrint.swift）
@@ -473,10 +528,10 @@ struct StagePanel: View {
         .opacity(Double(min(1, progress * 4)))
         .allowsHitTesting(model.stageExpanded)
     }
-    /// 展开后的一行实情：等你 / 在跑 / 信源，各自能跳过去。
+    /// 展开后的一行实情：下一步 / 在跑 / 信源，各自能跳过去。
     private var stats: some View {
         HStack(spacing: Space.sm) {
-            chip("等你 \(model.waitingCount)", symbol: "hand.raised", tone: model.waitingCount > 0 ? .warning : .neutral) { model.closeStage(); model.showWaiting = true }  // 10-18 统一「等你」
+            chip("下一步 \(model.nextUrgentCount)", symbol: "shoeprints.fill", tone: model.nextUrgentCount > 0 ? .warning : .neutral) { model.closeStage(); model.tab = .next }  // 10-25：「等你」只增不减，换成下一步
             chip("在跑 \(model.runningTasks.count)", symbol: "play.circle", tone: model.runningTasks.isEmpty ? .neutral : .info) { model.closeStage(); model.tab = .doing }
             chip(model.brokenSources.isEmpty ? "信源正常" : "信源断了 \(model.brokenSources.count)", symbol: model.brokenSources.isEmpty ? "checkmark.circle" : "exclamationmark.triangle", tone: model.brokenSources.isEmpty ? .success : .danger) { model.closeStage(); model.showConnectors = true }
             if model.stripState == .done, !model.stage.deliveryID.isEmpty {

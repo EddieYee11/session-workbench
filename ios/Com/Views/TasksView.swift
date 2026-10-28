@@ -122,7 +122,7 @@ struct TaskHubView: View {
                 }
             }
         }.refreshable { await model.refresh(.doing) }
-        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: ComDock.height) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { DockSpacer() }
         .navigationTitle("任务与目标").navigationBarTitleDisplayMode(.large)
         .toolbarBackground(Palette.background, for: .navigationBar)
         .sheet(isPresented: $addingGoal) { GoalEditor() }

@@ -29,6 +29,12 @@ private enum HealthSpan: Int, CaseIterable, Identifiable {
 }
 
 struct HealthView: View {
+    /// 截图验收用：COM_PREVIEW_HEALTH_BENTO=1 时只留指标拼图（UI 测试里建议卡堆会吃掉滑动，拼图下半截拍不到）。
+    #if DEBUG
+    static let bentoOnly = ProcessInfo.processInfo.environment["COM_PREVIEW_HEALTH_BENTO"] == "1"
+    #else
+    static let bentoOnly = false
+    #endif
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var shown = false
@@ -38,22 +44,28 @@ struct HealthView: View {
         let all = source["days"].array
         let today = source["today"].isNull ? all.last ?? .null : source["today"]
         let m = today["measurements"]
-        // 10-17 二版：一级界面只放图形和能点的东西——恢复环 + 四个维度小环、建议卡堆、六格指标、最近活动；
+        // 10-17 二版：一级界面只放图形和能点的东西——恢复环 + 四个维度小环、建议卡堆、指标拼图（10-28 起大小不一，含最近活动）；
         // 解释文字、趋势图都收进点开以后（参考 Originkit 的 Swipe Stack / Flip Gallery / Interactive Grid）。
         ScreenScaffold(title: "健康") {
             if m.isNull || m.object.isEmpty {
                 InlineNotice(text: "还没有今天的 Garmin 数据：手表同步后这里会出评估。", tone: .neutral)
             }
-            HealthHero(insight: model.healthInsight, m: m, shown: shown)
-                .modifier(HealthRise(on: shown, delay: 0.04))
-            ActionStack(actions: model.healthInsight["actions"].array)
-                .modifier(HealthRise(on: shown, delay: 0.12))
+            if !Self.bentoOnly {
+                HealthHero(insight: model.healthInsight, m: m, shown: shown)
+                    .modifier(HealthRise(on: shown, delay: 0.04))
+                ActionStack(actions: model.healthInsight["actions"].array)
+                    .modifier(HealthRise(on: shown, delay: 0.12))
+            }
             MetricGrid(today: today, days: all, shown: shown, zoom: zoom)
                 .modifier(HealthRise(on: shown, delay: 0.2))
-            ActivityStrip(days: all)
-                .modifier(HealthRise(on: shown, delay: 0.28))
+            HealthBrief(points: model.todayBrief.filter { $0["kind"].string == "health" })
+                .modifier(HealthRise(on: shown, delay: 0.32))
+            BodyCard(shown: shown, showTiles: false)
+                .modifier(HealthRise(on: shown, delay: 0.36))
         }
-        .refreshable { await model.refresh(.health); await model.refreshHealthInsight() }
+        .refreshable { await model.refresh(.health); _ = await model.load("/personal/today"); _ = await model.load("/personal/next"); await model.refreshHealthInsight() }
+        // 身体电量曲线、睡眠条来自「今天」的数据，简报里的身体要点来自「下一步」：进页时补读一次。
+        .task { _ = await model.load("/personal/today"); _ = await model.load("/personal/next") }
         .onAppear { shown = true }
         .onDisappear { shown = false }
         .accessibilityIdentifier("health-page")
@@ -388,15 +400,43 @@ private struct ActionStack: View {
     }
 }
 
-// MARK: 指标方格
+// MARK: 身体简报
 
-/// 六格：电量、睡眠、HRV、静息心率、压力、负荷。每格只有图标、一个大数、一条 14 天迷你线，和自己均值比好坏上色；
-/// 点开用 zoom 转场推进到那一项的趋势页（iOS 18 navigationTransition，格子放大成页面）。
+/// 「下一步」整理时从身体数据里归纳的几条要点（原来在今天页的简报里）；没有就不占位。
+private struct HealthBrief: View {
+    let points: [JSON]
+    var body: some View {
+        if !points.isEmpty {
+            VStack(spacing: Space.sm) {
+                ForEach(Array(points.enumerated()), id: \.offset) { index, point in
+                    HStack(alignment: .top, spacing: Space.md) {
+                        Image(systemName: "heart.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(TodayHue.pink.ink)
+                            .frame(width: 34, height: 34).background(TodayHue.pink.fill, in: .rect(cornerRadius: 11, style: .continuous))
+                        Text(point["text"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary).lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(Space.md)
+                    .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("health-brief-\(index)")
+                }
+            }
+        }
+    }
+}
+
+// MARK: 指标拼图
+
+/// 10-28 改版（参考 x.com/craft_120 的 bento 拼图）：七张大小不一的卡——睡眠宽卡 + 静息心率小卡；
+/// HRV 中卡 + 电量 / 压力两张小方卡叠放 + 右侧「活动量」高卡；底下「最近活动」宽卡。
+/// 每张卡都是入口：点开用 zoom 转场推进到那一项的趋势页（iOS 18 navigationTransition，卡片放大成页面）。
 private struct MetricGrid: View {
     let today: JSON
     let days: [JSON]
     let shown: Bool
     let zoom: Namespace.ID
+    @State private var width: CGFloat = 360
     struct Item: Identifiable { let id: String; let title: String; let symbol: String; let hue: TodayHue; let key: String; let unit: String; let higher: Bool; let scale: Double }
     static let items: [Item] = [
         Item(id: "battery", title: "身体电量", symbol: "bolt.heart.fill", hue: .mint, key: "body_battery_at_wake", unit: "", higher: true, scale: 1),
@@ -404,62 +444,319 @@ private struct MetricGrid: View {
         Item(id: "hrv", title: "HRV", symbol: "waveform.path.ecg", hue: .sky, key: "hrv_last_night", unit: "ms", higher: true, scale: 1),
         Item(id: "rhr", title: "静息心率", symbol: "heart.fill", hue: .pink, key: "resting_heart_rate", unit: "bpm", higher: false, scale: 1),
         Item(id: "stress", title: "压力", symbol: "brain.head.profile", hue: .butter, key: "avg_stress", unit: "", higher: false, scale: 1),
-        Item(id: "load", title: "训练负荷", symbol: "figure.climbing", hue: .butter, key: "load_acute", unit: "", higher: true, scale: 1),
+        Item(id: "load", title: "活动量", symbol: "figure.walk", hue: .butter, key: "steps", unit: "步", higher: true, scale: 1),
+        Item(id: "activity", title: "最近活动", symbol: "figure.climbing", hue: .butter, key: "load_acute", unit: "", higher: true, scale: 1),
     ]
+    private var m: JSON { today["measurements"] }
     var body: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.md), GridItem(.flexible(), spacing: Space.md)], spacing: Space.md) {
-            ForEach(Array(Self.items.enumerated()), id: \.element.id) { index, item in
-                NavigationLink {
-                    HealthMetricPage(item: item)
-                        .navigationTransition(.zoom(sourceID: item.id, in: zoom))
-                } label: {
-                    tile(item, index: index)
+        let g = Space.md
+        let u = max(92, (width - 2 * g) / 3)
+        let small: CGFloat = 112
+        VStack(spacing: g) {
+            HStack(spacing: g) {
+                tile("sleep", height: 156)
+                tile("rhr", height: 156).frame(width: u)
+            }
+            HStack(alignment: .top, spacing: g) {
+                VStack(spacing: g) {
+                    HStack(spacing: g) {
+                        tile("hrv", height: small * 2 + g)
+                        VStack(spacing: g) {
+                            tile("battery", height: small)
+                            tile("stress", height: small)
+                        }
+                        .frame(width: u * 0.86)
+                    }
+                    tile("activity", height: 132)
                 }
-                .buttonStyle(TilePress())
-                .matchedTransitionSource(id: item.id, in: zoom) { $0.clipShape(.rect(cornerRadius: Radius.xl, style: .continuous)) }
-                .accessibilityIdentifier("health-tile-" + item.id)
+                tile("load", height: small * 2 + g * 2 + 132).frame(width: u)
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
-    private func tile(_ item: Item, index: Int) -> some View {
-        let series = days.suffix(14).compactMap { d in d["measurements"][item.key].isNull ? nil : d["measurements"][item.key].double * item.scale }
-        // 电量格显示「现在」，其余显示今天的值。
-        let m = today["measurements"]
-        let now: Double? = item.id == "battery" && !m["body_battery"].isNull ? m["body_battery"].double : series.last
-        let mean = series.count > 1 ? series.dropLast().reduce(0, +) / Double(series.count - 1) : nil
-        let trend: Double = (now != nil && mean != nil && mean! > 0) ? (now! - mean!) / mean! : 0
-        let good = item.higher ? trend >= -0.05 : trend <= 0.05
-        return VStack(alignment: .leading, spacing: Space.sm) {
-            HStack {
-                Image(systemName: item.symbol).font(.system(size: 14, weight: .semibold)).foregroundStyle(item.hue.ink)
-                    .frame(width: 32, height: 32).background(item.hue.fill, in: .circle)
-                Spacer()
-                if mean != nil && abs(trend) >= 0.03 {
-                    Image(systemName: trend > 0 ? "arrow.up.right" : "arrow.down.right").font(.system(size: 11, weight: .heavy))
-                        .foregroundStyle(good ? TodayHue.mint.ink : Palette.danger)
-                        .frame(width: 22, height: 22).background((good ? TodayHue.mint.fill : TodayHue.pink.fill), in: .circle)
-                }
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(now.map { item.id == "sleep" ? $0.formatted(.number.precision(.fractionLength(1))) : "\(Int($0.rounded()))" } ?? "—")
-                    .font(.system(size: 26, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(Palette.textPrimary)
-                    .contentTransition(.numericText())
-                if !item.unit.isEmpty { Text(item.unit).font(.caption).foregroundStyle(Palette.textTertiary) }
-            }
-            Text(item.title).font(.caption.weight(.medium)).foregroundStyle(Palette.textSecondary)
-            if series.count > 1 {
-                MiniTrend(values: series, color: item.hue.ink).frame(height: 26)
-                    .modifier(DrawIn(on: shown, delay: 0.35 + Double(index) * 0.05, duration: 0.8))
-            }
+
+    private func tile(_ id: String, height: CGFloat) -> some View {
+        let item = Self.items.first { $0.id == id }!
+        let index = Self.items.firstIndex { $0.id == id } ?? 0
+        return NavigationLink {
+            HealthMetricPage(item: item)
+                .navigationTransition(.zoom(sourceID: item.id, in: zoom))
+        } label: {
+            content(item, index: index)
+                .padding(Space.md)
+                .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
+                .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+                .elevation(.raised)
+                .contentShape(.rect(cornerRadius: Radius.lg, style: .continuous))
         }
-        .padding(Space.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
-        .elevation(.raised)
+        .buttonStyle(TilePress())
+        .matchedTransitionSource(id: item.id, in: zoom) { $0.clipShape(.rect(cornerRadius: Radius.lg, style: .continuous)) }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(item.title + " " + (now.map { String(Int($0)) } ?? "无数据") + item.unit)
+        .accessibilityLabel(item.title + "，" + spoken(item))
         .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("health-tile-" + item.id)
     }
+
+    // MARK: 取数
+
+    private func series(_ key: String, scale: Double = 1, last: Int = 14) -> [Double] {
+        days.suffix(last).compactMap { d in d["measurements"][key].isNull ? nil : d["measurements"][key].double * scale }
+    }
+    private func value(_ key: String) -> Double? { m[key].isNull ? nil : m[key].double }
+    private func spoken(_ item: Item) -> String {
+        switch item.id {
+        case "battery": return value("body_battery").map { "现在 \(Int($0))" } ?? "无数据"
+        case "activity": return "\(recent.count) 次"
+        default: return series(item.key, scale: item.scale).last.map { (item.id == "sleep" ? $0.formatted(.number.precision(.fractionLength(1))) : "\(Int($0.rounded()))") + item.unit } ?? "无数据"
+        }
+    }
+    private var recent: [(String, JSON)] {
+        Array(days.suffix(14).reversed().flatMap { d in d["activities"].array.map { (String(d["date"].string.suffix(5)), $0) } })
+    }
+
+    // MARK: 卡片内容
+
+    @ViewBuilder private func content(_ item: Item, index: Int) -> some View {
+        switch item.id {
+        case "sleep": sleepCard(item)
+        case "rhr": heartCard(item, index: index)
+        case "hrv": hrvCard(item, index: index)
+        case "battery":
+            ringCard(item, fraction: (value("body_battery") ?? value("body_battery_at_wake") ?? 0) / 100,
+                     value: value("body_battery").map { "\(Int($0))" } ?? "—",
+                     note: value("body_battery_at_wake").map { "起床 \(Int($0))" } ?? "")
+        case "stress":
+            ringCard(item, fraction: (value("avg_stress") ?? 0) / 100, value: value("avg_stress").map { "\(Int($0))" } ?? "—",
+                     note: (value("avg_stress") ?? 0) <= 25 ? "很放松" : (value("avg_stress") ?? 0) <= 50 ? "平稳" : "偏紧")
+        case "load": loadCard(item, index: index)
+        default: activityCard(item)
+        }
+    }
+
+    private func header(_ item: Item) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: item.symbol).font(.system(size: 11, weight: .bold)).foregroundStyle(item.hue.ink)
+            Text(item.title).font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary)
+        }
+    }
+    private func big(_ text: String, unit: String = "", size: CGFloat = 40, color: Color = Palette.textPrimary) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            Text(text).font(.system(size: size, weight: .light, design: .rounded)).monospacedDigit().foregroundStyle(color)
+                .contentTransition(.numericText()).lineLimit(1).minimumScaleFactor(0.6)
+            if !unit.isEmpty { Text(unit).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary) }
+        }
+    }
+    private static func hm(_ seconds: Double) -> String {
+        let minutes = Int((seconds / 60).rounded())
+        return minutes >= 60 ? "\(minutes / 60)h\(String(format: "%02d", minutes % 60))" : "\(minutes)m"
+    }
+
+    /// 睡眠宽卡：左边大数（小时）+ 睡眠分，右边像「日志」那样一列带色条的分期。
+    private func sleepCard(_ item: Item) -> some View {
+        let stages: [(String, String, Color)] = [("深睡", "deep_seconds", TodayHue.lavender.ink), ("浅睡", "light_seconds", TodayHue.sky.ink), ("REM", "rem_seconds", TodayHue.pink.ink)]
+            .compactMap { name, key, color in value(key).map { (name, Self.hm($0), color) } }
+        return HStack(alignment: .top, spacing: Space.md) {
+            VStack(alignment: .leading, spacing: 0) {
+                header(item)
+                Spacer(minLength: Space.sm)
+                big(value("sleep_seconds").map { ($0 / 3600).formatted(.number.precision(.fractionLength(1))) } ?? "—", unit: "小时", size: 46)
+                if let score = value("sleep_score") {
+                    Text("睡眠分 \(Int(score))").font(.caption).foregroundStyle(Palette.textTertiary)
+                }
+            }
+            Spacer(minLength: 0)
+            if stages.isEmpty {
+                let s = series(item.key, scale: item.scale)
+                if s.count > 1 { MiniTrend(values: s, color: item.hue.ink).frame(width: 90).modifier(DrawIn(on: shown, delay: 0.35, duration: 0.8)) }
+            } else {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(Array(stages.enumerated()), id: \.offset) { _, stage in
+                        HStack(spacing: Space.sm) {
+                            Capsule().fill(stage.2).frame(width: 3)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(stage.0).font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.textPrimary)
+                                Text(stage.1).font(.caption.monospacedDigit()).foregroundStyle(Palette.textTertiary)
+                            }
+                        }
+                        .fixedSize()
+                    }
+                }
+                .frame(minWidth: 84, alignment: .leading)
+            }
+        }
+    }
+
+    /// 静息心率小卡：红色大数 + 14 天曲线 + 高 / 低。
+    private func heartCard(_ item: Item, index: Int) -> some View {
+        let s = series(item.key)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Image(systemName: "heart.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(Palette.danger)
+                Text(s.last.map { "\(Int($0))" } ?? "—").font(.system(size: 26, weight: .regular, design: .rounded)).monospacedDigit().foregroundStyle(Palette.danger)
+                    .contentTransition(.numericText())
+                Text("bpm").font(.caption2.weight(.semibold)).foregroundStyle(Palette.danger.opacity(0.75))
+            }
+            Text("静息心率").font(.caption).foregroundStyle(Palette.textTertiary)
+            if s.count > 1 {
+                MiniTrend(values: s, color: Palette.danger).frame(maxHeight: .infinity)
+                    .modifier(DrawIn(on: shown, delay: 0.35 + Double(index) * 0.05, duration: 0.8))
+                VStack(spacing: 1) {
+                    minMax("高", s.max() ?? 0, Palette.danger)
+                    minMax("低", s.min() ?? 0, Palette.info)
+                }
+            } else { Spacer(minLength: 0) }
+        }
+    }
+    private func minMax(_ label: String, _ v: Double, _ color: Color) -> some View {
+        HStack {
+            Text(label).font(.caption2.weight(.semibold)).foregroundStyle(Palette.textTertiary)
+            Spacer()
+            Text("\(Int(v.rounded()))").font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(color)
+        }
+    }
+
+    /// HRV 中卡：昨晚 vs 14 天均值两个数，下面整块曲线。
+    private func hrvCard(_ item: Item, index: Int) -> some View {
+        let s = series(item.key)
+        let mean = s.count > 1 ? s.dropLast().reduce(0, +) / Double(s.count - 1) : nil
+        return VStack(alignment: .leading, spacing: Space.sm) {
+            header(item)
+            Text("近 \(s.count) 天 · ms").font(.caption2).foregroundStyle(Palette.textTertiary).padding(.top, -6)
+            HStack(alignment: .top, spacing: Space.md) {
+                pair("昨晚", s.last.map { "\(Int($0))" } ?? "—", item.hue.ink)
+                pair("均值", mean.map { "\(Int($0.rounded()))" } ?? "—", Palette.textTertiary)
+            }
+            if s.count > 1 {
+                MiniTrend(values: s, color: item.hue.ink).frame(maxHeight: .infinity)
+                    .modifier(DrawIn(on: shown, delay: 0.35 + Double(index) * 0.05, duration: 0.9))
+            } else { Spacer(minLength: 0) }
+        }
+    }
+    private func pair(_ label: String, _ value: String, _ dot: Color) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.caption2).foregroundStyle(Palette.textTertiary)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Circle().fill(dot).frame(width: 6, height: 6)
+                Text(value).font(.system(size: 22, weight: .regular, design: .rounded)).monospacedDigit().foregroundStyle(Palette.textPrimary)
+                    .contentTransition(.numericText()).lineLimit(1).fixedSize()
+            }
+        }
+    }
+
+    /// 小方卡：圆环 + 名字 + 数。
+    private func ringCard(_ item: Item, fraction: Double, value: String, note: String) -> some View {
+        VStack(spacing: 5) {
+            BentoRing(fraction: fraction, color: item.hue.ink, track: item.hue.fill, symbol: item.symbol, shown: shown)
+                .frame(width: 40, height: 40)
+            Text(item.title).font(.caption.weight(.semibold)).foregroundStyle(Palette.textSecondary)
+            HStack(spacing: 3) {
+                Text(value).font(.caption.weight(.bold).monospacedDigit()).foregroundStyle(Palette.textPrimary).contentTransition(.numericText())
+                if !note.isEmpty { Text(note).font(.caption2).foregroundStyle(Palette.textTertiary).lineLimit(1) }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 活动量高卡：日均步数大数 + 14 天柱状 + 底下几条灰底指标（参考图里 Activity 那张）。
+    private func loadCard(_ item: Item, index: Int) -> some View {
+        let s = series("steps")
+        let mean = s.isEmpty ? nil : s.reduce(0, +) / Double(s.count)
+        let rows: [(String, String)] = [
+            ("今天", value("steps").map { "\(Int($0))" } ?? "—"),
+            ("急性负荷", value("load_acute").map { "\(Int($0))" } ?? "—"),
+            ("负荷比", value("load_ratio").map { $0.formatted(.number.precision(.fractionLength(1))) } ?? "—"),
+        ]
+        return VStack(alignment: .leading, spacing: Space.sm) {
+            header(item)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("日均").font(.caption2).foregroundStyle(Palette.textTertiary)
+                big(mean.map { $0 >= 10000 ? ($0 / 1000).formatted(.number.precision(.fractionLength(1))) + "k" : "\(Int($0.rounded()))" } ?? "—", unit: "步", size: 26)
+            }
+            if s.count > 1 {
+                Chart(Array(s.enumerated()), id: \.offset) { point in
+                    // 类目轴（字符串）才有「每格宽度」，.ratio 才生效；整数轴是连续的，柱子宽度为 0
+                    BarMark(x: .value("天", "\(point.offset)"), y: .value("步", point.element), width: .ratio(0.62))
+                        .foregroundStyle(point.offset == s.count - 1 ? item.hue.ink : TodayHue.sky.ink.opacity(0.55))
+                        .cornerRadius(2)
+                }
+                .chartXAxis(.hidden).chartYAxis(.hidden)
+                .frame(maxHeight: .infinity)
+                .modifier(DrawIn(on: shown, delay: 0.4, duration: 0.9))
+            } else { Spacer(minLength: 0) }
+            VStack(spacing: 4) {
+                ForEach(rows, id: \.0) { row in
+                    HStack {
+                        Text(row.0).font(.caption2).foregroundStyle(Palette.textSecondary)
+                        Spacer(minLength: 2)
+                        Text(row.1).font(.caption2.weight(.semibold).monospacedDigit()).foregroundStyle(Palette.textPrimary)
+                    }
+                    .padding(.horizontal, 7).padding(.vertical, 5)
+                    .background(Palette.fill, in: .rect(cornerRadius: 7, style: .continuous))
+                }
+                if let status = trainingStatusWord(m["training_status"].string).nilIfEmpty {
+                    Text(status).font(.caption2.weight(.semibold)).foregroundStyle(TodayHue.mint.ink)
+                        .frame(maxWidth: .infinity).padding(.vertical, 5)
+                        .background(TodayHue.mint.fill, in: .rect(cornerRadius: 7, style: .continuous))
+                }
+            }
+        }
+    }
+
+    /// 最近活动宽卡：左边 14 天次数大数，右边最近两次（色条 + 名字 + 日期时长）。
+    private func activityCard(_ item: Item) -> some View {
+        let acts = recent
+        return HStack(alignment: .top, spacing: Space.md) {
+            VStack(alignment: .leading, spacing: 0) {
+                header(item)
+                Spacer(minLength: Space.sm)
+                big("\(acts.count)", unit: "次 · 14 天", size: 44)
+            }
+            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 9) {
+                if acts.isEmpty {
+                    Text("两周没有记录").font(.caption).foregroundStyle(Palette.textTertiary)
+                }
+                ForEach(Array(acts.prefix(2).enumerated()), id: \.offset) { i, pair in
+                    let (date, a) = pair
+                    HStack(spacing: Space.sm) {
+                        Capsule().fill(i == 0 ? TodayHue.butter.ink : TodayHue.sky.ink).frame(width: 3)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Label(a["name"].string, systemImage: activitySymbol(a["type"].string))
+                                .font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                            Text(date + " · \(a["minutes"].int) 分钟").font(.caption.monospacedDigit()).foregroundStyle(Palette.textTertiary)
+                        }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: 150, alignment: .leading)
+        }
+    }
+}
+
+/// 小方卡里的圆环：进页时从 0 画到当前值，中间放图标。
+private struct BentoRing: View {
+    let fraction: Double
+    let color: Color
+    let track: Color
+    let symbol: String
+    let shown: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    var body: some View {
+        ZStack {
+            Circle().stroke(track, lineWidth: 6)
+            Circle().trim(from: 0, to: shown || reduce ? max(0.02, min(1, fraction)) : 0)
+                .stroke(color, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(reduce ? nil : .timingCurve(0.45, 0, 0.2, 1, duration: 0.9).delay(0.4), value: shown)
+            Image(systemName: symbol).font(.system(size: 12, weight: .bold)).foregroundStyle(color)
+        }
+        .padding(3)
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 private struct MiniTrend: View {
@@ -482,62 +779,6 @@ private struct TilePress: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(.spring(response: 0.28, dampingFraction: 0.7), value: configuration.isPressed)
-    }
-}
-
-/// 最近两周的活动：一排圆形徽章（运动图标 + 分钟），横着滑；点开看那次的心率、热量。
-private struct ActivityStrip: View {
-    let days: [JSON]
-    @State private var picked: Int?
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    var body: some View {
-        let acts = Array(days.suffix(14).reversed().flatMap { d in d["activities"].array.map { (String(d["date"].string.suffix(5)), $0) } }.prefix(8))
-        if !acts.isEmpty {
-            VStack(alignment: .leading, spacing: Space.sm) {
-                Text("最近活动").font(TypeScale.section).accessibilityAddTraits(.isHeader).padding(.horizontal, Space.xs)
-                ScrollView(.horizontal) {
-                    HStack(spacing: Space.md) {
-                        ForEach(Array(acts.enumerated()), id: \.offset) { index, item in
-                            let (date, a) = item
-                            Button {
-                                Haptics.selection()
-                                withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.78)) { picked = picked == index ? nil : index }
-                            } label: {
-                                VStack(spacing: 4) {
-                                    Image(systemName: activitySymbol(a["type"].string)).font(.system(size: 20, weight: .semibold)).foregroundStyle(TodayHue.butter.ink)
-                                        .frame(width: 54, height: 54)
-                                        .background(TodayHue.butter.fill, in: .circle)
-                                        .overlay(Circle().strokeBorder(picked == index ? TodayHue.butter.ink : .clear, lineWidth: 2))
-                                    Text("\(a["minutes"].int)′").font(.caption.weight(.bold).monospacedDigit()).foregroundStyle(Palette.textPrimary)
-                                    Text(date).font(.caption2).foregroundStyle(Palette.textTertiary)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(a["name"].string + " \(a["minutes"].int) 分钟，" + date)
-                            .accessibilityIdentifier("health-activity-\(index)")
-                        }
-                    }
-                    .padding(.horizontal, Space.xs).padding(.vertical, 2)
-                }
-                .scrollIndicators(.hidden)
-                if let picked, picked < acts.count {
-                    let a = acts[picked].1
-                    HStack(spacing: Space.lg) {
-                        Text(a["name"].string).font(TypeScale.rowTitle).foregroundStyle(Palette.textPrimary)
-                        Spacer()
-                        if !a["avg_hr"].isNull { Label("\(a["avg_hr"].int)", systemImage: "heart.fill").foregroundStyle(TodayHue.pink.ink) }
-                        if !a["calories"].isNull { Label("\(a["calories"].int)", systemImage: "flame.fill").foregroundStyle(TodayHue.butter.ink) }
-                    }
-                    .font(TypeScale.footnote.weight(.semibold).monospacedDigit())
-                    .padding(Space.md)
-                    .background(Palette.surface, in: .rect(cornerRadius: Radius.md, style: .continuous))
-                    .id(picked)
-                    .transition(reduce ? .opacity : .blurLift)
-                }
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("health-activities")
-        }
     }
 }
 
@@ -586,7 +827,7 @@ private struct HealthMetricPage: View {
                 case "battery": BatteryPanel(today: today, days: days, shown: shown)
                 case "sleep": SleepPanel(m: m, days: days, shown: shown)
                 case "hrv": HRVPanel(m: m, days: days, shown: shown)
-                case "load": LoadPanel(m: m, days: all, shown: shown)
+                case "load", "activity": LoadPanel(m: m, days: all, shown: shown)
                 default: HeartStressPanel(days: days, shown: shown)
                 }
             }
@@ -594,7 +835,7 @@ private struct HealthMetricPage: View {
             Text("来源：Garmin Connect（python-garminconnect）。和你自己的近期均值比，不是医疗诊断。")
                 .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).padding(.horizontal, Space.xs)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: ComDock.height) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { DockSpacer() }
         .navigationTitle(item.title).navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Palette.background, for: .navigationBar)
         .onAppear { shown = true }
@@ -809,7 +1050,7 @@ private struct LoadPanel: View {
     let shown: Bool
     var body: some View {
         let acts = days.reversed().flatMap { d in d["activities"].array.map { (day(d), $0) } }.prefix(5)
-        Panel(title: "负荷与活动", symbol: "figure.climbing", hue: .butter, trailing: statusWord(m["training_status"].string)) {
+        Panel(title: "负荷与活动", symbol: "figure.climbing", hue: .butter, trailing: trainingStatusWord(m["training_status"].string)) {
             HStack {
                 Stat(title: "急性负荷", value: m["load_acute"].isNull ? "—" : "\(m["load_acute"].int)")
                 Stat(title: "慢性负荷", value: m["load_chronic"].isNull ? "—" : "\(m["load_chronic"].int)")
@@ -844,11 +1085,12 @@ private struct LoadPanel: View {
         }
         .accessibilityIdentifier("health-load")
     }
-    private func statusWord(_ raw: String) -> String {
-        let map = ["PRODUCTIVE": "有效训练", "MAINTAINING": "保持", "RECOVERY": "恢复中", "UNPRODUCTIVE": "低效", "DETRAINING": "退训", "PEAKING": "巅峰",
-                   "OVERREACHING": "负荷过量", "STRAINED": "紧绷", "NO_STATUS": "暂无状态"]
-        return map.first { raw.hasPrefix($0.key) }?.value ?? ""
-    }
+}
+
+func trainingStatusWord(_ raw: String) -> String {
+    let map = ["PRODUCTIVE": "有效训练", "MAINTAINING": "保持", "RECOVERY": "恢复中", "UNPRODUCTIVE": "低效", "DETRAINING": "退训", "PEAKING": "巅峰",
+               "OVERREACHING": "负荷过量", "STRAINED": "紧绷", "NO_STATUS": "暂无状态"]
+    return map.first { raw.hasPrefix($0.key) }?.value ?? ""
 }
 
 /// 急慢性负荷比：0.8–1.5 是合适区间（Garmin 的划法），指针从 0 滑到当前位置。

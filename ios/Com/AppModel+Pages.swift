@@ -114,18 +114,22 @@ extension AppModel {
         let week: [(Double, Double, Double, Double, Double, Double, Double)] = [  // 睡眠秒、睡眠分、HRV、准备度、静息心率、压力、步数
             (23400, 72, 39, 58, 60, 34, 8200), (27000, 85, 45, 77, 57, 25, 10400), (21600, 64, 36, 49, 61, 41, 6300),
             (25800, 80, 43, 70, 58, 28, 9100), (24480, 76, 41, 64, 58, 39, 7528), (22800, 70, 40, 61, 59, 30, 5400), (26040, 81, 44, 81, 58, 26, 2851)]
-        let days: [JSON] = week.enumerated().map { i, v in
+        var days: [JSON] = week.enumerated().map { i, v in
             let date = Date(timeIntervalSince1970: day - Double(6 - i) * 86400)
             let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
             return .object(["date": .string(f.string(from: date)), "missing": .array([]), "body_battery_curve": .array([]),
                             "measurements": .object(["sleep_seconds": .number(v.0), "sleep_score": .number(v.1), "hrv_last_night": .number(v.2), "readiness_score": .number(v.3),
                                                      "resting_heart_rate": .number(v.4), "avg_stress": .number(v.5), "steps": .number(v.6), "body_battery_at_wake": .number(55 + v.3 / 5)])])
         }
+        days[3]["activities"] = .array([.object(["name": .string("夜跑"), "type": .string("running"), "minutes": .number(41), "avg_hr": .number(146), "calories": .number(392), "start": .string("21:05")])])
         var today = days.last!
         var m = today["measurements"]
         for (k, v) in [("body_battery", 47.0), ("body_battery_charged", 59), ("body_battery_drained", 20), ("deep_seconds", 7020), ("light_seconds", 13620), ("rem_seconds", 5400), ("awake_seconds", 120)] { m[k] = .number(v) }
         m["sleep_start"] = .string("2026-10-15T00:31+08:00"); m["sleep_end"] = .string("2026-10-15T07:47+08:00")
+        for (k, v) in [("load_acute", 512.0), ("load_chronic", 468), ("load_ratio", 1.1)] { m[k] = .number(v) }  // 10-28 拼图「活动量」卡
+        m["training_status"] = .string("PRODUCTIVE_1")
         today["measurements"] = m
+        today["activities"] = .array([.object(["name": .string("抱石"), "type": .string("bouldering"), "minutes": .number(92), "avg_hr": .number(118), "calories": .number(486), "start": .string("19:40")])])
         let curve: [JSON] = stride(from: 0.0, through: max(1, nowH), by: 0.25).map { h in
             let level = h < 7.8 ? 8 + h / 7.8 * 59 : max(20, 67 - (h - 7.8) * 2.6)
             return .array([.number(day + h * 3600), .number(level.rounded())])

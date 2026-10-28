@@ -146,6 +146,8 @@ class PersonalConversation:
         try: setup.execute('PRAGMA journal_mode=WAL')
         finally: setup.close()
         self.client = client or HermesClient(state)
+        # 10-25：回复里提到的产出文件自动挂成卡片（app 注入 ArtifactAccess.link_text）
+        self.artifact_linker = None
         self.reactions = ReactionStore(state)
         self.wake = asyncio.Event()
         self.changed = asyncio.Condition()
@@ -226,6 +228,27 @@ class PersonalConversation:
             db.execute("INSERT INTO messages(id,request_id,parent_id,role,text,status,phase,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                        (key, key, parent_id, 'assistant', text, 'completed', 'completed', revision, at, at))
         self._notify()
+        self._link_artifacts(key, text)
+
+    def backfill_artifacts(self, days: int = 14) -> int:
+        """近 days 天的回复里提到了产出文件、却没挂卡片的：补挂一次（幂等）。"""
+        if not self.artifact_linker:
+            return 0
+        with self.db() as db:
+            rows = db.execute("SELECT id,text FROM messages WHERE role='assistant' AND created_at>? AND (artifacts IS NULL OR artifacts='[]')"
+                              " AND (text LIKE '%.html%' OR text LIKE '%.md%' OR text LIKE '%.pdf%')", (time.time() - days * 86400,)).fetchall()
+        for row in rows:
+            self._link_artifacts(row["id"], row["text"])
+        return len(rows)
+
+    def _link_artifacts(self, message_id: str, text: str) -> None:
+        if not self.artifact_linker or not text:
+            return
+        try:
+            for artifact in self.artifact_linker(message_id, text):
+                self.attach_artifact(message_id, artifact)
+        except Exception:
+            pass  # 登记失败不影响回复本身
 
     def task_receipt_for_message(self, task_id: str, text: str, parent_id: str):
         return self.task_receipt(task_id, text, parent_id)
@@ -788,7 +811,10 @@ class PersonalConversation:
                     " VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (uuid.uuid4().hex, mid, "assistant", output, status, status, revision, now, now, encoded_options),
                 )
+            reply = db.execute("SELECT id,text FROM messages WHERE parent_id=? AND role='assistant'", (mid,)).fetchone() if status == "completed" else None
         self._notify()
+        if reply:
+            self._link_artifacts(reply["id"], reply["text"])
 
     def _delivery(self, mid: str, state: str) -> None:
         with self.db() as db:

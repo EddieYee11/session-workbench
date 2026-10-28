@@ -36,7 +36,8 @@ class PushNotifications:
             db.executescript("""CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,token TEXT,environment TEXT,enabled INTEGER,registered REAL);
               CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,message_id TEXT,device_id TEXT,state TEXT,attempts INTEGER,next_at REAL,created REAL,reason TEXT);
               CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY,sid TEXT,title TEXT,method TEXT,created REAL,actionable INTEGER DEFAULT 0);
-              CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);""")
+              CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);
+              CREATE TABLE IF NOT EXISTS wechat_pushes(key TEXT PRIMARY KEY,kind TEXT,text TEXT,at REAL,state TEXT,reason TEXT);""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(approvals)")}
             if "actionable" not in columns:
                 db.execute("ALTER TABLE approvals ADD COLUMN actionable INTEGER DEFAULT 0")
@@ -100,14 +101,73 @@ class PushNotifications:
             return None
         return {"server": server, "device_key": key, "preview": bool(cfg.get("preview", False))}
 
+    # ---------- 10-25 微信通道 ----------
+    # APNs 没有开发者密钥、Bark 也没配：主动提醒其实一直送不到手机。Eddie 每天都在微信里，
+    # 所以高优先级的事走 pi-gateway 发给他自己的微信（Poke 住在 iMessage 同一个思路）。
+    # 只发三类：要他拍板的审批、刚冒出来的「现在就该做」、结果不确定的操作；每天最多 daily_max 条（审批不占额度），静默时段不发。
+    def wechat(self):
+        try:
+            cfg = json.loads((self.state / "wechat-push.json").read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(cfg, dict) or not cfg.get("enabled"):
+            return None
+        return {"daily_max": self._whole(cfg.get("daily_max"), 3), "url": str(cfg.get("url") or "http://127.0.0.1:8642/admin/weixin/send")}
+
+    @staticmethod
+    def gateway_key():
+        try:
+            for line in (Path.home() / ".pi-gateway/.env").read_text().splitlines():
+                if line.startswith("API_8642_KEY="):
+                    return line.split("=", 1)[1].strip().strip("\"'")
+        except OSError:
+            return ""
+        return ""
+
+    def quiet_now(self):
+        cfg = self.settings()
+        hour = datetime.fromtimestamp(self.clock(), ZoneInfo("Asia/Shanghai")).hour
+        start, end = cfg.get("quiet_start", 23), cfg.get("quiet_end", 8)
+        return (hour >= start or hour < end) if start > end else start <= hour < end
+
+    async def send_wechat(self, cfg, text):
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+            response = await client.post(cfg["url"], json={"text": text}, headers={"Authorization": "Bearer " + self.gateway_key()})
+        return response.status_code, "" if response.status_code == 200 else response.text[:120]
+
+    async def push_wechat(self, candidates, sender=None):
+        """candidates: [{key, kind: approval|next|effect, text}]。一次最多发一条；同一个 key 只发一次。"""
+        cfg = self.wechat()
+        if not cfg or self.quiet_now():
+            return None
+        day = datetime.fromtimestamp(self.clock(), ZoneInfo("Asia/Shanghai")).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        with self.db() as db:
+            done = {r[0] for r in db.execute("SELECT key FROM wechat_pushes")}
+            used = db.execute("SELECT count(*) FROM wechat_pushes WHERE at>=? AND kind<>'approval' AND state='sent'", (day,)).fetchone()[0]
+        pick = next((c for c in candidates if c["key"] not in done and (c["kind"] == "approval" or used < cfg["daily_max"])), None)
+        if not pick:
+            return None
+        try:
+            code, reason = await (sender or self.send_wechat)(cfg, pick["text"])
+        except Exception as exc:
+            code, reason = 0, type(exc).__name__
+        with self.db() as db:
+            db.execute("INSERT OR REPLACE INTO wechat_pushes VALUES (?,?,?,?,?,?)", (pick["key"], pick["kind"], pick["text"][:500], self.clock(), "sent" if code == 200 else "failed", reason[:120]))
+        return pick["key"] if code == 200 else None
+
+    def wechat_log(self, limit=20):
+        with self.db() as db:
+            return [dict(r) for r in db.execute("SELECT * FROM wechat_pushes ORDER BY at DESC LIMIT ?", (limit,))]
+
     def status(self):
         with self.db() as db:
             counts = {r[0]: r[1] for r in db.execute("SELECT state,count(*) FROM outbox GROUP BY state")}
             devices = db.execute("SELECT count(*) FROM devices WHERE enabled=1").fetchone()[0]
-        delivery = "apns" if self.config() and devices else "bark" if self.bark() else "background_refresh"
+        delivery = "apns" if self.config() and devices else "bark" if self.bark() else "wechat" if self.wechat() else "background_refresh"
         return {
             "configured": bool(self.config()),
             "bark": bool(self.bark()),
+            "wechat": bool(self.wechat()),
             "registered_devices": devices,
             "outbox": counts,
             "delivery": delivery,

@@ -451,7 +451,7 @@ struct MessageView: View, Equatable {
                     .padding(.horizontal, Space.lg).padding(.vertical, Space.md)
                     .noteSurface()
             }
-            if !message["artifacts"].array.isEmpty { ArtifactList(artifacts: message["artifacts"].array) }
+            if !message["artifacts"].array.isEmpty { ArtifactList(artifacts: message["artifacts"].array, chips: true) }  // 10-25 附件片，与航程详情同款
         }
         .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
         .padding(user ? .leading : .trailing, user ? 48 : 20)

@@ -143,23 +143,72 @@ struct VoyageBanner: View {
     }
 }
 
-// MARK: - 列表
+// MARK: - 列表（10-25：收件箱式，参考 Mailio inbox——搜索、筛选胶囊、按来源分组的白卡、超过 3 条收起）
+
+/// 10-25 Eddie：航程一多就乱（14 天里对话顺手进来的 65 段、交办的只有 20 段）。
+/// 所以：进行中 / 等你的永远置顶；历史按时间分段、每段露 3 条，「更早」默认整段收起；
+/// 筛选按来源分「交办」（下一步 / 待办 / 每周……）和「对话」，默认看交办；搜索时不看筛选，搜全部。
+private let caseFilters: [(key: String, title: String)] = [("delegated", "交办"), ("chat", "对话"), ("failed", "没做成"), ("all", "全部")]
+
+private func caseIsChat(_ item: JSON) -> Bool { item["kind"].string == "turn" || item["source"].string == "chat" }
+
+private func caseFilterMatch(_ item: JSON, _ key: String) -> Bool {
+    switch key {
+    case "delegated": return !caseIsChat(item)
+    case "chat": return caseIsChat(item)
+    case "failed": return ["failed", "cancelled"].contains(item["state"].string)
+    default: return true
+    }
+}
+
+/// 历史分段：今天 / 昨天 / 本周（7 天内）/ 更早。
+private func caseBucket(_ at: Double) -> String {
+    let calendar = Calendar.current
+    let date = Date(timeIntervalSince1970: at)
+    if calendar.isDateInToday(date) { return "今天" }
+    if calendar.isDateInYesterday(date) { return "昨天" }
+    return Date().timeIntervalSince(date) < 7 * 86400 ? "本周" : "更早"
+}
 
 struct CasesListView: View {
     @Environment(AppModel.self) private var model
+    @State private var query = ""
+    @State private var filter: String?
+    @State private var expanded: Set<String> = []
     private var items: [JSON] { model.casesData["items"].array }
+    /// 默认看交办；一段交办都没有时退回全部。
+    private var current: String { filter ?? (items.contains { !caseIsChat($0) } ? "delegated" : "all") }
+    private var live: [JSON] { items.filter { activeStates.contains($0["state"].string) }.sorted { rank($0) < rank($1) } }
+    private var history: [JSON] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return items.filter { !activeStates.contains($0["state"].string) }
+            .filter { q.isEmpty ? caseFilterMatch($0, current) : [$0["title"], $0["now"], $0["result"], $0["source_label"]].contains { $0.string.localizedCaseInsensitiveContains(q) } }
+            .sorted { $0["updated_at"].double > $1["updated_at"].double }
+    }
+    private func rank(_ item: JSON) -> Int { ["waiting", "attention"].contains(item["state"].string) ? 0 : 1 }
     var body: some View {
-        let active = items.filter { activeStates.contains($0["state"].string) }
-        let finished = items.filter { !activeStates.contains($0["state"].string) }
-        ScrollPage(spacing: Layout.sectionSpacing) {
+        ScrollPage(spacing: Space.lg) {
             if items.isEmpty {
                 EmptyState(title: "还没有航程", description: "在「下一步」或待办里点「交给 Com」，或者在聊天里让它办一件复杂的事，它会单独开一段航程，在这里看它一步步怎么做的。", symbol: "rectangle.stack")
-            }
-            if !active.isEmpty {
-                GroupSection("进行中 · \(active.count)") { ForEach(active.map(RemoteRow.init)) { row in caseLink(row.value) } }
-            }
-            if !finished.isEmpty {
-                GroupSection("做过的", footer: "简单的事不进这里，只留在聊天里。") { ForEach(finished.prefix(40).map(RemoteRow.init)) { row in caseLink(row.value) } }
+            } else {
+                SearchField(text: $query, prompt: "搜全部航程：标题、在做的事、结果")
+                if !live.isEmpty && query.isEmpty { section("正在办 · \(live.count)", symbol: "bolt.horizontal", rows: live, limit: .max) }
+                if query.isEmpty { filterBar }
+                let buckets = ["今天", "昨天", "本周", "更早"].compactMap { name -> (String, [JSON])? in
+                    let rows = history.filter { caseBucket($0["updated_at"].double) == name }
+                    return rows.isEmpty ? nil : (name, rows)
+                }
+                if buckets.isEmpty {
+                    Text(query.isEmpty ? "这一类里还没有做过的航程。" : "没有搜到「\(query)」。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                        .frame(maxWidth: .infinity).padding(.vertical, Space.xl)
+                }
+                ForEach(buckets, id: \.0) { name, rows in
+                    // 搜索时全展开；「更早」默认整段收起，只露标题和条数
+                    section(name, symbol: name == "更早" ? "archivebox" : "clock", rows: rows, limit: !query.isEmpty ? .max : name == "更早" ? 0 : 3)
+                }
+                if query.isEmpty && current != "chat" && items.contains(where: caseIsChat) {
+                    Text("聊天里顺手办的多步任务收在「对话」里。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).padding(.horizontal, Space.xs)
+                }
             }
         }
         .navigationTitle("航程").navigationBarTitleDisplayMode(.large)
@@ -173,32 +222,118 @@ struct CasesListView: View {
             }
         }
     }
-    private func caseLink(_ item: JSON) -> some View {
-        NavigationLink { CaseDetailView(id: item.id) } label: { CaseRow(item: item) }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("case-" + item.id)
+    /// 筛选胶囊：选中的一颗描边加深；「没做成」的数字用警示色角标（参考图里 All E-mail 的红点数字）。只管下面的历史，正在办的始终在上面。
+    private var filterBar: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Space.sm) {
+                ForEach(caseFilters, id: \.key) { f in
+                    let count = items.filter { !activeStates.contains($0["state"].string) && caseFilterMatch($0, f.key) }.count
+                    let on = current == f.key
+                    Button { withAnimation(.snappy(duration: 0.25)) { filter = f.key; expanded = [] } } label: {
+                        HStack(spacing: 6) {
+                            Text(f.title).font(TypeScale.footnote.weight(on ? .semibold : .regular))
+                            if count > 0 {
+                                Text("\(count)").font(.caption2.weight(.bold).monospacedDigit())
+                                    .foregroundStyle(f.key == "failed" ? .white : Palette.textSecondary)
+                                    .padding(.horizontal, 6).padding(.vertical, 1)
+                                    .background(f.key == "failed" ? Palette.danger : Palette.fill, in: .capsule)
+                            }
+                        }
+                        .foregroundStyle(on ? Palette.textPrimary : Palette.textSecondary)
+                        .padding(.horizontal, Space.md).padding(.vertical, 8)
+                        .background(Palette.surface, in: .capsule)
+                        .overlay(Capsule().strokeBorder(on ? Palette.textPrimary.opacity(0.75) : Palette.separator, lineWidth: on ? 1.2 : 0.8))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(on ? .isSelected : [])
+                    .accessibilityIdentifier("cases-filter-" + f.key)
+                }
+            }
+            .padding(.horizontal, 1).padding(.vertical, 1)
+        }
+        .scrollIndicators(.hidden)
+    }
+    /// 一段：标题行 + 一张白卡（行间细线），超过 limit 条收起，底部「查看全部（N）」。
+    private func section(_ title: String, symbol: String, rows: [JSON], limit: Int) -> some View {
+        let open = expanded.contains(title) || rows.count <= limit
+        let shown = open ? rows : Array(rows.prefix(limit))
+        return VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol).font(.system(size: 13, weight: .medium))
+                Text(title).font(TypeScale.subheadline)
+                if limit != .max { Text("\(rows.count)").font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textTertiary) }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Palette.textSecondary).padding(.horizontal, Space.xs)
+            VStack(spacing: 0) {
+                ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { Divider().overlay(Palette.separator).padding(.leading, 64) }
+                    NavigationLink { CaseDetailView(id: item.id) } label: { CaseRow(item: item) }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("case-" + item.id)
+                }
+                if !open || expanded.contains(title) && rows.count > limit {
+                    if !shown.isEmpty { Divider().overlay(Palette.separator) }
+                    Button { withAnimation(.snappy(duration: 0.3)) { if open { expanded.remove(title) } else { expanded.insert(title) } } } label: {
+                        HStack(spacing: 4) {
+                            Text(open ? "收起" : "查看全部（\(rows.count)）")
+                            Image(systemName: "chevron.down").rotationEffect(.degrees(open ? 180 : 0))
+                        }
+                        .font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.info)
+                        .frame(maxWidth: .infinity).padding(.vertical, Space.md)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).strokeBorder(Palette.separator, lineWidth: 0.8))
+        }
     }
 }
 
+/// 头像：标题首字 + 按标题算出的浅色底（参考图里的彩色首字母圆）。
+struct CaseAvatar: View {
+    let title: String
+    var size: CGFloat = 38
+    private static let hues: [Color] = [Color(red: 0.42, green: 0.62, blue: 0.95), Color(red: 0.93, green: 0.45, blue: 0.55), Color(red: 0.62, green: 0.45, blue: 0.93),
+                                        Color(red: 0.30, green: 0.72, blue: 0.55), Color(red: 0.96, green: 0.62, blue: 0.30), Color(red: 0.35, green: 0.70, blue: 0.85)]
+    var body: some View {
+        let hue = Self.hues[abs(title.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }) % Self.hues.count]
+        Text(String(title.trimmingCharacters(in: .whitespaces).prefix(1)))
+            .font(.system(size: size * 0.42, weight: .semibold)).foregroundStyle(.white)
+            .frame(width: size, height: size).background(hue, in: .circle)
+            .accessibilityHidden(true)
+    }
+}
+
+/// 一行航程：等你的左边一颗点 · 头像 · 标题和时间 · 状态行（状态色）· 一句在做什么 / 等你的问题。
 struct CaseRow: View {
     let item: JSON
     var body: some View {
-        Card(item["state"].string == "waiting" ? .highlighted(.warning) : .standard, padding: Space.md) {
-            VStack(alignment: .leading, spacing: Space.sm) {
+        let state = item["state"].string
+        let waiting = ["waiting", "attention"].contains(state)
+        let p = item["progress"]
+        let status = item["state_label"].string + (p["total"].int > 0 ? " · \(p["done"].int)/\(p["total"].int) 步" : "") + (item["source_label"].string.isEmpty ? "" : " · 来自" + item["source_label"].string)
+        let preview = waiting && !item["waiting"]["question"].string.isEmpty ? "等你：" + item["waiting"]["question"].string
+            : !item["now"].string.isEmpty ? item["now"].string : relativeTime(item["created_at"].double) + "开始"
+        HStack(alignment: .top, spacing: Space.sm) {
+            Circle().fill(waiting ? Palette.warning : state == "running" ? Palette.info : .clear).frame(width: 7, height: 7).padding(.top, 16)
+            CaseAvatar(title: item["title"].string)
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-                    Text(item["title"].string).font(TypeScale.headline).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                    Text(item["title"].string).font(TypeScale.subheadline.weight(.semibold)).foregroundStyle(Palette.textPrimary).lineLimit(1)
                     Spacer(minLength: Space.sm)
-                    Stamp(text: item["state_label"].string, tone: caseTone(item["state"].string))
+                    Text(relativeTime(item["updated_at"].double)).font(.caption.monospacedDigit()).foregroundStyle(Palette.textTertiary)
                 }
-                let p = item["progress"]
-                if p["total"].int > 0 { StepProgress(done: p["done"].int, total: p["total"].int, live: activeStates.contains(item["state"].string)) }
-                HStack(spacing: 6) {
-                    if item["state"].string == "running" { WorkPulse() }
-                    Text(item["waiting"]["question"].string.isEmpty ? (item["now"].string.isEmpty ? item["source_label"].string + " · " + relativeTime(item["updated_at"].double) : item["now"].string) : "等你：" + item["waiting"]["question"].string)
-                        .font(TypeScale.footnote).foregroundStyle(item["state"].string == "waiting" ? Palette.warning : Palette.textSecondary).lineLimit(2)
+                HStack(spacing: 5) {
+                    if state == "running" { WorkPulse() }
+                    Text(status).font(TypeScale.footnote.weight(.medium)).foregroundStyle(caseTone(state).color)
                 }
+                Text(preview).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).lineLimit(1)
             }
         }
+        .padding(.vertical, Space.md).padding(.trailing, Space.md).padding(.leading, Space.sm)
+        .contentShape(.rect)
     }
 }
 
@@ -223,45 +358,16 @@ struct StepProgress: View {
     }
 }
 
-// MARK: - 步骤清单（航程详情与聊天「思考过程」共用）
+// MARK: - 步骤（聊天「思考过程」的时间轴见 WorkProcess.swift 的 TodoTimeline）
 
 struct TodoStep: Identifiable, Equatable, Sendable {
     let id: String
     let text: String
     /// todo / doing / done / blocked / skipped
     let status: String
-}
-
-struct TodoChecklist: View {
-    let steps: [TodoStep]
-    var live = true
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(steps) { step in
-                HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-                    ZStack {
-                        switch step.status {
-                        case "done": Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.textTertiary)
-                        case "doing": if live { WorkPulse() } else { Image(systemName: "circle.dotted").foregroundStyle(Palette.textTertiary) }
-                        case "blocked": Image(systemName: "exclamationmark.circle").foregroundStyle(Palette.warning)
-                        case "skipped": Image(systemName: "minus.circle").foregroundStyle(Palette.textTertiary)
-                        default: Image(systemName: "circle").foregroundStyle(Palette.separator)
-                        }
-                    }
-                    .font(.system(size: 13, weight: .medium)).frame(width: 18)
-                    Text(step.text)
-                        .font(TypeScale.footnote.weight(step.status == "doing" && live ? .semibold : .regular))
-                        .foregroundStyle(step.status == "doing" && live ? Palette.textPrimary : step.status == "done" || step.status == "skipped" ? Palette.textTertiary : Palette.textSecondary)
-                        .strikethrough(step.status == "skipped")
-                    Spacer(minLength: 0)
-                }
-                .padding(.vertical, 3)
-                .animation(reduce ? nil : .smooth(duration: 0.25), value: step.status)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
+    /// 后端 turn_planner 10-28 起每步记的时间戳（秒）；老消息没有就是 0。
+    var startedAt: Double = 0
+    var doneAt: Double = 0
 }
 
 // MARK: - 详情
@@ -282,24 +388,12 @@ struct CaseDetailView: View {
             } else {
                 header
                 ThreadStrip(key: "case:" + id)  // 10-18 线索：从哪来、去了哪
-                if !data["session_id"].string.isEmpty {
-                    Button { model.openThreadNode(.object(["kind": .string("session"), "id": data["session_id"], "agent": data["agent"]])) } label: {
-                        Label("在工作页打开执行会话", systemImage: "terminal").font(TypeScale.footnote.weight(.medium))
-                    }
-                    .buttonStyle(.plain).foregroundStyle(Palette.accentText)
-                    .accessibilityIdentifier("case-open-session")
-                }
                 if data["state"].string == "waiting" { waitingCard }
                 if !data["outcome"]["reason"].string.isEmpty && data["state"].string == "failed" {
                     InlineNotice(text: "没做成：" + data["outcome"]["reason"].string, tone: .warning)
                 }
-                let steps = data["steps"].array.enumerated().map { TodoStep(id: String($0.offset), text: $0.element["title"].string, status: $0.element["status"].string) }
-                if !steps.isEmpty {
-                    GroupSection("步骤") { Card(padding: Space.md) { TodoChecklist(steps: steps, live: activeStates.contains(data["state"].string)) } }
-                }
-                if !data["result"].string.isEmpty {
-                    GroupSection("结果") { Card(padding: Space.lg) { ReplyText(text: data["result"].string) } }
-                }
+                letter
+                actions
                 let assumptions = data["assumptions"].array
                 if !assumptions.isEmpty {
                     GroupSection("它自己拿主意的地方", footer: "信息不够时它选了最稳妥的做法继续；不对的话在下面直接说。") {
@@ -312,22 +406,14 @@ struct CaseDetailView: View {
                         }
                     }
                 }
-                let artifacts = data["artifacts"].array.filter { !$0["path"].string.isEmpty }
-                if !artifacts.isEmpty {
-                    GroupSection("产出") { ArtifactList(artifacts: artifacts) }
-                }
                 timeline
-                if data["can_send"].bool || data["state"].string == "done" && data["kind"].string != "turn" { composer }
-                if data["can_cancel"].bool {
-                    Button("停止这段航程", role: .destructive) { confirmCancel = true }
-                        .buttonStyle(.quiet).frame(maxWidth: .infinity)
-                        .confirmationDialog("停止后 Pi 会中断当前这一步，已经做的不会撤回。", isPresented: $confirmCancel, titleVisibility: .visible) {
-                            Button("停止", role: .destructive) { Task { await model.caseCancel(id); _ = await model.load("/personal/cases/" + id) } }
-                        }
-                }
+                if canReply { composer }
             }
         }
-        .navigationTitle(data["title"].string.isEmpty ? "航程" : data["title"].string).navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("停止后 Pi 会中断当前这一步，已经做的不会撤回。", isPresented: $confirmCancel, titleVisibility: .visible) {
+            Button("停止", role: .destructive) { Task { await model.caseCancel(id); _ = await model.load("/personal/cases/" + id) } }
+        }
+        .navigationTitle("航程").navigationBarTitleDisplayMode(.inline)  // 标题已在正文第一行（来信式），导航栏不再重复
         .toolbarBackground(Palette.background, for: .navigationBar)
         .refreshable { _ = await model.load("/personal/cases/" + id) }
         .task {
@@ -338,21 +424,99 @@ struct CaseDetailView: View {
             }
         }
     }
+    private var canReply: Bool { data["can_send"].bool || data["state"].string == "done" && data["kind"].string != "turn" }
+    private var live: Bool { activeStates.contains(data["state"].string) }
+    /// 标题行（参考图：主题 + 右上角星标）：这里右上角是状态章。
     private var header: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(spacing: Space.sm) {
-                Stamp(text: data["state_label"].string, tone: caseTone(data["state"].string))
-                Text(data["source_label"].string + " · " + relativeTime(data["created_at"].double)).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-            }
+        HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
             Text(data["title"].string).font(TypeScale.title).fixedSize(horizontal: false, vertical: true)
-            if !data["goal"].string.isEmpty { Text(data["goal"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary).lineSpacing(2) }
-            if !data["now"].string.isEmpty && activeStates.contains(data["state"].string) {
-                HStack(spacing: 6) { WorkPulse(); Text(data["now"].string).font(TypeScale.subheadline.weight(.medium)).foregroundStyle(Palette.textPrimary) }
-            }
-            let p = data["progress"]
-            if p["total"].int > 0 { StepProgress(done: p["done"].int, total: p["total"].int, live: activeStates.contains(data["state"].string)) }
+            Spacer(minLength: Space.sm)
+            Stamp(text: data["state_label"].string, tone: caseTone(data["state"].string))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    /// 10-25 来信卡（参考 Mailio 邮件详情）：谁在办、从哪来、多久前 → 目标 → 此刻 → 编号步骤 → 结果 → 附件片。
+    private var letter: some View {
+        let agent = ["pi": "Pi", "codex": "Codex", "claude": "Claude", "hermes": "Hermes"][data["agent"].string] ?? "Com"
+        let steps = data["steps"].array
+        let p = data["progress"]
+        let artifacts = data["artifacts"].array.filter { !$0["path"].string.isEmpty }
+        return VStack(alignment: .leading, spacing: Space.md) {
+            HStack(spacing: Space.md) {
+                CaseAvatar(title: agent, size: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(agent).font(TypeScale.subheadline.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                    Text("来自" + data["source_label"].string + " · 交给 Com · " + relativeTime(data["created_at"].double))
+                        .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            Divider().overlay(Palette.separator)
+            if !data["goal"].string.isEmpty {
+                Text(data["goal"].string).font(TypeScale.body).foregroundStyle(Palette.textPrimary).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            }
+            if !data["now"].string.isEmpty && live {
+                HStack(spacing: 6) { WorkPulse(); Text(data["now"].string).font(TypeScale.subheadline.weight(.medium)).foregroundStyle(Palette.textPrimary) }
+            }
+            if p["total"].int > 0 { StepProgress(done: p["done"].int, total: p["total"].int, live: live) }
+            if !steps.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in numberedStep(index + 1, step) }
+                }
+            }
+            if !data["result"].string.isEmpty { ReplyText(text: data["result"].string) }
+            if !artifacts.isEmpty { ArtifactList(artifacts: artifacts, chips: true) }
+        }
+        .padding(Space.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).strokeBorder(Palette.separator, lineWidth: 0.8))
+    }
+    /// 步骤写成编号清单（参考图里的「1. Design Review — October 28」），右边一个状态小记号。
+    private func numberedStep(_ n: Int, _ step: JSON) -> some View {
+        let status = step["status"].string
+        return HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+            Text("\(n).").font(TypeScale.subheadline.weight(.semibold).monospacedDigit()).foregroundStyle(Palette.textSecondary).frame(width: 22, alignment: .leading)
+            Text(step["title"].string).font(TypeScale.subheadline.weight(status == "doing" && live ? .semibold : .regular))
+                .foregroundStyle(status == "done" || status == "skipped" ? Palette.textTertiary : Palette.textPrimary)
+                .strikethrough(status == "skipped")
+            Spacer(minLength: Space.sm)
+            Group {
+                switch status {
+                case "done": Image(systemName: "checkmark").foregroundStyle(Palette.success)
+                case "doing": if live { WorkPulse() } else { Image(systemName: "circle.dotted").foregroundStyle(Palette.textTertiary) }
+                case "blocked": Image(systemName: "exclamationmark.circle").foregroundStyle(Palette.warning)
+                default: EmptyView()
+                }
+            }
+            .font(.system(size: 12, weight: .semibold))
+        }
+    }
+    /// 底部一排动作胶囊（参考图 Reply / Move / Edit）：接着说 · 打开会话 · 标完成 / 停止。
+    @ViewBuilder private var actions: some View {
+        let session = data["session_id"].string
+        HStack(spacing: Space.sm) {
+            if canReply { pill("接着说", "arrowshape.turn.up.left") { focused = true } }
+            if !session.isEmpty {
+                pill("打开会话", "terminal") { model.openThreadNode(.object(["kind": .string("session"), "id": data["session_id"], "agent": data["agent"]])) }
+                    .accessibilityIdentifier("case-open-session")
+            }
+            if data["can_cancel"].bool {
+                pill("停止", "stop.circle", destructive: true) { confirmCancel = true }
+            } else if live {
+                pill("标完成", "checkmark.circle") { Task { await model.caseResolve(id); _ = await model.load("/personal/cases/" + id) } }
+            }
+        }
+    }
+    private func pill(_ title: String, _ symbol: String, destructive: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) { Text(title); Image(systemName: symbol).font(.system(size: 12, weight: .semibold)) }
+                .font(TypeScale.footnote.weight(.medium)).foregroundStyle(destructive ? Palette.danger : Palette.textPrimary)
+                .frame(maxWidth: .infinity).padding(.vertical, 10)
+                .background(Palette.surface, in: .capsule)
+                .overlay(Capsule().strokeBorder(Palette.separator, lineWidth: 0.8))
+        }
+        .buttonStyle(.plain)
     }
     private var waitingCard: some View {
         Card(.highlighted(.warning), padding: Space.lg) {
@@ -537,7 +701,12 @@ extension AppModel {
         let waiting: JSON = .object(["id": .string("task_demo_wait"), "title": .string("清理旧素材草稿"), "source": .string("todo"), "source_label": .string("待办"),
             "state": .string("waiting"), "state_label": .string("等你"), "now": .string(""), "progress": .object(["done": .number(1), "total": .number(3)]),
             "created_at": .number(now - 7200), "updated_at": .number(now - 600), "waiting": .object(["question": .string("删掉 3 份已过期的旧草稿？")])])
-        datasets["/personal/cases"] = .object(["items": .array([waiting, running, turn]), "active": .number(2), "waiting": .number(1)])
+        let more: [JSON] = [("整理周报素材", "next", "下一步", 2.0), ("核对八月报销", "todo", "待办", 26.0), ("导出大有可攀签到表", "next", "下一步", 30.0),
+                            ("回复斐凡换电脑尺寸", "next", "下一步", 50.0), ("清理旧素材草稿", "todo", "待办", 240.0), ("查华为三折叠重量", "chat", "对话", 3.0)]
+            .enumerated().map { n, row in .object(["id": .string("case:more\(n)"), "title": .string(row.0), "source": .string(row.1), "source_label": .string(row.2),
+                "state": .string(n == 4 ? "failed" : "done"), "state_label": .string(n == 4 ? "没做成" : "完成"), "kind": .string(row.1 == "chat" ? "turn" : "task"), "now": .string(""),
+                "progress": .object(["done": .number(2), "total": .number(3)]), "created_at": .number(now - row.3 * 3600 - 600), "updated_at": .number(now - row.3 * 3600), "waiting": .null]) }
+        datasets["/personal/cases"] = .object(["items": .array([waiting, running, turn] + more), "active": .number(2), "waiting": .number(1)])
         var detail = running.object
         detail["goal"] = .string("给王总一份 Q4 排期回复草稿，周五前能直接发。")
         detail["steps"] = .array([step("读王总的排期邮件", "done"), step("对照 Q4 日程和项目进度", "done"), step("起草回复", "doing"), step("给你确认", "todo")])
@@ -548,7 +717,7 @@ extension AppModel {
             .object(["at": .number(now - 250), "kind": .string("step_done"), "text": .string("读王总的排期邮件")]),
             .object(["at": .number(now - 120), "kind": .string("assumption"), "text": .string("按周五交付写，邮件里没说具体日期")]),
             .object(["at": .number(now - 60), "kind": .string("step_doing"), "text": .string("起草回复")])])
-        detail["artifacts"] = .array([]); detail["result"] = .string(""); detail["tool_calls"] = .number(7)
+        detail["artifacts"] = .array([.object(["id": .string("art_demo1"), "name": .string("Q4排期回复草稿.md"), "path": .string("/tmp/Q4排期回复草稿.md"), "size": .number(12_800), "availability": .string("available")]), .object(["id": .string("art_demo2"), "name": .string("排期对照.pdf"), "path": .string("/tmp/排期对照.pdf"), "size": .number(2_460_000), "availability": .string("available")])]); detail["result"] = .string(""); detail["tool_calls"] = .number(7)
         detail["can_send"] = .bool(true); detail["can_cancel"] = .bool(true); detail["evidence"] = .array([])
         datasets["/personal/cases/task_demo_running"] = .object(detail)
         datasets["/personal/plan"] = .object(["day": .string(AppModel.dayString(1)), "weekday": .string("日"), "state": .string("open"), "headline": .string("明天 2 个日程，建议做 3 件事"),

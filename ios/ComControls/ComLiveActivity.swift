@@ -5,7 +5,8 @@ import WidgetKit
 // 轨道 r3-memory + r4 增强：灵动岛常驻的 Com。
 // r4 新增：休息状态动画（呼吸缩放 + 微光效果）、展开视图工作台预览、语音快捷按钮。
 // 人物就是 App 图标那个青柠圆里的线稿女孩（Assets 里的 ComAvatar，取自图标母版）。
-// compact：左边头像（休息时呼吸动画）；右边等你点头的件数，在跑就走秒。
+// compact：左边头像（休息时呼吸动画）；右边「下一步现在该做」的件数，在跑就走秒。
+// 10-25：去掉「等你」计数（过期待办只增不减、Eddie 不用）；点灵动岛直接进下一步，展开后可去聊天或记一笔。
 // minimal：头像（休息时呼吸动画）。
 // expanded：工作台预览 + 一行状态说明 + 三个计数 + 走秒 + 「打开 Com」按钮 + 语音快捷按钮。
 // 动画原则（从动效库移植）：
@@ -40,9 +41,11 @@ private extension ComActivityAttributes.ContentState {
     }
     var tint: Color { mood == "broken" ? LiveInk.coral : LiveInk.lime }
     var busy: Bool { since != nil }
-    var isResting: Bool { mood == "idle" && !busy && waiting == 0 }
-    /// 有等你点头的就直接去「今天」处理，没有就回对话。
-    var link: URL { URL(string: waiting > 0 ? "com-eddie://tasks" : "com-eddie://today")! }
+    var isResting: Bool { mood == "idle" && !busy && urgent == 0 }
+    /// 点灵动岛 / 锁屏卡：进下一步（Eddie 用得最多）。
+    var link: URL { URL(string: "com-eddie://plan")! }
+    /// 回主对话（com-eddie://today 在 App 里落到聊天页）。
+    var chatLink: URL { URL(string: "com-eddie://today")! }
     var voiceLink: URL { URL(string: "com-eddie://voice")! }
 }
 
@@ -81,20 +84,32 @@ struct ComLiveActivityWidget: Widget {
                             LiveCounts(state: state)
                             Spacer(minLength: 0)
 
-                            // 语音快捷按钮
+                            // 记一笔：记账占日常消息四成，直接开快捷语音
                             Link(destination: state.voiceLink) {
-                                Image(systemName: "waveform")
+                                Image(systemName: "yensign.circle")
                                     .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(LiveInk.ink)
+                                    .foregroundStyle(.white)
                                     .frame(width: 36, height: 32)
-                                    .background(LiveInk.lime.opacity(0.3), in: .circle)
+                                    .background(.white.opacity(0.14), in: .circle)
                             }
                             .buttonStyle(ScaleButtonStyle())
+                            .accessibilityLabel("记一笔")
 
-                            // 打开 Com 按钮
+                            // 聊天
+                            Link(destination: state.chatLink) {
+                                Image(systemName: "bubble.left.fill")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 36, height: 32)
+                                    .background(.white.opacity(0.14), in: .circle)
+                            }
+                            .buttonStyle(ScaleButtonStyle())
+                            .accessibilityLabel("聊天")
+
+                            // 下一步
                             Link(destination: state.link) {
                                 HStack(spacing: 4) {
-                                    Text("打开 Com")
+                                    Text("下一步")
                                     Image(systemName: "arrow.up.right")
                                         .font(.system(size: 11, weight: .bold))
                                 }
@@ -113,7 +128,7 @@ struct ComLiveActivityWidget: Widget {
             } compactTrailing: {
                 CompactStatus(state: state, stale: context.isStale)
             } minimal: {
-                LiveAvatar(size: 22, ring: state.waiting > 0 ? LiveInk.lime : nil, isResting: state.isResting)
+                LiveAvatar(size: 22, ring: state.urgent > 0 ? LiveInk.lime : nil, isResting: state.isResting)
             }
             .widgetURL(state.link)
             .keylineTint(LiveInk.lime)
@@ -204,14 +219,11 @@ private struct WorkspacePreview: View {
 
             // 任务概览
             VStack(alignment: .leading, spacing: 2) {
-                Text(state.busy ? "正在处理" : state.waiting > 0 ? "等待确认" : "待命中")
+                Text(state.busy ? "正在处理" : state.urgent > 0 ? "下一步" : "待命中")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(LiveInk.dim)
 
                 HStack(spacing: 6) {
-                    if state.waiting > 0 {
-                        Label("\(state.waiting)", systemImage: "hand.raised.fill")
-                    }
                     if state.running > 0 {
                         Label("\(state.running)", systemImage: "gearshape.fill")
                     }
@@ -263,17 +275,17 @@ private struct Caption: View {
     }
 }
 
-/// compact 右边：先说等你点头的件数；没有就在跑时走秒；都没有就一个状态小图标。
+/// compact 右边：先说下一步现在该做的件数；没有就在跑时走秒；都没有就一个状态小图标。
 private struct CompactStatus: View {
     let state: ComActivityAttributes.ContentState
     let stale: Bool
     var body: some View {
         Group {
-            if state.waiting > 0 {
+            if state.urgent > 0 {
                 HStack(spacing: 3) {
-                    Image(systemName: "hand.raised.fill").font(.system(size: 11, weight: .bold))
-                    Text("\(state.waiting)").font(.system(size: 15, weight: .bold, design: .rounded)).monospacedDigit()
-                        .contentTransition(.numericText(value: Double(state.waiting)))
+                    Image(systemName: "shoeprints.fill").font(.system(size: 11, weight: .bold))
+                    Text("\(state.urgent)").font(.system(size: 15, weight: .bold, design: .rounded)).monospacedDigit()
+                        .contentTransition(.numericText(value: Double(state.urgent)))
                 }
                 .foregroundStyle(LiveInk.lime)
                 .transition(.push(from: .bottom))
@@ -320,14 +332,13 @@ private struct ExpandedBadge: View {
     }
 }
 
-/// 三个计数：等你 · 在跑 · 该做；数字变了按位滚动。
+/// 两个计数：在跑 · 该做；数字变了按位滚动。
 private struct LiveCounts: View {
     let state: ComActivityAttributes.ContentState
     var body: some View {
         HStack(spacing: 14) {
-            stat("等你", state.waiting, lit: state.waiting > 0)
             stat("在跑", state.running, lit: false)
-            stat("该做", state.urgent, lit: false)
+            stat("该做", state.urgent, lit: state.urgent > 0)
         }
         .animation(.spring(duration: 0.45), value: state)
     }
@@ -347,7 +358,7 @@ private struct LockScreenLive: View {
     let stale: Bool
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
-            LiveAvatar(size: 48, ring: state.waiting > 0 ? LiveInk.lime : nil, isResting: state.isResting)
+            LiveAvatar(size: 48, ring: state.urgent > 0 ? LiveInk.lime : nil, isResting: state.isResting)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Com").font(.system(size: 13, weight: .bold, design: .rounded)).foregroundStyle(LiveInk.lime)

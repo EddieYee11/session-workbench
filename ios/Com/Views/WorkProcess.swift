@@ -154,7 +154,8 @@ struct TurnPlan: Equatable, Sendable {
         guard !todos.isEmpty else { return nil }
         let steps = todos.map { t in
             TodoStep(id: t["id"].string, text: t["content"].string,
-                     status: ["completed": "done", "in_progress": "doing", "blocked": "blocked", "skipped": "skipped"][t["status"].string] ?? "todo")
+                     status: ["completed": "done", "in_progress": "doing", "blocked": "blocked", "skipped": "skipped"][t["status"].string] ?? "todo",
+                     startedAt: t["started_at"].double, doneAt: t["done_at"].double)
         }
         let active = todos.first { $0["status"].string == "in_progress" }?["active"].string ?? ""
         return TurnPlan(title: entry["title"].string, steps: steps, active: active)
@@ -232,7 +233,13 @@ struct WorkProcessRow: View {
     var extra: [JSON] = []
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var open = false
+    @State private var open: Bool
+    init(process: WorkProcess, extra: [JSON] = []) {
+        self.process = process
+        self.extra = extra
+        // 10-28：有 todo 清单时，思考执行中直接把时间轴摊开（外显），做完再折起
+        _open = State(initialValue: process.live && process.plan != nil)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -246,7 +253,7 @@ struct WorkProcessRow: View {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     if let plan = process.plan {
                         // todo 清单就是思考过程：每步在干嘛一目了然；工具细节不再露出来
-                        TodoChecklist(steps: plan.steps, live: process.live)
+                        TodoTimeline(steps: plan.steps, groups: process.groups, live: process.live)
                         if process.stepCount > 0 {
                             Text("动用了 \(process.stepCount) 次工具").font(.caption2).foregroundStyle(Palette.textTertiary).padding(.leading, 26)
                         }
@@ -277,6 +284,9 @@ struct WorkProcessRow: View {
         // 做完自动折成一行；想看再点开。
         .onChange(of: process.live) { _, live in
             if !live { withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = false } }
+        }
+        .onChange(of: process.plan != nil) { _, has in
+            if has && process.live { withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = true } }
         }
     }
     @ViewBuilder private var header: some View {
@@ -332,6 +342,211 @@ private struct StepLine: View {
     private var duration: String? {
         guard !live, let start = group.steps.first?.startedAt, let end = group.steps.map(\.finishedAt).max(), start > 0, end > start else { return nil }
         return WorkProcess.duration(end - start)
+    }
+}
+
+// MARK: - todo 时间轴
+
+/// 10-28 改版（参考 x.com/shedsgns「Agent work components」）：竖线串起每一步；
+/// 做完 = 实心青柠勾 + 用时，正在做 = 浅底圆 + 中心点 + 外圈一段弧在转、「进行中」有高光扫过，它下面弯出这一步动用的工具（小点，一段亮光沿线往下流），
+/// 没轮到 = 空心圈，没走通 = 警示色胶囊。
+struct TodoTimeline: View {
+    let steps: [TodoStep]
+    var groups: [WorkGroup] = []
+    var live = true
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    static let column: CGFloat = 22
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                let last = index == steps.count - 1
+                let doing = live && step.status == "doing"
+                // 这一步到下一步之间那段线：走过了就是青柠色
+                let lit = step.status == "done" && !last && steps[index + 1].status != "todo"
+                let subs = doing ? substeps(for: step) : []
+                VStack(alignment: .leading, spacing: 0) {
+                    row(step, doing: doing)
+                    if !subs.isEmpty {
+                        SubstepBranch(groups: subs)
+                    } else if !last {
+                        Color.clear.frame(height: 8)
+                    }
+                }
+                .background(alignment: .topLeading) {
+                    if !last && subs.isEmpty {  // 有分支时由分支线接到下一步
+                        Rectangle().fill(lit ? Palette.accent : Palette.separator)
+                            .frame(width: 1.5).padding(.top, 19).padding(.bottom, -3)
+                            .offset(x: Self.column / 2 - 0.75)
+                    }
+                }
+                .animation(reduce ? nil : .smooth(duration: 0.3), value: step.status)
+            }
+        }
+        .padding(.vertical, Space.md).padding(.horizontal, Space.md)
+        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Palette.separator, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.04), radius: 10, y: 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("todo-timeline")
+    }
+
+    private func row(_ step: TodoStep, doing: Bool) -> some View {
+        HStack(spacing: Space.sm) {
+            TimelineNode(status: step.status, live: live).frame(width: Self.column, height: 22)
+            Text(step.text)
+                .font(TypeScale.subheadline.weight(doing ? .medium : .regular))
+                .foregroundStyle(doing ? Palette.textPrimary : step.status == "todo" ? Palette.textTertiary : Palette.textSecondary)
+                .strikethrough(step.status == "skipped")
+                .lineLimit(1)
+            Spacer(minLength: Space.sm)
+            trailing(step, doing: doing)
+        }
+    }
+
+    @ViewBuilder private func trailing(_ step: TodoStep, doing: Bool) -> some View {
+        if doing {
+            ShimmerText(text: "进行中", font: TypeScale.footnote.weight(.medium), color: Palette.info)
+        } else if step.status == "blocked" {
+            Text("没走通").font(TypeScale.caption).foregroundStyle(Palette.warning)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Palette.warning.opacity(0.14), in: Capsule())
+        } else if step.status == "done", step.startedAt > 0, step.doneAt > step.startedAt {
+            Text(Self.short(step.doneAt - step.startedAt)).font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textTertiary)
+        }
+    }
+
+    /// 正在做的这一步下面挂它动用过的工具：从这一步开始之后的组，最多 3 组。
+    private func substeps(for step: TodoStep) -> [WorkGroup] {
+        let since = step.startedAt > 0 ? step.startedAt - 0.5 : 0
+        return Array(groups.filter { ($0.steps.first?.startedAt ?? 0) >= since }.suffix(3))
+    }
+
+    static func short(_ seconds: Double) -> String {
+        let s = max(1, Int(seconds.rounded()))
+        return s < 60 ? "\(s) 秒" : "\(s / 60) 分 \(s % 60) 秒"
+    }
+}
+
+private struct TimelineNode: View {
+    let status: String
+    let live: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    var body: some View {
+        ZStack {
+            switch status {
+            case "done":
+                Circle().fill(Palette.accent).frame(width: 17, height: 17)
+                Image(systemName: "checkmark").font(.system(size: 8.5, weight: .heavy)).foregroundStyle(Palette.onAccent)
+            case "doing" where live:
+                // 参考视频：浅底盘 + 实心中心点 + 外圈约 1/4 圈的弧，0.85 秒转一圈
+                Circle().fill(Palette.accent.opacity(0.32)).frame(width: 18, height: 18)
+                Circle().strokeBorder(Palette.accentText.opacity(0.18), lineWidth: 1.8).frame(width: 18, height: 18)
+                Circle().fill(Palette.accentText).frame(width: 7, height: 7)
+                TimelineView(.animation(paused: reduce)) { context in
+                    let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.85) / 0.85
+                    Circle().inset(by: 0.9).trim(from: 0, to: 0.28)
+                        .stroke(Palette.accentText, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                        .frame(width: 18, height: 18)
+                        .rotationEffect(.degrees(reduce ? -90 : turn * 360 - 90))
+                }
+            case "doing":
+                Image(systemName: "circle.dotted").font(.system(size: 15, weight: .medium)).foregroundStyle(Palette.textTertiary)
+            case "blocked":
+                Image(systemName: "exclamationmark.circle.fill").font(.system(size: 17)).foregroundStyle(Palette.warning)
+            case "skipped":
+                Image(systemName: "minus.circle").font(.system(size: 16, weight: .medium)).foregroundStyle(Palette.textTertiary)
+            default:
+                Circle().fill(Palette.surface).frame(width: 15, height: 15)
+                    .overlay(Circle().strokeBorder(Palette.separator, lineWidth: 1.5))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// 文字上一道高光从左扫到右（1.3 秒扫完，停 0.5 秒再来），参考视频里「Writing」的效果。
+struct ShimmerText: View {
+    let text: String
+    let font: Font
+    let color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    var body: some View {
+        let label = Text(text).font(font)
+        label.foregroundStyle(color)
+            .overlay {
+                if !reduce {
+                    TimelineView(.animation) { context in
+                        let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.3
+                        GeometryReader { geo in
+                            let band = max(18, geo.size.width * 0.7)
+                            LinearGradient(colors: [.white.opacity(0), .white.opacity(0.7), .white.opacity(0)], startPoint: .leading, endPoint: .trailing)
+                                .frame(width: band)
+                                .offset(x: -band + min(1, t) * (geo.size.width + band * 2))
+                        }
+                    }
+                    .mask(label)
+                    .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+/// 进行中那一步的分支：从圆环弯出去一条细线，挂着工具小点；一段青柠亮光沿线往下流。
+private struct SubstepBranch: View {
+    let groups: [WorkGroup]
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var flow: CGFloat = 0
+    private static let rowHeight: CGFloat = 24
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(groups) { group in
+                HStack(spacing: Space.sm) {
+                    Circle().fill(group.running ? Palette.accentText : Palette.textTertiary.opacity(0.6))
+                        .frame(width: group.running ? 5 : 4, height: group.running ? 5 : 4)
+                        .frame(width: TodoTimeline.column, alignment: .trailing).padding(.trailing, 1)
+                    Text(group.running ? group.liveText : group.doneText)
+                        .font(TypeScale.footnote).foregroundStyle(group.running ? Palette.textSecondary : Palette.textTertiary)
+                        .lineLimit(1).contentTransition(.opacity)
+                }
+                .frame(height: Self.rowHeight)
+                .transition(.opacity.combined(with: .offset(y: -4)))
+            }
+        }
+        .padding(.vertical, 4)
+        .background(alignment: .topLeading) {
+            GeometryReader { geo in
+                let path = Branch(x0: TodoTimeline.column / 2, x1: TodoTimeline.column - 3.5)
+                ZStack {
+                    path.stroke(Palette.separator, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                    if !reduce {
+                        path.trim(from: flow, to: min(1, flow + 0.16))
+                            .stroke(Palette.accentText, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                    }
+                }
+                .frame(width: TodoTimeline.column, height: geo.size.height + 8)
+                .offset(y: -3)
+            }
+        }
+        .animation(reduce ? nil : .smooth(duration: 0.3), value: groups.map(\.id))
+        .onAppear {
+            guard !reduce else { return }
+            withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) { flow = 0.84 }
+        }
+    }
+}
+
+/// 主线 x0 → 弯到 x1 竖直往下 → 弯回 x0 接下一步的节点。
+private struct Branch: Shape {
+    let x0: CGFloat
+    let x1: CGFloat
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let bend: CGFloat = 12
+        p.move(to: CGPoint(x: x0, y: 0))
+        p.addCurve(to: CGPoint(x: x1, y: bend), control1: CGPoint(x: x0, y: bend * 0.6), control2: CGPoint(x: x1, y: bend * 0.4))
+        p.addLine(to: CGPoint(x: x1, y: rect.height - bend))
+        p.addCurve(to: CGPoint(x: x0, y: rect.height), control1: CGPoint(x: x1, y: rect.height - bend * 0.4), control2: CGPoint(x: x0, y: rect.height - bend * 0.6))
+        return p
     }
 }
 

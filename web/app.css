@@ -958,3 +958,37 @@ body[data-tab="health"] .dock-item.on { color: var(--hue-pink-ink); }
 
 .art-frame { width: 100%; height: 76vh; border: 0; border-radius: 14px; background: #fff; }
 .kv.art { width: 100%; text-align: left; background: none; border: 0; cursor: pointer; }
+
+/* 10-25/27 对齐 iOS：下一步动作草稿、活动日志、今天页周条 */
+.badge.danger { background: var(--danger-soft, #f6e0dd); color: var(--danger, #bd493e); } .badge.neutral { background: var(--fill); }
+.draft { margin: 8px 0 2px; border-radius: 12px; background: var(--fill); padding: 8px 12px; font-size: 14px; }
+.draft summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; } .draft summary::-webkit-details-marker { display: none; }
+.draft p { margin: 6px 0 2px; white-space: pre-wrap; color: var(--text-2); }
+.act-row { align-items: flex-start; } .act-row small { display: block; color: var(--text-2); } .act-row .actions { margin-top: 6px; }
+.week-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin: 4px 0 14px; }
+.week-strip .wk { display: grid; justify-items: center; gap: 6px; padding: 8px 0; border-radius: 16px; color: var(--text-3); }
+.week-strip .wk b { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; font-size: 17px; font-variant-numeric: tabular-nums; color: var(--text); }
+.week-strip .wk.on { background: var(--surface); color: var(--text); } .week-strip .wk.on b { background: var(--mint-f); color: var(--mint-i); }
+.sched { position: relative; display: grid; gap: 12px; margin-bottom: 18px; }
+.sched::before { content: ""; position: absolute; left: 56px; top: 0; bottom: 0; width: 1px; background: var(--sep); }
+.sched-row { display: flex; gap: 12px; align-items: flex-start; position: relative; }
+.sched-row time { width: 44px; text-align: right; padding-top: 18px; font-size: 13px; font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; flex: none; }
+.sched-card { flex: 1; min-width: 0; display: flex; gap: 12px; align-items: flex-start; text-align: left; padding: 14px 14px 14px 18px; border-radius: 18px; background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 18px rgba(0,0,0,.05); position: relative; overflow: hidden; }
+.sched-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--mint-i); }
+.sched-card.lavender::before { background: var(--lav-i); } .sched-card.butter::before { background: var(--but-i); } .sched-card.pink::before { background: var(--pink-i); } .sched-card.sky::before { background: var(--sky-i); }
+.sched-card.past { opacity: .55; } .sched-card small { display: block; color: var(--text-2); } .sched-card b.done { text-decoration: line-through; }
+.sched-now { display: flex; align-items: center; gap: 12px; margin-left: 0; } .sched-now span { background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700; border-radius: 99px; padding: 3px 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sched-now i { flex: 1; height: 1px; background: var(--accent-text); opacity: .5; }
+.sched-empty { text-align: center; color: var(--text-3); padding: 34px 12px; }
+.card.advice { display: flex; gap: 12px; align-items: flex-start; margin-top: 10px; } .card.advice p { margin: 0; line-height: 1.55; }
+.health-brief { display: grid; margin-bottom: 4px; }
+.today-head .round { position: relative; }
+.case-group { margin-bottom: 14px; } .group-head.sm { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 14px; padding: 0 4px 6px; } .group-head.sm svg { width: 15px; height: 15px; }
+.card.list.tight { padding: 0 4px; }
+.case-line { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; padding: 12px 8px; border-bottom: 1px solid var(--sep); border-radius: 0; } .case-line:last-of-type { border-bottom: 0; }
+.case-line .dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 17px; flex: none; } .case-line .dot.warn { background: var(--warning); } .case-line .dot.run { background: var(--info); }
+.case-line .avatar { width: 38px; height: 38px; border-radius: 50%; color: #fff; display: grid; place-items: center; font-weight: 600; flex: none; }
+.case-line b { font-size: 15px; } .case-line small { display: block; } .case-line .clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.case-line .st { font-weight: 500; } .case-line .st.warning, .case-line .st.attention { color: var(--warning); } .case-line .st.accent { color: var(--accent-text); } .case-line .st.danger { color: var(--danger); } .case-line .st.success { color: var(--success); }
+.case-group .more { display: block; width: 100%; text-align: center; padding: 12px 0; color: var(--info); font-size: 13px; font-weight: 500; }
+.filters { display: flex; gap: 8px; overflow-x: auto; padding: 2px 1px 12px; scrollbar-width: none; } .filters .chip em.bad { background: var(--danger); color: #fff; opacity: 1; border-radius: 99px; padding: 0 6px; }

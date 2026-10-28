@@ -112,3 +112,20 @@ def test_approval_is_only_actionable_when_both_choices_exist(tmp_path):
         titles = [r['title'] for r in db.execute('SELECT title FROM approvals')]
     assert rows == {'ap-2': 1, 'ap-3': 0}
     assert all('rm -rf' not in title for title in titles)
+
+
+def test_wechat_channel_caps_daily_pushes_but_not_approvals_and_respects_quiet_hours(tmp_path):
+    import json
+    p,c,now=setup(tmp_path)
+    sent=[]
+    async def sender(cfg,text):
+        sent.append(text);return 200,''
+    assert asyncio.run(p.push_wechat([{'key':'next:a','kind':'next','text':'x'}],sender)) is None, '没配置就不发'
+    (tmp_path/'wechat-push.json').write_text(json.dumps({'enabled':True,'daily_max':2}))
+    cands=[{'key':f'next:{i}','kind':'next','text':f'事{i}'} for i in range(4)]+[{'key':'approval:1','kind':'approval','text':'审批'}]
+    for _ in range(6):
+        asyncio.run(p.push_wechat(cands,sender))
+    assert sent==['事0','事1','审批'], '每天两条额度，审批不占额度；同一个 key 只发一次'
+    assert p.status()['delivery']=='apns' or p.status()['wechat']
+    now[0]=datetime(2026,10,7,23,30,tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()
+    assert asyncio.run(p.push_wechat([{'key':'approval:2','kind':'approval','text':'夜里'}],sender)) is None and sent[-1]=='审批'

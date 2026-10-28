@@ -7,8 +7,6 @@ import ComCore
 
 extension AppModel {
     var waitingData: JSON { datasets["/personal/waiting"] ?? .null }
-    /// 全局「等你」数：审批卡 + 后端汇总的三类。Dock 徽标、顶栏、灵动岛都读它。
-    var waitingCount: Int { decisionCount + waitingData["count"].int }
 
     /// 打开线索里的一环。先收起正在看的航程 sheet，再跳过去。
     func openThreadNode(_ node: JSON) {

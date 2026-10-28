@@ -44,6 +44,8 @@ struct BodyCard: View {
     let shown: Bool
     /// 嵌在今天页横幅里展开时：底色和内边距交给横幅（10-17）。
     var embedded = false
+    /// 六格指标：健康页自己有指标方格，那边不再重复画一遍。
+    var showTiles = true
     var body: some View {
         let health = model.health
         let today = health["today"]["measurements"]
@@ -95,10 +97,12 @@ struct BodyCard: View {
             let curve = model.health["today"]["body_battery_curve"].array
             if curve.count > 2 { BatteryCurve(points: curve).frame(height: 54).modifier(DrawIn(on: shown, delay: 0.3, duration: 1.1)) }
             if !m["sleep_seconds"].isNull { SleepBar(m: m, shown: shown) }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Space.sm), count: 3), spacing: Space.sm) {
-                ForEach(Array(BodyMetrics.all.filter { $0.value(m) != nil }.enumerated()), id: \.element.id) { index, metric in
-                    BodyTile(metric: metric, value: metric.value(m)!, series: BodyMetrics.series(days, metric), shown: shown)
-                        .modifier(TileRise(on: shown, delay: 0.45 + Double(index) * 0.05))
+            if showTiles {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Space.sm), count: 3), spacing: Space.sm) {
+                    ForEach(Array(BodyMetrics.all.filter { $0.value(m) != nil }.enumerated()), id: \.element.id) { index, metric in
+                        BodyTile(metric: metric, value: metric.value(m)!, series: BodyMetrics.series(days, metric), shown: shown)
+                            .modifier(TileRise(on: shown, delay: 0.45 + Double(index) * 0.05))
+                    }
                 }
             }
         }
