@@ -8,29 +8,75 @@ struct WorkView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
     @AppStorage("work.lastAgent") private var lastAgent = "codex"
+    @AppStorage("work.surface") private var surfaceRaw = WorkSurface.sessions.rawValue
     @State private var frames: [String: CGRect] = [:]
     @State private var flights: [String: OutgoingFlight] = [:]
     private var work: WorkSessionModel { model.work }
     /// 当前派给谁：新对话是选中的 Agent，会话里是那段会话的。
     private var agent: String { work.mode == .home ? lastAgent : work.agent }
+    private var surface: Binding<WorkSurface> {
+        Binding(
+            get: { WorkSurface(rawValue: surfaceRaw) ?? .sessions },
+            set: { surfaceRaw = $0.rawValue }
+        )
+    }
+    private var onRemote: Bool { surface.wrappedValue == .remote }
 
     var body: some View {
-        ZStack {
-            if work.mode == .home {
-                NewWorkChat().transition(Self.homeTransition(reduce))
-            } else {
-                WorkChat(flying: Set(flights.keys)).id(work.generation).transition(Self.chatTransition(reduce))
+        VStack(spacing: 0) {
+            if !model.approvalDeepLinkNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    InlineNotice(text: model.approvalDeepLinkNote, tone: .danger)
+                    Button("打开等你") { model.openWaitingInbox() }
+                        .buttonStyle(.secondaryCompact)
+                        .accessibilityIdentifier("work-approval-deeplink-waiting")
+                }
+                .padding(.horizontal, Space.lg)
+                .padding(.vertical, Space.sm)
+                .accessibilityIdentifier("work-approval-deeplink-fail")
             }
+            if !model.workOpenNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    InlineNotice(text: model.workOpenNote, tone: .danger)
+                    Button("再拉侧栏") {
+                        Task { await model.refresh(.work) }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .accessibilityIdentifier("work-sidebar-refresh")
+                }
+                .padding(.horizontal, Space.lg)
+                .padding(.vertical, Space.sm)
+                .accessibilityIdentifier("work-open-fail")
+            }
+            WorkSurfacePicker(surface: surface)
+            ZStack {
+                if onRemote {
+                    WorkRemoteSurface()
+                        .transition(reduce ? .opacity : .asymmetric(
+                            insertion: .modifier(active: BlurShift(y: 10, blur: 5, opacity: 0), identity: BlurShift()),
+                            removal: .opacity))
+                } else if work.mode == .home {
+                    NewWorkChat().transition(Self.homeTransition(reduce))
+                } else {
+                    WorkChat(flying: Set(flights.keys)).id(work.generation).transition(Self.chatTransition(reduce))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(reduce ? .easeOut(duration: 0.2) : ComMotion.crossfade, value: onRemote)
         }
         // 动效库 20-build-checklist：标题模糊上浮（y+26→0、blur 10→0、power3.out）/ 整块模糊上浮离场（y−30、blur 8）。
         .animation(reduce ? .easeOut(duration: 0.2) : ReplyMotion.rise, value: work.generation)
-        .safeAreaInset(edge: .bottom, spacing: 0) { WorkComposer() }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !onRemote { WorkComposer() }
+        }
         // 轨道 r2-memory：当前 Agent 让页面顶部轻轻染上它的品牌浅底，换人时 0.5s 渐变过去。
         .background {
             ZStack(alignment: .top) {
                 Palette.background
-                LinearGradient(colors: [agentBrand(agent)?.wash ?? .clear, Palette.background.opacity(0)], startPoint: .top, endPoint: .center)
-                    .opacity(0.9)
+                if !onRemote {
+                    LinearGradient(colors: [agentBrand(agent)?.wash ?? .clear, Palette.background.opacity(0)], startPoint: .top, endPoint: .center)
+                        .opacity(0.9)
+                }
             }
             .ignoresSafeArea()
             .animation(reduce ? .easeOut(duration: 0.2) : .smooth(duration: 0.5), value: agent)
@@ -51,15 +97,17 @@ struct WorkView: View {
         }
         .onChange(of: work.outgoing.last?.requestID) { _, id in fly(id) }
         .task(id: work.pollKey) {
-            guard work.mode != .home else { return }
+            guard !onRemote, work.mode != .home else { return }
             await work.refresh(model)
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
                 guard !Task.isCancelled else { return }
-                if model.active && model.isShown(.work) { await work.refresh(model) }
+                if model.active && model.isShown(.work) && !onRemote { await work.refresh(model) }
             }
         }
-        .task(id: agent) { await work.loadModels(for: agent, model) }
+        .task(id: agent) { guard !onRemote else { return }; await work.loadModels(for: agent, model) }
+        // 进页拉齐侧栏：与 refresh(.work) 同路，失败 workOpenNote，别假装历史已齐。
+        .task { await model.refresh(.work) }
     }
 
     private func fly(_ id: String?) {
@@ -99,8 +147,25 @@ struct BlurShift: ViewModifier {
 /// 空白的新对话：居中一个头像和一句话。点头像换 Agent（顶栏标题也能换）。
 private struct NewWorkChat: View {
     @AppStorage("work.lastAgent") private var lastAgent = "codex"
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    /// 问候按上海时区，和工作外的伙伴口吻对齐。
+    private var hour: Int {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return cal.component(.hour, from: Date())
+    }
+    private var companion: String {
+        let name = agentName(lastAgent)
+        switch hour {
+        case 5..<11: return "新开一段。说清楚要改什么、落在哪个目录——我派给 \(name)。"
+        case 11..<14: return "空白画布。一句话就能派活；复杂的会拆成航程，不会闷头瞎跑。"
+        case 14..<18: return "我在岗。丢一句需求就行——终端 SSH 另页探测，这里只派会话。"
+        case 18..<23: return "晚上也接活。说目标与边界，\(name) 接手后你可去干别的。"
+        default: return "夜深了也行。短任务直接派；长任务我会拆开给你看步骤。"
+        }
+    }
     var body: some View {
-        VStack(spacing: Space.md) {
+        VStack(spacing: Space.lg) {
             Menu {
                 ForEach(["hermes", "pi", "claude", "codex"], id: \.self) { item in
                     Button { lastAgent = item } label: { Label { Text(agentName(item)) } icon: { Image(agentBrand(item)?.mark ?? "") } }
@@ -111,8 +176,20 @@ private struct NewWorkChat: View {
                     .background(Circle().fill(agentBrand(lastAgent)?.wash ?? Palette.fill).opacity(0.55))
             }
             .accessibilityLabel("当前是 " + agentName(lastAgent) + "，点按更换")
-            Text("让 \(agentName(lastAgent)) 做点什么").font(TypeScale.section).foregroundStyle(Palette.textPrimary)
-                .contentTransition(.opacity)
+            VStack(spacing: Space.sm) {
+                Text("让 \(agentName(lastAgent)) 做点什么")
+                    .font(TypeScale.section)
+                    .foregroundStyle(Palette.textPrimary)
+                    .contentTransition(.opacity)
+                Text(companion)
+                    .font(TypeScale.callout)
+                    .foregroundStyle(Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .padding(.horizontal, Space.xl)
+                    .contentTransition(.opacity)
+                    .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: companion)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.bottom, Space.xxxl)
@@ -131,12 +208,18 @@ struct WorkSidebarLayer: View {
     @AppStorage("work.host") private var host = "mini"
     @AppStorage("work.agent") private var agent = ""
     @State private var showBoard = false
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var loadedOnce = false
     let width: CGFloat
     private var board: JSON { model.datasets["/personal/projects"] ?? .null }
+    private var sessionsMissing: Bool { model.datasets["/sessions"] == nil }
     var body: some View {
         let work = model.work
+        let waiting = loading || (!loadedOnce && board.isNull && sessionsMissing)
         WorkSidebar(host: $host, agent: $agent, threads: WorkThread.build(board: board, sessions: model.datasets["/sessions"]?["sessions"].array ?? []),
-                    hosts: board["hosts"].array, loading: board.isNull && model.datasets["/sessions"] == nil,
+                    hosts: board["hosts"].array, loading: waiting, failNote: failNote,
+                    retrying: loading, onRetry: { Task { await refreshSidebar() } },
                     current: work.mode == .session ? work.sessionID : work.mode == .snapshot ? work.snapshot.id : "",
                     showBoard: $showBoard, close: { model.closeWorkSidebar(reduce: reduce) }) { open($0) }
             .frame(width: width)
@@ -154,23 +237,75 @@ struct WorkSidebarLayer: View {
                 DispatchQueue.main.async { model.settleWorkSidebar(predicted: predicted, width: width, reduce: reduce) }
             })
             .sheet(isPresented: $showBoard) { BoardSheet(host: host) }
+            .task { await refreshSidebar() }
     }
     /// 能续接的在这一页原地聊；只有进展快照的（MacBook 上的 Pi/Codex）原地打开只读摘录。
+    /// 对不上的项留在侧栏开口，别关栏假装已打开。
     private func open(_ thread: WorkThread) {
         Haptics.selection()
-        if let session = thread.session { model.work.open(session) } else if let item = thread.item { model.work.openSnapshot(item) }
+        if let session = thread.session {
+            guard !session.id.isEmpty else {
+                failNote = "这条会话对不上——可再拉齐侧栏后点一次。不会假装已打开。"
+                return
+            }
+            model.work.open(session)
+        } else if let item = thread.item {
+            guard !item.id.isEmpty else {
+                failNote = "这条进展摘录对不上——可再拉齐侧栏后点一次。不会假装已打开。"
+                return
+            }
+            model.work.openSnapshot(item)
+        } else {
+            failNote = "点开没成——缺会话或摘录。可再试拉齐侧栏。"
+            return
+        }
+        failNote = ""
         model.closeWorkSidebar(reduce: reduce)
+    }
+    private func refreshSidebar() async {
+        guard !loading else { return }
+        loading = true
+        failNote = ""
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        async let projects = model.load("/personal/projects")
+        async let sessions = model.load("/sessions")
+        let gotProjects = await projects != nil
+        let gotSessions = await sessions != nil
+        if gotProjects && gotSessions { return }
+        let projectErr = model.errors["/personal/projects"] ?? ""
+        let sessionErr = model.errors["/sessions"] ?? ""
+        if !gotProjects && !gotSessions {
+            let err = [projectErr, sessionErr].first { !$0.isEmpty } ?? ""
+            failNote = err.isEmpty
+                ? "项目和会话都没拢上——检查配对或网络后再试"
+                : "侧栏没拢上：" + err + "——可再试"
+        } else if !gotProjects {
+            failNote = projectErr.isEmpty
+                ? "项目看板没读上——会话若在仍可先点；可再试"
+                : "项目看板没读上：" + projectErr + "——可再试"
+        } else {
+            failNote = sessionErr.isEmpty
+                ? "会话列表没读上——项目若在仍可先点；可再试"
+                : "会话列表没读上：" + sessionErr + "——可再试"
+        }
     }
 }
 
 /// 侧栏内容：电脑 → Agent 分区，下面按天分组的对话。
 private struct WorkSidebar: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
     @Binding var host: String
     @Binding var agent: String
     let threads: [WorkThread]
     let hosts: [JSON]
     let loading: Bool
+    var failNote: String = ""
+    var retrying: Bool = false
+    var onRetry: (() -> Void)? = nil
     /// 正在聊的那段（会话 id 或快照 id），在列表里高亮。
     let current: String
     @Binding var showBoard: Bool
@@ -197,8 +332,23 @@ private struct WorkSidebar: View {
             PartitionBar(host: $host, agent: $agent, agents: agents, threads: threads, hosts: hosts, space: partition, showBoard: $showBoard)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    if !failNote.isEmpty {
+                        InlineNotice(text: failNote, tone: .danger)
+                            .padding(.top, Space.md)
+                        if let onRetry {
+                            Button(retrying ? "重试中…" : "再试一次") {
+                                guard !retrying else { return }
+                                onRetry()
+                            }
+                            .buttonStyle(.secondaryCompact)
+                            .disabled(retrying)
+                            .padding(.top, Space.sm)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("work-sidebar-retry")
+                        }
+                    }
                     if rows.isEmpty {
-                        Text(loading ? "正在汇总两台电脑的会话…" : host == "macbook" ? "MacBook 的会话每 15 分钟同步一次。" : "这里还没有对话。")
+                        Text(loading ? "正在把两台电脑上的会话拢到一起…" : !failNote.isEmpty ? "先重试拉齐；通了才会出现历史。" : host == "macbook" ? "MacBook 的会话大约每 15 分钟同步一次；急用可到那台机器上先开。" : "这边还空着。回去在输入框说一句，或从项目看板点进来——我帮你开一段。")
                             .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).padding(.top, Space.lg).padding(.horizontal, Space.xs)
                     }
                     ForEach(WorkThread.days(rows.prefix(limit)), id: \.title) { day in
@@ -209,7 +359,9 @@ private struct WorkSidebar: View {
                         }
                     }
                     if rows.count > limit {
-                        Button("再看更早的 \(rows.count - limit) 段") { withAnimation(.smooth(duration: 0.2)) { limit += 60 } }
+                        Button("再看更早的 \(rows.count - limit) 段") {
+                            withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { limit += 60 }
+                        }
                             .buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold)).padding(.top, Space.lg).frame(maxWidth: .infinity)
                     }
                 }
@@ -358,24 +510,33 @@ struct AgentAvatar: View {
             .background(brand?.wash ?? Palette.fill, in: .circle)
             .overlay(Circle().strokeBorder((brand?.ink ?? Palette.textPrimary).opacity(0.10), lineWidth: 0.5))
             .clipShape(.circle)
-            .keyframeAnimator(initialValue: AgentStampPose(), trigger: agent) { view, pose in
-                view.scaleEffect(reduce ? 1 : pose.scale).rotationEffect(.degrees(reduce ? 0 : pose.angle))
-            } keyframes: { _ in
-                KeyframeTrack(\.scale) {
-                    CubicKeyframe(1.3, duration: 0.001)
-                    SpringKeyframe(0.96, duration: 0.16, spring: .snappy)
-                    SpringKeyframe(1, duration: 0.24, spring: .bouncy)
-                }
-                KeyframeTrack(\.angle) {
-                    CubicKeyframe(-9, duration: 0.001)
-                    SpringKeyframe(2, duration: 0.16, spring: .snappy)
-                    SpringKeyframe(0, duration: 0.24, spring: .smooth)
-                }
-            }
+            .modifier(AgentStampMotion(trigger: agent, reduce: reduce))
             .accessibilityHidden(true)
     }
 }
 struct AgentStampPose { var scale: CGFloat = 1; var angle: Double = 0 }
+
+/// 把 reduce 作为普通 Bool 传入 keyframe 闭包，避免捕获 `@Environment` 主线程隔离属性。
+private struct AgentStampMotion: ViewModifier {
+    let trigger: String
+    let reduce: Bool
+    func body(content: Content) -> some View {
+        content.keyframeAnimator(initialValue: AgentStampPose(), trigger: trigger) { view, pose in
+            view.scaleEffect(reduce ? 1 : pose.scale).rotationEffect(.degrees(reduce ? 0 : pose.angle))
+        } keyframes: { _ in
+            KeyframeTrack(\.scale) {
+                CubicKeyframe(1.3, duration: 0.001)
+                SpringKeyframe(0.96, duration: 0.16, spring: .snappy)
+                SpringKeyframe(1, duration: 0.24, spring: .bouncy)
+            }
+            KeyframeTrack(\.angle) {
+                CubicKeyframe(-9, duration: 0.001)
+                SpringKeyframe(2, duration: 0.16, spring: .snappy)
+                SpringKeyframe(0, duration: 0.24, spring: .smooth)
+            }
+        }
+    }
+}
 
 // MARK: - 分区栏
 
@@ -390,7 +551,7 @@ private struct PartitionBar: View {
     let space: Namespace.ID
     @Binding var showBoard: Bool
     @Environment(\.accessibilityReduceMotion) private var reduce
-    private var motion: Animation { reduce ? .easeOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.8) }
+    private var motion: Animation { ComMotion.reduced(reduce, ComMotion.settle) }
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack(spacing: 4) {
@@ -443,7 +604,7 @@ private struct PartitionBar: View {
             }
             .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftPressStyle(scale: 0.985))
         .accessibilityIdentifier("work-host-" + entry)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -472,7 +633,7 @@ private struct PartitionBar: View {
             }
             .overlay(alignment: .topTrailing) { if live { Circle().fill(Palette.success).frame(width: 7, height: 7).overlay(Circle().stroke(Palette.background, lineWidth: 1.5)).offset(x: 1, y: -1) } }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftPressStyle(scale: 0.97))
         .accessibilityIdentifier("work-agent-" + (id.isEmpty ? "all" : id))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -551,8 +712,13 @@ private struct WorkComposer: View {
     @State private var sending = false
     private var work: WorkSessionModel { model.work }
     private var draft: Binding<String> {
-        Binding(get: { work.mode == .home ? work.homeDraft : work.sessionDraft },
-                set: { if work.mode == .home { work.homeDraft = $0 } else { work.sessionDraft = $0 } })
+        Binding(
+            get: { work.mode == .home ? work.homeDraft : work.sessionDraft },
+            set: { next in
+                if work.mode == .home { work.homeDraft = next }
+                else { work.sessionDraft = next } // didSet 落盘；失败 → draftPersistNote
+            }
+        )
     }
     private var empty: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// 第一次往电脑上的终端里打字前问一句（可能和人在电脑前同时打字撞上），之后不再问。
@@ -580,8 +746,16 @@ private struct WorkComposer: View {
     var body: some View {
         @Bindable var work = model.work
         VStack(alignment: .leading, spacing: Space.sm) {
-            if !work.note.isEmpty && work.mode == .home {
-                Label(work.note, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(Palette.danger).padding(.horizontal, Space.sm)
+            // 首页派活 / 会话续发失败都开口；勿只靠气泡旁注或灰 Caption。
+            if !work.note.isEmpty {
+                InlineNotice(text: work.note, tone: .danger)
+                    .padding(.horizontal, Space.sm)
+                    .accessibilityIdentifier("work-composer-fail")
+            }
+            if !work.draftPersistNote.isEmpty {
+                InlineNotice(text: work.draftPersistNote, tone: .warning)
+                    .padding(.horizontal, Space.sm)
+                    .accessibilityIdentifier("work-draft-persist-fail")
             }
             if let reference = model.reference, work.mode == .session, !work.sessionID.isEmpty, reference["source_session_id"].string == work.sessionID {
                 HStack(alignment: .top) {
@@ -614,7 +788,7 @@ private struct WorkComposer: View {
                 .padding(.top, -Space.xl).padding(.bottom, -ComDock.height - 60).allowsHitTesting(false)
         }
         .animation(.smooth(duration: 0.2), value: empty)
-        .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: routeHint?.0)
+        .animation(ComMotion.reduced(reduce, ComMotion.settle), value: routeHint?.0)
         .sheet(isPresented: $pickingDirectory) { DirectoryPicker(path: $work.directory).presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
         .onChange(of: work.selection) { _, _ in work.effort = "" }
     }
@@ -629,7 +803,11 @@ private struct WorkComposer: View {
                 .chatFrame("composer")
             ZStack {
                 if empty && work.mode == .session && work.running && !work.starting {
-                    CircleActionButton(symbol: "stop.fill", label: "停止执行", size: 40) { Task { await work.stop(model) } }
+                    CircleActionButton(symbol: work.stopping ? "hourglass" : "stop.fill", label: work.stopping ? "正在停止" : "停止执行", size: 40) {
+                        guard !work.stopping, !work.ending else { return }
+                        Task { await work.stop(model) }
+                    }
+                        .disabled(work.stopping || work.ending)
                         .accessibilityIdentifier("work-stop")
                         .transition(.scale(scale: 0.6).combined(with: .opacity))
                 } else {
@@ -640,7 +818,7 @@ private struct WorkComposer: View {
                         .transition(.scale(scale: 0.6).combined(with: .opacity))
                 }
             }
-            .animation(reduce ? nil : .spring(response: 0.3, dampingFraction: 0.8), value: empty && work.running)
+            .animation(ComMotion.reduced(reduce, ComMotion.pop), value: empty && work.running)
         }
         .padding(Space.sm)
         .composerSurface()
@@ -679,7 +857,9 @@ private struct WorkComposer: View {
 
     private func send() {
         let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !sending else { return }
+        guard !text.isEmpty, !sending, !work.starting else { return }
+        Haptics.selection()
+        work.note = ""
         if work.mode != .home && work.dispatchMode == "injected" && !injectConfirmed { confirmingInject = true; return }
         if work.mode == .home { start(text) } else { Task { sending = true; await work.submit(text, model); sending = false } }
     }
@@ -689,7 +869,11 @@ private struct WorkComposer: View {
         let entry: PendingMessage
         do {
             entry = try model.queueWork(path: "/sessions", text: text, fields: ["agent": .string(agent), "cwd": .string(cwd), "prompt": .string(text), "model": .string(work.selection), "effort": .string(work.effort), "sandbox": .string("danger-full-access")])
-        } catch { work.note = error.localizedDescription; return }
+        } catch {
+            // 草稿还在输入框；开口别只抛系统串。
+            work.note = "没排进发送队列：" + error.localizedDescription + "——草稿还在，可再试派出去"
+            return
+        }
         work.homeDraft = ""
         work.begin(agent: agent, cwd: cwd, text: text, requestID: entry.id)
         Task {
@@ -697,6 +881,7 @@ private struct WorkComposer: View {
             let result = await work.deliver(entry.id, model)
             if let sid = result?["sid"].string, !sid.isEmpty {
                 work.attach(sid)
+                work.note = ""
                 await model.refresh(.work)
             } else if result?["status"].string == "rejected" {
                 work.failStart(result?["error"].string ?? "没派出去", rejected: true)
@@ -725,10 +910,24 @@ struct WorkTitleMenu: View {
                 .pickerStyle(.inline)
             case .session:
                 Section(agentName(work.agent) + " · " + workStatusLabel(work.status)) {
-                    if work.running && !work.starting { Button("停止执行", systemImage: "stop.circle") { Task { await work.stop(model) } } }
+                    if work.running && !work.starting {
+                        Button(work.stopping ? "正在停止…" : "停止执行", systemImage: "stop.circle") {
+                            guard !work.stopping, !work.ending else { return }
+                            Task { await work.stop(model) }
+                        }
+                        .disabled(work.stopping || work.ending || work.pinning)
+                    }
                     if !work.sessionID.isEmpty {
-                        Button(work.pinned ? "取消置顶" : "置顶", systemImage: work.pinned ? "pin.slash" : "pin") { Task { await work.togglePin(model) } }
-                        Button("结束会话", systemImage: "xmark.circle", role: .destructive) { Task { await work.end(model) } }
+                        Button(work.pinning ? "处理中…" : (work.pinned ? "取消置顶" : "置顶"), systemImage: work.pinned ? "pin.slash" : "pin") {
+                            guard !work.pinning, !work.ending else { return }
+                            Task { await work.togglePin(model) }
+                        }
+                        .disabled(work.pinning || work.ending)
+                        Button(work.ending ? "正在结束…" : "结束会话", systemImage: "xmark.circle", role: .destructive) {
+                            guard !work.ending, !work.pinning else { return }
+                            Task { await work.end(model) }
+                        }
+                        .disabled(work.ending || work.pinning)
                     }
                 }
                 Button("新对话", systemImage: "square.and.pencil") { model.work.newChat() }

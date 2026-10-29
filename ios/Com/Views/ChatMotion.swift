@@ -36,7 +36,7 @@ struct OutgoingBubbleFlight: View {
                 .position(x: destination.midX, y: destination.midY)
                 .allowsHitTesting(false).accessibilityHidden(true)
                 .task(id: flight.id) {
-                    withAnimation(.spring(duration: 0.38, bounce: 0.18)) { progress = 1 }
+                    withAnimation(ComMotion.flight) { progress = 1 }
                     try? await Task.sleep(for: .milliseconds(440))
                     guard !Task.isCancelled else { return }
                     landed()
@@ -83,11 +83,12 @@ extension View {
     }
 }
 
+/// 气泡/发送轻按压；参数对齐 `SoftPressStyle` / `ComMotion.press`。
 struct MessagePressStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduce
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.scaleEffect(reduce ? 1 : configuration.isPressed ? 0.93 : 1)
             .opacity(configuration.isPressed ? 0.8 : 1)
-            .animation(reduce ? nil : .spring(duration: 0.18, bounce: 0.12), value: configuration.isPressed)
+            .animation(reduce ? .easeOut(duration: 0.12) : ComMotion.press, value: configuration.isPressed)
     }
 }

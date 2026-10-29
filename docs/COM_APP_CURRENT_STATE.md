@@ -1,3 +1,13 @@
+# 平台说明 · 2026-10-29
+
+> iOS 过夜增量（同日分支 `com-personal-agent-overnight-20261029`）：空聊 Presence、对话注意力条、工作 Tab「对话|终端」诚实 `/health` 探测（HerdrKit 未挂）、`ComMotion` curated 动效；「记一下咖啡18」裸数字快路径已 kickstart 到 mini。细节见 `docs/COM_OVERNIGHT_HANDOFF_20261029.md`。本文件其余信息架构段落仍以既有产品真源为准，未整篇重写。
+
+**日常主线是 iOS + backend（+ 配套 web）。Android 客户端已停更**，下文 Android 1.7–1.9 / 2.0 内容仅作历史基线，不要当成当前产品 IA 或实现范围。
+
+本批 iOS 升级见 [COM_IOS_UPGRADE_BATCH_20261029.md](COM_IOS_UPGRADE_BATCH_20261029.md)。
+
+---
+
 # Com iOS 主动 Agent 升级 · 2026-10-07
 
 最新 iOS、双机项目看板、今天页记账与行动建议、通知边界和验收结果见 [本次交付报告](COM_PERSONAL_AGENT_DELIVERY_2026-10-07.md)。下方 Android 版本与早期增量保留为历史基线。

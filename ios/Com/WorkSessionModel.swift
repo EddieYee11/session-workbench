@@ -21,14 +21,24 @@ import ComCore
     private(set) var outgoing: [Outgoing] = []
     private(set) var loaded = false
     var note = ""
+    /// 会话草稿 Vault 读/写失败开口（别静默丢字或空框假「没写过」）。
+    var draftPersistNote = ""
+    /// 「停止执行」进行中：作曲器与顶栏菜单共用，防连点。
+    var stopping = false
+    /// 置顶 / 取消置顶进行中。
+    var pinning = false
+    /// 「结束会话」进行中。
+    var ending = false
     var models: [JSON] = []
     var selection = ""
     var effort = ""
     /// 首页（新对话）的项目目录；原来在输入框右边设置按钮的派活页里选，现在在输入框左边「+」里。
     var directory = WorkSessionModel.defaultDirectory
     var homeDraft = ""
+    /// 从 Vault 灌回时跳过再写，避免盖掉「没读上」开口。
+    private var suppressDraftPersist = false
     var sessionDraft = "" {
-        didSet { if mode == .session, !sessionID.isEmpty { try? SecureVault.save(sessionDraft, name: "work-draft-" + sessionID.pathEncoded) } }
+        didSet { persistSessionDraftIfNeeded() }
     }
 
     struct Outgoing: Equatable {
@@ -76,7 +86,7 @@ import ComCore
     var pinned: Bool { metadata["pinned"].bool }
     var approvals: [JSON] { live["approvals"].array }
     /// 最近一轮的 token 用量；老会话或未上报时为 null。
-    var usage: JSON { live["usage"] ?? .null }
+    var usage: JSON { live["usage"] }
     var folder: String { URL(fileURLWithPath: mode == .home ? directory : metadata["cwd"].string).lastPathComponent }
     /// 轮询的钥匙：换会话、拿到 sid 时重开。
     var pollKey: String { "\(mode)-\(sessionID)-\(snapshot.id)-\(generation)" }
@@ -88,15 +98,17 @@ import ComCore
     func open(_ session: JSON) {
         mode = .session; sessionID = session.id; metadata = session; snapshot = .null
         reset()
-        sessionDraft = (try? SecureVault.load(String.self, name: "work-draft-" + sessionID.pathEncoded)) ?? ""
+        loadSessionDraft()
     }
     func openSnapshot(_ item: JSON) {
         mode = .snapshot; sessionID = ""; metadata = .null; snapshot = item
         reset()
+        clearSessionDraftLocal()
     }
     func newChat() {
         mode = .home; sessionID = ""; metadata = .null; snapshot = .null
         reset()
+        clearSessionDraftLocal()
     }
     /// keepChoices：首页发出时保留刚在「+」里选的模型和推理强度，接着用在这段会话里。
     private func reset(keepChoices: Bool = false) {
@@ -111,7 +123,41 @@ import ComCore
         reset(keepChoices: true)
         metadata = .object(["agent": .string(agent), "cwd": .string(cwd), "title": .string(String(text.prefix(60))), "status": .string("starting")])
         outgoing = [Outgoing(requestID: requestID, text: text, createdAt: Date().timeIntervalSince1970, baseline: 0)]
+        clearSessionDraftLocal()
+    }
+
+    private func clearSessionDraftLocal() {
+        suppressDraftPersist = true
         sessionDraft = ""
+        suppressDraftPersist = false
+        draftPersistNote = ""
+    }
+
+    private func loadSessionDraft() {
+        guard !sessionID.isEmpty else {
+            clearSessionDraftLocal()
+            return
+        }
+        let name = "work-draft-" + sessionID.pathEncoded
+        suppressDraftPersist = true
+        defer { suppressDraftPersist = false }
+        do {
+            sessionDraft = try SecureVault.load(String.self, name: name) ?? ""
+            draftPersistNote = ""
+        } catch {
+            sessionDraft = ""
+            draftPersistNote = "上次草稿没读上：\(error.localizedDescription)——输入框是空的，不代表你没写过。不会假装已恢复。"
+        }
+    }
+
+    private func persistSessionDraftIfNeeded() {
+        guard !suppressDraftPersist, mode == .session, !sessionID.isEmpty else { return }
+        do {
+            try SecureVault.save(sessionDraft, name: "work-draft-" + sessionID.pathEncoded)
+            if draftPersistNote.contains("没存上") { draftPersistNote = "" }
+        } catch {
+            draftPersistNote = "这段草稿没存上：\(error.localizedDescription)——关掉会话再开可能丢字。可再改一字触发重试。不会假装已落盘。"
+        }
     }
     /// 回执到了：接上真正的会话 id，同一个聊天流继续（不换 generation，不重播进场）。
     func attach(_ sid: String) {
@@ -122,6 +168,10 @@ import ComCore
     func failStart(_ message: String, rejected: Bool) {
         if let index = outgoing.indices.last { outgoing[index].state = rejected ? "rejected" : "uncertain"; outgoing[index].note = message }
         metadata["status"] = .string(rejected ? "failed" : "unknown")
+        // Composer 同步开口：别当成已派上；可点气泡「回到草稿」。
+        note = rejected
+            ? (message.isEmpty ? "没派出去——可点气泡下「回到草稿」再试" : "没派出去：" + message + "——可点「回到草稿」再试")
+            : (message.isEmpty ? "送达待核实——别当成已接上；可查发送记录或回到草稿" : message + "——别当成已接上；可查发送记录")
     }
     /// 没送出去的那条拿回输入框；首页发的那条，页面回到首页。
     func restore(_ requestID: String) -> String? {
@@ -139,10 +189,34 @@ import ComCore
         case .home: return
         case .snapshot:
             let id = snapshot.id
-            guard let data = await model.load("/personal/projects/sources/" + id.pathEncoded), mode == .snapshot, snapshot.id == id else { return }
-            history = data["messages"].array; loaded = true
+            guard !id.isEmpty else {
+                note = "这段摘录对不上——可回侧栏再点一次。不会假装已打开。"
+                return
+            }
+            let path = "/personal/projects/sources/" + id.pathEncoded
+            if let data = await model.load(path), mode == .snapshot, snapshot.id == id {
+                history = data["messages"].array
+                loaded = true
+                clearOpenFailNote()
+                return
+            }
+            guard mode == .snapshot, snapshot.id == id else { return }
+            let err = model.errors[path] ?? ""
+            // openSnapshot 已清空 history；别用「缓存」口吻假装还在看内容。
+            if loaded || !history.isEmpty {
+                note = err.isEmpty
+                    ? "摘录刷新没成——下面仍是刚才读到的；可下拉再试。"
+                    : "摘录刷新没成：" + err + "——下面仍是刚才读到的；可下拉再试。"
+            } else {
+                note = err.isEmpty
+                    ? "摘录没读上——可下拉重试或回侧栏再点。不会假装已打开。"
+                    : "摘录没读上：" + err + "——可下拉重试。不会假装已打开。"
+            }
         case .session:
-            guard !sessionID.isEmpty else { return }
+            guard !sessionID.isEmpty else {
+                note = "会话对不上——可回侧栏再点一次。不会假装已打开。"
+                return
+            }
             let id = sessionID
             do {
                 let detail = try await fetch("/sessions/" + id.pathEncoded, model)
@@ -158,10 +232,17 @@ import ComCore
                     // 不在工作页时，把新审批发到通知中心；同一张卡只提醒一次。
                     ComNotifications.approvalWaiting(current["approvals"].array, sessionID: id, show: !model.isShown(.work))
                 }
-                loaded = true; note = ""
+                loaded = true
+                // 轮询成功别冲掉停止/结束/发送失败开口（假「已停下」）。
+                clearOpenFailNote()
             } catch {
                 guard sessionID == id else { return }
-                note = "历史缓存 · " + error.localizedDescription
+                // open() 会 reset 清空 history；失败时勿再说「历史缓存」假装还在看旧内容。
+                if loaded || !history.isEmpty {
+                    note = "会话刷新没成：" + error.localizedDescription + "——下面仍是刚才读到的；可下拉再试。"
+                } else {
+                    note = "会话没读上：" + error.localizedDescription + "——可下拉重试或回侧栏再点。不会假装已打开。"
+                }
             }
         }
     }
@@ -191,7 +272,11 @@ import ComCore
         if let reference = model.reference, reference["source_session_id"].string == id { fields["reference"] = reference }
         let entry: PendingMessage
         do { entry = try model.queueWork(path: "/sessions/" + id.pathEncoded + (dispatchMode == "input" ? "/input" : "/dispatch"), text: text, fields: fields) }
-        catch { note = error.localizedDescription; return }
+        catch {
+            note = "没排进发送队列：" + error.localizedDescription + "——草稿还在，可再试发送"
+            return
+        }
+        note = ""
         let baseline = Self.merge(history, live["items"].array).filter { $0["role"].string == "user" && $0["text"].string == text }.count
         outgoing.append(Outgoing(requestID: entry.id, text: text, createdAt: Date().timeIntervalSince1970, baseline: baseline))
         sessionDraft = ""; model.reference = nil
@@ -200,15 +285,22 @@ import ComCore
         let newSID = result?["sid"].string ?? ""
         switch result?["status"].string {
         case "accepted" where result?["mode"].string == "forked" && !newSID.isEmpty:
-            continueIn(newSID, from: title, outgoing: outgoing[index]); await refresh(model)
+            continueIn(newSID, from: title, outgoing: outgoing[index]); note = ""; await refresh(model)
         case "accepted" where ["resumed", "adopted"].contains(result?["mode"].string ?? "") && !newSID.isEmpty:
             sessionID = newSID; metadata["id"] = .string(newSID); metadata["capabilities"]["input"] = .bool(true)
-            outgoing[index].state = "accepted"; await refresh(model)
+            outgoing[index].state = "accepted"; note = ""; await refresh(model)
         case "accepted" where result?["mode"].string == "injected":
-            outgoing[index].state = "elsewhere"; outgoing[index].note = "已打进电脑上正在跑的终端"; await refresh(model)
-        case "accepted": outgoing[index].state = "accepted"; await refresh(model)
-        case "rejected": outgoing[index].state = "rejected"; outgoing[index].note = result?["error"].string ?? "没送出去"
-        default: outgoing[index].state = "uncertain"; outgoing[index].note = "送达待核实，要求已保存"
+            outgoing[index].state = "elsewhere"; outgoing[index].note = "已打进电脑上正在跑的终端"; note = ""; await refresh(model)
+        case "accepted": outgoing[index].state = "accepted"; note = ""; await refresh(model)
+        case "rejected":
+            let detail = result?["error"].string ?? "没送出去"
+            outgoing[index].state = "rejected"
+            outgoing[index].note = detail
+            note = "没送出去：" + detail + "——可点气泡下「回到草稿」再试"
+        default:
+            outgoing[index].state = "uncertain"
+            outgoing[index].note = "送达待核实，要求已保存"
+            note = "送达待核实——别当成已接上；要求已保存，可查发送记录"
         }
     }
     func deliver(_ id: String, _ model: AppModel) async -> JSON? {
@@ -217,23 +309,101 @@ import ComCore
         #endif
         return await model.deliverWork(id)
     }
-    func stop(_ model: AppModel) async {
+    /// 停止执行。HTTP 成功仍要看 live 是否还在跑；失败留 note，轮询不得冲掉。
+    @discardableResult
+    func stop(_ model: AppModel) async -> Bool {
+        guard !stopping, !sessionID.isEmpty else { return false }
+        stopping = true
+        defer { stopping = false }
         #if DEBUG
-        if model.isUITesting { live["status"] = .string("completed"); return }
+        if model.isUITesting { live["status"] = .string("completed"); note = ""; return true }
         #endif
-        await model.action("/sessions/" + sessionID.pathEncoded + "/stop"); await refresh(model)
+        guard model.client != nil else {
+            note = "还没连上 mini——停止没发出去，可再试。不会假装已停下。"
+            return false
+        }
+        let ok = await model.action("/sessions/" + sessionID.pathEncoded + "/stop")
+        await refresh(model)
+        if !ok {
+            note = model.banner.isEmpty
+                ? "停止没成——还在跑，可再点「停止」。不会假装已停下。"
+                : "停止没成：" + model.banner + "——还在跑，可再点「停止」。不会假装已停下。"
+            return false
+        }
+        // 后端常直接 {ok:true}；Escape/interrupt 可能尚未生效，再看一眼。
+        if running {
+            try? await Task.sleep(for: .milliseconds(700))
+            await refresh(model)
+        }
+        if running {
+            note = "已请求停止，但还在跑——可再点「停止」。不会假装已停下。"
+            return false
+        }
+        note = ""
+        return true
     }
     func togglePin(_ model: AppModel) async {
+        guard !pinning, !sessionID.isEmpty else { return }
+        pinning = true
+        defer { pinning = false }
         #if DEBUG
         if model.isUITesting { metadata["pinned"] = .bool(!pinned); return }
         #endif
-        await model.action("/sessions/" + sessionID.pathEncoded + "/labels", fields: ["pinned": .bool(!pinned)], refresh: .work); await refresh(model)
+        let want = !pinned
+        let ok = await model.action("/sessions/" + sessionID.pathEncoded + "/labels", fields: ["pinned": .bool(want)], refresh: .work)
+        await refresh(model)
+        if !ok {
+            note = model.banner.isEmpty
+                ? (want ? "没置上——可再试。不会假装已置顶。" : "没取消掉——可再试。不会假装已取消。")
+                : (want ? "没置上：" : "没取消掉：") + model.banner + "——可再试。"
+            return
+        }
+        if pinned != want {
+            note = want
+                ? "置顶已请求，但状态没变——可再试。不会假装已置顶。"
+                : "取消置顶已请求，但状态没变——可再试。不会假装已取消。"
+        } else {
+            note = ""
+        }
     }
-    func end(_ model: AppModel) async {
+    /// 结束会话。HTTP 成功仍要确认不再 running；失败留 note。
+    @discardableResult
+    func end(_ model: AppModel) async -> Bool {
+        guard !ending, !sessionID.isEmpty else { return false }
+        ending = true
+        defer { ending = false }
         #if DEBUG
-        if model.isUITesting { live["status"] = .string("ended"); metadata["capabilities"]["input"] = .bool(false); return }
+        if model.isUITesting { live["status"] = .string("ended"); metadata["capabilities"]["input"] = .bool(false); note = ""; return true }
         #endif
-        await model.action("/sessions/" + sessionID.pathEncoded + "/end", refresh: .work); await refresh(model)
+        guard model.client != nil else {
+            note = "还没连上 mini——结束没发出去，可再试。不会假装已结束。"
+            return false
+        }
+        let ok = await model.action("/sessions/" + sessionID.pathEncoded + "/end", refresh: .work)
+        await refresh(model)
+        if !ok {
+            note = model.banner.isEmpty
+                ? "结束没成——会话还在，可再试。不会假装已结束。"
+                : "结束没成：" + model.banner + "——会话还在，可再试。不会假装已结束。"
+            return false
+        }
+        if running {
+            try? await Task.sleep(for: .milliseconds(700))
+            await refresh(model)
+        }
+        if running {
+            note = "已请求结束，但还在跑——可再试。不会假装已结束。"
+            return false
+        }
+        note = ""
+        return true
+    }
+    /// 拉齐成功时只清「打开/刷新失败」开口，保留停止/结束/发送失败提示。
+    private func clearOpenFailNote() {
+        let openFails = ["没读上", "刷新没成", "对不上", "摘录没", "会话对不上"]
+        if note.isEmpty || openFails.contains(where: { note.contains($0) }) {
+            note = ""
+        }
     }
     /// 原会话接不上，后端带着前情开了新会话：页面原地换成新会话，刚发的那条留在顶上，说明是接着哪段做的。
     private func continueIn(_ sid: String, from oldTitle: String, outgoing item: Outgoing) {

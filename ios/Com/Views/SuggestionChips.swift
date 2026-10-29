@@ -57,42 +57,54 @@ enum ReplyOptions {
 struct SuggestionChips: View {
     let messageID: String
     let options: [String]
-    let choose: (String) -> Void
+    /// 返回是否送达；失败时芯片回弹可再点。
+    let choose: (String) async -> Bool
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var shown = false
     @State private var picked: String?
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            Label("下一步", systemImage: "sparkle")
-                .font(TypeScale.caption).foregroundStyle(Palette.textTertiary)
+            Label(options.count == 1 ? "你可以回一句：" : "我想你可以：", systemImage: "sparkle")
+                .font(TypeScale.caption.weight(.medium)).foregroundStyle(Palette.textSecondary)
                 .labelStyle(.titleAndIcon)
                 .opacity(shown ? 1 : 0)
             FlowLayout(spacing: Space.sm) {
                 ForEach(Array(options.enumerated()), id: \.element) { index, option in
+                    let primary = index == 0
                     Button {
                         guard picked == nil else { return }
-                        Haptics.sent()
-                        withAnimation(reduce ? .linear(duration: 0.12) : ReplyMotion.pop) { picked = option }
-                        choose(option)
+                        Haptics.selection()
+                        withAnimation(reduce ? .easeOut(duration: 0.12) : ComMotion.pop) { picked = option }
+                        Task {
+                            let ok = await choose(option)
+                            if !ok {
+                                withAnimation(reduce ? .easeOut(duration: 0.12) : ComMotion.pop) { picked = nil }
+                            }
+                        }
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: ReplyOptions.symbol(for: option)).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accentText)
+                            Image(systemName: ReplyOptions.symbol(for: option))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(primary ? Palette.accentText : Palette.textSecondary)
                             Text(option).font(TypeScale.subheadline.weight(.medium)).foregroundStyle(Palette.textPrimary).lineLimit(1)
                         }
                         .padding(.horizontal, 14).frame(minHeight: 40)
-                        .background(Palette.surface, in: .capsule)
-                        .overlay(Capsule().strokeBorder(picked == option ? Palette.accent : Palette.separator, lineWidth: picked == option ? 1.5 : 0.5))
+                        .background(primary ? Palette.accent.opacity(0.12) : Palette.surface, in: .capsule)
+                        .overlay(Capsule().strokeBorder(
+                            picked == option ? Palette.accent : (primary ? Palette.accent.opacity(0.35) : Palette.separator),
+                            lineWidth: picked == option ? 1.5 : (primary ? 1 : 0.5)))
                         .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
                         .contentShape(.capsule)
                     }
-                    .buttonStyle(MessagePressStyle())
+                    .buttonStyle(SoftPressStyle())
                     .accessibilityIdentifier("suggestion-\(index)")
-                    // 动效库 15-bubble-glow-logo：气泡 back.out 弹出（从尾巴处小角度旋转放大落定）；
-                    // 动效库 20-build-checklist：各行错峰 2 帧（≈0.07s）；整组等回复正文上浮落定（≈0.32s）后再弹。
-                    .scaleEffect(shown ? (picked == nil || picked == option ? 1 : 0.92) : 0.6, anchor: .topLeading)
-                    .rotationEffect(.degrees(shown || reduce ? 0 : -6), anchor: .topLeading)
+                    .accessibilityLabel((primary ? "首选：" : "") + option)
+                    // curated：错峰 soft pop；Reduce Motion 只淡入不旋转。
+                    .scaleEffect(shown ? (picked == nil || picked == option ? 1 : 0.92) : (reduce ? 1 : 0.88), anchor: .topLeading)
                     .opacity(shown ? (picked == nil || picked == option ? 1 : 0) : 0)
-                    .animation(reduce ? .linear(duration: 0.15) : ReplyMotion.pop.delay(0.32 + Double(index) * 0.07), value: shown)
+                    .offset(y: shown || reduce ? 0 : 8)
+                    .animation(reduce ? .easeOut(duration: 0.15) : ComMotion.pop.delay(0.28 + Double(index) * ComMotion.stagger), value: shown)
+                    .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: picked)
                 }
             }
         }
@@ -100,7 +112,10 @@ struct SuggestionChips: View {
         .padding(.top, Space.xxs)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("suggestion-chips")
-        .onAppear { shown = true }
+        .onAppear {
+            if reduce { shown = true }
+            else { withAnimation(ComMotion.lift) { shown = true } }
+        }
         // 验收修正：.id 放在 ChatView 调用处（按消息 id），换到新回复时 shown 才会重置、重新弹入。
     }
 }

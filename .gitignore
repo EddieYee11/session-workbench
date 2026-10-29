@@ -28,6 +28,8 @@ verification/
 ios/.build/
 ios/DerivedData/
 ios/DerivedDataDevice/
+ios/DerivedDataDuo/
+ios/DerivedDataSim/
 ios/build/
 ios/**/xcuserdata/
 ios/.swiftpm/

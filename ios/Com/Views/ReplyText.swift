@@ -110,8 +110,8 @@ enum ReplyMotion {
     static let rise = Animation.timingCurve(0.215, 0.61, 0.355, 1, duration: 0.34)
     /// GSAP power2.out ≈ cubic-bezier(0.25, 0.46, 0.45, 0.94)。
     static let sweep = Animation.timingCurve(0.25, 0.46, 0.45, 0.94, duration: 0.36)
-    /// GSAP back.out(1.7) 的弹簧近似：轻微过冲后落定。
-    static let pop = Animation.spring(response: 0.42, dampingFraction: 0.62)
+    /// 与 `ComMotion.pop` 同参（轻微过冲）；保留本地枚举以便 Reply 进场与 claim 逻辑同文件。
+    static let pop = ComMotion.pop
     /// 已经播过进场的消息（滚动重建、切页回来不重播）。
     @MainActor static var played: Set<String> = []
     /// 只给刚到（30 秒内）、还没播过的回复播一次。

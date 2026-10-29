@@ -59,6 +59,7 @@ struct RhythmicText: View {
 
 struct VoiceSessionPanel: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
     var quick = false
     private var title: String {
         if model.pendingApproval != nil {
@@ -66,6 +67,10 @@ struct VoiceSessionPanel: View {
             case .recording: return "说「批准」，或「拒绝」。"
             case .transcribing: return "正在听你的决定…"
             case .ready: return "听到了。"
+            case .failed:
+                return model.voice.hasCapture
+                    ? "没听清这次决定——录音还在，再说一次或重新转写。"
+                    : "开麦没成——可再试；批准/拒绝仍可回卡片点。"
             default: return "用一句话决定这次操作。"
             }
         }
@@ -74,8 +79,23 @@ struct VoiceSessionPanel: View {
         case .transcribing: "正在整理你的话…"
         case .ready: "听到了。"
         case .recorded: "这段话，已经留下。"
-        case .failed: "录音已保留。"
+        case .failed:
+            model.voice.hasCapture
+                ? "转写没成——录音还在，可重新转写。别当成已经发出去。"
+                : "开麦没成——可再试；不会假装我在听。"
+        case .idle where model.voice.starting: "正在开麦…"
         default: "想说点什么？"
+        }
+    }
+    private var primaryLabel: String {
+        if model.voice.starting { return "开麦中…" }
+        switch model.voice.phase {
+        case .recording: return "完成录音"
+        case .ready: return "正在发送"
+        case .transcribing: return "转写中"
+        case .failed where model.voice.hasCapture, .recorded: return "重新转写"
+        case .failed: return "再试开麦"
+        default: return model.voice.hasCapture ? "重新转写" : "开始录音"
         }
     }
     var body: some View {
@@ -84,7 +104,10 @@ struct VoiceSessionPanel: View {
             VStack(alignment: .leading, spacing: Space.lg) {
                 HStack(spacing: Space.sm) {
                     StatusDot(tone: model.voice.phase == .recording ? .danger : .accent)
-                    Text(model.voice.phase == .recording ? "正在录音" : model.voice.phase == .transcribing ? "正在转写" : "Com 语音").font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.textSecondary)
+                    Text(model.voice.phase == .recording ? "正在录音" : model.voice.phase == .transcribing ? "正在转写" : "Com 语音")
+                        .font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.textSecondary)
+                        .contentTransition(.opacity)
+                        .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: model.voice.phase)
                     Spacer()
                     Button { model.voice.autoSend.toggle(); Haptics.selection() } label: {
                         HStack(spacing: Space.xxs) {
@@ -96,11 +119,12 @@ struct VoiceSessionPanel: View {
                         .padding(.horizontal, Space.sm).padding(.vertical, Space.xxs)
                         .background(model.voice.autoSend ? Palette.accent : Palette.fill, in: .capsule)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SoftPressStyle(scale: 0.96))
                     .accessibilityLabel("停顿 0.7 秒自动发送")
                     .accessibilityValue(model.voice.autoSend ? "开" : "关")
                     .accessibilityIdentifier("voice-auto-send")
                     Text(String(format: "%d:%02d", model.voice.seconds / 60, model.voice.seconds % 60)).font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textSecondary)
+                        .contentTransition(.numericText())
                         .padding(.horizontal, Space.sm).padding(.vertical, Space.xxs).background(Palette.fill, in: .capsule)
                 }
                 // Long dictation scrolls with the newest words instead of clipping at line 3;
@@ -126,7 +150,18 @@ struct VoiceSessionPanel: View {
                         }
                     }.frame(height: 28).accessibilityHidden(true)
                 }
-                if !model.voice.error.isEmpty { Text(model.voice.error).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).lineLimit(3) }
+                if !model.voice.error.isEmpty {
+                    InlineNotice(text: model.voice.error, tone: .danger)
+                        .accessibilityIdentifier("voice-fail")
+                } else if model.voice.phase == .failed {
+                    InlineNotice(
+                        text: model.voice.hasCapture
+                            ? "转写失败时录音仍保留——点「重新转写」；别当成已发出。"
+                            : "开麦失败时不会假装在听——检查麦克风权限或配对后再试。",
+                        tone: .danger
+                    )
+                    .accessibilityIdentifier("voice-fail-opening")
+                }
                 HStack {
                     CircleActionButton(symbol: "xmark", label: "放弃录音", size: 40) {
                         model.voice.cancel()
@@ -135,17 +170,19 @@ struct VoiceSessionPanel: View {
                     Spacer()
                     Button { primaryAction() } label: {
                         HStack(spacing: Space.sm) {
-                            if model.voice.phase == .transcribing { ProgressView().controlSize(.small).tint(Palette.onAccent) }
+                            if model.voice.phase == .transcribing || model.voice.starting { ProgressView().controlSize(.small).tint(Palette.onAccent) }
                             else { Image(systemName: model.voice.phase == .recording ? "stop.fill" : model.voice.phase == .ready ? "arrow.up" : "mic") }
-                            Text(model.voice.phase == .recording ? "完成录音" : model.voice.phase == .ready ? "正在发送" : model.voice.phase == .transcribing ? "转写中" : model.voice.hasCapture ? "重新转写" : "开始录音")
+                            Text(primaryLabel)
                         }
                     }
                     .buttonStyle(.primaryAction)
-                    .disabled(model.voice.phase == .ready || model.voice.phase == .transcribing || (model.voice.phase == .ready && model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                    .disabled(model.voice.starting || model.voice.phase == .ready || model.voice.phase == .transcribing || (model.voice.phase == .ready && model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                    .accessibilityIdentifier("voice-primary")
                 }.buttonStyle(.plain)
             }.padding(Space.lg)
         }.frame(height: model.voice.transcript.count > 36 ? 280 : 220)
-        .animation(.smooth(duration: 0.35), value: model.voice.transcript.count > 36)
+        .animation(ComMotion.reduced(reduce, ComMotion.settle), value: model.voice.transcript.count > 36)
+        .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: model.voice.phase)
         .clipShape(.rect(cornerRadius: Radius.xl, style: .continuous))
         .onChange(of: model.voice.phase) { old, phase in
             if old == .recording && phase == .recorded { Task { await model.transcribeVoice() } }
@@ -155,12 +192,27 @@ struct VoiceSessionPanel: View {
         if model.voice.phase == .recording {
             model.voice.finishRecording()
         } else if model.voice.hasCapture { Task { await model.transcribeVoice() } }
-        else { Task { await model.voice.start(using: model.client) } }
+        else {
+            guard !model.voice.starting else { return }
+            Task { await model.voice.start(using: model.client) }
+        }
     }
 }
 
 struct QuickVoiceView: View {
     @Environment(AppModel.self) private var model
+    private var footer: String {
+        switch model.voice.phase {
+        case .failed:
+            return model.voice.hasCapture
+                ? "失败时录音还在——可重新转写或放弃。不会假装已发出。"
+                : "开麦失败可再试。先连上 mini，并允许麦克风。"
+        case .transcribing: return "正在转写——通了才发送；失败会留录音。"
+        case .recording: return model.voice.autoSend ? "停顿 0.7 秒自动转文字并发送。" : "说完点完成，再转文字发送。"
+        default:
+            return model.voice.autoSend ? "停顿 0.7 秒自动转文字并发送。" : "完成录音后转为文字，自动发送。"
+        }
+    }
     var body: some View {
         VStack(spacing: Space.md) {
             HStack(spacing: Space.md) {
@@ -175,7 +227,8 @@ struct QuickVoiceView: View {
                 }
             }.padding(.horizontal, Layout.margin).padding(.top, Space.xl)
             VoiceSessionPanel(quick: true).background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous)).elevation(.raised).padding(.horizontal, Space.md)
-            Text(model.voice.autoSend ? "停顿 0.7 秒自动转文字并发送。" : "完成录音后转为文字，自动发送。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            Text(footer).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                .accessibilityIdentifier("voice-footer")
             Spacer(minLength: 0)
         }
     }

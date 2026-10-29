@@ -176,18 +176,19 @@ struct WorkProcess: Equatable, Sendable {
     /// 3 步以上的轮次进了航程列表，可以回看。
     var isCase: Bool { (plan?.steps.count ?? 0) >= 3 }
 
-    /// 「当前步骤」：顶栏气泡和流里那一行共用。
+    /// 「当前步骤」：顶栏气泡和流里那一行共用——像伙伴自语，不是系统状态码。
     var current: String {
         if let plan, live, !plan.active.isEmpty { return plan.active }
         if let group = groups.last, group.running { return group.liveText }
-        if phase == "responding" || phase == "speaking" { return ["在组织回复", "开始写回复", "把结果理一理"][seed % 3] }
-        if groups.isEmpty { return ["在想怎么办", "先理一理思路", "琢磨一下"][seed % 3] }
-        return ["想想下一步", "接着往下做", "看看还缺什么"][(seed + groups.count) % 3]
+        if phase == "responding" || phase == "speaking" { return ["我在组织回复", "开始把结果写清楚", "把结论理一理"][seed % 3] }
+        if groups.isEmpty { return ["我在想怎么帮你", "先理清下手点", "琢磨一下"][seed % 3] }
+        return ["接着往下做", "看看还缺什么", "我再确认一步"][(seed + groups.count) % 3]
     }
     var summary: String {
         let seconds = durationMS > 0 ? durationMS / 1000 : max(0, finishedAt - startedAt)
         if let plan { return (plan.title.isEmpty ? "" : plan.title + " · ") + "\(plan.done)/\(plan.steps.count) 步 · " + Self.duration(seconds) }
-        return "做了 \(stepCount) 步 · 用时 " + Self.duration(seconds)
+        if stepCount == 0 { return "想了一下 · " + Self.duration(seconds) }
+        return "办完了 · \(stepCount) 步 · " + Self.duration(seconds)
     }
     static func duration(_ seconds: Double) -> String {
         let s = Int(seconds.rounded())
@@ -244,7 +245,7 @@ struct WorkProcessRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 Haptics.selection()
-                withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open.toggle() }
+                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open.toggle() }
             } label: { header }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier(process.live ? "work-process-live" : "work-process-summary")
@@ -268,7 +269,7 @@ struct WorkProcessRow: View {
                         ForEach(Array(process.groups.enumerated()), id: \.element.id) { index, group in
                             StepLine(group: group, live: process.live && index == process.groups.count - 1 && group.running)
                         }
-                        if process.groups.isEmpty { Text("还没动用工具，先在想。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary) }
+                        if process.groups.isEmpty { Text("还没动工具——我先在想。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary) }
                     }
                     ForEach(Array(extra.suffix(8).enumerated()), id: \.offset) { index, event in
                         StepRow(text: eventLabel(event), state: index < min(8, extra.count) - 1 ? .done : stepState(event), time: clockTime(event["at"].double))
@@ -283,10 +284,10 @@ struct WorkProcessRow: View {
         .padding(.horizontal, Space.xs)
         // 做完自动折成一行；想看再点开。
         .onChange(of: process.live) { _, live in
-            if !live { withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = false } }
+            if !live { withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open = false } }
         }
         .onChange(of: process.plan != nil) { _, has in
-            if has && process.live { withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = true } }
+            if has && process.live { withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open = true } }
         }
     }
     @ViewBuilder private var header: some View {
@@ -438,7 +439,7 @@ private struct TimelineNode: View {
                     Circle().fill(Palette.accent).frame(width: 17, height: 17)
                     Image(systemName: "checkmark").font(.system(size: 8.5, weight: .heavy)).foregroundStyle(Palette.onAccent)
                 }
-                .transition(.scale(scale: 0.55).combined(with: .opacity).animation(.spring(response: 0.42, dampingFraction: 0.62)))
+                .transition(.scale(scale: 0.55).combined(with: .opacity).animation(ComMotion.pop))
             case "doing" where live:
                 // 参考视频：浅底盘 + 实心中心点 + 外圈一段弧在转。
                 // 10-28 三轮：弧长随呼吸伸缩（1.9 秒一口气）、中心点同步轻轻起伏，转速不变，读起来是「活的」而不是机械转圈。

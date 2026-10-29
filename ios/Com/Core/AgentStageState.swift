@@ -16,7 +16,7 @@ public enum AgentStageState: String, Sendable {
         case .review: "这一步需要你确认"
         case .delivered: "整理好了，给你放在这边"
         case .failed: "遇到了问题，查看消息里的说明"
-        case .offline: "正在恢复连接，进度稍后更新"
+        case .offline: "连接断了，进度稍后再说"
         }
     }
     public var symbol: String {

@@ -10,6 +10,8 @@ struct ChatView: View {
     private var reduce: Bool { systemReduce || (model.isUITesting && ProcessInfo.processInfo.arguments.contains("--ui-reduce-motion")) }
     @State private var atBottom = true
     @State private var historyLoading = false
+    /// 「更早的对话」拉网失败时页内提示（本地扩窗不算失败）。
+    @State private var historyFailNote = ""
     @State private var frames: [String: CGRect] = [:]
     @State private var flights: [String: OutgoingFlight] = [:]
     @State private var unread: Set<String> = []
@@ -27,6 +29,8 @@ struct ChatView: View {
     @State private var viewport = ChatViewport()
     /// r2-chat：点过的建议卡所在消息（点完立刻收起，不等服务端回执）。
     @State private var usedSuggestions: String?
+    /// 全部中断进行中，防连点。
+    @State private var interruptingAll = false
     private var rows: [ChatTimelineRow] { ChatPage.window(timeline, budget: historyBudget) }
     private var assistants: Set<String> { Set(model.conversation.messages.filter { $0["role"].string == "assistant" }.map(\.id)) }
     var body: some View {
@@ -38,35 +42,42 @@ struct ChatView: View {
             ScrollView {
                 VStack(spacing: Space.xl) {
                     if (rows.count < timeline.count || model.moreHistory) && !model.conversation.messages.isEmpty {
-                        Button(historyLoading ? "正在读取…" : "更早的对话") {
-                            followLatest = false; manuallyReading = true
-                            let anchor = rows.first(where: { viewport.visibleRows.contains($0.id) })?.id
-                            historyLoading = true
-                            Task {
-                                if rows.count < timeline.count {
-                                    historyBudget += ChatPage.standardBudget
-                                } else {
-                                    await model.loadHistory()
-                                    historyBudget += ChatPage.standardBudget
+                        VStack(spacing: Space.sm) {
+                            Button(historyLoading ? "正在读取…" : "更早的对话") {
+                                guard !historyLoading else { return }
+                                followLatest = false; manuallyReading = true
+                                let anchor = rows.first(where: { viewport.visibleRows.contains($0.id) })?.id
+                                historyLoading = true
+                                historyFailNote = ""
+                                Task {
+                                    if rows.count < timeline.count {
+                                        historyBudget += ChatPage.standardBudget
+                                    } else {
+                                        let ok = await model.loadHistory()
+                                        if ok {
+                                            historyBudget += ChatPage.standardBudget
+                                        } else {
+                                            historyFailNote = "更早的对话没读上——可再点一次"
+                                        }
+                                    }
+                                    await Task.yield()
+                                    if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+                                    historyLoading = false
                                 }
-                                await Task.yield()
-                                if let anchor { proxy.scrollTo(anchor, anchor: .top) }
-                                historyLoading = false
                             }
-                        }.buttonStyle(.secondaryAction).disabled(historyLoading)
+                            .buttonStyle(.secondaryAction)
+                            .disabled(historyLoading)
+                            .accessibilityIdentifier("chat-load-history")
+                            if !historyFailNote.isEmpty {
+                                Label(historyFailNote, systemImage: "exclamationmark.circle")
+                                    .font(TypeScale.footnote.weight(.medium))
+                                    .foregroundStyle(Palette.danger)
+                                    .accessibilityIdentifier("chat-history-fail")
+                            }
+                        }
                     }
                     if model.conversation.messages.isEmpty && rows.isEmpty {
-                        VStack(alignment: .leading, spacing: Space.lg) {
-                            VStack(alignment: .leading, spacing: Space.sm) {
-                                Text("今天还没有要你管的事").font(TypeScale.title)
-                                Text("邮件、日历、群消息和两台电脑我都在看。有变化，我会先整理好放到这里。").font(TypeScale.callout).foregroundStyle(Palette.textSecondary).lineSpacing(4)
-                            }
-                            FlowLayout(spacing: Space.sm + 2) {
-                                ForEach(["明天要准备什么", "这个月花了多少", "Codex 跑完了吗"], id: \.self) { prompt in
-                                    Button(prompt) { Task { await model.send(textOverride: prompt) } }.buttonStyle(PromptChipStyle())
-                                }
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, Space.xxxl).padding(.horizontal, Space.xs)
+                        ChatEmptyPresence()
                     }
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         let isAgent = row.message["role"].string == "assistant"
@@ -97,12 +108,13 @@ struct ChatView: View {
                         let options = ReplyOptions.options(for: latest)
                         if !options.isEmpty {
                             SuggestionChips(messageID: latest.id, options: options) { option in
-                                // 先让被点的那张亮一下（≈0.2s），再收起其余卡片并把这句发出去。
-                                Task { @MainActor in
-                                    if !reduce { try? await Task.sleep(for: .milliseconds(200)) }
+                                // 先亮一下再发；送达成功才收起整组；失败芯片回弹可重试。
+                                if !reduce { try? await Task.sleep(for: .milliseconds(200)) }
+                                let ok = await model.send(textOverride: option)
+                                if ok {
                                     withAnimation(reduce ? nil : .smooth(duration: 0.28)) { usedSuggestions = latest.id }
-                                    await model.send(textOverride: option)
                                 }
+                                return ok
                             }
                             .id(latest.id)  // r2-chat 验收修正：新回复换一组卡片时重建状态，重新播弹入
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -241,39 +253,101 @@ struct ChatView: View {
                             .floatingGlass(.capsule)
                             .contentShape(Rectangle())
                     }
-                        .buttonStyle(.plain).zIndex(1).padding(Space.lg).accessibilityIdentifier("chat-jump-latest").accessibilityLabel(unread.isEmpty ? "回到最新消息" : "\(unread.count) 条新回复，回到最新消息")
+                        .buttonStyle(SoftPressStyle(scale: 0.94)).zIndex(1).padding(Space.lg).accessibilityIdentifier("chat-jump-latest").accessibilityLabel(unread.isEmpty ? "回到最新消息" : "\(unread.count) 条新回复，回到最新消息")
                 }
             }
-            // agent 忙碌时显示中断按钮
-            if model.stage.state.isBusy {
-                HStack {
-                    Spacer()
-                    Button {
-                        Task { await model.interrupt() }
-                    } label: {
-                        HStack(spacing: Space.xs) {
-                            Image(systemName: "stop.circle.fill")
-                                .font(.system(size: 16, weight: .semibold))
-                            Text(model.activeRuns.count > 1 ? "全部中断 · \(model.activeRuns.count) 件在并行" : "中断")
-                                .font(TypeScale.callout.weight(.semibold))
-                        }
-                        .foregroundStyle(Palette.coral)
-                        .padding(.horizontal, Space.md)
-                        .padding(.vertical, Space.sm)
-                        .background(Palette.coral.opacity(0.12), in: .capsule)
-                        .overlay(Capsule().strokeBorder(Palette.coral.opacity(0.3), lineWidth: 1))
+            if !model.locateNote.isEmpty {
+                InlineNotice(text: model.locateNote, tone: .danger)
+                    .padding(.horizontal, Space.lg)
+                    .accessibilityIdentifier("chat-locate-fail")
+            }
+            if !model.todayOpening, !model.todayOpenNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    InlineNotice(text: model.todayOpenNote, tone: .danger)
+                    Button(model.todayOpening ? "刷新中…" : "再刷主聊") {
+                        guard !model.todayOpening else { return }
+                        model.openTodayDeepLink()
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("中断当前操作")
-                    Spacer()
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(model.todayOpening)
+                    .accessibilityIdentifier("chat-today-refresh")
                 }
                 .padding(.horizontal, Space.lg)
-                .padding(.vertical, Space.xs)
+                .accessibilityIdentifier("chat-today-open-fail")
+            }
+            if !model.financeOpening, !model.financeOpenNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    InlineNotice(text: model.financeOpenNote, tone: .warning)
+                    Button(model.financeOpening ? "打开中…" : "打开账本") {
+                        guard !model.financeOpening else { return }
+                        model.openFinance()
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(model.financeOpening)
+                    .accessibilityIdentifier("chat-finance-open")
+                }
+                .padding(.horizontal, Space.lg)
+                .accessibilityIdentifier("chat-finance-refresh-fail")
+            }
+            // SSE 断线：HTTP 拉齐成功也不清；勿假装实时已恢复。
+            if !model.streamNote.isEmpty {
+                InlineNotice(text: model.streamNote, tone: .danger)
+                    .padding(.horizontal, Space.lg)
+                    .accessibilityIdentifier("chat-stream-fail")
+            }
+            // agent 忙碌时显示中断按钮
+            if model.stage.state.isBusy || !model.interruptNote.isEmpty {
+                VStack(spacing: Space.sm) {
+                    if !model.interruptNote.isEmpty {
+                        InlineNotice(text: model.interruptNote, tone: .danger)
+                            .padding(.horizontal, Space.lg)
+                            .accessibilityIdentifier("chat-interrupt-fail")
+                    }
+                    if model.stage.state.isBusy {
+                        HStack {
+                            Spacer()
+                            Button {
+                                guard !interruptingAll else { return }
+                                Haptics.selection()
+                                interruptingAll = true
+                                model.interruptNote = ""
+                                Task {
+                                    _ = await model.interrupt()
+                                    interruptingAll = false
+                                }
+                            } label: {
+                                HStack(spacing: Space.xs) {
+                                    Image(systemName: "stop.circle.fill")
+                                        .font(.system(size: 16, weight: .semibold))
+                                    Text(interruptingAll ? "正在中断…" : (model.activeRuns.count > 1 ? "全部中断 · \(model.activeRuns.count) 件在并行" : "中断"))
+                                        .font(TypeScale.callout.weight(.semibold))
+                                }
+                                .foregroundStyle(Palette.coral)
+                                .padding(.horizontal, Space.md)
+                                .padding(.vertical, Space.sm)
+                                .background(Palette.coral.opacity(0.12), in: .capsule)
+                                .overlay(Capsule().strokeBorder(Palette.coral.opacity(0.3), lineWidth: 1))
+                            }
+                            .buttonStyle(SoftPressStyle(scale: 0.96))
+                            .disabled(interruptingAll)
+                            .accessibilityLabel("中断当前操作")
+                            .accessibilityIdentifier("chat-interrupt-all")
+                            Spacer()
+                        }
+                        .padding(.horizontal, Space.lg)
+                        .padding(.vertical, Space.xs)
+                    }
+                }
                 .transition(.asymmetric(
                     insertion: reduce ? .opacity : .scale(scale: 0.92).combined(with: .opacity),
                     removal: .opacity
                 ))
-                .animation(reduce ? .linear(duration: 0.12) : .spring(response: 0.35, dampingFraction: 0.82), value: model.stage.state.isBusy)
+                .animation(ComMotion.reduced(reduce, ComMotion.settle), value: model.stage.state.isBusy)
+                .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: model.interruptNote.isEmpty)
+            }
+            // 有对话时仍提示「等你 / 下一步」，保持 Muse 式对话重心。
+            if !model.conversation.messages.isEmpty || !rows.isEmpty {
+                ChatAttentionStrip()
             }
             // 输入区独占一整行；功能 Dock 在它下面（RootView 统一挂，打字时让位）。
             ComposerView(focusChanged: { focused in
@@ -385,6 +459,10 @@ struct MessageView: View, Equatable {
     var flying = false
     var pending: PendingMessage?
     var isConsecutiveAgent = false
+    /// 「查回执」进行中：防连点叠查。
+    @State private var checkingReceipt = false
+    /// 单条中断进行中。
+    @State private var interrupting = false
     var user: Bool { message["role"].string == "user" }
     var text: String {
         let raw = textContent(message["text"].isNull ? message["content"] : message["text"])
@@ -430,12 +508,31 @@ struct MessageView: View, Equatable {
                     .accessibilityIdentifier("chat-bubble-" + message.id)
             } else {
                 // 它的回复：加浅色气泡区分连续消息，靠标题层级、粗体重点和段落呼吸分层。
-                ClampedWhenProactive(proactive: ProactiveMessage.matches(message), text: text) {
-                    ReplyText(text: text, motionID: message.id, createdAt: message["created_at"].double)
-                }
+                // 记账快通道回执（「已记 -35 餐饮…」）加一条轻标签；刚到的 3 秒内补一次成功触感。
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    if text.hasPrefix("已记") {
+                        Label("已记账", systemImage: "yensign.circle.fill")
+                            .font(TypeScale.caption.weight(.semibold))
+                            .foregroundStyle(Palette.success)
+                            .accessibilityIdentifier("chat-bookkeep-receipt-" + message.id)
+                            .onAppear {
+                                let age = Date().timeIntervalSince1970 - message["created_at"].double
+                                if age >= 0, age < 3 { Haptics.success() }
+                            }
+                    }
+                    ClampedWhenProactive(proactive: ProactiveMessage.matches(message), text: text) {
+                        ReplyText(text: text, motionID: message.id, createdAt: message["created_at"].double)
+                    }
                     .foregroundStyle(Palette.textPrimary)
-                    .agentBubble()
-                    .accessibilityIdentifier("agent-bubble-" + message.id)
+                }
+                .agentBubble()
+                .overlay(alignment: .leading) {
+                    if text.hasPrefix("已记") {
+                        RoundedRectangle(cornerRadius: 2).fill(Palette.success.opacity(0.85))
+                            .frame(width: 3).padding(.vertical, Space.sm).padding(.leading, 4)
+                    }
+                }
+                .accessibilityIdentifier("agent-bubble-" + message.id)
             }
             if !message["attachments"].array.isEmpty {
                 ForEach(message["attachments"].array.map(RemoteRow.init)) { row in
@@ -446,9 +543,24 @@ struct MessageView: View, Equatable {
             if user { deliveryStatus }
             if user && model.activeRuns.count > 1 && ["sending", "running"].contains(message["status"].string) {
                 // 并行时每件可以单独停，不影响另外在跑的。
-                Button { Task { await model.interrupt(messageID: message.id) } } label: {
-                    Label("停下这件", systemImage: "stop.circle").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.coral)
-                }.buttonStyle(.plain).accessibilityIdentifier("chat-stop-" + message.id)
+                VStack(alignment: .trailing, spacing: Space.xs) {
+                    Button {
+                        guard !interrupting else { return }
+                        interrupting = true
+                        model.interruptNote = ""
+                        Task {
+                            _ = await model.interrupt(messageID: message.id)
+                            interrupting = false
+                        }
+                    } label: {
+                        Label(interrupting ? "正在停下…" : "停下这件", systemImage: "stop.circle").font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.coral)
+                    }.buttonStyle(.plain).disabled(interrupting).accessibilityIdentifier("chat-stop-" + message.id)
+                    if !model.interruptNote.isEmpty {
+                        InlineNotice(text: model.interruptNote, tone: .danger)
+                            .frame(maxWidth: 280, alignment: .trailing)
+                            .accessibilityIdentifier("chat-stop-fail-" + message.id)
+                    }
+                }
             }
             if !message["error"].string.isEmpty { InlineNotice(text: message["error"].string) }
             ForEach(message["linked_tasks"].array.map(RemoteRow.init)) { row in
@@ -485,13 +597,42 @@ struct MessageView: View, Equatable {
             HStack(spacing: Space.sm) {
                 if pending.state == .checking { ProgressView().controlSize(.mini) }
                 Text(pending.state == .delivered ? "已受理 · 正在同步" : pending.note).font(TypeScale.footnote).foregroundStyle(pending.state == .rejected ? Palette.danger : Palette.textSecondary)
-                if pending.state == .uncertain { Button("查回执") { Task { await model.deliver(pending.id) } }.buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold)) }
+                if pending.state == .uncertain || checkingReceipt {
+                    if checkingReceipt { ProgressView().controlSize(.mini) }
+                    Button(checkingReceipt ? "查询中…" : "查回执") {
+                        guard !checkingReceipt else { return }
+                        checkingReceipt = true
+                        let id = pending.id
+                        Task {
+                            let state = await model.deliver(id)
+                            let after = model.pending.first(where: { $0.id == id })
+                            let detail = after?.note ?? ""
+                            if state == .delivered {
+                                model.chatComposerNote = ""
+                            } else if state == .rejected {
+                                model.chatComposerNote = detail.isEmpty
+                                    ? "没送出去——可点「回到草稿」再试。不会假装已核实。"
+                                    : "没送出去：" + detail + "——可点「回到草稿」再试。"
+                            } else {
+                                // 仍 uncertain/checking 或查失败：Composer 开口，别只靠气泡灰字。
+                                model.chatComposerNote = detail.isEmpty
+                                    ? "回执仍待核实——不会重复提交；可再点「查回执」或到设置→发送记录。别当成已发出。"
+                                    : "回执仍待核实：" + detail + "——不会重复提交；可再查。别当成已发出。"
+                            }
+                            checkingReceipt = false
+                        }
+                    }
+                    .buttonStyle(.quiet)
+                    .font(TypeScale.footnote.weight(.semibold))
+                    .disabled(checkingReceipt || model.sending)
+                    .accessibilityIdentifier("chat-check-receipt")
+                }
                 if pending.state == .rejected && model.draft.isEmpty && model.attachments.isEmpty { Button("回到草稿") { model.restoreRejected(pending.id) }.buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold)) }
             }
         } else if !message["status"].string.isEmpty && !(process?.live == true && ["sending", "running"].contains(message["status"].string)) {
             // 在跑时由下面的「工作过程」一行说明，不再重复「已送达 · 执行中」。
             let status = message["status"].string
-            Label(["queued": "已送达 · 排队中", "sending": "已送达 · 正在处理", "running": "已送达 · 执行中", "completed": "已送达", "failed": "本轮失败", "unknown": "结果未知", "approval_required": "等待批准", "cancelled": "已停止"][status] ?? "已送达", systemImage: status == "failed" || status == "unknown" ? "exclamationmark.circle" : "checkmark")
+            Label(["queued": "收到了 · 我先排上", "sending": "收到了 · 我在接", "running": "我在办", "completed": "办完了", "failed": "这轮没办成", "unknown": "结果还不清楚", "approval_required": "要你批准这一步", "cancelled": "已停下"][status] ?? "收到了", systemImage: status == "failed" || status == "unknown" ? "exclamationmark.circle" : "checkmark")
                 .font(TypeScale.footnote).foregroundStyle(status == "failed" || status == "unknown" ? Palette.warning : Palette.textTertiary)
         }
     }
@@ -543,6 +684,40 @@ struct ComposerView: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: Space.sm) {
+            if !model.chatComposerNote.isEmpty {
+                InlineNotice(text: model.chatComposerNote, tone: .danger)
+                    .padding(.horizontal, Space.xs)
+                    .accessibilityIdentifier("chat-composer-fail")
+            }
+            if !model.cachePersistNote.isEmpty {
+                InlineNotice(text: model.cachePersistNote, tone: .warning)
+                    .padding(.horizontal, Space.xs)
+                    .accessibilityIdentifier("chat-cache-persist-fail")
+            }
+            if !model.shareInboxNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    InlineNotice(text: model.shareInboxNote, tone: .warning)
+                    Button("打开收件箱") { model.openShareInbox() }
+                        .buttonStyle(.secondaryCompact)
+                        .accessibilityIdentifier("chat-share-inbox-open")
+                }
+                .padding(.horizontal, Space.xs)
+                .accessibilityIdentifier("chat-share-inbox-fail")
+            }
+            if !model.searchOpenNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    InlineNotice(text: model.searchOpenNote, tone: .warning)
+                    Button(model.searchOpening ? "打开中…" : "打开搜索") {
+                        guard !model.searchOpening else { return }
+                        model.openSearch()
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(model.searchOpening)
+                    .accessibilityIdentifier("chat-search-open")
+                }
+                .padding(.horizontal, Space.xs)
+                .accessibilityIdentifier("chat-search-open-fail")
+            }
             if !model.attachments.isEmpty {
                 ScrollView(.horizontal) {
                     HStack {
@@ -571,62 +746,114 @@ struct ComposerView: View {
                         Menu {
                             Button("选择文件", systemImage: "doc") { importing = true }
                             PhotosPicker(selection: $photo, matching: .images) { Label("选择照片", systemImage: "photo") }
-                            Button("查看成果", systemImage: "tray.full") { model.showSearch = true }
+                            Button(model.searchOpening ? "打开中…" : "查看成果", systemImage: model.searchOpening ? "hourglass" : "tray.full") {
+                                guard !model.searchOpening else { return }
+                                model.openSearch()
+                            }
+                            .disabled(model.searchOpening)
                         } label: {
                             Image(systemName: uploading ? "hourglass" : "plus").font(.system(size: 18, weight: .medium)).foregroundStyle(Palette.textPrimary)
                                 .frame(width: 44, height: 44).background(Palette.fill, in: .circle)
                         }.disabled(uploading).accessibilityLabel("附件与成果")
                         TextField("发消息", text: $model.draft, axis: .vertical).font(TypeScale.callout).lineLimit(1...6).focused($focused).padding(.vertical, Space.md).accessibilityIdentifier("message-input").chatFrame("composer")
                         if model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Button { focused = false; model.openVoice() } label: { Image(systemName: "mic").font(.system(size: 20, weight: .regular)).foregroundStyle(Palette.textPrimary).frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).contentShape(Rectangle()).accessibilityIdentifier("chat-voice-start").accessibilityLabel("开始语音")
+                            Button {
+                                guard !model.voice.starting else { return }
+                                focused = false
+                                model.openVoice()
+                            } label: {
+                                Image(systemName: model.voice.starting ? "hourglass" : "mic")
+                                    .font(.system(size: 20, weight: .regular))
+                                    .foregroundStyle(Palette.textPrimary)
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(SoftPressStyle(scale: 0.92))
+                            .contentShape(Rectangle())
+                            .disabled(model.voice.starting)
+                            .accessibilityIdentifier("chat-voice-start")
+                            .accessibilityLabel(model.voice.starting ? "正在开麦" : "开始语音")
                         } else {
-                            CircleActionButton(symbol: "arrow.up", label: "发送消息", filled: true, size: 40) {
+                            CircleActionButton(symbol: model.sending ? "hourglass" : "arrow.up", label: model.sending ? "发送中" : "发送消息", filled: true, size: 40) {
+                                // 按下即反馈，受理成功后再 Haptics.sent（AppModel.send）——快路径体感更跟手。
+                                guard !model.sending else { return }
+                                Haptics.selection()
+                                model.chatComposerNote = ""
                                 let fromVoice = model.voice.phase == .ready
                                 Task { await model.send(voiceMessage: fromVoice); if fromVoice && model.pending.last?.state == .delivered { model.voice.cancel() } }
                             }.disabled(model.sending).padding(.trailing, 2)
+                            .accessibilityIdentifier("chat-send")
                         }
                     }.padding(.leading, Space.sm).padding(.trailing, Space.sm).padding(.vertical, Space.sm)
                 }
             }
             .composerSurface()
-            .animation(reduce ? .linear(duration: 0.12) : .spring(response: 0.4, dampingFraction: 0.86), value: model.voice.phase)
+            .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: model.voice.phase)
 
         }
         .onChange(of: model.draft) { _, _ in model.persistSoon() }
         .onChange(of: focused) { _, value in focusChanged(value) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
-            if case .success(let url) = result { Task { await upload(url: url) } }
+            switch result {
+            case .success(let url): Task { await upload(url: url) }
+            case .failure(let error):
+                // 窗内开口，别只靠 banner alert。
+                model.chatComposerNote = "文件没选上：" + error.localizedDescription + "——可再点「+」选一次。"
+            }
         }
         .onChange(of: photo) { _, item in
             guard let item else { return }
             Task {
+                model.chatComposerNote = ""
                 do {
-                    guard let data = try await item.loadTransferable(type: Data.self) else { return }
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        model.chatComposerNote = "这张照片读不出来——换一张，或用「选择文件」。不会假装已挂上。"
+                        photo = nil
+                        return
+                    }
                     let type = item.supportedContentTypes.first
                     await upload(data: data, name: "照片-\(Date().formatted(.iso8601.year().month().day()))." + (type?.preferredFilenameExtension ?? "jpg"), mime: type?.preferredMIMEType ?? "image/jpeg")
-                } catch { model.banner = error.localizedDescription }
+                } catch {
+                    model.chatComposerNote = "照片没读上：" + error.localizedDescription + "——可再选一次。"
+                }
                 photo = nil
             }
         }
     }
     private func upload(url: URL) async {
+        model.chatComposerNote = ""
         let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             guard size <= 20 * 1024 * 1024 else { throw APIError(status: 413, detail: "附件超过 20 MB") }
             await upload(data: try Data(contentsOf: url), name: url.lastPathComponent, mime: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream")
+        } catch {
+            model.chatComposerNote = "附件没挂上：" + error.localizedDescription + "——可再点「+」重试。不会假装已附上。"
         }
-        catch { model.banner = error.localizedDescription }
     }
     private func upload(data: Data, name: String, mime: String) async {
-        guard let client = model.client else { return }
-        guard model.attachments.count < 8 else { model.banner = "每条消息最多八个附件"; return }
-        uploading = true; defer { uploading = false }
+        guard let client = model.client else {
+            // 未配对 / 无 client：别静默吞掉，人会以为附件已挂上。
+            model.chatComposerNote = model.isPaired
+                ? "连不上 mini，附件没传上——稍后再点「+」重试。不会假装已挂上。"
+                : "先连接 Mac mini，再加附件。现在不会假装已挂上。"
+            return
+        }
+        guard model.attachments.count < 8 else {
+            model.chatComposerNote = "每条最多八个附件——先去掉一个再加。"
+            return
+        }
+        uploading = true
+        model.chatComposerNote = ""
+        defer { uploading = false }
         do {
             let value = try await client.uploadAttachment(data, name: name, mime: mime, id: UUID().uuidString.lowercased())
             model.attachments.append(value)
             model.persistNow()
-        } catch { model.banner = error.localizedDescription }
+            model.chatComposerNote = ""
+        } catch {
+            model.chatComposerNote = "附件没传上：" + error.localizedDescription + "——可再点「+」重试。不会假装已挂上。"
+        }
     }
 }
 
@@ -661,7 +888,7 @@ struct ProactiveStack: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             Button {
                 Haptics.selection()
-                withAnimation(reduce ? nil : .spring(response: 0.38, dampingFraction: 0.86)) { open.toggle() }
+                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open.toggle() }
             } label: {
                 HStack(spacing: Space.sm) {
                     Image(systemName: "bell.badge").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accentText)
@@ -680,7 +907,7 @@ struct ProactiveStack: View {
                 .background(Palette.fill, in: .rect(cornerRadius: Radius.md, style: .continuous))
                 .contentShape(.rect)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SoftPressStyle(scale: 0.98))
             .accessibilityIdentifier("proactive-stack")
             if open {
                 ForEach(run) { row in
@@ -706,7 +933,7 @@ struct ClampedWhenProactive<Content: View>: View {
                 .clipped()
                 .mask(LinearGradient(stops: [.init(color: .black, location: 0.7), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
                 .overlay(alignment: .bottomLeading) {
-                    Button("展开全文") { withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) { open = true } }
+                    Button("展开全文") { withAnimation(ComMotion.settle) { open = true } }
                         .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.accentText)
                         .accessibilityIdentifier("proactive-expand")
                 }
@@ -714,7 +941,7 @@ struct ClampedWhenProactive<Content: View>: View {
             VStack(alignment: .leading, spacing: Space.xs) {
                 content()
                 if long {
-                    Button("收起") { withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) { open = false } }
+                    Button("收起") { withAnimation(ComMotion.settle) { open = false } }
                         .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
                 }
             }

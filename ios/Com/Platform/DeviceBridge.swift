@@ -15,6 +15,8 @@ import ComCore
     private let location = LocationReader()
     var connected = false
     var note = "仅在 App 使用期间连接手机能力"
+    /// 设备结果同步开关：本机已记 ≠ 服务器已按新范围同步 / 已授权。
+    var syncNote = ""
     var readingHealth = false
     var healthNote = ""
     var healthSync = UserDefaults.standard.bool(forKey: "healthSync")
@@ -57,24 +59,76 @@ import ComCore
                 cap("media.list", false, false, "使用系统照片选择器，不扫描照片库"), cap("alarm.set", false, false, "首版使用提醒事项"),
                 cap("alarm.show", false, false, "未接入系统闹钟")]
     }
-    func authorize(_ domain: String) async {
+    /// 请求系统权限。成功 true；失败写 `note` 给人话开口，勿假装已授权。
+    @discardableResult
+    func authorize(_ domain: String) async -> Bool {
         do {
             switch domain {
-            case "health": try await health.requestPermission(); model?.localHealth = try await health.summary(days: 1)
-            case "calendar": guard try await events.requestFullAccessToEvents() else { throw denied() }
-            case "reminders": guard try await events.requestFullAccessToReminders() else { throw denied() }
-            case "contacts": guard try await contacts.requestAccess(for: .contacts) else { throw denied() }
-            case "location": location.requestPermission()
-            default: break
+            case "health":
+                try await health.requestPermission()
+                model?.localHealth = try await health.summary(days: 1)
+            case "calendar":
+                guard try await events.requestFullAccessToEvents() else {
+                    throw APIError(status: 403, detail: "系统没给日历权限")
+                }
+            case "reminders":
+                guard try await events.requestFullAccessToReminders() else {
+                    throw APIError(status: 403, detail: "系统没给提醒事项权限")
+                }
+            case "contacts":
+                guard try await contacts.requestAccess(for: .contacts) else {
+                    throw APIError(status: 403, detail: "系统没给联系人权限")
+                }
+            case "location":
+                location.requestPermission()
+                note = "已弹出位置授权——请在系统框里选允许；若拒绝，可到系统设置再开。不会假装已定位。"
+                await connect()
+                return true
+            default:
+                break
             }
-            note = "授权已请求；系统允许的数据才会返回"
+            note = "授权已更新；系统允许的数据才会返回。"
             await connect()
-        } catch { note = error.localizedDescription }
+            return true
+        } catch {
+            note = "授权没成：" + error.localizedDescription + "——可再点，或到系统设置里开。不会假装已授权。"
+            return false
+        }
     }
+    /// 把同步开关写进本机，并尽量报到 mini。失败 / 未授权写 `syncNote`，勿假装服务器已按新范围同步。
     func updateSync() async {
         UserDefaults.standard.set(healthSync, forKey: "healthSync")
         UserDefaults.standard.set(contactsSync, forKey: "contactsSync")
+        var gaps: [String] = []
+        if healthSync {
+            if !health.available {
+                gaps.append("这台没有健康数据能力")
+            } else if !UserDefaults.standard.bool(forKey: "healthRequested") {
+                gaps.append("健康还没走过授权——先点上面「健康 · 只读」")
+            }
+        }
+        if contactsSync {
+            let status = CNContactStore.authorizationStatus(for: .contacts)
+            if status != .authorized && status != .limited {
+                gaps.append("联系人权限还没给——先点上面「联系人」")
+            }
+        }
+        guard let model, model.isPaired, model.client != nil else {
+            syncNote = gaps.isEmpty
+                ? "开关已记在本机——还没连上 mini，配对后才会按这个范围同步。不会假装服务器已更新。"
+                : gaps.joined(separator: "；") + "。开关已记在本机；配对后也不会在未授权时假装已同步。"
+            return
+        }
         await connect()
+        if !connected {
+            let base = note.isEmpty ? "能力通道没连上" : note
+            syncNote = base + "——开关仍记在本机。不会假装服务器已按新范围同步。"
+            if !gaps.isEmpty { syncNote += " 另外：" + gaps.joined(separator: "；") + "。" }
+            return
+        }
+        syncNote = gaps.isEmpty
+            ? ""
+            : gaps.joined(separator: "；") + "——通道已连上，未授权项不会交给 mini。不会假装已能同步那些数据。"
     }
     func readHealth() async {
         guard !readingHealth else { return }
@@ -86,7 +140,9 @@ import ComCore
             healthNote = model?.localHealth["missing_reason"].string ?? ""
             if healthNote.isEmpty { healthNote = "最近 24 小时的摘要已更新" }
             await connect()
-        } catch { healthNote = "读取未完成：" + error.localizedDescription }
+        } catch {
+            healthNote = "读取没成：" + error.localizedDescription + "——可再点「读取」，或到系统设置开健康权限。不会假装已读上。"
+        }
     }
     func connect() async {
         stop()
@@ -150,9 +206,18 @@ import ComCore
     private func recover(_ rows: [JSON], socket: URLSessionWebSocketTask) async {
         for row in rows where ["unknown", "executing", "pending"].contains(row["status"].string) {
             let id = row.id
-            if let cached = try? SecureVault.load(JSON.self, name: "invocation-" + id.pathEncoded) {
-                if cached["type"].string == "result" { try? await send(cached, socket: socket) }
-                else if !running.contains(id) {
+            guard !id.isEmpty else { continue }
+            switch loadInvocation(id) {
+            case .missing:
+                break
+            case .corrupt(let detail):
+                note = "设备操作记录读不出：\(detail)——不会重跑这条；已回报未知。不会假装已核对。"
+                try? await send(.object(["type": .string("result"), "id": .string(id), "status": .string("unknown"),
+                                        "result": .object(["reason": .string("本机操作记录损坏，不会重新执行")])]), socket: socket)
+            case .value(let cached):
+                if cached["type"].string == "result" {
+                    try? await send(cached, socket: socket)
+                } else if !running.contains(id) {
                     try? await send(.object(["type": .string("result"), "id": .string(id), "status": .string("unknown"),
                                             "result": .object(["reason": .string("上次设备操作结果未知，不会重新执行")])]), socket: socket)
                 }
@@ -162,10 +227,19 @@ import ComCore
     private func handle(_ row: JSON, socket: URLSessionWebSocketTask) async {
         let id = row.id
         guard !id.isEmpty, !running.contains(id) else { return }
-        if let cached = try? SecureVault.load(JSON.self, name: "invocation-" + id.pathEncoded) {
+        switch loadInvocation(id) {
+        case .corrupt(let detail):
+            // 坏账不能当「没有」——重跑可能重复改日历/联系人。
+            note = "设备操作记录读不出：\(detail)——不会重跑；已回报未知。不会假装已核对。"
+            try? await send(.object(["type": .string("result"), "id": .string(id), "status": .string("unknown"),
+                                    "result": .object(["reason": .string("本机操作记录损坏，不会重新执行")])]), socket: socket)
+            return
+        case .value(let cached):
             if cached["type"].string == "result" { try? await send(cached, socket: socket) }
             else { try? await send(.object(["type": .string("result"), "id": .string(id), "status": .string("unknown")]), socket: socket) }
             return
+        case .missing:
+            break
         }
         running.insert(id); defer { running.remove(id) }
         var result: JSON
@@ -185,8 +259,39 @@ import ComCore
                               "result": .object(["reason": .string(error.localizedDescription)])])
         }
         result["tool"] = row["tool"]; result["finished_at"] = .number(Date().timeIntervalSince1970)
-        do { try SecureVault.save(result, name: "invocation-" + id.pathEncoded); try await send(result, socket: socket) }
-        catch { note = "操作回执待补传；不会再次执行" }
+        // 落盘与回传分开：存失败仍尽量送服务器；别说「待补传」却本地没东西可补。
+        var persistOk = true
+        do {
+            try SecureVault.save(result, name: "invocation-" + id.pathEncoded)
+        } catch {
+            persistOk = false
+            note = "操作结果没落盘：\(error.localizedDescription)——已尽量回传服务器；回执页可能看不到。不会假装已记上。"
+        }
+        do {
+            try await send(result, socket: socket)
+            if persistOk, note.contains("没落盘") || note.contains("没送出") || note.contains("待补传") { note = "iPhone 能力已连接" }
+        } catch {
+            note = persistOk
+                ? "操作回执没送出：\(error.localizedDescription)——本机已记下，重连后会补传；不会再次执行。"
+                : "操作结果没落盘也没送出：\(error.localizedDescription)——不会再次执行；请到回执页核对或重试连接。不会假装已完成上报。"
+        }
+    }
+
+    private enum InvocationLoad {
+        case missing
+        case corrupt(String)
+        case value(JSON)
+    }
+    /// 区分「没有」与「读坏」：后者绝不能重跑。
+    private func loadInvocation(_ id: String) -> InvocationLoad {
+        do {
+            if let cached = try SecureVault.load(JSON.self, name: "invocation-" + id.pathEncoded) {
+                return .value(cached)
+            }
+            return .missing
+        } catch {
+            return .corrupt(error.localizedDescription)
+        }
     }
     private func denied() -> APIError { APIError(status: 403, detail: "权限未允许或设备结果同步未开启") }
     private func date(_ value: JSON, fallback: Date? = nil) throws -> Date {

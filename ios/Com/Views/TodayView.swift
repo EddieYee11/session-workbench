@@ -70,7 +70,8 @@ extension AppModel {
     }
 
     /// 动提醒：完成 / 晚 10 分钟 / 晚 1 小时 / 取消，写回 pi-gateway 的提醒记录，再回读一次。
-    func reminderAction(_ reminder: JSON, _ action: String) async {
+    @discardableResult
+    func reminderAction(_ reminder: JSON, _ action: String) async -> Bool {
         #if DEBUG
         if isUITesting {
             var value = todayData
@@ -79,14 +80,35 @@ extension AppModel {
                 if action == "cancel" { return nil }
                 var copy = row; if action == "confirm" { copy["status"] = .string("done"); copy["overdue"] = .bool(false) }; return copy
             })
-            datasets["/personal/today"] = value; Haptics.success(); return
+            datasets["/personal/today"] = value; Haptics.success(); return true
         }
         #endif
         do {
             _ = try await mutate("/personal/reminders/" + reminder.id.pathEncoded + "/action",
                                  fields: ["action": .string(action), "expected": .object(["due": reminder["due"], "status": reminder["status"]])])
-            _ = await load("/personal/today"); Haptics.success()
-        } catch { banner = error.localizedDescription }
+            // 已写回；今天没刷齐则乐观改提醒 + doingOpenNote，别假装列表已是最新。
+            if await load("/personal/today") == nil {
+                var value = todayData
+                value["reminders"] = .array(value["reminders"].array.compactMap { row in
+                    guard row.id == reminder.id else { return row }
+                    if action == "cancel" { return nil }
+                    var copy = row
+                    if action == "confirm" {
+                        copy["status"] = .string("done")
+                        copy["overdue"] = .bool(false)
+                    }
+                    return copy
+                })
+                datasets["/personal/today"] = value
+                let err = errors["/personal/today"] ?? ""
+                let head = action == "confirm" ? "已标完成" : action == "cancel" ? "已取消提醒" : "已改提醒"
+                doingOpenNote = err.isEmpty
+                    ? head + "，今天页没刷上——可下拉再试。不会假装提醒已更新。"
+                    : head + "，今天页没刷上：" + err + "——可下拉再试。不会假装提醒已更新。"
+            }
+            Haptics.success()
+            return true
+        } catch { banner = error.localizedDescription; return false }
     }
 
     /// 「下一步」整理时写的 3–5 条要点（10-17）：身体 / 日程 / 事 / 资讯。今天页取日程建议，健康页取身体。
@@ -183,6 +205,9 @@ extension TodayEntry {
 struct TodayView: View {
     @Environment(AppModel.self) private var model
     @State private var shown = false
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var loadedOnce = false
 
     var body: some View {
         // 每分钟走一格：「现在」标记和已过去的卡片淡化跟着时间动。
@@ -195,7 +220,37 @@ struct TodayView: View {
                     .modifier(EnterRise(on: shown, delay: 0))
                 WeekStrip(now: now)
                     .modifier(EnterRise(on: shown, delay: 0.06))
-                ScheduleTimeline(rows: rows, now: now)
+                if loading && !loadedOnce && rows.isEmpty {
+                    HStack(spacing: Space.sm) {
+                        ProgressView().controlSize(.small)
+                        Text("正在拉齐今天的日程和提醒…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    }
+                    .accessibilityIdentifier("today-pulling")
+                }
+                if !model.doingOpenNote.isEmpty {
+                    InlineNotice(text: model.doingOpenNote, tone: .danger)
+                        .accessibilityIdentifier("today-doing-open-fail")
+                    Button(loading ? "重试中…" : "再试一次") {
+                        guard !loading else { return }
+                        Task {
+                            await model.refresh(.doing)
+                            await pullToday(force: true)
+                        }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(loading)
+                    .accessibilityIdentifier("today-doing-retry")
+                } else if !failNote.isEmpty {
+                    InlineNotice(text: failNote, tone: .danger)
+                    Button(loading ? "重试中…" : "再试一次") {
+                        guard !loading else { return }
+                        Task { await pullToday(force: true) }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(loading)
+                    .accessibilityIdentifier("today-retry")
+                }
+                ScheduleTimeline(rows: rows, now: now, loading: loading && !loadedOnce, loadFailed: !failNote.isEmpty)
                     .modifier(EnterRise(on: shown, delay: 0.12))
                 ScheduleAdvice()
                     .modifier(EnterRise(on: shown, delay: 0.18))
@@ -207,24 +262,61 @@ struct TodayView: View {
                 }
             }
         }
-        .refreshable { await model.refresh(.doing); _ = await model.load("/personal/next"); await model.refreshHot() }
+        .refreshable {
+            await pullToday(force: true)
+            await pullTodayNext()
+            // 下拉强制重抓热点；失败 hotOpenNote（HotBoardCard 开口），别假装已齐。
+            _ = await model.refreshHot(force: true)
+        }
+        // 进页拉齐：今天时间线 + 下一步简报 + 热点；别只靠切 Tab 的 refresh。
+        .task {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await pullToday(force: false) }
+                group.addTask { await pullTodayNext() }
+                group.addTask { await model.refreshHot() }
+            }
+        }
         // 每次切回「今天」都重新走一遍进场；切走时复位。
         .onAppear { shown = true }
         .onDisappear { shown = false }
     }
-}
 
-/// 20-build-checklist 的「模糊上浮」：y+26→0、blur 10→0，各块错峰。
-private struct EnterRise: ViewModifier {
-    let on: Bool
-    let delay: Double
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    func body(content: Content) -> some View {
-        content
-            .opacity(on ? 1 : 0)
-            .offset(y: on || reduce ? 0 : 26)
-            .blur(radius: on || reduce ? 0 : 10)
-            .animation(reduce ? .easeOut(duration: 0.2) : on ? .spring(response: 0.55, dampingFraction: 0.9).delay(delay) : nil, value: on)
+    private func pullToday(force: Bool) async {
+        guard !loading else { return }
+        loading = true
+        if force { failNote = "" }
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        let path = "/personal/today"
+        if await model.load(path) != nil {
+            failNote = ""
+            model.doingOpenNote = ""
+            return
+        }
+        let err = model.errors[path] ?? ""
+        let had = !model.todayData.isNull && (!model.todayData["events"].array.isEmpty || !model.todayData["reminders"].array.isEmpty)
+        failNote = err.isEmpty
+            ? (had ? "今天的日程/提醒没刷新上——下面仍是上一版，可再试" : "今天的日程和提醒没拉齐——检查配对或网络后再试")
+            : (had ? "今天没刷新上：" + err + "——下面仍是上一版" : "今天没拉齐：" + err + "——可再试")
+    }
+
+    /// 今日简报吃 /personal/next；失败 todayNextOpenNote，别假装「我说几句」已齐。
+    private func pullTodayNext() async {
+        if await model.load("/personal/next") != nil {
+            model.todayNextOpenNote = ""
+            return
+        }
+        let err = model.errors["/personal/next"] ?? ""
+        let had = !model.todayBrief.isEmpty
+        model.todayNextOpenNote = err.isEmpty
+            ? (had
+               ? "今日简报没刷上——下面仍可能是上一版。可再下拉。不会假装已是最新。"
+               : "今日简报还没拉齐——可再下拉或点右上角整理。不会假装已是最新。")
+            : (had
+               ? "今日简报没刷上：" + err + "——下面仍可能是上一版。不会假装已是最新。"
+               : "今日简报没拉齐：" + err + "——可再下拉。不会假装已是最新。")
     }
 }
 
@@ -233,28 +325,84 @@ private struct EnterRise: ViewModifier {
 private struct TodayHeader: View {
     @Environment(AppModel.self) private var model
     let summary: String
+    private var hour: Int { Calendar.current.component(.hour, from: Date()) }
+    private var briefLine: String {
+        let greet: String = {
+            switch hour {
+            case 5..<11: return "早。我帮你看过今天——"
+            case 11..<14: return "中午。我先开口："
+            case 14..<18: return "下午。此刻："
+            case 18..<23: return "晚上。还剩："
+            default: return "夜深了。我还醒着——"
+            }
+        }()
+        if model.waitingInboxCount > 0 {
+            if let tip = ChatAttentionHint.topWaitingTitle(model) {
+                let more = model.waitingInboxCount > 1 ? "（还有 \(model.waitingInboxCount - 1)）" : ""
+                return greet + "先拍板「\(tip)」\(more)。" + summary
+            }
+            return greet + summary + " · \(model.waitingInboxCount) 件等你"
+        }
+        if let tip = ChatAttentionHint.topNextTitle(model) {
+            return greet + summary + " · 下一步先看「\(tip)」"
+        }
+        return greet + summary
+    }
+    @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(Date().formatted(.dateTime.year().month(.wide).locale(Locale(identifier: "zh_CN"))))
                     .font(.system(size: 30, weight: .bold, design: .rounded)).foregroundStyle(Palette.textPrimary)
-                Text(summary).font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary)
-                    .contentTransition(.numericText())
+                Text(briefLine).font(TypeScale.subheadline).foregroundStyle(
+                    model.waitingInboxCount > 0 ? Palette.textPrimary : Palette.textSecondary
+                )
+                    .contentTransition(.opacity)
+                    .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: briefLine)
                     .accessibilityIdentifier("today-summary")
             }
             Spacer(minLength: Space.sm)
-            // 任务与目标：不常用，缩成一颗小按钮；有等你拍板的才挂个数。
+            // 10-29：等你收件箱是主入口；任务档案退到次要。
+            Button {
+                guard !model.waitingOpening else { return }
+                Haptics.selection()
+                model.openWaitingInbox()
+            } label: {
+                Group {
+                    if model.waitingOpening {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "hand.raised").font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(model.waitingInboxCount > 0 ? Palette.warning : Palette.textSecondary)
+                    }
+                }
+                .frame(width: 40, height: 40).background(Palette.surface, in: .circle)
+                .overlay(alignment: .topTrailing) {
+                    if !model.waitingOpening, model.waitingInboxCount > 0 {
+                        Text("\(model.waitingInboxCount)").font(.system(size: 10, weight: .bold).monospacedDigit()).foregroundStyle(Palette.onAccent)
+                            .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16).background(Palette.accent, in: .capsule).offset(x: 5, y: -5)
+                            .contentTransition(.numericText())
+                    }
+                }
+                .opacity(model.waitingOpening ? 0.72 : 1)
+                .attentionBreath(active: model.waitingInboxCount > 0 && !model.waitingOpening && !reduce)
+            }
+            .buttonStyle(SoftPressStyle(scale: 0.94))
+            .disabled(model.waitingOpening)
+            .accessibilityLabel({
+                if model.waitingOpening { return "正在打开等你" }
+                if model.waitingInboxCount <= 0 { return "等你" }
+                if let tip = ChatAttentionHint.topWaitingTitle(model) {
+                    return "等你拍板：\(tip)，共 \(model.waitingInboxCount) 件"
+                }
+                return "等你，\(model.waitingInboxCount) 件"
+            }())
+            .accessibilityIdentifier("today-waiting")
             NavigationLink { TaskHubView() } label: {
                 Image(systemName: "square.stack").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.textSecondary)
                     .frame(width: 40, height: 40).background(Palette.surface, in: .circle)
-                    .overlay(alignment: .topTrailing) {
-                        if model.decisionCount > 0 {
-                            Text("\(model.decisionCount)").font(.system(size: 10, weight: .bold).monospacedDigit()).foregroundStyle(Palette.onAccent)
-                                .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16).background(Palette.accent, in: .capsule).offset(x: 5, y: -5)
-                        }
-                    }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SoftPressStyle(scale: 0.94))
             .accessibilityLabel("任务与目标").accessibilityIdentifier("today-task-hub")
         }
     }
@@ -302,13 +450,15 @@ private struct WeekStrip: View {
 private struct ScheduleTimeline: View {
     let rows: [TodayEntry]
     let now: Double
+    var loading: Bool = false
+    var loadFailed: Bool = false
     private static let timeWidth: CGFloat = 44
     var body: some View {
         if rows.isEmpty {
-            Text("今天没有日程").font(TypeScale.subheadline).foregroundStyle(Palette.textTertiary)
+            Text(emptyLead).font(TypeScale.subheadline).foregroundStyle(Palette.textTertiary)
                 .frame(maxWidth: .infinity, minHeight: 96)
                 .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
-                .accessibilityIdentifier("today-empty")
+                .accessibilityIdentifier(loadFailed ? "today-empty-fail" : "today-empty")
         } else {
             let nowIndex = rows.firstIndex { $0.start > now } ?? (rows.contains { $0.start > 0 } ? rows.count : nil)
             VStack(spacing: 0) {
@@ -332,6 +482,11 @@ private struct ScheduleTimeline: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("today-timeline")
         }
+    }
+    private var emptyLead: String {
+        if loading { return "正在拉齐今天的日程和提醒…" }
+        if loadFailed { return "日程和提醒还没读上——先重试；通了我再开口排时间线。" }
+        return "今天没有日程"
     }
     private var nowMarker: some View {
         HStack(spacing: Space.md) {
@@ -383,37 +538,77 @@ private struct ScheduleCard: View {
 
 // MARK: 日程建议
 
-/// 「下一步」整理时顺手写的、关于日程松紧和安排的几条建议（简报里 kind = event 的要点）；没有就给个按钮现在整理。
+/// 「下一步」整理时写的简报要点：当作 agent 开口，不只堆日程建议列表。
 private struct ScheduleAdvice: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
+    /// 本地点按门控：在 nextData.running 亮起前挡住连点叠刷。
+    @State private var localBusy = false
+    private var tips: [JSON] {
+        let all = model.todayBrief
+        let events = all.filter { $0["kind"].string == "event" }
+        // 有日程要点就优先；否则用整份 brief，像早上它主动开口。
+        return events.isEmpty ? all : events
+    }
     var body: some View {
-        let running = model.nextData["running"].bool
-        let tips = model.todayBrief.filter { $0["kind"].string == "event" }
+        let running = model.nextData["running"].bool || localBusy
+        let rows = tips
         VStack(alignment: .leading, spacing: Space.md) {
             HStack(alignment: .firstTextBaseline) {
-                Text("日程建议").font(TypeScale.section).accessibilityAddTraits(.isHeader)
+                Text(rows.isEmpty ? "我看一眼今天" : "我说几句").font(TypeScale.section).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
-                Button { Task { await model.refreshNext() } } label: {
+                Button {
+                    guard !localBusy, !model.nextData["running"].bool else { return }
+                    localBusy = true
+                    Task {
+                        await model.refreshNext()
+                        // 整理结束后再核 next；失败 todayNextOpenNote。
+                        if await model.load("/personal/next") != nil {
+                            model.todayNextOpenNote = ""
+                        } else if model.todayNextOpenNote.isEmpty && model.planOpenNote.isEmpty {
+                            let err = model.errors["/personal/next"] ?? ""
+                            model.todayNextOpenNote = err.isEmpty
+                                ? "今日简报没刷上——可再点整理。不会假装已是最新。"
+                                : "今日简报没刷上：" + err + "——可再点整理。不会假装已是最新。"
+                        }
+                        localBusy = false
+                    }
+                } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.textSecondary)
                         .symbolEffect(.rotate.byLayer, options: .repeating, isActive: running && !reduce)
                         .frame(width: 30, height: 30).background(Palette.fill, in: .circle)
+                        .opacity(running ? 0.55 : 1)
                 }
                 .buttonStyle(.plain).disabled(running)
-                .accessibilityLabel("重新整理日程建议").accessibilityIdentifier("today-advice-refresh")
+                .accessibilityLabel("重新整理今日简报").accessibilityIdentifier("today-advice-refresh")
             }
-            if tips.isEmpty {
-                Text(running ? "正在看今天的安排…" : "还没有日程建议，点右上角让 Com 看一眼今天。")
+            if !model.todayNextOpenNote.isEmpty {
+                InlineNotice(text: model.todayNextOpenNote, tone: .danger)
+                    .accessibilityIdentifier("today-next-open-fail")
+            }
+            if rows.isEmpty {
+                Text(running ? "正在看今天的安排…" : (!model.todayNextOpenNote.isEmpty ? "简报还没读上——可再下拉或点右上角。" : "还没有开口。点右上角，我帮你扫一眼日程和待办。"))
                     .font(TypeScale.subheadline).foregroundStyle(Palette.textTertiary)
                     .frame(maxWidth: .infinity, minHeight: 72)
                     .background(Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
             } else {
-                ForEach(Array(tips.enumerated()), id: \.offset) { index, tip in
+                ForEach(Array(rows.prefix(3).enumerated()), id: \.offset) { index, tip in
                     HStack(alignment: .top, spacing: Space.md) {
-                        Image(systemName: "lightbulb.fill").font(.system(size: 14, weight: .semibold)).foregroundStyle(TodayHue.butter.ink)
-                            .frame(width: 36, height: 36).background(TodayHue.butter.fill, in: .rect(cornerRadius: 12, style: .continuous))
-                        Text(tip["text"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary).lineSpacing(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Image(systemName: index == 0 ? "quote.opening" : "lightbulb.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(index == 0 ? Palette.accentText : TodayHue.butter.ink)
+                            .frame(width: 36, height: 36)
+                            .background((index == 0 ? Palette.accent : TodayHue.butter.fill).opacity(index == 0 ? 0.18 : 1),
+                                        in: .rect(cornerRadius: 12, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            if index == 0 {
+                                Text("开场")
+                                    .font(TypeScale.caption.weight(.semibold))
+                                    .foregroundStyle(Palette.accentText)
+                            }
+                            Text(tip["text"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary).lineSpacing(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         Spacer(minLength: 0)
                     }
                     .padding(Space.md)
@@ -436,6 +631,7 @@ struct TodayDetail: View {
     @Environment(\.dismiss) private var dismiss
     let entry: TodayEntry
     @State private var busy = false
+    @State private var failNote = ""
     private var v: JSON { entry.value }
     var body: some View {
         ScrollPage(spacing: Space.xl) {
@@ -449,6 +645,10 @@ struct TodayDetail: View {
                 } else {
                     EmptyState(title: "这件事已经处理了", description: "", symbol: "checkmark.circle")
                 }
+            }
+            if !failNote.isEmpty {
+                InlineNotice(text: failNote, tone: .danger)
+                    .accessibilityIdentifier("today-detail-fail")
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { DockSpacer() }
@@ -468,8 +668,11 @@ struct TodayDetail: View {
             KeyValueRow(label: "日期", value: dayLabel(Date(timeIntervalSince1970: v["start"].double)))
         }
         if !v["notes"].string.isEmpty { Card { RichText(text: v["notes"].string) } }
-        Button("交给 Com 准备") { hand("帮我准备今天的「\(entry.title)」（\(allDay ? "全天" : clockTime(v["start"].double))\(v["location"].string.isEmpty ? "" : "，" + v["location"].string)）：列出要带的材料、要确认的问题，有相关邮件就一起看。") }
+        Button(busy ? "交给 Com…" : "交给 Com 准备") {
+            hand("帮我准备今天的「\(entry.title)」（\(allDay ? "全天" : clockTime(v["start"].double))\(v["location"].string.isEmpty ? "" : "，" + v["location"].string)）：列出要带的材料、要确认的问题，有相关邮件就一起看。")
+        }
             .buttonStyle(.primaryFull).disabled(busy)
+            .accessibilityIdentifier("today-event-hand")
         if let url = URL(string: v["link"].string), !v["link"].string.isEmpty { Link("在日历里打开", destination: url).font(TypeScale.subheadline.weight(.semibold)).frame(maxWidth: .infinity) }
     }
 
@@ -480,7 +683,7 @@ struct TodayDetail: View {
         }
         if pending {
             VStack(spacing: Space.sm) {
-                Button("完成了") { act("confirm") }.buttonStyle(.primaryFull).disabled(busy).accessibilityIdentifier("reminder-confirm")
+                Button(busy ? "处理中…" : "完成了") { act("confirm") }.buttonStyle(.primaryFull).disabled(busy).accessibilityIdentifier("reminder-confirm")
                 HStack(spacing: Space.sm) {
                     Button("晚 10 分钟") { act("snooze10") }.buttonStyle(.secondaryAction).disabled(busy)
                     Button("晚 1 小时") { act("snooze60") }.buttonStyle(.secondaryAction).disabled(busy)
@@ -506,19 +709,44 @@ struct TodayDetail: View {
             if !v["note"].string.isEmpty { KeyValueRow(label: "备注", value: v["note"].string) }
             KeyValueRow(label: "来源", value: "Obsidian 行动台")
         }
-        Button("交给 Com") { hand("帮我推进待办「\(entry.title)」" + (v["next_step"].string.isEmpty ? "。" : "，下一步是：" + v["next_step"].string + "。") + "先告诉我你打算怎么做。") }
+        Button(busy ? "交给 Com…" : "交给 Com") {
+            hand("帮我推进待办「\(entry.title)」" + (v["next_step"].string.isEmpty ? "。" : "，下一步是：" + v["next_step"].string + "。") + "先告诉我你打算怎么做。")
+        }
             .buttonStyle(.primaryFull).disabled(busy)
+            .accessibilityIdentifier("today-todo-hand")
         Text(v["path"].string).font(TypeScale.code).foregroundStyle(Palette.textTertiary)
     }
 
     private func act(_ action: String) {
+        guard !busy else { return }
         busy = true
-        Task { await model.reminderAction(v, action); busy = false; dismiss() }
+        failNote = ""
+        Task {
+            let ok = await model.reminderAction(v, action)
+            busy = false
+            // 写回失败别关详情，开口提示可再点。
+            if ok {
+                dismiss()
+            } else {
+                failNote = "提醒没写回——详情还在，可再试；别当成已经改好了"
+            }
+        }
     }
     /// 作为一条消息交给主对话，执行仍走原有批准流。
     private func hand(_ text: String) {
+        guard !busy else { return }
         busy = true
-        Task { await model.send(textOverride: text); busy = false; model.tab = .chat }
+        failNote = ""
+        Task {
+            let ok = await model.send(textOverride: text)
+            busy = false
+            // 送达失败别空跳聊天，留在今天详情重试。
+            if ok {
+                model.tab = .chat
+            } else {
+                failNote = "没交给 Com——还在详情页，可再试"
+            }
+        }
     }
 }
 
@@ -534,7 +762,13 @@ struct HealthCard: View {
                     Button(model.devices.readingHealth ? "读取中…" : "读取") { Task { await model.devices.readHealth() } }.buttonStyle(.secondaryCompact).disabled(model.devices.readingHealth)
                 }
                 if !model.devices.healthNote.isEmpty {
-                    Text(model.devices.healthNote).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                    let failed = model.devices.healthNote.contains("未完成") || model.devices.healthNote.contains("失败") || model.devices.healthNote.contains("没成") || model.devices.healthNote.contains("权限")
+                    if failed {
+                        InlineNotice(text: model.devices.healthNote, tone: .danger)
+                            .accessibilityIdentifier("health-card-fail")
+                    } else {
+                        Text(model.devices.healthNote).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                    }
                 }
                 if model.localHealth.isNull {
                     Text("授权健康权限后，可以读取最近 24 小时的活动、心率与睡眠。").font(TypeScale.body).foregroundStyle(Palette.textSecondary)
@@ -571,6 +805,9 @@ struct MatterDetailView: View {
     let matter: JSON
     @State private var correction = ""
     @State private var goal = ""
+    /// 依据袋→事项「交给 Com」等：失败留页可重试，勿假跳聊天。
+    @State private var busy = false
+    @State private var failNote = ""
     var body: some View {
         DetailPage(title: "事项") {
             DetailHeader(title: matter["title"].string, subtitle: matter["what"].string) {
@@ -586,22 +823,64 @@ struct MatterDetailView: View {
                 VStack(alignment: .leading, spacing: Space.md) {
                     TextField("补充要求（可选）", text: $goal, axis: .vertical).lineLimit(1...3).insetField()
                     Button {
+                        guard !busy else { return }
+                        busy = true
+                        failNote = ""
                         Task {
-                            do { _ = try await model.mutate("/personal/matters/" + matter.id.pathEncoded + "/action", fields: ["goal": .string(goal.isEmpty ? "分析这件事并给出下一步" : goal)]); dismiss(); model.tab = .chat; await model.refresh(.chat) }
-                            catch { model.banner = error.localizedDescription }
+                            do {
+                                _ = try await model.mutate("/personal/matters/" + matter.id.pathEncoded + "/action", fields: ["goal": .string(goal.isEmpty ? "分析这件事并给出下一步" : goal)])
+                                dismiss()
+                                // 与 today 深链同路刷主聊；失败 todayOpenNote，别假跳成「派活已显示」。
+                                model.openTodayDeepLink()
+                            } catch {
+                                failNote = "交给 Com 没成：" + error.localizedDescription + "——还可以再试。不会假跳聊天。"
+                            }
+                            busy = false
                         }
-                    } label: { Text("交给 Com") }.buttonStyle(.primaryFull)
+                    } label: { Text(busy ? "交给中…" : "交给 Com") }
+                        .buttonStyle(.primaryFull)
+                        .disabled(busy)
+                        .accessibilityIdentifier("matter-hand-off")
+                    if !failNote.isEmpty {
+                        InlineNotice(text: failNote, tone: .danger)
+                            .accessibilityIdentifier("matter-hand-fail")
+                    }
                     ViewThatFits {
                         HStack(spacing: Space.sm) { feedback("关注", "follow"); feedback("稍后", "later"); feedback("已处理", "handled") }
                         VStack(alignment: .leading, spacing: Space.sm) { feedback("关注", "follow"); feedback("稍后", "later"); feedback("已处理", "handled") }
                     }
+                    .disabled(busy)
                 }
             }
             DisclosureGroup("纠正或关闭提醒") {
                 VStack(alignment: .leading, spacing: Space.md) {
                     TextField("更正事实", text: $correction, axis: .vertical).lineLimit(2...4).insetField()
-                    Button("保存更正") { Task { await model.action("/personal/matters/" + matter.id.pathEncoded + "/feedback", fields: ["action": .string("correct"), "text": .string(correction)], refresh: .chat); await model.refreshFlow() } }.buttonStyle(.secondaryAction).disabled(correction.trimmingCharacters(in: .whitespaces).isEmpty)
-                    Button("不再提醒") { Task { await model.action("/personal/matters/" + matter.id.pathEncoded + "/feedback", fields: ["action": .string("mute")]); await model.refreshFlow(); dismiss() } }.buttonStyle(.quiet)
+                    Button("保存更正") {
+                        guard !busy else { return }
+                        busy = true
+                        failNote = ""
+                        Task {
+                            if await model.action("/personal/matters/" + matter.id.pathEncoded + "/feedback", fields: ["action": .string("correct"), "text": .string(correction)], refresh: .chat) {
+                                await model.refreshFlow()
+                            } else {
+                                failNote = "更正没成——还可以再试。不会假装已改。"
+                            }
+                            busy = false
+                        }
+                    }.buttonStyle(.secondaryAction).disabled(busy || correction.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("不再提醒") {
+                        guard !busy else { return }
+                        busy = true
+                        failNote = ""
+                        Task {
+                            if await model.action("/personal/matters/" + matter.id.pathEncoded + "/feedback", fields: ["action": .string("mute")]) {
+                                await model.refreshFlow(); dismiss()
+                            } else {
+                                failNote = "关掉提醒没成——还可以再试。不会假装已静音。"
+                            }
+                            busy = false
+                        }
+                    }.buttonStyle(.quiet).disabled(busy)
                 }.padding(.top, Space.md)
             }.font(TypeScale.body)
             GroupedCard {
@@ -612,12 +891,37 @@ struct MatterDetailView: View {
                 RawDetails(title: "查看来源事实", value: matter["facts"]).rowPadding()
                 if !matter["action_context"].isNull { RawDetails(title: "关联背景", value: matter["action_context"]).rowPadding() }
             }
-            Button("解除事项关联", role: .destructive) { Task { await model.action("/personal/matters/" + matter.id.pathEncoded + "/unlink"); await model.refreshFlow() } }
-                .buttonStyle(.quiet).frame(maxWidth: .infinity)
+            Button("解除事项关联", role: .destructive) {
+                guard !busy else { return }
+                busy = true
+                failNote = ""
+                Task {
+                    if await model.action("/personal/matters/" + matter.id.pathEncoded + "/unlink") {
+                        await model.refreshFlow(); dismiss()
+                    } else {
+                        failNote = "解除没成——还可以再试。不会假装已解绑。"
+                    }
+                    busy = false
+                }
+            }
+                .buttonStyle(.quiet).frame(maxWidth: .infinity).disabled(busy)
         }
     }
     private func feedback(_ title: String, _ action: String) -> some View {
-        Button(title) { Task { await model.action("/personal/matters/" + matter.id.pathEncoded + "/feedback", fields: ["action": .string(action)]); await model.refreshFlow(); if action != "follow" { dismiss() } } }.buttonStyle(.secondaryCompact)
+        Button(title) {
+            guard !busy else { return }
+            busy = true
+            failNote = ""
+            Task {
+                if await model.action("/personal/matters/" + matter.id.pathEncoded + "/feedback", fields: ["action": .string(action)]) {
+                    await model.refreshFlow()
+                    if action != "follow" { dismiss() }
+                } else {
+                    failNote = "\(title)没成——还可以再试。不会假装已反馈。"
+                }
+                busy = false
+            }
+        }.buttonStyle(.secondaryCompact).disabled(busy)
     }
 }
 
@@ -654,8 +958,16 @@ private struct RunSheetEntry: View {
                 Button {
                     busy = true; error = ""
                     Task {
-                        do { _ = try await model.mutate("/personal/runsheet", fields: ["project": project["title"]]); _ = await model.load("/personal/next") }
-                        catch { self.error = error.localizedDescription }
+                        do {
+                            _ = try await model.mutate("/personal/runsheet", fields: ["project": project["title"]])
+                            // 已请出流程表；下一步没刷上则开口，别假装卡片已出现。
+                            if await model.load("/personal/next") == nil {
+                                let err = model.errors["/personal/next"] ?? ""
+                                self.error = err.isEmpty
+                                    ? "流程表已请出，下一步没刷上——可到「下一步」下拉。不会假装卡片已出现。"
+                                    : "流程表已请出，下一步没刷上：" + err + "——可再试。不会假装卡片已出现。"
+                            }
+                        } catch { self.error = error.localizedDescription }
                         busy = false
                     }
                 } label: {
@@ -663,7 +975,10 @@ private struct RunSheetEntry: View {
                 }
                 .buttonStyle(.secondaryCompact).disabled(busy)
             }
-            if !error.isEmpty { Text(error).font(TypeScale.footnote).foregroundStyle(Palette.warning) }
+            if !error.isEmpty {
+                Text("排表没成：" + error + "——还可以再试")
+                    .font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.danger)
+            }
         }
     }
 }

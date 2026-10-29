@@ -17,11 +17,18 @@ struct NewWorkView: View {
     @State private var working = false
     @State private var pickingDirectory = false
     @State private var note = ""
+    @State private var modelsLoading = false
+    @State private var modelsFailNote = ""
+    @State private var modelsLoadedOnce = false
     var body: some View {
         NavigationStack {
             ScrollPage(spacing: Space.xxl) {
                 GroupSection("谁来一起做") {
-                    Picker("执行器", selection: $agent) { Text("Hermes").tag("hermes"); Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex") }.pickerStyle(.segmented)
+                    Picker("执行器", selection: $agent) {
+                        Text("Hermes").tag("hermes"); Text("Pi").tag("pi"); Text("Claude").tag("claude"); Text("Codex").tag("codex")
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(modelsLoading)
                 }
                 GroupSection("这次想完成什么") {
                     TextField("工作要求", text: $prompt, axis: .vertical).lineLimit(4...10).font(TypeScale.callout)
@@ -33,12 +40,38 @@ struct NewWorkView: View {
                     }
                 }
                 GroupSection("模型") {
+                    if modelsLoading || !modelsLoadedOnce {
+                        HStack(spacing: Space.sm) {
+                            ProgressView().controlSize(.small)
+                            Text("正在拉模型列表…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                        }
+                        .accessibilityLabel("正在拉模型列表")
+                    }
+                    if !modelsFailNote.isEmpty {
+                        InlineNotice(text: modelsFailNote, tone: .danger)
+                        Button(modelsLoading ? "重试中…" : "再试一次") {
+                            guard !modelsLoading else { return }
+                            Task { await loadModels() }
+                        }
+                        .buttonStyle(.secondaryCompact)
+                        .disabled(modelsLoading)
+                        .accessibilityIdentifier("newwork-models-retry")
+                    }
                     GroupedCard {
                         HStack {
                             Text("模型").font(TypeScale.body)
                             Spacer(minLength: Space.sm)
-                            Picker("模型", selection: $selection) { Text("执行器默认").tag(""); ForEach(models.map(RemoteRow.init)) { row in Text(row.value["label"].string.isEmpty ? row.id : row.value["label"].string).tag(row.id) } }
+                            if modelsLoading {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Picker("模型", selection: $selection) {
+                                    Text(models.isEmpty && modelsLoadedOnce ? "执行器默认（列表未读上也可派）" : "执行器默认").tag("")
+                                    ForEach(models.map(RemoteRow.init)) { row in
+                                        Text(row.value["label"].string.isEmpty ? row.id : row.value["label"].string).tag(row.id)
+                                    }
+                                }
                                 .labelsHidden().tint(Palette.textSecondary)
+                            }
                         }.padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
                         let efforts = models.first { $0.id == selection }?["efforts"].array.map(\.string) ?? []
                         if !efforts.isEmpty {
@@ -81,9 +114,29 @@ struct NewWorkView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
             .task(id: agent) {
                 selection = ""; effort = ""
-                if let data = await model.load("/models?agent=" + agent) { models = data["models"].array }
+                await loadModels()
             }
             .sheet(isPresented: $pickingDirectory) { DirectoryPicker(path: $directory).presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
+        }
+    }
+
+    private func loadModels() async {
+        guard !modelsLoading else { return }
+        modelsLoading = true
+        modelsFailNote = ""
+        defer {
+            modelsLoading = false
+            modelsLoadedOnce = true
+        }
+        let path = "/models?agent=" + agent
+        if let data = await model.load(path) {
+            models = data["models"].array
+        } else {
+            models = []
+            let err = model.errors[path] ?? model.errors["/models"] ?? ""
+            modelsFailNote = err.isEmpty
+                ? "模型列表没读上——可用「执行器默认」先派，或检查配对后再试"
+                : "模型列表没读上：" + err + "——可再试，或先用默认派"
         }
     }
 }
@@ -93,22 +146,48 @@ struct DirectoryPicker: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var path: String
     @State private var data: JSON = .null
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var loadedOnce = false
     var body: some View {
         NavigationStack {
             ScrollPage {
-                CodeBlock(text: data["path"].string)
+                if loading || !loadedOnce {
+                    HStack(spacing: Space.sm) {
+                        ProgressView().controlSize(.small)
+                        Text("正在读取目录…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    }
+                    .accessibilityLabel("正在读取目录")
+                }
+                if !failNote.isEmpty {
+                    InlineNotice(text: failNote, tone: .danger)
+                    Button(loading ? "重试中…" : "再试一次") {
+                        guard !loading else { return }
+                        Task { await browse(path.isEmpty ? data["path"].string : path) }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(loading)
+                    .accessibilityIdentifier("directory-retry")
+                }
+                CodeBlock(text: data["path"].string.isEmpty ? (loading ? "…" : "（还没读到路径）") : data["path"].string)
                 if !data["parent"].isNull || !data["directories"].array.isEmpty {
                     GroupSection("文件夹") {
                         GroupedCard(dividerInset: Layout.rowInset) {
                             if !data["parent"].isNull {
-                                Button { Task { await browse(data["parent"].string) } } label: {
+                                Button {
+                                    guard !loading else { return }
+                                    Task { await browse(data["parent"].string) }
+                                } label: {
                                     ListRow(symbol: "arrow.up", title: "上一级") { EmptyView() }
-                                }.buttonStyle(.row)
+                                }.buttonStyle(.row).disabled(loading)
                             }
                             ForEach(data["directories"].array.map(\.string), id: \.self) { directory in
-                                Button { Task { await browse(directory) } } label: {
+                                Button {
+                                    guard !loading else { return }
+                                    Task { await browse(directory) }
+                                } label: {
                                     ListRow(symbol: "folder", tone: .neutral, title: URL(fileURLWithPath: directory).lastPathComponent)
-                                }.buttonStyle(.row)
+                                }.buttonStyle(.row).disabled(loading)
                             }
                         }
                     }
@@ -117,20 +196,46 @@ struct DirectoryPicker: View {
                     GroupSection("最近使用") {
                         GroupedCard(dividerInset: Layout.rowInset) {
                             ForEach(data["recent"].array.map(\.string), id: \.self) { directory in
-                                Button { Task { await browse(directory) } } label: {
+                                Button {
+                                    guard !loading else { return }
+                                    Task { await browse(directory) }
+                                } label: {
                                     ListRow(symbol: "clock", title: URL(fileURLWithPath: directory).lastPathComponent)
-                                }.buttonStyle(.row)
+                                }.buttonStyle(.row).disabled(loading)
                             }
                         }
                     }
                 }
             }
             .navigationTitle("工作目录").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("取消") { dismiss() } }; ToolbarItem(placement: .topBarTrailing) { Button("使用这里") { path = data["path"].string; dismiss() }.disabled(data["path"].string.isEmpty) } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("使用这里") { path = data["path"].string; dismiss() }
+                        .disabled(data["path"].string.isEmpty || loading)
+                }
+            }
             .task { await browse(path) }
         }
     }
-    private func browse(_ directory: String) async { if let result = await model.load("/directories?path=" + directory.queryEncoded) { data = result } }
+    private func browse(_ directory: String) async {
+        guard !loading else { return }
+        loading = true
+        failNote = ""
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        let target = directory.isEmpty ? path : directory
+        if let result = await model.load("/directories?path=" + target.queryEncoded) {
+            data = result
+        } else {
+            let err = model.errors["/directories?path=" + target.queryEncoded] ?? model.errors["/directories"] ?? ""
+            failNote = err.isEmpty
+                ? "目录没读上——检查配对或网络后再试"
+                : "目录没读上：" + err + "——可再试"
+        }
+    }
 }
 
 // r3-work：WorkDetailView（会话详情的整页 sheet）已拆进工作页的原地聊天——见 WorkChat.swift / WorkSessionModel.swift。

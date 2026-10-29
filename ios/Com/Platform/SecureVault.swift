@@ -56,10 +56,33 @@ enum SecureVault {
         SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                        kSecAttrAccount as String: account] as CFDictionary)
     }
-    static func records(prefix: String) -> [JSON] {
-        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        return files.filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "sealed" }.compactMap { try? load(JSON.self, name: $0.deletingPathExtension().lastPathComponent) }
+    /// 目录可读时返回条目；decode 失败条数单独计，避免「有文件却像空」假空态。
+    struct RecordsLoad: Sendable {
+        var items: [JSON]
+        var decodeFailures: Int
+        var directoryError: String?
     }
+    static func loadRecords(prefix: String) -> RecordsLoad {
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        } catch {
+            return RecordsLoad(items: [], decodeFailures: 0, directoryError: error.localizedDescription)
+        }
+        let sealed = files.filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "sealed" }
+        var items: [JSON] = []
+        var failed = 0
+        for url in sealed {
+            let name = url.deletingPathExtension().lastPathComponent
+            if let row = try? load(JSON.self, name: name) {
+                items.append(row)
+            } else {
+                failed += 1
+            }
+        }
+        return RecordsLoad(items: items, decodeFailures: failed, directoryError: nil)
+    }
+    static func records(prefix: String) -> [JSON] { loadRecords(prefix: prefix).items }
     static func operationRecords() -> [JSON] { records(prefix: "operation-") }
     private static let keyLock = NSLock()
     private static func key() throws -> SymmetricKey {

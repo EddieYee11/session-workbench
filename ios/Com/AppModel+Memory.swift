@@ -14,7 +14,8 @@ extension AppModel {
     }
 
     /// action：confirm（没错 / 记住）、correct（纠正后保存）、delete（删掉=归档，可在历史版本里找回；待确认的则直接丢弃）。
-    func actOnLearned(_ id: String, action: String, content: String = "") async {
+    @discardableResult
+    func actOnLearned(_ id: String, action: String, content: String = "") async -> Bool {
         #if DEBUG
         if isUITesting {
             var inbox = datasets[Self.memoryInboxPath] ?? .object([:])
@@ -36,15 +37,22 @@ extension AppModel {
                 memory["items"] = .array(memory["items"].array.filter { $0.id != learnedMemory })
                 datasets["/personal/memory"] = memory
             }
-            Haptics.selection(); return
+            Haptics.selection(); return true
         }
         #endif
         do {
             _ = try await mutate(Self.memoryInboxPath + "/" + id.pathEncoded, fields: ["action": .string(action), "content": .string(content)])
             Haptics.selection()
-        } catch { banner = error.localizedDescription }
-        _ = await load(Self.memoryInboxPath)
-        _ = await load("/personal/memory")
+            _ = await load(Self.memoryInboxPath)
+            _ = await load("/personal/memory")
+            return true
+        } catch {
+            // 失败回读；页内由 MemoryReview.actFailNote 开口，banner 仅兜底。
+            banner = "记忆操作没成：" + error.localizedDescription
+            _ = await load(Self.memoryInboxPath)
+            _ = await load("/personal/memory")
+            return false
+        }
     }
 
     #if DEBUG

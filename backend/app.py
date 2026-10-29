@@ -2707,12 +2707,22 @@ async def personal_thread(key: str):
 
 
 WECHAT_SELF = {"我", "高杰", "野望", "野哥", "小野", "Eddie"}
+WAITING_ACK = STATE / "waiting-ack.json"
+
+
+def waiting_ack(ident, at):
+    """记下「已经回了」：同一条微信末条（同 id+at）不再进等你；对方又发新消息（at 变）会再出现。"""
+    from waiting_inbox import save_ack
+
+    return save_ack(WAITING_ACK, ident, at)
 
 
 def waiting_items():
     """统一「等你」（审批卡在 App 里另有数据，由客户端并进来）：等你批准的航程、过期待办、微信里有人在等回话。"""
     import re
     from datetime import timedelta
+
+    from waiting_inbox import drop_acked, load_acks
 
     tz = ZoneInfo("Asia/Shanghai")
     now = datetime.now(tz)
@@ -2747,6 +2757,9 @@ def waiting_items():
     for t in today_view.todo_index():
         if t["event_id"]:  # 日程同步来的：日子过了，事情也就过去了，不算在等你
             continue
+        # 已交给 Com 且航程还在跑/刚跑完：别在等你里重复催同一条（点「交给我办」后角标应立刻掉）。
+        if cases.covers_source("todo", t["path"]):
+            continue
         try:
             due = datetime.strptime(t["due"][:10], "%Y-%m-%d").date() if t["due"] else None
         except ValueError:
@@ -2765,6 +2778,7 @@ def waiting_items():
                 }
             )
     rank = {"case": 0, "wechat": 1, "todo": 2}
+    items = drop_acked(items, load_acks(WAITING_ACK))
     items.sort(key=lambda i: (rank[i["kind"]], -i["at"]))
     return items
 
@@ -2773,6 +2787,15 @@ def waiting_items():
 async def personal_waiting():
     items = await asyncio.to_thread(waiting_items)
     return {"items": items, "count": len(items)}
+
+
+@app.post("/personal/waiting/ack")
+async def personal_waiting_ack(request: Request):
+    data = await request.json()
+    try:
+        return await asyncio.to_thread(waiting_ack, data.get("id"), data.get("at"))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 # ---- 轨道 agent：滚动摘要 + 自动记忆 + 事件提醒 -------------------------------------------

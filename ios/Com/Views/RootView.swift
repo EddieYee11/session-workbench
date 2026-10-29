@@ -143,7 +143,9 @@ struct RootView: View {
             model.selectedSession = nil
             model.work.open(session)
             model.showWorkSidebar = false; model.workSidebarDrag = 0; model.workSidebarMounted = false
-            if model.tab != .work { withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.46, dampingFraction: 0.66)) { model.tab = .work } }
+            if model.tab != .work { withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) { model.tab = .work } }
+            // 立刻拉齐会话；失败 work.note 开口，别只切页假装已打开内容。
+            Task { await model.work.refresh(model) }
         }
     }
     /// 展开的折叠屏：宽度到这个值就换成左右双栏（iPhone Duo 展开横屏约 951pt；竖拿约 669pt 仍是单栏）。
@@ -270,15 +272,26 @@ private struct RootEvents: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onReceive(NotificationCenter.default.publisher(for: .comOpenMessage)) { event in
-                if event.userInfo?["section"] as? String == "tasks" { model.tab = .doing; return }
-                model.tab = .chat
-                if let id = event.object as? String, !id.isEmpty { Task { await model.locateMessage(id) } }
+                let section = event.userInfo?["section"] as? String
+                if section == "waiting" || section == "tasks" {
+                    model.openWaitingInbox()
+                    return
+                }
+                if let id = event.object as? String, !id.isEmpty {
+                    Task {
+                        // 对准成功才落在聊天；失败 locateNote 留在当前面，可再从通知进或去搜索。
+                        if !(await model.locateMessage(id)) {
+                            // locateMessage 已写 locateNote；不抢成只靠 banner。
+                        }
+                    }
+                } else {
+                    // 无 message id：与 today 深链同路刷主聊，失败 todayOpenNote，不静默切 Tab。
+                    model.openTodayDeepLink()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .comOpenApproval)) { event in
-                guard let sid = event.userInfo?["sid"] as? String, !sid.isEmpty else { model.tab = .work; return }
-                model.tab = .work
-                model.work.open(.object(["id": .string(sid), "agent": .string("codex")]))
-                Task { await model.work.refresh(model) }
+                // 与深链 openApproval 同路：缺 sid 工作页开口，不静默切 Tab 假装对准。
+                model.openApproval(sid: event.userInfo?["sid"] as? String ?? "")
             }
             .onReceive(NotificationCenter.default.publisher(for: .comApprovalResolved)) { event in
                 if let message = event.userInfo?["message"] as? String { model.banner = message }
@@ -311,7 +324,14 @@ struct MemorySheet: View {
                 // 轨道 r2-memory：大标题（带排序下拉）画在 MemoryView 内容里，系统标题用 inline 让位。
                 .navigationTitle("记忆").navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(Palette.background, for: .navigationBar)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { model.showMemory = false } } }
+                .toolbar {
+                    if model.memoryOpening {
+                        ToolbarItem(placement: .topBarLeading) {
+                            ProgressView().controlSize(.small).accessibilityLabel("正在拉齐记忆")
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) { Button("完成") { model.showMemory = false } }
+                }
                 .task { _ = await model.load("/personal/memory") }
         }
     }
@@ -323,7 +343,14 @@ struct ConnectorsSheet: View {
         NavigationStack {
             ConnectionsView()
                 .toolbarBackground(Palette.background, for: .navigationBar)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { model.showConnectors = false } } }
+                .toolbar {
+                    if model.connectorsOpening {
+                        ToolbarItem(placement: .topBarLeading) {
+                            ProgressView().controlSize(.small).accessibilityLabel("正在拉齐连接器")
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) { Button("完成") { model.showConnectors = false } }
+                }
         }
     }
 }
@@ -342,40 +369,106 @@ struct ConnectorSheet: View {
 
 struct PairingView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var code = ""
     @State private var loading = false
     @State private var error = ""
+    @State private var deepLinkNote = ""
+    @State private var land = false
+    @State private var fromScan = false
+    private var companionState: StripState {
+        if loading { return .think }
+        if !error.isEmpty { return .broken }
+        return .idle
+    }
+    private var opening: String {
+        if loading { return "正在跟 mini 握手——通了才会把凭据写进钥匙串。" }
+        if !error.isEmpty { return "这次没连上，我直说。改地址或换一张新码，再点「再试一次」——别当成已经配对好了。" }
+        if fromScan { return "扫码带过来了地址和配对码。核对一下，点连接；凭据只进本机钥匙串。" }
+        return "先连上你的 Mac mini——邮件、日历、账本和两台电脑上的活，都会汇到这里。"
+    }
     var body: some View {
         @Bindable var model = model
         NavigationStack {
             ScrollPage(spacing: Space.xxl) {
-                Companion(state: .think).frame(height: 170).padding(.top, Space.xl)
+                Companion(state: companionState).frame(height: 170).padding(.top, Space.xl)
+                    .modifier(EnterRise(on: land, delay: 0, y: 14, blur: 6, animation: ComMotion.rise))
+                    .accessibilityIdentifier(error.isEmpty ? "pair-companion" : "pair-companion-fail")
                 VStack(alignment: .leading, spacing: Space.md) {
                     Eyebrow(text: "YOUR PERSONAL AGENT")
                     Text("随时，\n与你一起。").font(TypeScale.largeTitle).lineSpacing(4)
-                    Text("连接你的 Mac mini，让邮件、日历、账本和两台电脑上的工作在这里汇合。").font(TypeScale.callout).foregroundStyle(Palette.textSecondary).lineSpacing(4)
+                    Text(opening).font(TypeScale.callout).foregroundStyle(Palette.textSecondary).lineSpacing(4)
+                        .contentTransition(.opacity)
+                        .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: opening)
+                        .accessibilityIdentifier("pair-opening")
                 }
+                .modifier(EnterRise(on: land, delay: 0.05, y: 12, blur: 5, animation: ComMotion.pop))
                 VStack(alignment: .leading, spacing: Space.lg) {
                     GroupedCard {
                         TextField("HTTPS 服务地址", text: $model.base).font(TypeScale.callout).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).accessibilityIdentifier("server-address").rowPadding()
                         TextField("一次性配对码", text: $code).font(TypeScale.callout).keyboardType(.asciiCapable).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("pair-code").rowPadding()
                     }
                     Button {
-                        loading = true
-                        Task { do { try await model.pair(code: code) } catch { self.error = error.localizedDescription }; loading = false }
+                        guard !loading else { return }
+                        Task { await connect() }
                     } label: {
-                        HStack { Text("开始连接"); Spacer(); if loading { ProgressView().tint(Palette.onInk) } else { Image(systemName: "arrow.right") } }
-                    }.buttonStyle(.primaryFull).disabled(loading || code.isEmpty)
-                    if !error.isEmpty { InlineNotice(text: error) }
+                        HStack {
+                            Text(loading ? "连接中…" : (error.isEmpty ? "开始连接" : "再试一次"))
+                            Spacer()
+                            if loading { ProgressView().tint(Palette.onInk) } else { Image(systemName: "arrow.right") }
+                        }
+                    }.buttonStyle(.primaryFull).disabled(loading || code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("pair-connect")
+                    if !deepLinkNote.isEmpty {
+                        InlineNotice(text: deepLinkNote, tone: .warning)
+                            .accessibilityIdentifier("pair-deeplink-note")
+                    }
+                    if !model.pairGateNote.isEmpty {
+                        InlineNotice(text: model.pairGateNote, tone: .warning)
+                            .accessibilityIdentifier("pair-voice-gate-note")
+                    }
+                    if !error.isEmpty {
+                        InlineNotice(text: error, tone: .danger)
+                            .accessibilityIdentifier("pair-fail")
+                    }
                 }
-                Text("配对码在 Mac mini 上生成。账号凭据留在这台 iPhone 的钥匙串中。也可以让已配对的设备出示二维码，用相机扫码自动填入。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                .modifier(EnterRise(on: land, delay: 0.1, y: 12, blur: 4, animation: ComMotion.lift))
+                Text("配对码在 Mac mini 上生成；凭据只进本机钥匙串。也可以让已配对的设备出示二维码，相机一扫就填好。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    .modifier(EnterRise(on: land, delay: 0.14, y: 8, blur: 3, animation: ComMotion.settle))
             }
             .onAppear {
+                if reduce { land = true } else { withAnimation(ComMotion.lift) { land = true } }
                 if let pending = UserDefaults.standard.string(forKey: "pendingPairCode"), !pending.isEmpty {
                     code = pending
+                    fromScan = true
                     UserDefaults.standard.removeObject(forKey: "pendingPairCode")
                 }
+                if let note = UserDefaults.standard.string(forKey: "pendingPairNote"), !note.isEmpty {
+                    deepLinkNote = note
+                    UserDefaults.standard.removeObject(forKey: "pendingPairNote")
+                }
             }
+        }
+    }
+    private func connect() async {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            error = "还没填配对码——在 mini 上生成一张，或扫已配对设备的二维码。"
+            return
+        }
+        let base = model.base.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !base.isEmpty, base.lowercased().hasPrefix("http") else {
+            error = "服务地址不对——要填 HTTPS 地址（例如 https://…），再试一次。"
+            return
+        }
+        loading = true
+        error = ""
+        defer { loading = false }
+        do {
+            try await model.pair(code: trimmed)
+        } catch {
+            // 失败留在配对页开口；勿假装已写入钥匙串。
+            self.error = "配对没成：" + error.localizedDescription + "——可换新码或核对地址后再试"
         }
     }
 }

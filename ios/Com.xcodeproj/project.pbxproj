@@ -39,6 +39,7 @@
 		519DFD50E452B5757B49C65C /* AgencyModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7558CEC3E0DC8802B9E006C9 /* AgencyModel.swift */; };
 		542A8AEBF0A1D91E6D13085A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 86EE9A2030D82F3CC38D01D9 /* Assets.xcassets */; };
 		54581A4600CB09A745277666 /* Chrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59E94D049852C4A54CFFA21D /* Chrome.swift */; };
+		5564A84F0ECF1BF1349DA17C /* WorkRemote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76F90F01951A00327CE50779 /* WorkRemote.swift */; };
 		584B57748C2AE16E429F03BF /* HealthReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0027E45C459F7817D2DB0E71 /* HealthReader.swift */; };
 		5997035B70F8DE666CA4AE90 /* ProjectBoardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D94119968D27D2EE60CC408A /* ProjectBoardViews.swift */; };
 		61A3DAB80E57D7B5422B65CD /* R3MemoryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D81B9C4B49965AF15748239 /* R3MemoryUITests.swift */; };
@@ -54,6 +55,7 @@
 		72F5B88AD014405E2CE1C53B /* ThreadsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D4151C42B545721DDBF4A1 /* ThreadsViews.swift */; };
 		76119F2EF60F37D313BB7AE6 /* ComVoiceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8649038D882EDBC4307C24 /* ComVoiceControl.swift */; };
 		771DB0FB5E7A9B556289D206 /* AppModel+Pages.swift in Sources */ = {isa = PBXBuildFile; fileRef = A221C7D39A2E646665ADB4D3 /* AppModel+Pages.swift */; };
+		7B0BD77A7E1762CB68F3C101 /* ChatPresence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 951C4E3CE069AF075E41F302 /* ChatPresence.swift */; };
 		7BF37EFE24C1B04B02C9AB43 /* ComCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B77E8C2C95C01B5561165726 /* ComCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		7C9707C68BE6B2F845A4DCA9 /* ScrollFrameMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BDF0E1DFD41F7167E786627 /* ScrollFrameMonitor.swift */; };
 		82E6333125F902DA85B4E86C /* WorkHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EB76DCBCE907B0C5EB3F5F /* WorkHome.swift */; };
@@ -219,6 +221,7 @@
 		6EC1160E2848EF111BB78CDA /* Checks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Checks.swift; sourceTree = "<group>"; };
 		712B229F2ABFC63A9878E594 /* ReplyText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyText.swift; sourceTree = "<group>"; };
 		7558CEC3E0DC8802B9E006C9 /* AgencyModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgencyModel.swift; sourceTree = "<group>"; };
+		76F90F01951A00327CE50779 /* WorkRemote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkRemote.swift; sourceTree = "<group>"; };
 		809B0769F81E1FE18DA79147 /* WorkSessionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkSessionModel.swift; sourceTree = "<group>"; };
 		831A14BE8E8D3B0D93746FE7 /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		83D6B14B92D33506CD44632E /* AgentStageMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageMachine.swift; sourceTree = "<group>"; };
@@ -228,6 +231,7 @@
 		8D57A98082458D1359BD5F11 /* VoiceCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommands.swift; sourceTree = "<group>"; };
 		8FC354352A0E839AE2201D8D /* Character.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Character.swift; sourceTree = "<group>"; };
 		947F6661953F6A5A925B1B35 /* VoiceGlow-ThirdParty-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "VoiceGlow-ThirdParty-LICENSE.txt"; sourceTree = "<group>"; };
+		951C4E3CE069AF075E41F302 /* ChatPresence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPresence.swift; sourceTree = "<group>"; };
 		96B7B594AFDF5566F0807669 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		97904BD5D703965F324E2615 /* ChatTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTimeline.swift; sourceTree = "<group>"; };
 		97F94D4079AE66BCDF36F3AF /* VoiceStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceStream.swift; sourceTree = "<group>"; };
@@ -272,7 +276,7 @@
 		F9D90C9360DCE4743755E1B6 /* CasesViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CasesViews.swift; sourceTree = "<group>"; };
 		FDDB7C77B7EAB250E94DEFC6 /* ComUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ComUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FEE32CA35186E717D66E3076 /* AgentStageMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageMachineTests.swift; sourceTree = "<group>"; };
-		"TEMP_550AB937-02BB-4E25-841F-352E399A64E9" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		"TEMP_DD3D8ECB-DAB4-404A-945A-E1BD82BD715D" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -327,6 +331,7 @@
 				F9D90C9360DCE4743755E1B6 /* CasesViews.swift */,
 				8FC354352A0E839AE2201D8D /* Character.swift */,
 				ABC19D47D6245D85B1C1DC84 /* ChatMotion.swift */,
+				951C4E3CE069AF075E41F302 /* ChatPresence.swift */,
 				5FFE0DAB1403070690833136 /* ChatView.swift */,
 				59E94D049852C4A54CFFA21D /* Chrome.swift */,
 				96B7B594AFDF5566F0807669 /* DesignSystem.swift */,
@@ -354,6 +359,7 @@
 				BBA4697B21D25BCF148F3737 /* WorkChat.swift */,
 				E7EB76DCBCE907B0C5EB3F5F /* WorkHome.swift */,
 				67F32D8CB2C10FA35A3E69B9 /* WorkProcess.swift */,
+				76F90F01951A00327CE50779 /* WorkRemote.swift */,
 				DEA3EDED0706D4C2FAF05AD7 /* WorkView.swift */,
 			);
 			path = Views;
@@ -500,10 +506,10 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		"TEMP_A73FF0C2-D304-419F-B2A8-162E814F76DC" /* ios */ = {
+		"TEMP_6DDAF7E2-5C76-4A18-81A8-418AFBA2544A" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_550AB937-02BB-4E25-841F-352E399A64E9" /* Config.xcconfig */,
+				"TEMP_DD3D8ECB-DAB4-404A-945A-E1BD82BD715D" /* Config.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -722,6 +728,7 @@
 				2850448FE0BBCBFF1C0CA10D /* CasesViews.swift in Sources */,
 				2DFA194B731A152BB1D0C91E /* Character.swift in Sources */,
 				932E50DA4B2E1B154A922806 /* ChatMotion.swift in Sources */,
+				7B0BD77A7E1762CB68F3C101 /* ChatPresence.swift in Sources */,
 				35B97609DD142D1A95B57481 /* ChatView.swift in Sources */,
 				54581A4600CB09A745277666 /* Chrome.swift in Sources */,
 				6D254289114A1F5551A3073A /* ComActivity.swift in Sources */,
@@ -764,6 +771,7 @@
 				34D429456DDCC36A6D2A838F /* WorkChat.swift in Sources */,
 				82E6333125F902DA85B4E86C /* WorkHome.swift in Sources */,
 				A794E59B406CC0C906F947EE /* WorkProcess.swift in Sources */,
+				5564A84F0ECF1BF1349DA17C /* WorkRemote.swift in Sources */,
 				8BDEA72F00A6BEC7F55C538D /* WorkSessionModel.swift in Sources */,
 				2441F126F313E85FDE29AC67 /* WorkView.swift in Sources */,
 			);
@@ -899,7 +907,7 @@
 		};
 		3090500630AD48E73BFDF9C7 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_550AB937-02BB-4E25-841F-352E399A64E9" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_DD3D8ECB-DAB4-404A-945A-E1BD82BD715D" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -935,7 +943,7 @@
 				COM_APNS_ENVIRONMENT = "";
 				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2026101804;
+				CURRENT_PROJECT_VERSION = 2026102901;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -1043,7 +1051,7 @@
 		};
 		77A0C5116CC8A0F0C01DCC13 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_550AB937-02BB-4E25-841F-352E399A64E9" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_DD3D8ECB-DAB4-404A-945A-E1BD82BD715D" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1079,7 +1087,7 @@
 				COM_APNS_ENVIRONMENT = "";
 				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2026101804;
+				CURRENT_PROJECT_VERSION = 2026102901;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

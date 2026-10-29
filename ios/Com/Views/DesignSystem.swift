@@ -155,6 +155,102 @@ enum Layout {
     static let dock: CGFloat = 72            // 浮动 Dock 占的底部空间
 }
 
+// MARK: - Motion tokens（全 App 共用；页面别再各写一套 spring）
+
+/// UI spring tokens。不叫 `Motion`——`WorkProcess` 里已有同名缓动曲线枚举。
+/// 2026-10-29：对照 bestsaaswebdesigns curated Animation 的共性（错峰揭示、轻按压、交叉淡入、注意力呼吸），
+/// 补齐可迁移到 SwiftUI 的 token；不照搬网页 SaaS 仪表盘。
+enum ComMotion {
+    /// Dock 选中撑开、chip 切换。
+    static let snap = Animation.spring(response: 0.46, dampingFraction: 0.66)
+    /// 顶栏、舞台收合、列表折叠。
+    static let settle = Animation.spring(response: 0.38, dampingFraction: 0.86)
+    /// 气泡进场、依据袋弹出。
+    static let pop = Animation.spring(response: 0.42, dampingFraction: 0.62)
+    /// 发送飞行（duration + bounce 写法，和 ChatMotion 一致）。
+    static let flight = Animation.spring(duration: 0.38, bounce: 0.18)
+    /// 页面区块错峰上浮。
+    static let rise = Animation.spring(response: 0.55, dampingFraction: 0.9)
+    /// 健康/轻量区块。
+    static let lift = Animation.spring(response: 0.5, dampingFraction: 0.86)
+    /// 模式切换交叉淡入（对话↔终端、分段）。
+    static let crossfade = Animation.spring(response: 0.4, dampingFraction: 0.88)
+    /// 卡片/行轻按压回弹。
+    static let press = Animation.spring(duration: 0.18, bounce: 0.14)
+    /// 「有事找你」条等注意力提示的柔和呼吸（仅装饰，不抢焦点）。
+    static let breath = Animation.easeInOut(duration: 1.6).repeatForever(autoreverses: true)
+    static let stagger: Double = 0.06
+    static func reduced(_ reduce: Bool, _ preferred: Animation) -> Animation {
+        reduce ? .easeOut(duration: 0.2) : preferred
+    }
+}
+
+/// 页面进场：模糊 + 上移，错峰 delay。Today / Health / 等你列表共用。
+struct EnterRise: ViewModifier {
+    let on: Bool
+    var delay: Double = 0
+    var y: CGFloat = 26
+    var blur: CGFloat = 10
+    var animation: Animation = ComMotion.rise
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    func body(content: Content) -> some View {
+        content
+            .opacity(on || reduce ? 1 : 0)
+            .offset(y: on || reduce ? 0 : y)
+            .blur(radius: on || reduce ? 0 : blur)
+            .animation(reduce ? .easeOut(duration: 0.2) : on ? animation.delay(delay) : nil, value: on)
+    }
+}
+
+/// 卡片/chip 轻按压（curated 里常见的 soft scale press；Reduce Motion 只降透明度）。
+struct SoftPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    var scale: CGFloat = 0.97
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(reduce ? 1 : (configuration.isPressed ? scale : 1))
+            .opacity(configuration.isPressed ? 0.88 : 1)
+            .animation(reduce ? .easeOut(duration: 0.12) : ComMotion.press, value: configuration.isPressed)
+    }
+}
+
+/// 注意力条柔和呼吸：只动描边/透明度，不做位移（避免阅读抖动）。
+struct AttentionBreath: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var pulse = false
+    var active: Bool = true
+    func body(content: Content) -> some View {
+        content
+            .opacity(reduce || !active ? 1 : (pulse ? 1 : 0.82))
+            .onAppear {
+                guard active, !reduce else { return }
+                withAnimation(ComMotion.breath) { pulse = true }
+            }
+            .onChange(of: active) { _, on in
+                if !on || reduce { pulse = false }
+                else { withAnimation(ComMotion.breath) { pulse = true } }
+            }
+    }
+}
+
+extension View {
+    func enterRise(on: Bool, delay: Double = 0, y: CGFloat = 26, blur: CGFloat = 10) -> some View {
+        modifier(EnterRise(on: on, delay: delay, y: y, blur: blur))
+    }
+    func attentionBreath(active: Bool = true) -> some View {
+        modifier(AttentionBreath(active: active))
+    }
+}
+
+/// 前台可见、非低电量、未开减少动态效果时才跑 ambient Canvas。
+enum AmbientMotionPolicy {
+    static func allowsTimeline(active: Bool, reduceMotion: Bool) -> Bool {
+        guard active, !reduceMotion else { return false }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return false }
+        return true
+    }
+}
+
 // MARK: - Elevation & glass
 
 enum Elevation { case flat, raised, floating }
@@ -535,11 +631,15 @@ struct StatusDot: View {
 /// Count badge on a control (在办 3).
 struct CountBadge: View {
     let count: Int
+    @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
         if count > 0 {
             Text("\(min(count, 99))").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.onAccent)
+                .contentTransition(.numericText())
                 .frame(minWidth: 18, minHeight: 18).padding(.horizontal, 3)
                 .background(Palette.accent, in: .capsule).overlay(Capsule().strokeBorder(Palette.surface, lineWidth: 2))
+                .scaleEffect(1)
+                .animation(reduce ? nil : ComMotion.snap, value: count)
         }
     }
 }
@@ -569,7 +669,7 @@ struct PrimaryButtonStyle: ButtonStyle {
             .background(Palette.accent.opacity(enabled ? 1 : 0.45), in: .capsule)
             .opacity(enabled ? 1 : 0.6)
             .scaleEffect(reduce ? 1 : configuration.isPressed ? 0.97 : 1)
-            .animation(reduce ? nil : .spring(duration: 0.2, bounce: 0.15), value: configuration.isPressed)
+            .animation(reduce ? .easeOut(duration: 0.12) : ComMotion.press, value: configuration.isPressed)
     }
 }
 extension ButtonStyle where Self == PrimaryButtonStyle {
@@ -737,6 +837,8 @@ struct EmptyState: View {
     let title: String
     let description: String
     let symbol: String
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var shown = false
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             IconBadge(symbol: symbol, tone: .neutral, size: 40)
@@ -747,7 +849,13 @@ struct EmptyState: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(Space.lg)
         .background(Palette.fill.opacity(0.6), in: .rect(cornerRadius: Radius.lg, style: .continuous))
+        .enterRise(on: shown, delay: 0.02, y: 14, blur: 6)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("empty-state")
+        .onAppear {
+            if reduce { shown = true }
+            else { withAnimation(ComMotion.rise) { shown = true } }
+        }
     }
 }
 
@@ -757,7 +865,11 @@ struct LoadingState: View {
         HStack(spacing: Space.sm) {
             ProgressView().controlSize(.small)
             Text(text).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
-        }.frame(maxWidth: .infinity, alignment: .leading)
+                .contentTransition(.opacity)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, Space.xs)
+        .accessibilityIdentifier("loading-state")
     }
 }
 
@@ -765,13 +877,35 @@ struct LoadingState: View {
 struct InlineNotice: View {
     let text: String
     var tone: Tone = .danger
+    private var shown: String { Self.companion(text) }
     var body: some View {
         Label {
-            Text(text).font(TypeScale.footnote).foregroundStyle(tone == .neutral ? Palette.textSecondary : tone.color)
+            Text(shown).font(TypeScale.footnote).foregroundStyle(tone == .neutral ? Palette.textSecondary : tone.color)
         } icon: {
             Image(systemName: tone == .danger ? "exclamationmark.circle.fill" : "info.circle").font(TypeScale.footnote).foregroundStyle(tone.color)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityLabel(shown)
+    }
+    /// 把冷硬系统错误收成伙伴口吻；认不出的原文保留，方便排查。
+    static func companion(_ raw: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return t }
+        let lower = t.lowercased()
+        if lower.contains("could not connect") || lower.contains("network connection was lost")
+            || lower.contains("not connected to the internet") || t.contains("NSURLErrorDomain") {
+            return "这会儿连不上 mini。看一下网络或配对地址，再试一次。"
+        }
+        if lower.contains("timed out") || lower.contains("timeout") || t.contains("超时") {
+            return "等太久了，服务没回。稍后再试，或到设置里确认还连着。"
+        }
+        if t.contains("连接凭据无效") || lower.contains("unauthorized") || t.contains("401") {
+            return "配对好像失效了。到设置里重新连一次 mini。"
+        }
+        if lower.contains("cancelled") && (lower.contains("url") || lower.contains("request")) {
+            return "这次请求取消了，没有发出去。"
+        }
+        return t
     }
 }
 
