@@ -90,12 +90,19 @@ import ComCore
             push(state, to: [keep])
             return
         }
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        // 没有活着的 Activity：清掉 last，免得后面假以为岛上已是最新而不重开。
+        last = nil
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            model?.liveActivityNote = "系统关闭了实时活动——灵动岛不会更新。到「设置 › 面容 ID 与密码 / 实时活动」打开后再回 Com；不会假装岛上还在跳。"
+            return
+        }
         do {
             _ = try Activity.request(attributes: ComActivityAttributes(), content: content(state), pushType: nil)
             last = state
+            model?.liveActivityNote = ""
         } catch {
-            // 不在前台，或用户在设置里关了实时活动：下次回到前台 / 将要进后台再试。
+            // 不在前台，或请求失败：不清成成功；下次回到前台 / 将要进后台再试。
+            model?.liveActivityNote = "灵动岛没开上：\(error.localizedDescription)——回到前台会再试。不会假装已挂上。"
         }
     }
 
@@ -103,8 +110,11 @@ import ComCore
     private func enterBackground() {
         guard let model, model.isPaired, let state = state() else { endAll(); return }
         let alive = activities
-        guard !alive.isEmpty else { return }
-        last = state
+        guard !alive.isEmpty else {
+            // 没有活岛：不要写 last 假装已推上；ensure 会在下次前台开口。
+            last = nil
+            return
+        }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "work.eddie.com.live-activity") { [weak self] in
             MainActor.assumeIsolated { self?.endBackgroundTask() }
         }
@@ -113,6 +123,9 @@ import ComCore
                 nonisolated(unsafe) let activity = activity
                 await activity.update(content(state))
             }
+            // update 成功后才记住：挂起后若没活岛，下次前台 ensure 会重开而不是跳过。
+            last = state
+            model.liveActivityNote = ""
             #if DEBUG
             if demo { await runDemo() }
             #endif
@@ -126,10 +139,17 @@ import ComCore
         backgroundTask = .invalid
     }
 
+    /// 只有目标 Activity 真的还活着才推进 `last`。空列表时旧版也会写 last → 之后状态变了不再重试 = 假成功。
     private func push(_ state: State, to targets: [Activity<ComActivityAttributes>]? = nil) {
+        let list = targets ?? activities
+        guard !list.isEmpty else {
+            last = nil
+            return
+        }
         guard state != last else { return }
         last = state
-        for activity in targets ?? activities {
+        model?.liveActivityNote = ""
+        for activity in list {
             nonisolated(unsafe) let activity = activity
             Task { await activity.update(content(state)) }
         }
@@ -137,6 +157,7 @@ import ComCore
 
     private func endAll() {
         last = nil; busySince = nil; runningSince = nil
+        if model?.isPaired == false { model?.liveActivityNote = "" }
         for activity in Activity<ComActivityAttributes>.activities {
             nonisolated(unsafe) let activity = activity
             Task { await activity.end(nil, dismissalPolicy: .immediate) }
@@ -157,8 +178,7 @@ import ComCore
         runningSince = running > 0 ? (runningSince ?? busySince ?? Date()) : nil
         // 电脑上的任务有创建时间就从那一刻算，计时才是真的「跑了多久」。
         let taskStart = tasks.map { $0["created_at"].double }.filter { $0 > 0 }.min().map { Date(timeIntervalSince1970: $0) }
-        return State(mood: model.stripState.rawValue, caption: model.stripCaption, waiting: 0,  // 10-25 不再显示「等你」，字段留着兼容已在跑的灵动岛
-                    
+        return State(mood: model.stripState.rawValue, caption: model.stripCaption, waiting: model.waitingInboxCount,
                      running: running, urgent: model.nextUrgentCount, since: running > 0 ? (taskStart ?? runningSince) : nil)
     }
 

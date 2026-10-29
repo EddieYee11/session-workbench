@@ -193,6 +193,9 @@ struct MemoryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     /// 待你过目的纸片在本地的过场与撤销（轨道 r3-memory），文件夹页和「自动记忆」页共用这一份。
     @State private var review = MemoryReview()
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var loadedOnce = false
 
     private var items: [JSON] { model.datasets["/personal/memory"]?["items"].array ?? [] }
     private var folders: [MemoryFolder] {
@@ -202,6 +205,7 @@ struct MemoryView: View {
         let extra = Set(items.map(\.memoryFolder)).subtracting(list.map(\.name)).sorted().map { MemoryFolder(name: $0, blurb: "") }
         return list + extra
     }
+    private var pulling: Bool { model.memoryOpening || loading || !loadedOnce }
 
     var body: some View {
         let papers = MemoryPaper.build(items: items, inbox: model.datasets[AppModel.memoryInboxPath]).filter { !review.hidden.contains($0.id) }
@@ -212,6 +216,24 @@ struct MemoryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.lg) {
                 header(total: papers.count)
+                if pulling {
+                    HStack(spacing: Space.sm) {
+                        ProgressView().controlSize(.small)
+                        Text("正在拉齐记忆…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    }
+                    .accessibilityLabel("正在拉齐记忆")
+                    .accessibilityIdentifier("memory-pulling")
+                }
+                if !failNote.isEmpty {
+                    InlineNotice(text: failNote, tone: .danger)
+                    Button(loading || model.memoryOpening ? "重试中…" : "再试一次") {
+                        guard !loading, !model.memoryOpening else { return }
+                        Task { await refreshMemory(force: true) }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(loading || model.memoryOpening)
+                    .accessibilityIdentifier("memory-retry")
+                }
                 FilterChips(options: MemoryFilter.allCases.map(\.rawValue), selection: Binding(get: { filter.rawValue }, set: { filter = MemoryFilter(rawValue: $0) ?? .all }),
                             animation: reduce ? .easeOut(duration: 0.15) : .spring(response: 0.42, dampingFraction: 0.86), haptic: true)
                 if searching {
@@ -226,8 +248,17 @@ struct MemoryView: View {
                 } else {
                     LearnedTip()
                     if visible.isEmpty {
-                        EmptyState(title: filter == .pending ? "没有等你确认的" : filter == .learned ? "还没有自动学到的" : "还没有记忆",
-                                   description: "聊到新的偏好、习惯或在做的事，它会自动记下，再放到这里给你过目。", symbol: "checkmark.circle")
+                        EmptyState(title: !failNote.isEmpty ? "记忆还没读上"
+                                       : filter == .pending ? "眼下没有要你点头的"
+                                       : filter == .learned ? "还没自动学到新东西" : "记忆还是空的",
+                                   description: !failNote.isEmpty
+                                   ? "先重试拉齐；通了会出现文件夹和待确认纸片。"
+                                   : filter == .pending
+                                   ? "聊到新的偏好或习惯时，我会先放在这里请你点头——对了再收进长期记忆，不对就纠正我。"
+                                   : filter == .learned
+                                   ? "对话里浮现的习惯和偏好，你点头确认后会出现在这里。"
+                                   : "跟我说你的偏好、习惯或在做的事——我记下后会出现在这里，也可以随时改。",
+                                   symbol: "checkmark.circle")
                     } else if layout == "grid" {
                         grid(visible, grouped: grouped)
                     } else {
@@ -263,14 +294,64 @@ struct MemoryView: View {
             .environment(review)
         }
         .environment(review)
-        .refreshable { _ = await model.load("/personal/memory"); await model.loadMemoryInbox() }
+        .refreshable { await refreshMemory(force: true) }
         .task {
             #if DEBUG
             model.seedR3MemoryPreview()
             #endif
-            await model.loadMemoryInbox()
+            await refreshMemory(force: false)
         }
         .onAppear { appeared = true }
+    }
+
+    private func refreshMemory(force: Bool) async {
+        guard !loading else { return }
+        loading = true
+        if force { failNote = "" }
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        let memPath = "/personal/memory"
+        let inboxPath = AppModel.memoryInboxPath
+        let gotMem: Bool
+        let gotInbox: Bool
+        // 与 openMemory 同路：入口已在拉则等它结束，避免叠刷。
+        if model.memoryOpening && !force {
+            while model.memoryOpening && !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            gotMem = model.errors[memPath] == nil && model.datasets[memPath] != nil
+            gotInbox = model.errors[inboxPath] == nil && model.datasets[inboxPath] != nil
+        } else {
+            async let mem = model.load(memPath)
+            async let inbox: Void = model.loadMemoryInbox()
+            gotMem = await mem != nil
+            await inbox
+            gotInbox = model.errors[inboxPath] == nil && model.datasets[inboxPath] != nil
+        }
+        if gotMem && gotInbox {
+            failNote = ""
+            model.memoryOpenNote = ""
+            return
+        }
+        let memErr = model.errors[memPath] ?? ""
+        let inboxErr = model.errors[inboxPath] ?? ""
+        let hadCache = !(model.datasets[memPath]?["items"].array ?? []).isEmpty
+        if !gotMem && !gotInbox {
+            let err = [memErr, inboxErr].first { !$0.isEmpty } ?? ""
+            failNote = err.isEmpty
+                ? (hadCache ? "记忆没刷新上——下面仍是上一版，可再试" : "记忆还没拉齐——检查配对或网络后再试")
+                : (hadCache ? "记忆没刷新上：" + err + "——下面仍是上一版" : "记忆没拉齐：" + err + "——可再试")
+        } else if !gotMem {
+            failNote = memErr.isEmpty
+                ? (hadCache ? "记忆列表没刷新上——待确认若在仍可先看；可再试" : "记忆列表没读上——可再试")
+                : "记忆列表没读上：" + memErr + "——可再试"
+        } else {
+            failNote = inboxErr.isEmpty
+                ? "待确认收件箱没读上——长期记忆若在仍可先看；可再试"
+                : "待确认没读上：" + inboxErr + "——可再试"
+        }
     }
 
     private func sorted(_ list: [MemoryFolder], grouped: [String: [MemoryPaper]]) -> [MemoryFolder] {
@@ -299,8 +380,16 @@ struct MemoryView: View {
             .accessibilityIdentifier("memory-sort")
             .accessibilityLabel("记忆，排序方式")
             Spacer(minLength: 0)
-            Text("\(total) 条").font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textTertiary)
-                .contentTransition(.numericText())
+            if model.memoryOpening {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("拉齐中…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                }
+                .accessibilityLabel("正在拉齐记忆")
+            } else {
+                Text("\(total) 条").font(TypeScale.footnote.monospacedDigit()).foregroundStyle(Palette.textTertiary)
+                    .contentTransition(.numericText())
+            }
         }
     }
 
@@ -351,7 +440,7 @@ struct MemoryView: View {
     @ViewBuilder private var results: some View {
         let found = items.filter { $0["content"].string.localizedCaseInsensitiveContains(search) || $0.memoryTitle.localizedCaseInsensitiveContains(search) }
         if found.isEmpty {
-            EmptyState(title: "这里还留着空白", description: "没有符合「\(search)」的记忆。换个词，或去文件夹里翻翻。", symbol: "sparkles.rectangle.stack")
+            EmptyState(title: "没翻到「\(search)」", description: "换个词试试，或到文件夹里逛一圈——我可能用了另一个说法记下。", symbol: "sparkles.rectangle.stack")
         } else {
             GroupSection("找到 \(found.count) 条") {
                 GroupedCard(dividerInset: Layout.rowInset) {
@@ -631,7 +720,8 @@ private struct LearnedTip: View {
                         }
                         if pending > 0 {
                             Text(learned > 0 ? " · " : "")
-                            Text("\(pending) 条等你确认").fontWeight(.semibold).foregroundStyle(Palette.warning)
+                            Text(pending == 1 ? "有 1 条想请你点头" : "\(pending) 条想请你点头")
+                                .fontWeight(.semibold).foregroundStyle(Palette.warning)
                         }
                     }
                     .font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary).lineLimit(1)
@@ -677,6 +767,8 @@ struct MemoryFolderView: View {
     var initial: MemoryFilter = .all
     @State private var filter: MemoryFilter = .all
     @State private var appeared = false
+    /// 下拉刷失败开口；别假装夹子已是最新。
+    @State private var refreshFailNote = ""
     @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
         let items = model.datasets["/personal/memory"]?["items"].array ?? []
@@ -698,8 +790,16 @@ struct MemoryFolderView: View {
                     // 收进来的记忆多出一个「自动学到」时，胶囊顺着让位，不跳（轨道 r3-memory）。
                     .animation(reduce ? .easeOut(duration: 0.15) : .smooth(duration: 0.3), value: present.map(\.rawValue))
             }
+            if !refreshFailNote.isEmpty {
+                InlineNotice(text: refreshFailNote, tone: .danger)
+                    .accessibilityIdentifier("memory-folder-refresh-fail")
+            }
+            if !review.actFailNote.isEmpty {
+                InlineNotice(text: review.actFailNote, tone: .danger)
+                    .accessibilityIdentifier("memory-folder-act-fail")
+            }
             if shown.isEmpty {
-                EmptyState(title: "这个文件夹还是空的", description: "和 Com 聊到相关的事、或在共享知识库里写下笔记后，会自动放进来。", symbol: folder.symbol)
+                EmptyState(title: "这个夹子还空着", description: "跟我聊到相关的事，或在共享知识库写下笔记后，会自动收进来。", symbol: folder.symbol)
             } else {
                 // 间距算进每一格（待确认的纸片收起时连间距一起收），最后一格多出来的那截用负边距抵掉（轨道 r3-memory）。
                 VStack(spacing: 0) {
@@ -732,11 +832,43 @@ struct MemoryFolderView: View {
         .overlay(alignment: .bottom) { UndoToast() }
         .navigationTitle(folder.name).navigationBarTitleDisplayMode(.large)
         .toolbarBackground(Palette.background, for: .navigationBar)
-        .refreshable { _ = await model.load("/personal/memory"); await model.loadMemoryInbox() }
+        .refreshable { await refreshFolder() }
         .onAppear {
             if !appeared { filter = present.contains(initial) ? initial : .all }
             appeared = true
         }
+    }
+
+    private func refreshFolder() async {
+        refreshFailNote = ""
+        let memPath = "/personal/memory"
+        let inboxPath = AppModel.memoryInboxPath
+        let gotMem = await model.load(memPath) != nil
+        await model.loadMemoryInbox()
+        let gotInbox = model.errors[inboxPath] == nil && model.datasets[inboxPath] != nil
+        if gotMem && gotInbox { return }
+        let memErr = model.errors[memPath] ?? ""
+        let inboxErr = model.errors[inboxPath] ?? ""
+        let hadCache = !insideEmpty()
+        if !gotMem && !gotInbox {
+            let err = [memErr, inboxErr].first { !$0.isEmpty } ?? ""
+            refreshFailNote = err.isEmpty
+                ? (hadCache ? "夹子没刷上——下面仍是上一版，可再下拉。不会假装已是最新。" : "夹子还没拉齐——检查配对或网络后再试。不会假装已是最新。")
+                : (hadCache ? "夹子没刷上：" + err + "——下面仍是上一版。不会假装已是最新。" : "夹子没拉齐：" + err + "——可再试。不会假装已是最新。")
+        } else if !gotMem {
+            refreshFailNote = memErr.isEmpty
+                ? (hadCache ? "记忆列表没刷上——下面仍是上一版，可再下拉。不会假装已是最新。" : "记忆列表没读上——可再试。不会假装已是最新。")
+                : "记忆列表没读上：" + memErr + "——可再试。不会假装已是最新。"
+        } else {
+            refreshFailNote = inboxErr.isEmpty
+                ? "待确认没读上——夹子里旧纸片若在仍可先看；可再下拉。不会假装已是最新。"
+                : "待确认没读上：" + inboxErr + "——可再下拉。不会假装已是最新。"
+        }
+    }
+
+    private func insideEmpty() -> Bool {
+        let items = model.datasets["/personal/memory"]?["items"].array ?? []
+        return !items.contains { $0.memoryFolder == folder.name }
     }
 }
 
@@ -812,17 +944,30 @@ struct MemoryDetailView: View {
                     HStack(spacing: Space.md) {
                         Button("取消") { editing = false }.buttonStyle(.secondaryAction)
                         Button("保存纠正") {
+                            guard !saving else { return }
                             saving = true
+                            note = ""
                             Task {
                                 do {
                                     _ = try await model.mutate("/personal/memory/" + memory.id.pathEncoded, fields: ["content": .string(text), "expected_version": memory["version"]])
-                                    _ = await model.load("/personal/memory"); dismiss()
-                                } catch { note = error.localizedDescription }
+                                    // 纠正已写入；列表没刷上仍 dismiss，但开口别假装网格已是新内容。
+                                    if await model.load("/personal/memory") == nil {
+                                        let err = model.errors["/personal/memory"] ?? ""
+                                        model.memoryOpenNote = err.isEmpty
+                                            ? "纠正已保存，记忆列表没刷上——可再打开记忆下拉。不会假装列表已更新。"
+                                            : "纠正已保存，记忆列表没刷上：" + err + "——可再打开记忆。不会假装列表已更新。"
+                                    } else {
+                                        model.memoryOpenNote = ""
+                                    }
+                                    dismiss()
+                                } catch {
+                                    note = "保存没成：" + error.localizedDescription + "——还可以再试"
+                                }
                                 saving = false
                             }
                         }.buttonStyle(.primaryFull).disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                    if !note.isEmpty { InlineNotice(text: note) }
+                    if !note.isEmpty { InlineNotice(text: note, tone: .danger) }
                 }
             } else {
                 Card(padding: Space.xl) { RichText(text: memory["content"].string) }
@@ -894,19 +1039,28 @@ extension MemoryMotion {
     struct Undo: Equatable { let id: String; let title: String; let pending: Bool }
     private(set) var hidden: Set<String> = []
     private(set) var undo: Undo?
+    /// 记住/纠正/删掉失败开口（别只靠 banner alert）。
+    var actFailNote = ""
     @ObservationIgnored private var commits: [String: (ids: Set<String>, task: Task<Void, Never>)] = [:]
 
-    /// 没错 / 纠正：纸片已经收进文件夹，先藏起来再提交；提交完数据里也没了，再放开（失败的话它会回来，横幅说明原因）。
+    /// 没错 / 纠正：纸片先藏再提交；成功保持隐藏（列表已无此条）；失败才放回，别闪一下假成功。
     func file(_ item: JSON, action: String, content: String = "", model: AppModel) {
+        actFailNote = ""
         hidden.insert(item.id)
         Task {
-            await model.actOnLearned(item.id, action: action, content: content)
-            withAnimation(.smooth(duration: 0.25)) { _ = hidden.remove(item.id) }
+            let ok = await model.actOnLearned(item.id, action: action, content: content)
+            if !ok {
+                withAnimation(.smooth(duration: 0.25)) { _ = hidden.remove(item.id) }
+                actFailNote = action == "correct"
+                    ? "纠正没成——纸片回来了，还可以再改再存。不会假装已记住。"
+                    : "记住没成——纸片回来了，还可以再点。不会假装已写入。"
+            }
         }
     }
 
     /// 删掉 / 不用：先藏 4 秒（连同文件夹里那张纸），期间能撤销；过了才提交。
     func remove(_ item: JSON, title: String, pending: Bool, model: AppModel) {
+        actFailNote = ""
         let ids = Set([item.id, item["memory_id"].string].filter { !$0.isEmpty })
         hidden.formUnion(ids)
         withAnimation(MemoryMotion.catchUp) { undo = Undo(id: item.id, title: title, pending: pending) }
@@ -916,9 +1070,15 @@ extension MemoryMotion {
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
             if self.undo?.id == item.id { withAnimation(.easeOut(duration: 0.2)) { self.undo = nil } }
-            await model.actOnLearned(item.id, action: "delete")
+            let ok = await model.actOnLearned(item.id, action: "delete")
             self.commits[item.id] = nil
-            withAnimation(.smooth(duration: 0.25)) { self.hidden.subtract(ids) }
+            // 失败才放回；成功留在 hidden（数据里已没这条）。
+            if !ok {
+                withAnimation(.smooth(duration: 0.25)) { self.hidden.subtract(ids) }
+                self.actFailNote = pending
+                    ? "「先不用」没成——纸片回来了，还可以再点。不会假装已丢掉。"
+                    : "删掉没成——纸片回来了，还可以再试。不会假装已归档。"
+            }
         }
         commits[item.id] = (ids, task)
     }
@@ -1051,6 +1211,12 @@ private struct LearnedRow: View {
             Text("你说过「" + item["quote"].string + "」").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).lineLimit(2)
                 .padding(.top, editing ? Space.xs : 0)
         }
+        if pending && !editing && phase == .idle {
+            Text("我猜这是你的习惯——对就记住，不对请纠正我。")
+                .font(TypeScale.footnote)
+                .foregroundStyle(Palette.textSecondary)
+                .padding(.top, Space.xxs)
+        }
         if editing {
             Text("保存后旧版本和你的原话都会留着。").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
                 .modifier(BlurRiseIn(index: 1))
@@ -1072,13 +1238,13 @@ private struct LearnedRow: View {
         } else {
             HStack(spacing: Space.sm) {
                 Button { file("confirm") } label: {
-                    Label { Text(pending ? "记住" : "没错") } icon: { Image(systemName: "checkmark").fontWeight(.heavy) }
+                    Label { Text(pending ? "对，记住" : "没错") } icon: { Image(systemName: "checkmark").fontWeight(.heavy) }
                 }
                 .buttonStyle(ReviewButtonStyle(kind: .primary))
-                Button { startCorrecting() } label: { Label("纠正", systemImage: "pencil") }
+                Button { startCorrecting() } label: { Label(pending ? "纠正我" : "纠正", systemImage: "pencil") }
                     .buttonStyle(ReviewButtonStyle(kind: .secondary))
                 Spacer(minLength: 0)
-                Button(role: .destructive) { remove() } label: { Label(pending ? "不用" : "删掉", systemImage: "trash") }
+                Button(role: .destructive) { remove() } label: { Label(pending ? "先不用" : "删掉", systemImage: "trash") }
                     .buttonStyle(ReviewButtonStyle(kind: .danger))
             }
             .padding(.top, Space.xs)
@@ -1335,6 +1501,8 @@ struct LearnedMemoryView: View {
     @Environment(AppModel.self) private var model
     @Environment(MemoryReview.self) private var review
     @Environment(\.accessibilityReduceMotion) private var reduce
+    /// 下拉刷失败开口；别假装自动记忆已是最新。
+    @State private var refreshFailNote = ""
     var body: some View {
         let inbox = model.datasets[AppModel.memoryInboxPath]
         let learned = (inbox?["learned"].array ?? []).filter { !review.hidden.contains($0.id) }
@@ -1342,6 +1510,14 @@ struct LearnedMemoryView: View {
         ScrollViewReader { proxy in
         let reveal: (String) -> Void = { id in withAnimation(.smooth(duration: 0.3)) { proxy.scrollTo(id, anchor: .bottom) } }
         ScrollPage(spacing: Layout.sectionSpacing) {
+            if !refreshFailNote.isEmpty {
+                InlineNotice(text: refreshFailNote, tone: .danger)
+                    .accessibilityIdentifier("learned-memory-refresh-fail")
+            }
+            if !review.actFailNote.isEmpty {
+                InlineNotice(text: review.actFailNote, tone: .danger)
+                    .accessibilityIdentifier("memory-act-fail")
+            }
             if !pending.isEmpty {
                 GroupSection("等你确认", footer: "这些涉及健康、财务或不太确定的事，你点了「记住」才会写进记忆。") {
                     VStack(spacing: 0) {
@@ -1365,7 +1541,7 @@ struct LearnedMemoryView: View {
                 .transition(.opacity)
             }
             if learned.isEmpty && pending.isEmpty {
-                EmptyState(title: "都看过了", description: "聊到新的偏好、习惯或在做的事，它会自动记下，再放到这里给你过目。", symbol: "checkmark.circle")
+                EmptyState(title: "都看过了", description: "聊到新的偏好、习惯或在做的事，我会先记下再请你点头——对了才收进长期记忆。", symbol: "checkmark.circle")
                     .transition(.opacity)
             }
         }
@@ -1373,6 +1549,22 @@ struct LearnedMemoryView: View {
         .overlay(alignment: .bottom) { UndoToast() }
         .navigationTitle("自动记忆").navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Palette.background, for: .navigationBar)
-        .refreshable { await model.loadMemoryInbox() }
+        .refreshable { await refreshLearned() }
+    }
+
+    private func refreshLearned() async {
+        refreshFailNote = ""
+        let path = AppModel.memoryInboxPath
+        let hadCache = model.datasets[path] != nil
+        let got = await model.load(path) != nil
+        if got { return }
+        let err = model.errors[path] ?? ""
+        refreshFailNote = err.isEmpty
+            ? (hadCache
+               ? "自动记忆没刷上——下面仍是上一版，可再下拉。不会假装已是最新。"
+               : "自动记忆还没拉齐——检查配对或网络后再试。不会假装已是最新。")
+            : (hadCache
+               ? "自动记忆没刷上：" + err + "——下面仍是上一版。不会假装已是最新。"
+               : "自动记忆没拉齐：" + err + "——可再试。不会假装已是最新。")
     }
 }

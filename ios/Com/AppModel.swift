@@ -38,6 +38,16 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var sending = false
     var lastSubmittedID: String?
     var streaming = false
+    /// 主聊 SSE 断线开口；仅真正收到 snapshot/update 才清。HTTP 快照拉齐不得清（假「已恢复」）。
+    var streamNote = ""
+    /// 灵动岛开启失败 / 系统关闭实时活动：设置「平台能力」开口，不假装岛上还在跳。
+    var liveActivityNote = ""
+    /// 小组件 Keychain 写入失败：不 reload 成假新鲜，设置页开口。
+    var widgetUpdateNote = ""
+    /// 主聊 AppCache（含草稿）落盘/恢复失败：作曲器旁开口，不假装已落盘或已恢复。
+    var cachePersistNote = ""
+    /// 前台探测分享收件箱：App Group 失败时开口，勿用空列表假装「没有分享」。
+    var shareInboxNote = ""
     let stage = AgentStageModel()
     private var stageWatchTask: Task<Void, Never>?
     var active = false
@@ -72,12 +82,38 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var selectedSession: JSON?
     /// 正在用语音回答的审批：{id, params}，由审批卡上的「用语音说」设置。
     var pendingApproval: JSON?
-    /// 审批推送的深链：直接打开对应的 Agent 会话，别让用户再自己找。
+    /// 审批双路径（卡片 / 语音）共享失败开口：关语音窗后卡上仍能看见，勿只靠 banner。
+    var approvalFailNote = ""
+    var approvalFailID = ""
+    /// 审批深链缺 sid / 对不准时工作页开口，不假装已对准会话。
+    var approvalDeepLinkNote = ""
+    /// 未配对时被语音等入口拦住：留在配对页（不只靠 banner alert）。
+    var pairGateNote = ""
+    /// 审批推送的深链：有 sid 开工作会话；仅有审批 id（Bark `approval?id=`）进「等你」，别假装开了会话。
     func openApproval(_ url: URL) {
-        let sid = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "sid" })?.value ?? ""
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        let sid = items?.first(where: { $0.name == "sid" })?.value ?? ""
+        let approvalID = items?.first(where: { $0.name == "id" })?.value ?? ""
+        let sidTrim = sid.trimmingCharacters(in: .whitespacesAndNewlines)
+        let idTrim = approvalID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sidTrim.isEmpty, !idTrim.isEmpty {
+            // 推送常带审批号、会话可能未写入——进统一「等你」找待批，不硬开空工作页。
+            openWaitingInbox()
+            approvalDeepLinkNote = "审批链接只有审批号、没有会话——已打开「等你」找待批。点卡批准；不会假装已对准工作会话。"
+            return
+        }
+        openApproval(sid: sidTrim)
+    }
+    func openApproval(sid: String) {
         tab = .work
-        guard !sid.isEmpty else { return }
-        work.open(.object(["id": .string(sid), "agent": .string("codex")]))
+        let trimmed = sid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            approvalDeepLinkNote = "审批链接少了会话——对不准要拍板的那一段。可打开「等你」找待批，或从通知再进一次。不会假装已对准。"
+            return
+        }
+        approvalDeepLinkNote = ""
+        work.open(.object(["id": .string(trimmed), "agent": .string("codex")]))
+        Task { await work.refresh(self) }
     }
     /// 10-17 航程：要打开的航程 id（聊天里的航程卡、今天页、推送深链都走这里，RootView 用 sheet 接住）；showCases 打开航程列表。
     var presentedCase: String?
@@ -86,6 +122,12 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var showWaiting = false
     var localHealth: JSON = .null
     var banner = ""
+    /// 主聊 Composer 发送失败开口（别只靠气泡旁注或 banner alert）。
+    var chatComposerNote = ""
+    /// 主聊打断失败开口（别只靠 banner alert）。
+    var interruptNote = ""
+    /// 定位某条消息失败开口（搜索/线索/推送；别只靠 banner alert）。
+    var locateNote = ""
     var moreHistory = true
     var voice = VoiceRecorder()
     var devices: DeviceBridge!
@@ -187,13 +229,21 @@ enum SectionTab: String, CaseIterable, Identifiable {
             recomputeFlow()
             fetchedAt = try SecureVault.load([String: Date].self, name: "timestamps") ?? [:]
             pending = try SecureVault.load([PendingMessage].self, name: "outbox") ?? []
-            draft = try SecureVault.load(String.self, name: "draft") ?? ""
-            attachments = try SecureVault.load([JSON].self, name: "draft-attachments") ?? []
             for i in pending.indices { pending[i].recoverAfterRestart() }
             if let key = SecureVault.secret("token"), let token = String(data: key, encoding: .utf8), !token.isEmpty {
                 api = try APIClient(base: base, token: token); isPaired = true
             }
         } catch { banner = "本地恢复失败：" + error.localizedDescription }
+        // 草稿单独恢复：失败别并进总 catch 后静默空框，像「没写过」。
+        do {
+            draft = try SecureVault.load(String.self, name: "draft") ?? ""
+            attachments = try SecureVault.load([JSON].self, name: "draft-attachments") ?? []
+            cachePersistNote = ""
+        } catch {
+            draft = ""
+            attachments = []
+            cachePersistNote = "上次主聊草稿没读上：\(error.localizedDescription)——输入框是空的，不代表你没写过。不会假装已恢复。"
+        }
         devices = DeviceBridge(model: self)
         diagnose("initialized")
     }
@@ -218,12 +268,43 @@ enum SectionTab: String, CaseIterable, Identifiable {
         try SecureVault.storeSecret(Data(token.utf8), account: "token")
         UserDefaults.standard.set(base, forKey: "base")
         api = try APIClient(base: base, token: token); isPaired = true
+        pairGateNote = ""
         await setActive(true)
+    }
+    /// 深链 `com-eddie://pair?base=&code=`：无码/无地址/已配对都开口，不静默吞、不假装已配对。
+    func applyPairDeepLink(_ url: URL) {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        let rawBase = items?.first(where: { $0.name == "base" })?.value ?? ""
+        let rawCode = items?.first(where: { $0.name == "code" })?.value ?? ""
+        let baseTrim = rawBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codeTrim = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.removeObject(forKey: "pendingPairNote")
+        if isPaired {
+            // 已配对：不写 pendingPairCode，避免解除配对后误用旧扫码。
+            banner = "这台设备已经配对；要换服务器，请先在设置里解除配对。不会用这条链接改配对。"
+            return
+        }
+        if !baseTrim.isEmpty { base = baseTrim }
+        if codeTrim.isEmpty {
+            let note = baseTrim.isEmpty
+                ? "配对链接不完整——少了服务地址和配对码。请用完整二维码，或在配对页手动填。不会假装已配对。"
+                : "配对链接少了码——地址已填上，请补一次性配对码再连。不会假装已配对。"
+            UserDefaults.standard.set(note, forKey: "pendingPairNote")
+            banner = note
+            return
+        }
+        UserDefaults.standard.set(codeTrim, forKey: "pendingPairCode")
+        if baseTrim.isEmpty {
+            let note = "配对链接少了服务地址——码已填上，请补 HTTPS 地址再连。不会假装已配对。"
+            UserDefaults.standard.set(note, forKey: "pendingPairNote")
+            banner = note
+        }
     }
     func setActive(_ value: Bool) async {
         if isUITesting { active = value; return }
         lifecycle += 1; let currentLifecycle = lifecycle
         active = value; streaming = false
+        if !value { streamNote = "" }  // 进后台断流是预期，别留下「假恢复」告警
         stageWatchTask?.cancel(); stageWatchTask = nil
         if value {
             stageWatchTask = Task { [weak self] in
@@ -242,7 +323,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
             if voice.phase == .recording { voice.finishRecording() }
             persistNow(); await cacheWriteTask?.value; ComNotifications.schedule(); return
         }
-        showShareInbox = !ShareInbox.all().isEmpty
+        refreshShareInboxPresence()
         if UserDefaults.standard.bool(forKey: "openVoiceIntent") { UserDefaults.standard.set(false, forKey: "openVoiceIntent"); openVoice(quick: true) }
         guard isPaired else { return }
         // 先把聊天拉回来并立刻打开实时流，再去拉其余页面：回到前台第一眼就是最新对话，舞台不再先显示离线。
@@ -287,7 +368,11 @@ enum SectionTab: String, CaseIterable, Identifiable {
             let data = try await api.request(path)
             let changed = path.hasPrefix("/personal/conversation") || datasets[path] != data
             if changed && !path.hasPrefix("/personal/conversation") { datasets[path] = data; if AppModel.flowPaths.contains(path) { recomputeFlow() } }
-            if errors[path] != nil { errors[path] = nil }
+            // 流式断线提示不因 HTTP 拉齐清掉：拉齐成功 ≠ SSE 已恢复。
+            if let existing = errors[path] {
+                let keepStream = path.hasPrefix("/personal/conversation") && isStreamDisconnectNote(existing)
+                if !keepStream { errors[path] = nil }
+            }
             // 内容没变时不刷新时间戳、不落盘：避免每 15 秒让所有读 datasets 的页面重算一遍。
             if changed || fetchedAt[path] == nil { fetchedAt[path] = Date(); updateStatusWidget(); persistSoon() }
             diagnose("load-finished:" + route)
@@ -297,6 +382,9 @@ enum SectionTab: String, CaseIterable, Identifiable {
             if !(error is CancellationError) { errors[path] = error.localizedDescription }
             return nil
         }
+    }
+    private func isStreamDisconnectNote(_ text: String) -> Bool {
+        text.contains("实时连接") || text.contains("正在恢复") || text.contains("正在重连") || text.contains("不会假装已恢复")
     }
     private func updateStatusWidget() {
         guard !isUITesting,
@@ -308,7 +396,13 @@ enum SectionTab: String, CaseIterable, Identifiable {
         let old = StatusWidgetSnapshot.read()
         // Token-stream updates never trigger widget reloads.
         guard old?.reviewCount != reviews || old?.briefingCount != count || Date().timeIntervalSince(old?.updatedAt ?? .distantPast) > 900 else { return }
-        if StatusWidgetSnapshot(reviewCount: reviews, briefingCount: count, updatedAt: updated).save() { WidgetCenter.shared.reloadTimelines(ofKind: StatusWidgetSnapshot.kind) }
+        if StatusWidgetSnapshot(reviewCount: reviews, briefingCount: count, updatedAt: updated).save() {
+            widgetUpdateNote = ""
+            WidgetCenter.shared.reloadTimelines(ofKind: StatusWidgetSnapshot.kind)
+        } else {
+            // 写入失败不 reload：旧数还在 Keychain 里，别假装小组件已是本次结果。
+            widgetUpdateNote = "小组件数量没写上——锁屏/主屏还是上次成功同步的数。回到前台再刷一次；不会假装这次已更新。"
+        }
     }
     func refreshAll() async {
         await refresh(.chat)
@@ -323,10 +417,302 @@ enum SectionTab: String, CaseIterable, Identifiable {
             for path in ["/health", "/status", "/personal/memory", "/personal/automations"] { group.addTask { _ = await self.load(path) } }
         }
     }
-    /// 流里的便签和顶栏角色用到的一切：事项卡、待批准、任务、账本、信源。
+    /// 流里的便签和顶栏角色用到的一切：事项卡、待批准、任务、账本、信源、统一「等你」。
     func refreshFlow() async {
         await withTaskGroup(of: Void.self) { group in
-            for path in ["/personal/agency", "/personal/work/proposals?limit=20", "/personal/tasks", "/personal/finance", "/personal/connectors"] { group.addTask { _ = await self.load(path) } }
+            for path in ["/personal/agency", "/personal/work/proposals?limit=20", "/personal/tasks", "/personal/finance", "/personal/connectors", "/personal/waiting"] {
+                group.addTask { _ = await self.load(path) }
+            }
+        }
+    }
+    /// 打开统一「等你」：收起冲突 sheet，并立刻拉 waiting + flow（与深链/推送同路径），避免空壳或过期角标。
+    /// 菜单入口拉新进行中的 key，防连点叠刷同一入口。
+    private var menuOpening: Set<String> = []
+    /// 菜单/入口拉新中（LedgerNote、菜单行、舞台芯片、sheet 顶栏可据此 busy）。
+    var financeOpening: Bool { menuOpening.contains("finance") }
+    /// 菜单/账本卡打开时拉 finance 失败开口（明细页也会有 failNote）。
+    var financeOpenNote = ""
+    /// 菜单打开记忆时拉列表/待确认失败开口（记忆页也会有 failNote）。
+    var memoryOpenNote = ""
+    /// 菜单打开连接器时拉 sources 失败开口（连接器页也会有 failNote）。
+    var connectorsOpenNote = ""
+    /// 菜单/深链打开动态时 loadFeed 失败开口（动态页也会有 feedFail）。
+    var activityOpenNote = ""
+    /// 深链 plan 拉 next/plan 失败开口（下一步页 / 明天计划卡也会有 failNote）。
+    var planOpenNote = ""
+    /// 深链 today 刷主聊 conversation 失败开口（主聊页 InlineNotice）。
+    var todayOpenNote = ""
+    /// 菜单/深链打开「等你」时拉 waiting 失败开口（等你页也会有 failNote）。
+    var waitingOpenNote = ""
+    /// 打开搜索时拉 artifacts 失败开口（搜索页也会有 artifactsFail）。
+    var searchOpenNote = ""
+    /// 菜单打开设置时拉 /status 失败开口（设置页也会有 statusFail）。
+    var settingsOpenNote = ""
+    /// 目标已建上但 agency 列表没刷齐开口（目标页 InlineNotice）。
+    var agencyGoalsNote = ""
+    /// prepare 已整理但 agency cards 没刷齐开口（等你整理回执 / 详情 failNote）。
+    var agencyCardsNote = ""
+    /// 任务已归档但 tasks 列表没刷齐开口（任务页 / 等你划掉回执）。
+    var tasksOpenNote = ""
+    /// 工作页 projects/sessions 拉齐失败开口（派活后 / 菜单刷新 / 进页）。
+    var workOpenNote = ""
+    /// 健康页 range/insight 拉齐或重新评估失败开口（菜单 refresh / insight refresh）。
+    var healthOpenNote = ""
+    /// 今天页菜单 refresh(.doing) 拉齐失败开口（today 为主；flow/automations 一并拉）。
+    var doingOpenNote = ""
+    /// 今天页下拉 / 热点拉齐失败开口（HotBoardCard 也显示）。
+    var hotOpenNote = ""
+    /// 今天页下拉 / 进页拉 next（今日简报）失败开口（ScheduleAdvice 显示）。
+    var todayNextOpenNote = ""
+    var memoryOpening: Bool { menuOpening.contains("memory") }
+    var connectorsOpening: Bool { menuOpening.contains("connectors") }
+    var waitingOpening: Bool { menuOpening.contains("waiting") }
+    var activityOpening: Bool { menuOpening.contains("activity") }
+    var planOpening: Bool { menuOpening.contains("plan") }
+    var todayOpening: Bool { menuOpening.contains("today") }
+    var settingsOpening: Bool { menuOpening.contains("settings") }
+    var searchOpening: Bool { menuOpening.contains("search") }
+    /// 前台探测分享收件箱。用 `loadAll` 而非 `all()`：App Group 失败时开口，不假装没有分享。
+    func refreshShareInboxPresence() {
+        let batch = ShareInbox.loadAll()
+        if let err = batch.error, !err.isEmpty {
+            shareInboxNote = "分享收件箱没读上：\(err)——可能有待处理分享。可点「打开收件箱」再试。不会假装没有。"
+            // 有可读条目仍自动打开；纯错误不硬弹 sheet，靠主聊开口。
+            showShareInbox = !batch.items.isEmpty
+            return
+        }
+        shareInboxNote = batch.decodeFailures > 0
+            ? "有 \(batch.decodeFailures) 条分享解不开——能读的\(batch.items.isEmpty ? "没有" : "在收件箱里")。可打开收件箱核对。"
+            : ""
+        showShareInbox = !batch.items.isEmpty
+    }
+    /// 打开设置：立刻刷 /status，审批数/运行中别停在旧快照。
+    func openSettings() {
+        showSettings = true
+        settingsOpenNote = ""
+        guard menuOpening.insert("settings").inserted else { return }
+        Task {
+            defer { menuOpening.remove("settings") }
+            if await load("/status") == nil {
+                let err = errors["/status"] ?? ""
+                let hadCache = datasets["/status"] != nil
+                settingsOpenNote = err.isEmpty
+                    ? (hadCache ? "服务器状态没刷新上——下面仍可能是上一版。可再从菜单打开。不会假装已读上。" : "服务器状态还没拉齐——可再打开设置重试。不会假装已读上。")
+                    : "服务器状态没拉齐：" + err + "——可再打开设置重试。不会假装已读上。"
+            }
+        }
+    }
+    /// 打开搜索与成果：立刻刷 artifacts，空态成果列表别停在旧快照。
+    func openSearch() {
+        showSearch = true
+        searchOpenNote = ""
+        guard menuOpening.insert("search").inserted else { return }
+        Task {
+            defer { menuOpening.remove("search") }
+            if await load("/personal/artifacts") == nil {
+                let err = errors["/personal/artifacts"] ?? ""
+                let hadCache = !(datasets["/personal/artifacts"]?["items"].array ?? []).isEmpty
+                searchOpenNote = err.isEmpty
+                    ? (hadCache ? "成果没刷新上——下面仍可能是上一版。可再打开搜索。不会假装已读上。" : "成果还没拉齐——可再打开搜索重试。不会假装已读上。")
+                    : "成果没拉齐：" + err + "——可再打开搜索重试。不会假装已读上。"
+            }
+        }
+    }
+    func openWaitingInbox(closeStage: Bool = false) {
+        if closeStage { self.closeStage() }
+        showCases = false
+        presentedCase = nil
+        showActivity = false
+        showWaiting = true
+        waitingOpenNote = ""
+        guard menuOpening.insert("waiting").inserted else { return }
+        Task {
+            defer { menuOpening.remove("waiting") }
+            let ok = await load("/personal/waiting") != nil
+            await refreshFlow()
+            if ok {
+                waitingOpenNote = ""
+                return
+            }
+            let err = errors["/personal/waiting"] ?? ""
+            let hadCache = !(datasets["/personal/waiting"]?["items"].array ?? []).isEmpty
+            waitingOpenNote = err.isEmpty
+                ? (hadCache ? "等你清单没刷新上——下面仍可能是上一版。可再从菜单打开。不会假装已读上。" : "等你清单还没拉齐——可再打开重试。不会假装已读上。")
+                : "等你清单没拉齐：" + err + "——可再打开重试。不会假装已读上。"
+        }
+    }
+    /// 打开动态（航程+写操作）：立刻 loadFeed，避免菜单里「有航程停顿」点进去却是旧列表。
+    func openActivityFeed(closeStage: Bool = false) {
+        if closeStage { self.closeStage() }
+        showActivity = true
+        beginActivityFeedLoad()
+    }
+    /// 深链 `com-eddie://cases`：打开动态「电脑上的活」并 loadFeed；失败写 activityOpenNote，不假装已读上。
+    func openCasesDeepLink() {
+        tab = .next
+        showWaiting = false
+        showActivity = false
+        showCases = true
+        beginActivityFeedLoad()
+    }
+    /// 深链 `com-eddie://today`：回主对话并刷 conversation（灵动岛/旧链约定）；失败写 todayOpenNote，不假装已读上。
+    func openTodayDeepLink() {
+        tab = .chat
+        todayOpenNote = ""
+        guard menuOpening.insert("today").inserted else { return }
+        Task {
+            defer { menuOpening.remove("today") }
+            if let data = await load("/personal/conversation") {
+                conversation.apply(data, snapshot: true)
+                ComNotifications.observe(conversation.messages)
+                todayOpenNote = ""
+                return
+            }
+            let err = errors["/personal/conversation"] ?? ""
+            let hadCache = !conversation.messages.isEmpty
+            todayOpenNote = err.isEmpty
+                ? (hadCache ? "主聊没刷新上——下面仍可能是上一版。可下拉再试。不会假装已读上。" : "主聊还没拉齐——可再点灵动岛/链接重试。不会假装已读上。")
+                : "主聊没拉齐：" + err + "——可再试。不会假装已读上。"
+        }
+    }
+    /// 深链 `com-eddie://plan`：进下一步并拉 next + plan；失败写 planOpenNote，不假装已读上。
+    func openPlanDeepLink() {
+        tab = .next
+        planOpenNote = ""
+        guard menuOpening.insert("plan").inserted else { return }
+        Task {
+            defer { menuOpening.remove("plan") }
+            async let next = load("/personal/next")
+            async let plan = load("/personal/plan")
+            let gotNext = await next != nil
+            let gotPlan = await plan != nil
+            if gotNext && gotPlan {
+                planOpenNote = ""
+                return
+            }
+            let nextErr = errors["/personal/next"] ?? ""
+            let planErr = errors["/personal/plan"] ?? ""
+            let hadNext = !(datasets["/personal/next"]?["items"].array ?? []).isEmpty
+            let hadPlan = (datasets["/personal/plan"]?["state"].string == "open")
+                && !(datasets["/personal/plan"]?["items"].array ?? []).isEmpty
+            if !gotNext && !gotPlan {
+                let err = [nextErr, planErr].first { !$0.isEmpty } ?? ""
+                planOpenNote = err.isEmpty
+                    ? ((hadNext || hadPlan) ? "下一步与明天计划没刷新上——下面仍可能是上一版。可下拉再试。不会假装已读上。" : "下一步与明天计划还没拉齐——可再打开重试。不会假装已读上。")
+                    : "下一步/计划没拉齐：" + err + "——可再试。不会假装已读上。"
+            } else if !gotPlan {
+                planOpenNote = planErr.isEmpty
+                    ? (hadPlan ? "明天计划没刷新上——下一步若在仍可先看。可再试。" : "明天计划没读上——下一步若在仍可先看。可再试。")
+                    : "明天计划没读上：" + planErr + "——可再试。"
+            } else {
+                planOpenNote = nextErr.isEmpty
+                    ? (hadNext ? "下一步没刷新上——明天计划若在仍可先看。可再试。" : "下一步没读上——明天计划若在仍可先看。可再试。")
+                    : "下一步没读上：" + nextErr + "——可再试。"
+            }
+        }
+    }
+    private func beginActivityFeedLoad() {
+        activityOpenNote = ""
+        guard menuOpening.insert("activity").inserted else { return }
+        Task {
+            defer { menuOpening.remove("activity") }
+            applyActivityOpenNote(from: await loadFeed())
+        }
+    }
+    private func applyActivityOpenNote(from result: (activity: Bool, cases: Bool)) {
+        if result.activity && result.cases {
+            activityOpenNote = ""
+            return
+        }
+        let actErr = errors[Self.feedPath] ?? errors["/personal/activity"] ?? ""
+        let caseErr = errors["/personal/cases"] ?? ""
+        let hadCache = !(datasets[Self.feedPath]?["items"].array ?? activityData["items"].array ?? []).isEmpty
+            || !(datasets["/personal/cases"]?["items"].array ?? []).isEmpty
+        if !result.activity && !result.cases {
+            let err = [actErr, caseErr].first { !$0.isEmpty } ?? ""
+            activityOpenNote = err.isEmpty
+                ? (hadCache ? "动态没刷新上——下面仍可能是上一版。可再从菜单打开。不会假装已读上。" : "动态还没拉齐——可再打开重试。不会假装已读上。")
+                : "动态没拉齐：" + err + "——可再打开重试。不会假装已读上。"
+        } else if !result.cases {
+            activityOpenNote = caseErr.isEmpty
+                ? "航程列表没读上——写操作若在仍可先看。可再打开。"
+                : "航程列表没读上：" + caseErr + "——可再打开。"
+        } else {
+            activityOpenNote = actErr.isEmpty
+                ? "写操作动态没读上——航程若在仍可先看。可再打开。"
+                : "写操作动态没读上：" + actErr + "——可再打开。"
+        }
+    }
+    /// 打开记忆：立刻拉列表 + 待确认收件箱，避免点进去还是旧纸片。
+    func openMemory() {
+        showMemory = true
+        memoryOpenNote = ""
+        guard menuOpening.insert("memory").inserted else { return }
+        Task {
+            defer { menuOpening.remove("memory") }
+            async let mem = load("/personal/memory")
+            await loadMemoryInbox()
+            let gotMem = await mem != nil
+            let inboxPath = Self.memoryInboxPath
+            let gotInbox = errors[inboxPath] == nil && datasets[inboxPath] != nil
+            if gotMem && gotInbox {
+                memoryOpenNote = ""
+                return
+            }
+            let memErr = errors["/personal/memory"] ?? ""
+            let inboxErr = errors[inboxPath] ?? ""
+            let hadCache = !(datasets["/personal/memory"]?["items"].array ?? []).isEmpty
+            if !gotMem && !gotInbox {
+                let err = [memErr, inboxErr].first { !$0.isEmpty } ?? ""
+                memoryOpenNote = err.isEmpty
+                    ? (hadCache ? "记忆没刷新上——下面仍可能是上一版。可再从菜单打开。不会假装已读上。" : "记忆还没拉齐——可再打开重试。不会假装已读上。")
+                    : "记忆没拉齐：" + err + "——可再打开重试。不会假装已读上。"
+            } else if !gotMem {
+                memoryOpenNote = memErr.isEmpty
+                    ? "记忆列表没读上——可再打开。不会假装已读上。"
+                    : "记忆列表没读上：" + memErr + "——可再打开。"
+            } else {
+                memoryOpenNote = inboxErr.isEmpty
+                    ? "待确认收件箱没读上——长期记忆若在仍可先看。可再打开。"
+                    : "待确认没读上：" + inboxErr + "——可再打开。"
+            }
+        }
+    }
+    /// 打开分享收件箱：先探测 App Group；坏容器时 shareInboxNote + sheet 内 listFail，不假装没有分享。
+    func openShareInbox() {
+        refreshShareInboxPresence()
+        showShareInbox = true
+    }
+    /// 打开账本：立刻拉 finance（与「已记」刷账本同路）。
+    func openFinance() {
+        showFinance = true
+        financeOpenNote = ""
+        guard menuOpening.insert("finance").inserted else { return }
+        Task {
+            defer { menuOpening.remove("finance") }
+            if await load("/personal/finance") == nil {
+                let err = errors["/personal/finance"] ?? ""
+                financeOpenNote = err.isEmpty
+                    ? "账本没拉齐——明细若空可再从菜单打开。不会假装已读上。"
+                    : "账本没拉齐：" + err + "——可再打开重试。"
+            }
+        }
+    }
+    /// 打开连接器：立刻拉 sources，信源断了点进去应是现况。
+    func openConnectors(closeStage: Bool = false) {
+        if closeStage { self.closeStage() }
+        showConnectors = true
+        connectorsOpenNote = ""
+        guard menuOpening.insert("connectors").inserted else { return }
+        Task {
+            defer { menuOpening.remove("connectors") }
+            if await load("/personal/connectors") == nil {
+                let err = errors["/personal/connectors"] ?? ""
+                let hadCache = !(datasets["/personal/connectors"]?["sources"].array ?? []).isEmpty
+                connectorsOpenNote = err.isEmpty
+                    ? (hadCache ? "连接器没刷新上——下面仍可能是上一版。可再从菜单打开。不会假装已读上。" : "连接器还没拉齐——可再打开重试。不会假装已读上。")
+                    : "连接器没拉齐：" + err + "——可再打开重试。不会假装已读上。"
+            }
         }
     }
     func refresh(_ tab: SectionTab) async {
@@ -334,13 +720,134 @@ enum SectionTab: String, CaseIterable, Identifiable {
         _ = await load("/personal/cases")    // 10-18：航程入口在头像菜单和下一步页，哪一页都要有最新数，每次刷新都带上
         switch tab {
         case .chat:
-            if let data = await load("/personal/conversation") { conversation.apply(data, snapshot: true); ComNotifications.observe(conversation.messages) }
+            // 下拉/各处 refresh(.chat)：conversation 失败写 todayOpenNote，别假装主聊已读上。
+            if let data = await load("/personal/conversation") {
+                conversation.apply(data, snapshot: true)
+                ComNotifications.observe(conversation.messages)
+                todayOpenNote = ""
+            } else {
+                let err = errors["/personal/conversation"] ?? ""
+                let hadCache = !conversation.messages.isEmpty
+                todayOpenNote = err.isEmpty
+                    ? (hadCache
+                       ? "主聊没刷上——下面仍可能是上一版。可下拉再试。不会假装已读上。"
+                       : "主聊还没拉齐——可下拉再试。不会假装已读上。")
+                    : "主聊没刷上：" + err + "——可下拉再试。不会假装已读上。"
+            }
         case .next:
-            _ = await load("/personal/next"); _ = await load("/personal/connectors"); _ = await load("/personal/finance"); _ = await load("/personal/plan")
+            // 菜单刷新 / 各处 refresh(.next)：next+plan 失败写 planOpenNote，别假装下一步已读上。
+            async let next = load("/personal/next")
+            async let connectors = load("/personal/connectors")
+            async let finance = load("/personal/finance")
+            async let plan = load("/personal/plan")
+            let gotNext = await next != nil
+            let gotPlan = await plan != nil
+            _ = await connectors
+            _ = await finance
+            if gotNext && gotPlan {
+                planOpenNote = ""
+            } else {
+                let nextErr = errors["/personal/next"] ?? ""
+                let planErr = errors["/personal/plan"] ?? ""
+                let hadNext = !(datasets["/personal/next"]?["items"].array ?? []).isEmpty
+                let hadPlan = (datasets["/personal/plan"]?["state"].string == "open")
+                    && !(datasets["/personal/plan"]?["items"].array ?? []).isEmpty
+                if !gotNext && !gotPlan {
+                    let err = [nextErr, planErr].first { !$0.isEmpty } ?? ""
+                    planOpenNote = err.isEmpty
+                        ? ((hadNext || hadPlan) ? "下一步与明天计划没刷上——下面仍可能是上一版。可下拉再试。不会假装已读上。" : "下一步与明天计划还没拉齐——可再试。不会假装已读上。")
+                        : "下一步/计划没刷上：" + err + "——可再试。不会假装已读上。"
+                } else if !gotPlan {
+                    planOpenNote = planErr.isEmpty
+                        ? (hadPlan ? "明天计划没刷上——下一步若在仍可先看。可再试。" : "明天计划没读上——下一步若在仍可先看。可再试。")
+                        : "明天计划没读上：" + planErr + "——可再试。"
+                } else {
+                    planOpenNote = nextErr.isEmpty
+                        ? (hadNext ? "下一步没刷上——明天计划若在仍可先看。可再试。" : "下一步没读上——明天计划若在仍可先看。可再试。")
+                        : "下一步没读上：" + nextErr + "——可再试。"
+                }
+            }
         case .doing:
-            await refreshFlow(); _ = await load("/personal/today"); _ = await load("/personal/automations")  // 轨道 pages：今天时间线
-        case .health: _ = await load("/personal/health?days=30"); _ = await load("/personal/health/insight")
-        case .work: _ = await load("/personal/projects"); _ = await load("/sessions")
+            // 菜单刷新：flow + today + automations；today 失败写 doingOpenNote，别假装日程已齐。
+            await refreshFlow()
+            async let today = load("/personal/today")
+            async let autos = load("/personal/automations")
+            let gotToday = await today != nil
+            let gotAutos = await autos != nil
+            if gotToday && gotAutos {
+                doingOpenNote = ""
+            } else if gotToday {
+                let err = errors["/personal/automations"] ?? ""
+                doingOpenNote = err.isEmpty
+                    ? "定时工作没刷上——日程若在仍可先看。可再试。不会假装已是最新。"
+                    : "定时工作没刷上：" + err + "——日程若在仍可先看。可再试。"
+            } else {
+                let err = errors["/personal/today"] ?? ""
+                let had = !(datasets["/personal/today"]?["events"].array ?? []).isEmpty
+                    || !(datasets["/personal/today"]?["reminders"].array ?? []).isEmpty
+                doingOpenNote = err.isEmpty
+                    ? (had ? "今天的日程/提醒没刷上——下面仍可能是上一版。可再试。不会假装已是最新。" : "今天的日程和提醒还没拉齐——可再试。不会假装已是最新。")
+                    : (had ? "今天没刷上：" + err + "——下面仍可能是上一版。不会假装已是最新。" : "今天没拉齐：" + err + "——可再试。不会假装已是最新。")
+            }
+        case .health:
+            // 菜单刷新：range+insight 失败写 healthOpenNote，别假装健康页已齐。
+            let rangePath = "/personal/health?days=30"
+            let insightPath = "/personal/health/insight"
+            async let range = load(rangePath)
+            async let insight = load(insightPath)
+            let gotRange = await range != nil
+            let gotInsight = await insight != nil
+            if gotRange && gotInsight {
+                healthOpenNote = ""
+            } else {
+                let rangeErr = errors[rangePath] ?? errors["/personal/health"] ?? ""
+                let insightErr = errors[insightPath] ?? ""
+                let hadRange = !(datasets[rangePath]?["days"].array ?? []).isEmpty
+                    || !(datasets[rangePath]?["today"]["measurements"].isNull ?? true)
+                let hadInsight = !(datasets[insightPath]?.isNull ?? true)
+                if !gotRange && !gotInsight {
+                    let err = [rangeErr, insightErr].first { !$0.isEmpty } ?? ""
+                    healthOpenNote = err.isEmpty
+                        ? (hadRange || hadInsight ? "健康曲线和评估都没刷上——下面仍可能是上一版。可再试。不会假装已是最新。" : "健康曲线和评估还没拉齐——可再试。不会假装已是最新。")
+                        : "健康没刷上：" + err + "——可再试。不会假装已是最新。"
+                } else if !gotRange {
+                    healthOpenNote = rangeErr.isEmpty
+                        ? (hadRange ? "健康曲线没刷上——评估若在仍可先看；可再试。" : "健康曲线没读上——可再试。")
+                        : "健康曲线没读上：" + rangeErr + "——可再试。"
+                } else {
+                    healthOpenNote = insightErr.isEmpty
+                        ? (hadInsight ? "身体评估没刷上——下面仍可能是上一版。可再试。不会假装已写好。" : "身体评估没拉齐——可再试。不会假装已写好。")
+                        : "身体评估没拉齐：" + insightErr + "——可再试。不会假装已写好。"
+                }
+            }
+        case .work:
+            // 派活后 / 菜单刷新 / 进页：侧栏 projects+sessions 失败写 workOpenNote，别假装历史已齐。
+            async let projects = load("/personal/projects")
+            async let sessions = load("/sessions")
+            let gotProjects = await projects != nil
+            let gotSessions = await sessions != nil
+            if gotProjects && gotSessions {
+                workOpenNote = ""
+            } else {
+                let projectErr = errors["/personal/projects"] ?? ""
+                let sessionErr = errors["/sessions"] ?? ""
+                let hadProjects = datasets["/personal/projects"] != nil
+                let hadSessions = !(datasets["/sessions"]?["sessions"].array ?? []).isEmpty
+                if !gotProjects && !gotSessions {
+                    let err = [projectErr, sessionErr].first { !$0.isEmpty } ?? ""
+                    workOpenNote = err.isEmpty
+                        ? ((hadProjects || hadSessions) ? "项目和会话都没刷上——侧栏仍可能是上一版。可再拉。不会假装已是最新。" : "项目和会话还没拢上——检查配对或网络后再试。不会假装已是最新。")
+                        : "侧栏没刷上：" + err + "——可再拉。不会假装已是最新。"
+                } else if !gotProjects {
+                    workOpenNote = projectErr.isEmpty
+                        ? (hadProjects ? "项目看板没刷上——会话若在仍可先点；可再拉。" : "项目看板没读上——会话若在仍可先点；可再拉。")
+                        : "项目看板没读上：" + projectErr + "——可再拉。"
+                } else {
+                    workOpenNote = sessionErr.isEmpty
+                        ? (hadSessions ? "会话列表没刷上——项目若在仍可先点；可再拉。不会假装新会话已出现。" : "会话列表没读上——项目若在仍可先点；可再拉。不会假装新会话已出现。")
+                        : "会话列表没读上：" + sessionErr + "——可再拉。不会假装新会话已出现。"
+                }
+            }
         }
     }
     private func startStream() {
@@ -353,15 +860,28 @@ enum SectionTab: String, CaseIterable, Identifiable {
                     try await api.stream(after: self.conversation.revision > 0 ? self.conversation.revision : nil) { [weak self] event in
                         await self?.receive(event)
                     }
-                    failures = 0
-                } catch {
+                    // 字节流正常结束也算断线：勿保持 streaming=true，否则轮询以为还在线、假成功。
                     if Task.isCancelled { return }
-                    self.streaming = false; self.stage.disconnect(); self.errors["/personal/conversation"] = "实时连接中断，正在恢复"
                     failures += 1
+                    self.markStreamDown(attempt: failures)
+                } catch {
+                    if Task.isCancelled || error is CancellationError { return }
+                    failures += 1
+                    self.markStreamDown(attempt: failures)
                 }
                 try? await Task.sleep(for: .seconds(min(30, 1 << min(failures, 5))))
             }
         }
+    }
+    /// SSE 断开：舞台离线 + 页内开口；HTTP 拉齐不得冒充已恢复。
+    private func markStreamDown(attempt: Int) {
+        streaming = false
+        stage.disconnect()
+        let message = attempt >= 3
+            ? "实时连接一直没接上（已重试多次）——仍在重连；这会儿是缓存，新回复可能晚到。不会假装已恢复。"
+            : "实时连接断了，正在重连——这会儿是缓存，新回复可能晚到。不会假装已恢复。"
+        streamNote = message
+        errors["/personal/conversation"] = message
     }
     private func receive(_ event: SSEEvent) {
         guard let data = event.data.data(using: .utf8), let value = try? JSON.decode(data) else { return }
@@ -379,35 +899,81 @@ enum SectionTab: String, CaseIterable, Identifiable {
         conversation.apply(value, snapshot: event.name == "snapshot")
         ComNotifications.observe(conversation.messages)
         if streaming && event.name == "update" && previousRevision > 0 {
-            let fresh = value["messages"].array.contains { $0["role"].string == "assistant" && $0["status"].string == "completed" && !before.contains($0.id) }
-            if fresh { Haptics.success() }
+            let fresh = value["messages"].array.filter { $0["role"].string == "assistant" && $0["status"].string == "completed" && !before.contains($0.id) }
+            if !fresh.isEmpty { Haptics.success() }
+            // 快记账回执到了就立刻刷账本；失败开口，别让「已记」气泡配着旧明细假装已更新。
+            if fresh.contains(where: { $0["text"].string.hasPrefix("已记") }) {
+                Task {
+                    if await self.load("/personal/finance") == nil {
+                        let err = self.errors["/personal/finance"] ?? ""
+                        self.financeOpenNote = err.isEmpty
+                            ? "记账回执到了，账本没刷上——可打开账本再拉。不会假装明细已更新。"
+                            : "记账回执到了，账本没刷上：" + err + "——可打开账本再拉。不会假装明细已更新。"
+                    } else {
+                        self.financeOpenNote = ""
+                    }
+                }
+            }
         }
-        streaming = true; errors["/personal/conversation"] = nil; fetchedAt["/personal/conversation"] = Date()
+        // 只有真正收到对话事件才算恢复；心跳不算。
+        streaming = true
+        streamNote = ""
+        errors["/personal/conversation"] = nil
+        fetchedAt["/personal/conversation"] = Date()
         diagnose("stream:" + event.name)
         persistSoon()
     }
-    func loadHistory() async {
-        guard moreHistory, let first = conversation.messages.first else { return }
+    /// 拉更早对话。false = 请求失败（调用方页内提示，勿假装已读完）。
+    @discardableResult
+    func loadHistory() async -> Bool {
+        guard moreHistory, let first = conversation.messages.first else { return true }
         if let page = await load("/personal/conversation/history?before=" + first.id.queryEncoded + "&limit=60") {
             conversation.prependHistory(page); moreHistory = page["has_more"].bool; persistSoon()
+            return true
         }
+        return false
     }
-    func locateMessage(_ id: String) async {
-        if !conversation.messages.contains(where: { $0.id == id }),
-           let page = await load("/personal/conversation/history?around=" + id.queryEncoded + "&limit=60") {
+    /// 定位到某条消息；找不到则不跳聊天（调用方留页提示）。返回是否已对准。
+    /// 失败写 `locateNote`：区分历史没拉上 vs 对不上，勿一律「没找到」。
+    @discardableResult
+    func locateMessage(_ id: String) async -> Bool {
+        locateNote = ""
+        guard !id.isEmpty else {
+            locateNote = "消息编号空了，没法对准。"
+            return false
+        }
+        if !conversation.messages.contains(where: { $0.id == id }) {
+            let path = "/personal/conversation/history?around=" + id.queryEncoded + "&limit=60"
+            guard let page = await load(path) else {
+                let err = errors[path] ?? ""
+                locateNote = err.isEmpty
+                    ? "历史没拉上——检查配对或网络后再试对准。不会假装已跳到那条。"
+                    : "历史没拉上：" + err + "——可再试对准。不会假装已跳到那条。"
+                return false
+            }
             conversation.prependHistory(page)
         }
-        tab = .chat; jumpMessage = id
+        guard conversation.messages.contains(where: { $0.id == id }) else {
+            locateNote = "消息没对上——可能已归档或不在这趟对话。可去搜索换一条，或直接在主对话里找。"
+            return false
+        }
+        locateNote = ""
+        tab = .chat
+        jumpMessage = id
+        return true
     }
-    func send(voiceMessage: Bool = false, matter: String? = nil, textOverride: String? = nil) async {
+    /// 返回是否已送达受理。下一步记账/加日程靠它决定要不要标「做完」——失败别把卡划掉。
+    @discardableResult
+    func send(voiceMessage: Bool = false, matter: String? = nil, textOverride: String? = nil) async -> Bool {
         let text = (textOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, (!sending || voiceMessage) else { return }
+        guard !text.isEmpty, (!sending || voiceMessage) else { return false }
+        chatComposerNote = ""
         var extra: [String: JSON] = [:]
         if let reference { extra["reference"] = reference }
         if !attachments.isEmpty { extra["attachment_ids"] = .array(attachments.map { .string($0.id) }) }
         if let matter { extra["matter_id"] = .string(matter) }
         let voiceID = voiceMessage ? "voice-" + voice.captureID : nil
-        if let voiceID, pending.contains(where: { $0.id == voiceID }) { return }
+        if let voiceID, pending.contains(where: { $0.id == voiceID }) { return false }
         let entry = PendingMessage(text: text, path: "/personal/conversation/messages", extra: extra, requestID: voiceID)
         pending.append(entry)
         #if DEBUG
@@ -417,25 +983,70 @@ enum SectionTab: String, CaseIterable, Identifiable {
             if textOverride == nil { draft = "" }; reference = nil; attachments = []
             if ProcessInfo.processInfo.arguments.contains("--ui-send-rejected") {
                 pending[pending.count - 1].state = .rejected; pending[pending.count - 1].note = "测试中的发送未被受理"
-                return
+                chatComposerNote = "没送出去：测试中的发送未被受理——可点「回到草稿」再试"
+                return false
             }
             try? await Task.sleep(for: .milliseconds(600))
             if let index = pending.firstIndex(where: { $0.id == entry.id }) { pending[index].state = .delivered }
             try? await Task.sleep(for: .milliseconds(600))
             let message = JSON.object(["id": .string("server-" + entry.id), "request_id": .string(entry.id), "role": .string("user"), "text": .string(text), "status": .string("completed"), "created_at": .number(entry.createdAt.timeIntervalSince1970)])
             conversation.messages.append(message); conversation.revision += 1
-            return
+            return true
         }
         #endif
+        // 未配对别清空草稿再假装发出去（UI 测试已在上面返回）。
+        guard isPaired, api != nil else {
+            pending.removeAll { $0.id == entry.id }
+            chatComposerNote = "还没连上 mini——草稿还在，先配对再发。不会假装已发出。"
+            banner = "请先连接 Mac mini"
+            return false
+        }
         do { try SecureVault.save(pending, name: "outbox") }
-        catch { pending.removeAll { $0.id == entry.id }; banner = "发送记录保存失败，草稿已保留"; return }
+        catch {
+            pending.removeAll { $0.id == entry.id }
+            chatComposerNote = "发送记录保存失败，草稿已保留——可再试。别当成已发出。"
+            banner = "发送记录保存失败，草稿已保留"
+            return false
+        }
         lastSubmittedID = entry.id
-        if voiceMessage { voice.cancel(); showQuickVoice = false }
         if textOverride == nil { draft = "" }; reference = nil; attachments = []; persistNow()
         await deliver(entry.id)
+        let state = pending.first(where: { $0.id == entry.id })?.state
+        let detail = pending.first(where: { $0.id == entry.id })?.note ?? ""
+        let ok = state == .delivered
+        if ok {
+            chatComposerNote = ""
+        } else if state == .rejected {
+            chatComposerNote = detail.isEmpty
+                ? "没送出去——可点气泡下「回到草稿」再试"
+                : "没送出去：" + detail + "——可点「回到草稿」再试"
+        } else {
+            chatComposerNote = detail.isEmpty
+                ? "送达待核实——别当成已发出；可点「查回执」"
+                : "送达待核实：" + detail + "——别当成已发出"
+        }
+        if voiceMessage {
+            // 送达成功或明确拒收才清录音；不确定/失败保留转写，方便重试（别先 cancel 再发现没发出去）。
+            if ok || state == .rejected {
+                voice.cancel(); showQuickVoice = false
+            } else if !ok {
+                voice.error = chatComposerNote
+                voice.phase = .failed
+            }
+        }
+        return ok
     }
-    func deliver(_ id: String) async {
-        guard !issuing.contains(id), let api, let index = pending.firstIndex(where: { $0.id == id }), pending[index].state != .delivered else { return }
+    /// 发送 / 查回执。返回最终态；未配对或查不清时写 uncertain + note，调用方开口，勿假装已核实。
+    @discardableResult
+    func deliver(_ id: String) async -> DeliveryState? {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return nil }
+        if pending[index].state == .delivered { return .delivered }
+        guard !issuing.contains(id) else { return pending[index].state }
+        guard let api else {
+            updatePending(id) { $0.state = .uncertain }
+            updatePending(id) { $0.note = "还没连上 mini——回执没查上，配对后再查。不会假装已核实。" }
+            return .uncertain
+        }
         issuing.insert(id); sending = true
         diagnose("deliver-start:" + id)
         defer { issuing.remove(id); sending = !issuing.isEmpty; persistNow() }
@@ -444,12 +1055,21 @@ enum SectionTab: String, CaseIterable, Identifiable {
             if entry.state != .queued {
                 do {
                     let receipt = try await api.request(entry.receiptPath)
-                    if receipt["status"].string == "unknown" { updatePending(id) { $0.note = "服务端结果待核实，不会重复提交" }; return }
+                    if receipt["status"].string == "unknown" {
+                        updatePending(id) { $0.state = .uncertain }
+                        updatePending(id) { $0.note = "服务端结果待核实，不会重复提交" }
+                        return .uncertain
+                    }
                     updatePending(id) { $0.state = .delivered }; updatePending(id) { $0.note = "已受理" }
-                    await refresh(.chat); return
+                    await refresh(.chat)
+                    return .delivered
                 } catch let error as APIError where error.status == 404 {
                     // A main-message submission is transactionally idempotent by request_id.
-                    guard entry.path.hasPrefix("/personal/") else { updatePending(id) { $0.note = "未查到工作回执，请检查会话" }; return }
+                    guard entry.path.hasPrefix("/personal/") else {
+                        updatePending(id) { $0.state = .uncertain }
+                        updatePending(id) { $0.note = "未查到工作回执，请检查会话。不会假装已核实。" }
+                        return .uncertain
+                    }
                 }
             }
             updatePending(id) { $0.state = .checking }; updatePending(id) { $0.note = "正在发送" }
@@ -471,6 +1091,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
             } else { updatePending(id) { $0.state = .uncertain } }
             updatePending(id) { $0.note = error.localizedDescription }
         }
+        return pending.first(where: { $0.id == id })?.state
     }
     func recoverOutbox() async {
         for entry in pending where entry.state == .queued || entry.state == .uncertain || entry.state == .checking {
@@ -478,26 +1099,63 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
     }
     /// 语音回答审批：只接受明确的 accept/decline；复杂问题与密码仍回卡片。
-    func answerApproval(_ approval: JSON, decision: String) async {
-        guard let api else { banner = "请先连接 Mac mini"; return }
+    /// 失败保留 pendingApproval，并写共享 approvalFailNote + 语音窗 error，卡片/语音双路径都能留页再试。
+    @discardableResult
+    func answerApproval(_ approval: JSON, decision: String) async -> Bool {
+        guard let api else {
+            rememberApprovalFail(
+                id: approval.id,
+                message: "还没连上 mini——审批没发出去。可回卡片再点，或配对后再说。不会假装已批/已拒。"
+            )
+            return false
+        }
         do {
             _ = try await api.request("/approvals/" + approval.id.pathEncoded, body: .object(["decision": .string(decision)]))
             pendingApproval = nil
+            clearApprovalFail()
             banner = decision == "accept" ? "已批准这次操作。" : "已拒绝这次操作。"
             await work.refresh(self)
+            return true
         } catch {
-            pendingApproval = nil
-            banner = "审批没有送达：" + error.localizedDescription
+            // 失败别清 pendingApproval：还要回卡片或再说一次。
+            rememberApprovalFail(
+                id: approval.id,
+                message: "审批没送达：" + error.localizedDescription + "——还可再说一次，或回卡片点。不会假装已批/已拒。"
+            )
+            return false
         }
     }
-    func interrupt(messageID: String? = nil) async {
-        guard let api, stage.state.isBusy || messageID != nil else { return }
+    func rememberApprovalFail(id: String, message: String) {
+        approvalFailID = id
+        approvalFailNote = message
+        voice.error = message
+        voice.phase = .failed
+        banner = message
+    }
+    func clearApprovalFail() {
+        approvalFailNote = ""
+        approvalFailID = ""
+    }
+    /// 打断当前或指定消息上的运行。成功 true；失败写 `interruptNote` 留页开口，勿假装已停。
+    @discardableResult
+    func interrupt(messageID: String? = nil) async -> Bool {
+        guard stage.state.isBusy || messageID != nil else { return false }
+        interruptNote = ""
+        guard let api else {
+            interruptNote = "还没连上 mini——中断没发出去，可再试。不会假装已停下。"
+            return false
+        }
         do {
             _ = try await api.request("/personal/conversation/interrupt", body: .object(messageID.map { ["message_id": .string($0)] } ?? [:]))
             if messageID == nil || activeRuns.count <= 1 { stage.receive("task.progress", .object(["kind": .string("idle")])) }
+            interruptNote = ""
             banner = messageID == nil ? "已中断" : "已停下这件，其它的照常进行"
+            return true
         } catch {
-            banner = "中断失败: \(error.localizedDescription)"
+            interruptNote = messageID == nil
+                ? "中断没成：" + error.localizedDescription + "——还在办，可再点「中断」。别当成已经停了。"
+                : "停下这件没成：" + error.localizedDescription + "——还在跑，可再试。其它并行的不受影响。"
+            return false
         }
     }
     func queueWork(path: String, text: String, fields: [String: JSON]) throws -> PendingMessage {
@@ -510,8 +1168,18 @@ enum SectionTab: String, CaseIterable, Identifiable {
         catch { pending.removeAll { $0.id == entry.id }; throw error }
         return entry
     }
+    /// 工作出站 / 查回执。未配对写 note；失败返回 nil 且态为 uncertain，勿假装已核实。
     func deliverWork(_ id: String) async -> JSON? {
-        guard !issuing.contains(id), let api, let index = pending.firstIndex(where: { $0.id == id }) else { return nil }
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return nil }
+        if pending[index].state == .delivered {
+            return .object(["status": .string("accepted")])
+        }
+        guard !issuing.contains(id) else { return nil }
+        guard let api else {
+            updatePending(id) { $0.state = .uncertain }
+            updatePending(id) { $0.note = "还没连上 mini——回执没查上，配对后再查。不会假装已核实。" }
+            return nil
+        }
         issuing.insert(id)
         defer { issuing.remove(id); persistNow() }
         let entry = pending[index]
@@ -537,11 +1205,37 @@ enum SectionTab: String, CaseIterable, Identifiable {
             return nil
         }
     }
-    func disconnect() async {
-        if let api { await ComPush.disable(using: api) }
+    /// 解除本机配对。`unpaired` 本地一定清掉；`pushCleared` 表示服务器推送注销是否成功（失败仍解绑，设置页可开口）。
+    @discardableResult
+    func disconnect() async -> (unpaired: Bool, pushCleared: Bool) {
+        var pushCleared = true
+        if let api {
+            pushCleared = await ComPush.disable(using: api)
+        }
         await setActive(false)
         StatusWidgetSnapshot.clear(); WidgetCenter.shared.reloadTimelines(ofKind: StatusWidgetSnapshot.kind)
-        SecureVault.deleteSecret("token"); api = nil; isPaired = false; streaming = false
+        liveActivityNote = ""
+        widgetUpdateNote = ""
+        cachePersistNote = ""
+        shareInboxNote = ""
+        memoryOpenNote = ""
+        financeOpenNote = ""
+        connectorsOpenNote = ""
+        activityOpenNote = ""
+        planOpenNote = ""
+        todayOpenNote = ""
+        waitingOpenNote = ""
+        searchOpenNote = ""
+        settingsOpenNote = ""
+        agencyGoalsNote = ""
+        agencyCardsNote = ""
+        approvalDeepLinkNote = ""
+        pairGateNote = ""
+        SecureVault.deleteSecret("token")
+        api = nil
+        isPaired = false
+        streaming = false
+        return (true, pushCleared)
     }
     private func updatePending(_ id: String, _ edit: (inout PendingMessage) -> Void) {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
@@ -556,6 +1250,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
             .object(["id": value, "name": .string("附件 \(index + 1)")])
         }
         removeRejected(id)
+        chatComposerNote = "草稿已收回输入框——改完再发。刚才那条没有发出去。"
     }
     func mutate(_ path: String, fields: [String: JSON] = [:]) async throws -> JSON {
         guard let api else { throw APIError(status: 0, detail: "请先连接 Mac mini") }
@@ -568,9 +1263,17 @@ enum SectionTab: String, CaseIterable, Identifiable {
             return result
         } catch { banner = "操作未确认：" + error.localizedDescription + "。先刷新核对结果。"; throw error }
     }
-    func action(_ path: String, fields: [String: JSON] = [:], refresh section: SectionTab? = nil) async {
-        do { _ = try await mutate(path, fields: fields); if let section { await refresh(section) }; Haptics.selection() }
-        catch { banner = error.localizedDescription }
+    @discardableResult
+    func action(_ path: String, fields: [String: JSON] = [:], refresh section: SectionTab? = nil) async -> Bool {
+        do {
+            _ = try await mutate(path, fields: fields)
+            if let section { await refresh(section) }
+            Haptics.selection()
+            return true
+        } catch {
+            banner = error.localizedDescription
+            return false
+        }
     }
 
     // MARK: 工作页侧栏（r3-work）：主内容连同 Dock 一起往右推走，侧栏占满整屏高度
@@ -598,7 +1301,14 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if base + predicted > width / 2 { openWorkSidebar(reduce: reduce) } else { closeWorkSidebar(reduce: reduce) }
     }
     func openVoice(quick: Bool = false) {
-        guard isPaired else { banner = "先连接 Mac mini，再打开 Com 语音。"; return }
+        guard isPaired else {
+            // 未配对时 Root 停在配对页：页内 note + banner，别只弹窗一闪像没事。
+            let note = "要先配对才能用语音——连上 Mac mini 后再说。不会假装已开麦。"
+            pairGateNote = note
+            banner = note
+            return
+        }
+        pairGateNote = ""
         tab = .chat
         if quick { showQuickVoice = true }
         #if DEBUG
@@ -610,8 +1320,9 @@ enum SectionTab: String, CaseIterable, Identifiable {
             return
         }
         #endif
-        // Never overwrite an unsubmitted capture when the entry opens again.
-        if !voice.hasCapture && voice.phase != .transcribing { Task { await voice.start(using: api) } }
+        // Never overwrite an unsubmitted capture when the entry opens again；starting 中也不叠启。
+        guard !voice.starting, !voice.hasCapture, voice.phase != .transcribing, voice.phase != .recording else { return }
+        Task { await voice.start(using: api) }
     }
     func transcribeVoice() async {
         guard voice.phase != .transcribing && voice.phase != .ready else { return }
@@ -624,11 +1335,22 @@ enum SectionTab: String, CaseIterable, Identifiable {
             voice.transcript = "帮我整理今天的安排，再留一点时间去攀岩。"
             voice.phase = .ready
         } else {
-            guard let api else { banner = "请先连接 Mac mini"; return }
+            guard let api else {
+                // 失败开口留在语音窗；勿只 banner 后像没事。
+                voice.error = "还没连上 mini——录音已保留，配对后再转写。"
+                if voice.hasCapture { voice.phase = .failed }
+                banner = "请先连接 Mac mini"
+                return
+            }
             await voice.transcribe(using: api)
         }
         #else
-        guard let api else { banner = "请先连接 Mac mini"; return }
+        guard let api else {
+            voice.error = "还没连上 mini——录音已保留，配对后再转写。"
+            if voice.hasCapture { voice.phase = .failed }
+            banner = "请先连接 Mac mini"
+            return
+        }
         await voice.transcribe(using: api)
         #endif
         guard voice.phase == .ready, voice.captureID == capture, !voice.transcript.isEmpty else { return }
@@ -640,12 +1362,17 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
         // 审批模式：这句话是批准/拒绝，不再当作聊天内容发出去。
         if let approval = pendingApproval, let decision = VoiceCommands.decision(voice.transcript) {
-            await answerApproval(approval, decision: decision)
-            voice.cancel(); showQuickVoice = false
+            // 送达成功才关语音窗；失败保留转写与审批上下文，卡上共享 fail note。
+            if await answerApproval(approval, decision: decision) {
+                voice.cancel(); showQuickVoice = false
+            }
             return
         }
-        if pendingApproval != nil {
-            banner = "没听清。请说「批准」或「拒绝」，复杂问题回卡片回答。"
+        if let approval = pendingApproval {
+            rememberApprovalFail(
+                id: approval.id,
+                message: "没听清。请说「批准」或「拒绝」；复杂问题回卡片回答。不会假装已批。"
+            )
             return
         }
         // Show the glyph reveal before entering the same durable text-message outbox.
@@ -676,8 +1403,15 @@ enum SectionTab: String, CaseIterable, Identifiable {
             datasets: datasets.filter { !$0.key.hasPrefix("/personal/conversation") },
             timestamps: fetchedAt, draft: draft, attachments: attachments)
         cacheWriteTask = Task { [weak self, cacheWriter] in
-            do { try await cacheWriter.save(snapshot, revision: revision) }
-            catch { self?.banner = "本地保存失败：" + error.localizedDescription }
+            do {
+                try await cacheWriter.save(snapshot, revision: revision)
+                // 落盘成功：清掉存/读失败开口（盘可用，当前草稿已在缓存里）。
+                self?.cachePersistNote = ""
+            } catch {
+                let msg = "主聊草稿和本地缓存没存上：\(error.localizedDescription)——杀掉 App 可能丢未发的字。再改一字会重试。不会假装已落盘。"
+                self?.cachePersistNote = msg
+                self?.banner = "本地保存失败：" + error.localizedDescription
+            }
         }
     }
 }
@@ -823,8 +1557,8 @@ extension AppModel {
         case "search": showSearch = true
         case "finance": showFinance = true
         case "connectors": showConnectors = true
-        case "share": showShareInbox = true
-        case "activity": showActivity = true
+        case "share": openShareInbox()
+        case "activity": openActivityFeed()
         case "task": selectedTask = datasets["/personal/tasks"]?["items"].array.first
         default: break
         }

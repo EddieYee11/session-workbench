@@ -61,7 +61,8 @@ private final class VoiceCapture: @unchecked Sendable {
     private var timer: Task<Void, Never>?
     private var file: URL?
     private var interruption: NSObjectProtocol?
-    private var starting = false
+    /// 正在申请麦克风/建会话：UI 可据此 disable 开麦，防连点叠启。
+    private(set) var starting = false
     private var tapped = false
     /// Stop on its own after a pause, so a quick 记账/日程 sentence needs no second tap.
     var autoSend = UserDefaults.standard.object(forKey: "voice.autoSend") as? Bool ?? true {
@@ -73,16 +74,27 @@ private final class VoiceCapture: @unchecked Sendable {
     private var lastVoiced = Date.distantFuture
 
     init() {
-        if let saved = try? SecureVault.load(JSON.self, name: "voice-capture"), !saved["id"].string.isEmpty {
-            captureID = saved["id"].string
-            // WAV is the streaming-era retry copy; M4A is every capture recorded before it.
-            for ext in ["wav", "m4a"] {
-                let url = SecureVault.directory.appendingPathComponent(captureID + "." + ext)
-                if FileManager.default.fileExists(atPath: url.path) {
-                    file = url; phase = .recorded; seconds = saved["seconds"].int; error = "上次录音已保留，尚未发送"
-                    break
+        do {
+            if let saved = try SecureVault.load(JSON.self, name: "voice-capture"), !saved["id"].string.isEmpty {
+                captureID = saved["id"].string
+                // WAV is the streaming-era retry copy; M4A is every capture recorded before it.
+                var restored = false
+                for ext in ["wav", "m4a"] {
+                    let url = SecureVault.directory.appendingPathComponent(captureID + "." + ext)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        file = url; phase = .recorded; seconds = saved["seconds"].int; error = "上次录音已保留，尚未发送"
+                        restored = true
+                        break
+                    }
+                }
+                if !restored {
+                    // 元数据在、文件没了：别假装还能重试这条。
+                    captureID = ""
+                    error = "上次录音记录在，文件已不在——不能当已保留。可再录一条。"
                 }
             }
+        } catch {
+            self.error = "上次录音记录没读上：\(error.localizedDescription)——若有未发录音，可能找不回。不会假装已恢复。"
         }
         interruption = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in if self?.phase == .recording { self?.finishRecording() } }
@@ -94,7 +106,11 @@ private final class VoiceCapture: @unchecked Sendable {
         guard !starting && phase != .recording && phase != .transcribing else { return }
         starting = true
         defer { starting = false }
-        guard await AVAudioApplication.requestRecordPermission() else { error = "请在系统设置中允许 Com 使用麦克风"; phase = .failed; return }
+        guard await AVAudioApplication.requestRecordPermission() else {
+            error = "麦克风没开——到系统设置允许 Com；开麦失败不会假装在听。"
+            phase = .failed
+            return
+        }
         do {
             cancel()
             captureID = UUID().uuidString.lowercased()
@@ -139,7 +155,11 @@ private final class VoiceCapture: @unchecked Sendable {
                     if elapsed >= 60 { self.finishRecording(); self.error = "已达到 60 秒，录音已保留。"; return }
                 }
             }
-        } catch { self.error = error.localizedDescription; phase = .failed }
+        } catch {
+            // 开麦失败留 failed + 开口；勿停在 idle 像没试过。
+            self.error = "开麦没成：" + error.localizedDescription + "——可再试"
+            phase = .failed
+        }
     }
 
     func finishRecording() {
@@ -171,9 +191,14 @@ private final class VoiceCapture: @unchecked Sendable {
             let result = try await api.transcribe(id: id, audio: data, mime: file.pathExtension == "m4a" ? "audio/mp4" : "audio/wav")
             guard phase == .transcribing, captureID == id else { return }
             transcript = result["text"].string
-            guard !transcript.isEmpty else { throw APIError(status: 422, detail: "没有听清，录音已保留") }
+            guard !transcript.isEmpty else { throw APIError(status: 422, detail: "没有听清——录音已保留，可重新转写") }
             phase = .ready
-        } catch { if phase == .transcribing && captureID == id { self.error = error.localizedDescription; phase = .failed } }
+        } catch {
+            if phase == .transcribing && captureID == id {
+                self.error = "转写没成：" + error.localizedDescription + "——录音还在，可再试"
+                phase = .failed
+            }
+        }
     }
 
     func cancel() {
@@ -183,7 +208,12 @@ private final class VoiceCapture: @unchecked Sendable {
         engine.stop(); capture = nil
         if let file { try? FileManager.default.removeItem(at: file) }
         file = nil; captureID = ""; phase = .idle; level = 0; levels = []; transcript = ""; error = ""; seconds = 0
-        try? SecureVault.save(JSON.null, name: "voice-capture")
+        do {
+            try SecureVault.save(JSON.null, name: "voice-capture")
+        } catch {
+            // 本地已清空；元数据清不掉下次可能误提示「已保留」。开口让人知道，不挡放弃。
+            self.error = "录音已放弃，但记录没清干净：\(error.localizedDescription)——下次打开若看见旧提示，可忽略或再录覆盖。不会假装已清干净。"
+        }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -259,7 +289,15 @@ private final class VoiceCapture: @unchecked Sendable {
         finishRecording()
     }
 
+    /// 落盘 capture 元数据，供杀进程后重试。失败写 `error`，不假装「已保留」。
     private func saveCapture() {
-        try? SecureVault.save(JSON.object(["id": .string(captureID), "seconds": .number(Double(seconds))]), name: "voice-capture")
+        guard !captureID.isEmpty else { return }
+        do {
+            try SecureVault.save(JSON.object(["id": .string(captureID), "seconds": .number(Double(seconds))]), name: "voice-capture")
+            if self.error.contains("录音元数据没存上") { self.error = "" }
+        } catch {
+            // 录音文件可能还在目录里，但没元数据 → 冷启动找不到；开口别装已保留。
+            self.error = "录音元数据没存上：\(error.localizedDescription)——杀掉 App 可能丢这条可重试录音。转写前尽量别杀。不会假装已保留。"
+        }
     }
 }

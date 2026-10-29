@@ -34,10 +34,36 @@ struct WorkChat: View {
                     .buttonStyle(.plain).foregroundStyle(Palette.accentText)
                     .accessibilityIdentifier("work-case-banner")
                 }
-                if !work.note.isEmpty { InlineNotice(text: work.note) }
-                if rows.isEmpty && work.loaded {
-                    Text(work.mode == .snapshot ? "这段还没有可看的摘录。" : "会话已打开。回看历史不会启动执行器。")
-                        .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                // 侧栏点开后拉齐失败：危险开口，勿用中性灰字假装「历史缓存」。
+                if !work.note.isEmpty {
+                    InlineNotice(text: work.note, tone: .danger)
+                        .accessibilityIdentifier("work-chat-fail")
+                } else if !work.loaded && (work.mode == .session || work.mode == .snapshot) {
+                    HStack(spacing: Space.sm) {
+                        ProgressView().controlSize(.small)
+                        Text(work.mode == .snapshot ? "正在拉齐摘录…" : "正在打开会话…")
+                            .font(TypeScale.footnote)
+                            .foregroundStyle(Palette.textTertiary)
+                    }
+                    .accessibilityIdentifier("work-chat-opening")
+                    .accessibilityLabel(work.mode == .snapshot ? "正在拉齐摘录" : "正在打开会话")
+                }
+                if rows.isEmpty && work.loaded && work.note.isEmpty {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        Text(work.mode == .snapshot
+                             ? "这段还没有可看的摘录"
+                             : "会话开着，还没开口")
+                            .font(TypeScale.subheadline.weight(.medium))
+                            .foregroundStyle(Palette.textSecondary)
+                        Text(work.mode == .snapshot
+                             ? "同步过来的摘要到了会出现在这里；急用可到那台机器上看完整记录。"
+                             : "下面说一句就行。我在听——不会假装远程终端已接通。")
+                            .font(TypeScale.footnote)
+                            .foregroundStyle(Palette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.vertical, Space.sm)
+                    .accessibilityIdentifier("work-chat-empty")
                 }
                 ForEach(rows) { row in
                     WorkRow(row: row, agent: work.agent, flying: flying.contains(row.id))
@@ -165,6 +191,7 @@ private struct WorkRow: View {
 /// 右边：我的话，和主聊天同款深色气泡。刚发的那条下面说一句送达情况。
 private struct WorkUserBubble: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
     let row: WorkSessionModel.Row
     var flying = false
     var body: some View {
@@ -194,7 +221,7 @@ private struct WorkUserBubble: View {
                     }
                 }
                 .contentTransition(.opacity)
-                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: outgoing.state)
+                .animation(ComMotion.reduced(reduce, ComMotion.settle), value: outgoing.state)
                 .transition(.opacity)
             }
         }
@@ -284,7 +311,7 @@ private struct WorkStepsRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 Haptics.selection()
-                withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open.toggle() }
+                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open.toggle() }
             } label: { header }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier(live ? "work-steps-live" : "work-steps")
@@ -309,10 +336,10 @@ private struct WorkStepsRow: View {
         .padding(.horizontal, Space.xs)
         .onChange(of: planLive) { _, now in
             guard plan != nil else { return }
-            withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = now }
+            withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open = now }
         }
         .onChange(of: plan != nil) { _, has in
-            if has && planLive { withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = true } }
+            if has && planLive { withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open = true } }
         }
     }
     @ViewBuilder private var header: some View {
@@ -323,7 +350,7 @@ private struct WorkStepsRow: View {
                 Text(plan.active.isEmpty ? "接着往下做" : plan.active)
                     .font(TypeScale.subheadline.weight(.medium)).foregroundStyle(Palette.textPrimary).lineLimit(1)
                     .contentTransition(.opacity)
-                    .animation(reduce ? nil : .smooth(duration: 0.3), value: plan.active)
+                    .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: plan.active)
             } else if live, let last = calls.last {
                 WorkPulse()
                 let kind = Self.kind(last)

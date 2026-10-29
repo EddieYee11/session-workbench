@@ -9,45 +9,198 @@ extension AppModel {
     var casesData: JSON { datasets["/personal/cases"] ?? .null }
     var planData: JSON { datasets["/personal/plan"] ?? .null }
 
-    /// 交给 Com：建航程，返回航程 id；Hermes 判断是一步就能办的小事时会回到主对话，返回 nil 并切到聊天。
+    /// 交给 Com：建航程。返回航程 id；`""` = 小事进主对话；`nil` = 失败（别把失败当成已进聊天）。
     func delegateNext(_ item: JSON) async -> String? {
         do {
             let result = try await mutate("/personal/next/" + item.id.pathEncoded, fields: ["action": .string("delegate")])
-            _ = await load("/personal/next"); _ = await load("/personal/cases")
+            // 已交接；列表没刷齐则乐观收卡 + 开口，别假装下一步/航程已是最新。
+            if await load("/personal/next") == nil {
+                var value = nextData
+                value["items"] = .array(value["items"].array.filter { $0.id != item.id })
+                datasets["/personal/next"] = value
+                let err = errors["/personal/next"] ?? ""
+                planOpenNote = err.isEmpty
+                    ? "已交给我办，下一步列表没刷齐——可下拉再试。不会假装列表已是最新。"
+                    : "已交给我办，下一步列表没刷齐：" + err + "——可下拉再试。不会假装列表已是最新。"
+            }
+            if await load("/personal/cases") == nil {
+                let err = errors["/personal/cases"] ?? ""
+                // 航程入口在下一步页；用 planOpenNote 同口，别叠第二条无关 note。
+                if planOpenNote.isEmpty {
+                    planOpenNote = err.isEmpty
+                        ? "已接进航程，航程列表没刷上——可下拉开动态再看。不会假装航程已出现。"
+                        : "已接进航程，航程列表没刷上：" + err + "——可再试。不会假装航程已出现。"
+                }
+            }
+            if await load("/personal/waiting") == nil {
+                let err = errors["/personal/waiting"] ?? ""
+                if waitingOpenNote.isEmpty {
+                    waitingOpenNote = err.isEmpty
+                        ? "已交给我办，等你列表没刷齐——可再拉开等你。不会假装角标已更新。"
+                        : "已交给我办，等你列表没刷齐：" + err + "——可再拉开等你。不会假装角标已更新。"
+                }
+            }
             Haptics.success()
-            if result["mode"].string == "chat" { tab = .chat; await refresh(.chat); return nil }
-            return result["task_id"].string.isEmpty ? nil : result["task_id"].string
+            if result["mode"].string == "chat" {
+                showWaiting = false
+                tab = .chat
+                await refresh(.chat)
+                return ""
+            }
+            let id = result["task_id"].string
+            return id.isEmpty ? nil : id
         } catch { banner = error.localizedDescription; return nil }
     }
     /// 加到待办：day 是 YYYY-MM-DD；remindAt 是 "YYYY-MM-DD HH:MM"（可选）。
-    func nextToTodo(_ item: JSON, day: String, remindAt: String? = nil) async {
+    @discardableResult
+    func nextToTodo(_ item: JSON, day: String, remindAt: String? = nil) async -> Bool {
         var fields: [String: JSON] = ["action": .string("todo"), "day": .string(day)]
         if let remindAt { fields["remind_at"] = .string(remindAt) }
         do {
             _ = try await mutate("/personal/next/" + item.id.pathEncoded, fields: fields)
-            _ = await load("/personal/next"); _ = await load("/personal/today")
+            // 已加进待办；下一步没刷齐则乐观收卡；今天没刷上则 doingOpenNote，别假装待办已显示。
+            if await load("/personal/next") == nil {
+                var value = nextData
+                value["items"] = .array(value["items"].array.filter { $0.id != item.id })
+                datasets["/personal/next"] = value
+                let err = errors["/personal/next"] ?? ""
+                planOpenNote = err.isEmpty
+                    ? "已加进待办，下一步列表没刷齐——可下拉再试。不会假装列表已是最新。"
+                    : "已加进待办，下一步列表没刷齐：" + err + "——可下拉再试。不会假装列表已是最新。"
+            }
+            if await load("/personal/today") == nil {
+                let err = errors["/personal/today"] ?? ""
+                doingOpenNote = err.isEmpty
+                    ? "已加进待办，今天页没刷上——可到「今天」下拉。不会假装待办已显示。"
+                    : "已加进待办，今天页没刷上：" + err + "——可到「今天」下拉。不会假装待办已显示。"
+            }
             Haptics.success()
-        } catch { banner = error.localizedDescription }
+            return true
+        } catch { banner = error.localizedDescription; return false }
     }
+    /// 返回航程 id；`""` = 进主对话；`nil` = 失败。
     func delegateTodo(_ path: String) async -> String? {
         do {
             let result = try await mutate("/personal/today/todos/delegate", fields: ["path": .string(path)])
-            _ = await load("/personal/cases")
+            // 过期待办已交接；等你/今天没刷齐则开口，别假装角标与日程已齐（调用方已乐观藏卡）。
+            if await load("/personal/waiting") == nil {
+                let err = errors["/personal/waiting"] ?? ""
+                waitingOpenNote = err.isEmpty
+                    ? "已交给我办，等你列表没刷齐——可再拉开等你。不会假装角标已更新。"
+                    : "已交给我办，等你列表没刷齐：" + err + "——可再拉开等你。不会假装角标已更新。"
+            }
+            if await load("/personal/cases") == nil {
+                let err = errors["/personal/cases"] ?? ""
+                if waitingOpenNote.isEmpty {
+                    waitingOpenNote = err.isEmpty
+                        ? "已接进航程，航程列表没刷上——可打开动态再看。不会假装航程已出现。"
+                        : "已接进航程，航程列表没刷上：" + err + "——可再试。不会假装航程已出现。"
+                }
+            }
+            if await load("/personal/today") == nil {
+                let err = errors["/personal/today"] ?? ""
+                doingOpenNote = err.isEmpty
+                    ? "已交给我办，今天页没刷上——可到「今天」下拉。不会假装待办已离开。"
+                    : "已交给我办，今天页没刷上：" + err + "——可到「今天」下拉。不会假装待办已离开。"
+            }
             Haptics.success()
-            if result["mode"].string == "chat" { tab = .chat; await refresh(.chat); return nil }
-            return result["task_id"].string.isEmpty ? nil : result["task_id"].string
+            if result["mode"].string == "chat" { tab = .chat; await refresh(.chat); return "" }
+            let id = result["task_id"].string
+            return id.isEmpty ? nil : id
         } catch { banner = error.localizedDescription; return nil }
     }
-    func caseSend(_ id: String, _ text: String) async -> Bool {
-        do { _ = try await mutate("/personal/cases/" + id.pathEncoded + "/send", fields: ["text": .string(text)]); Haptics.selection(); return true }
-        catch { banner = error.localizedDescription; return false }
+    /// 航程状态变了：等你角标 / 注意力条 / 动态里的航程数都要立刻跟上，不能只刷详情。
+    /// - Returns: waiting / cases 是否拉齐；失败写 waitingOpenNote / activityOpenNote，别假装角标与列表已更新。
+    @discardableResult
+    func refreshAfterCaseChange(head: String = "航程已更新") async -> (waiting: Bool, cases: Bool) {
+        async let waitingLoad = load("/personal/waiting")
+        async let casesLoad = load("/personal/cases")
+        let gotWaiting = await waitingLoad != nil
+        let gotCases = await casesLoad != nil
+        if gotWaiting {
+            waitingOpenNote = ""
+        } else {
+            let err = errors["/personal/waiting"] ?? ""
+            waitingOpenNote = err.isEmpty
+                ? head + "，等你列表没刷齐——可再拉开等你。不会假装角标已更新。"
+                : head + "，等你列表没刷齐：" + err + "——可再拉开等你。不会假装角标已更新。"
+        }
+        if gotCases {
+            activityOpenNote = ""
+        } else {
+            let err = errors["/personal/cases"] ?? ""
+            activityOpenNote = err.isEmpty
+                ? head + "，航程列表没刷上——可打开动态或下拉再试。不会假装列表已更新。"
+                : head + "，航程列表没刷上：" + err + "——可打开动态再试。不会假装列表已更新。"
+        }
+        return (gotWaiting, gotCases)
     }
-    func caseCancel(_ id: String) async { await action("/personal/cases/" + id.pathEncoded + "/cancel") }
-    func caseResolve(_ id: String) async { await action("/personal/cases/" + id.pathEncoded + "/resolve") }
+    /// 列表刷失败时乐观改本地航程态，别让横幅/动态仍当它在跑。
+    private func patchCaseListState(_ id: String, state: String, label: String) {
+        var value = casesData
+        value["items"] = .array(value["items"].array.map { row in
+            guard row.id == id else { return row }
+            var copy = row
+            copy["state"] = .string(state)
+            copy["state_label"] = .string(label)
+            copy["now"] = .string("")
+            return copy
+        })
+        let live: Set<String> = ["running", "queued", "waiting", "attention"]
+        let items = value["items"].array
+        value["active"] = .number(Double(items.filter { live.contains($0["state"].string) }.count))
+        value["waiting"] = .number(Double(items.filter { ["waiting", "attention"].contains($0["state"].string) }.count))
+        datasets["/personal/cases"] = value
+    }
+    func caseSend(_ id: String, _ text: String) async -> Bool {
+        do {
+            _ = try await mutate("/personal/cases/" + id.pathEncoded + "/send", fields: ["text": .string(text)])
+            Haptics.selection()
+            await refreshAfterCaseChange(head: "话已送上")
+            return true
+        } catch { banner = error.localizedDescription; return false }
+    }
+    @discardableResult
+    func caseCancel(_ id: String) async -> Bool {
+        guard await action("/personal/cases/" + id.pathEncoded + "/cancel") else { return false }
+        let ok = await refreshAfterCaseChange(head: "已停止航程")
+        if !ok.cases { patchCaseListState(id, state: "cancelled", label: "已取消") }
+        return true
+    }
+    @discardableResult
+    func caseResolve(_ id: String) async -> Bool {
+        guard await action("/personal/cases/" + id.pathEncoded + "/resolve") else { return false }
+        let ok = await refreshAfterCaseChange(head: "已标完成")
+        if !ok.cases { patchCaseListState(id, state: "done", label: "完成") }
+        return true
+    }
     func applyPlan(day: String, selected: [String]) async -> JSON? {
         do {
             let result = try await mutate("/personal/plan/apply", fields: ["day": .string(day), "selected": .array(selected.map { JSON.string($0) })])
-            _ = await load("/personal/plan"); _ = await load("/personal/next"); _ = await load("/personal/today")
+            // 已放进待办；plan/next/today 没刷齐则开口（plan 乐观收起），别假装列表已是最新。
+            if await load("/personal/plan") == nil {
+                var value = planData
+                value["state"] = .string("closed")
+                datasets["/personal/plan"] = value
+                let err = errors["/personal/plan"] ?? ""
+                planOpenNote = err.isEmpty
+                    ? "已放进明天待办，计划卡没刷齐——可下拉再试。不会假装计划已收起。"
+                    : "已放进明天待办，计划卡没刷齐：" + err + "——可下拉再试。不会假装计划已收起。"
+            }
+            if await load("/personal/next") == nil {
+                let err = errors["/personal/next"] ?? ""
+                if planOpenNote.isEmpty {
+                    planOpenNote = err.isEmpty
+                        ? "已放进明天待办，下一步列表没刷齐——可下拉再试。不会假装列表已是最新。"
+                        : "已放进明天待办，下一步列表没刷齐：" + err + "——可下拉再试。不会假装列表已是最新。"
+                }
+            }
+            if await load("/personal/today") == nil {
+                let err = errors["/personal/today"] ?? ""
+                doingOpenNote = err.isEmpty
+                    ? "已放进明天待办，今天页没刷上——可到「今天」下拉。不会假装待办已显示。"
+                    : "已放进明天待办，今天页没刷上：" + err + "——可到「今天」下拉。不会假装待办已显示。"
+            }
             Haptics.success(); return result
         } catch { banner = error.localizedDescription; return nil }
     }
@@ -71,49 +224,116 @@ private let activeStates: Set<String> = ["running", "queued", "waiting", "attent
 /// 没有在跑的但做过一些，缩成一行「航程 · 看做过的 N 段」；从来没有过就不占位（头像菜单里始终有入口）。
 struct VoyageBanner: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var shown = false
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var loadedOnce = false
+    private let casesPath = "/personal/cases"
     var body: some View {
         let items = model.casesData["items"].array
         let live = items.filter { activeStates.contains($0["state"].string) }
-        if let top = live.first {
-            NavigationLink { ActivityFeedView(initial: .work) } label: { card(top: top, live: live) }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("voyage-banner")
-        } else if !items.isEmpty {
-            NavigationLink { ActivityFeedView(initial: .work) } label: {
-                HStack(spacing: Space.sm) {
-                    Image(systemName: "location.north.line").font(.system(size: 13, weight: .semibold))
-                    Text("航程").font(TypeScale.subheadline.weight(.semibold))
-                    Text("看做过的 \(items.count) 段").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.textTertiary)
+        VStack(alignment: .leading, spacing: Space.sm) {
+            // 有停顿等你的航程时置顶那一段——别让「还在跑」盖住真正要你拍板的。
+            if let top = live.first(where: { ["waiting", "attention"].contains($0["state"].string) }) ?? live.first {
+                NavigationLink { ActivityFeedView(initial: .work) } label: { card(top: top, live: live) }
+                    .buttonStyle(SoftPressStyle(scale: 0.985))
+                    .accessibilityIdentifier("voyage-banner")
+            } else if !items.isEmpty {
+                NavigationLink { ActivityFeedView(initial: .work) } label: {
+                    HStack(spacing: Space.sm) {
+                        Image(systemName: "location.north.line").font(.system(size: 13, weight: .semibold))
+                        Text("航程").font(TypeScale.subheadline.weight(.semibold))
+                        Text("看做过的 \(items.count) 段").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.textTertiary)
+                    }
+                    .foregroundStyle(Palette.textPrimary)
+                    .padding(.horizontal, Space.lg).frame(height: 44)
+                    .background(Palette.surface, in: .rect(cornerRadius: Radius.md, style: .continuous))
                 }
-                .foregroundStyle(Palette.textPrimary)
-                .padding(.horizontal, Space.lg).frame(height: 44)
-                .background(Palette.surface, in: .rect(cornerRadius: Radius.md, style: .continuous))
+                .buttonStyle(SoftPressStyle(scale: 0.985))
+                .accessibilityIdentifier("voyage-banner-quiet")
+            } else if loading || !loadedOnce {
+                HStack(spacing: Space.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("正在拉齐航程…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                }
+                .accessibilityLabel("正在拉齐航程")
+                .accessibilityIdentifier("voyage-banner-pulling")
+            } else if !failNote.isEmpty {
+                Text("航程还没读上——通了我再开口说哪段在跑、哪段等你。")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    .accessibilityIdentifier("voyage-banner-empty-fail")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("voyage-banner-quiet")
+            if !failNote.isEmpty {
+                InlineNotice(text: failNote, tone: .danger)
+                Button(loading ? "重试中…" : "再试一次") {
+                    guard !loading else { return }
+                    Task { await refreshCases(force: true) }
+                }
+                .buttonStyle(.secondaryCompact)
+                .disabled(loading)
+                .accessibilityIdentifier("voyage-banner-retry")
+            }
         }
+        .modifier(EnterRise(on: shown, delay: 0.02, y: 12, blur: 5, animation: ComMotion.lift))
+        .onAppear {
+            if reduce { shown = true }
+            else { withAnimation(ComMotion.lift) { shown = true } }
+        }
+        .task { await refreshCases(force: false) }
+    }
+    private func refreshCases(force: Bool) async {
+        guard !loading else { return }
+        // Next 页可能已拉过 cases——有缓存且非强制就不叠刷，但仍认已开口。
+        if !force, !model.casesData.isNull {
+            loadedOnce = true
+            if model.errors[casesPath] == nil { failNote = ""; return }
+        }
+        loading = true
+        if force { failNote = "" }
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        if await model.load(casesPath) != nil {
+            failNote = ""
+            return
+        }
+        let err = model.errors[casesPath] ?? ""
+        let had = !model.casesData["items"].array.isEmpty
+        failNote = err.isEmpty
+            ? (had ? "航程没刷新上——下面仍是上一版，可再试" : "航程没拉齐——检查配对或网络后再试")
+            : (had ? "航程没刷新上：" + err + "——下面仍是上一版" : "航程没拉齐：" + err + "——可再试")
     }
     private func card(top: JSON, live: [JSON]) -> some View {
-        let waiting = live.filter { $0["state"].string == "waiting" }.count
+        let waiting = live.filter { ["waiting", "attention"].contains($0["state"].string) }.count
         let running = live.count - waiting
         let p = top["progress"]
-        let line = top["state"].string == "waiting" ? "等你：" + top["waiting"]["question"].string : (top["now"].string.isEmpty ? "正在准备" : top["now"].string)
+        let paused = ["waiting", "attention"].contains(top["state"].string)
+        let question = top["waiting"]["question"].string
+        let line: String = {
+            if paused {
+                if question.isEmpty { return "停住了——要你点头才继续" }
+                return "停住等你：" + question
+            }
+            return top["now"].string.isEmpty ? "正在准备" : top["now"].string
+        }()
         return Card(.ink, padding: Space.lg) {
             VStack(alignment: .leading, spacing: Space.md) {
                 HStack(spacing: Space.sm) {
                     Image(systemName: "location.north.line").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.accent)
-                    Text("航程").font(TypeScale.subheadline.weight(.bold)).foregroundStyle(Palette.onInk)
+                    Text(paused ? "航程 · 等你" : "航程").font(TypeScale.subheadline.weight(.bold)).foregroundStyle(Palette.onInk)
                     Spacer(minLength: Space.sm)
-                    if running > 0 { chip("\(running) 段进行中", tone: Palette.accent) }
                     if waiting > 0 { chip("\(waiting) 段等你", tone: Palette.warning) }
+                    if running > 0 { chip("\(running) 段进行中", tone: Palette.accent) }
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text(top["title"].string).font(TypeScale.headline).foregroundStyle(Palette.onInk).lineLimit(2)
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         if top["state"].string == "running" { WorkPulse() }
-                        Text(line).font(TypeScale.subheadline).foregroundStyle(top["state"].string == "waiting" ? Palette.warning : Palette.onInkSecondary).lineLimit(2)
+                        Text(line).font(TypeScale.subheadline).foregroundStyle(paused ? Palette.warning : Palette.onInkSecondary).lineLimit(2)
                     }
                 }
                 if p["total"].int > 0 {
@@ -122,10 +342,11 @@ struct VoyageBanner: View {
                             ZStack(alignment: .leading) {
                                 Capsule().fill(Palette.onInk.opacity(0.16))
                                 Capsule().fill(Palette.accent).frame(width: max(8, geo.size.width * CGFloat(p["done"].int) / CGFloat(max(1, p["total"].int))))
-                                    .animation(.smooth(duration: 0.5), value: p["done"].int)
+                                    .animation(ComMotion.reduced(reduce, ComMotion.settle), value: p["done"].int)
                             }
                         }.frame(height: 6)
                         Text("\(p["done"].int)/\(p["total"].int)").font(.caption.monospacedDigit()).foregroundStyle(Palette.onInkSecondary)
+                            .contentTransition(.numericText())
                     }
                 }
                 HStack(spacing: 4) {
@@ -169,7 +390,7 @@ struct CaseRow: View {
         let waiting = ["waiting", "attention"].contains(state)
         let p = item["progress"]
         let status = item["state_label"].string + (p["total"].int > 0 ? " · \(p["done"].int)/\(p["total"].int) 步" : "") + (item["source_label"].string.isEmpty ? "" : " · 来自" + item["source_label"].string)
-        let preview = waiting && !item["waiting"]["question"].string.isEmpty ? "等你：" + item["waiting"]["question"].string
+        let preview = waiting && !item["waiting"]["question"].string.isEmpty ? "停住等你：" + item["waiting"]["question"].string
             : !item["now"].string.isEmpty ? item["now"].string : relativeTime(item["created_at"].double) + "开始"
         HStack(alignment: .top, spacing: Space.sm) {
             Circle().fill(waiting ? Palette.warning : state == "running" ? Palette.info : .clear).frame(width: 7, height: 7).padding(.top, 16)
@@ -230,28 +451,91 @@ struct TodoStep: Identifiable, Equatable, Sendable {
 struct CaseDetailView: View {
     let id: String
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var draft = ""
     @State private var sending = false
     @State private var confirmCancel = false
     @State private var showTimeline = false
+    @State private var shown = false
+    /// 停顿卡拍板 / 标完成 / 停止：失败留页可重试，勿连点叠发。
+    @State private var acting = false
+    @State private var actFail = ""
+    @State private var pollFail = ""
+    @State private var loadedOnce = false
+    @State private var retrying = false
     @FocusState private var focused: Bool
     private var data: JSON { model.datasets["/personal/cases/" + id] ?? .null }
+    private var casePath: String { "/personal/cases/" + id }
+    private var locked: Bool { sending || acting }
     var body: some View {
         ScrollPage(spacing: Space.xl) {
             if data.isNull {
-                ProgressView().frame(maxWidth: .infinity).padding(.top, Space.xxl)
+                if !loadedOnce {
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, Space.xxl)
+                        .accessibilityLabel("正在对齐航程")
+                } else {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        if !pollFail.isEmpty {
+                            InlineNotice(text: pollFail, tone: .danger)
+                        } else {
+                            InlineNotice(text: "还没读到这趟航程——可再试，或回上一级看看列表。", tone: .danger)
+                        }
+                        Button(retrying ? "重试中…" : "再试一次") {
+                            guard !retrying else { return }
+                            Task { await refreshCase(manual: true) }
+                        }
+                        .buttonStyle(.secondaryCompact)
+                        .disabled(retrying)
+                        .accessibilityIdentifier("case-poll-retry")
+                    }
+                    .padding(.top, Space.lg)
+                }
             } else {
+                if !pollFail.isEmpty {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        InlineNotice(text: pollFail, tone: .danger)
+                        Button(retrying ? "重试中…" : "再试一次") {
+                            guard !retrying else { return }
+                            Task { await refreshCase(manual: true) }
+                        }
+                        .buttonStyle(.secondaryCompact)
+                        .disabled(retrying)
+                        .accessibilityIdentifier("case-poll-retry")
+                    }
+                }
                 header
+                    .modifier(EnterRise(on: shown, delay: 0, y: 14, blur: 6, animation: ComMotion.pop))
                 ThreadStrip(key: "case:" + id)  // 10-18 线索：从哪来、去了哪
-                if data["state"].string == "waiting" { waitingCard }
-                if !data["outcome"]["reason"].string.isEmpty && data["state"].string == "failed" {
-                    InlineNotice(text: "没做成：" + data["outcome"]["reason"].string, tone: .warning)
+                    .modifier(EnterRise(on: shown, delay: 0.05, y: 10, blur: 4, animation: ComMotion.rise))
+                if data["state"].string == "waiting" {
+                    waitingCard
+                        .modifier(EnterRise(on: shown, delay: 0.08, y: 12, blur: 5, animation: ComMotion.pop))
+                }
+                if data["state"].string == "failed" {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        InlineNotice(
+                            text: data["outcome"]["reason"].string.isEmpty
+                                ? "这趟航程没办成。下面说说怎么改，或标完成收尾。"
+                                : "没办成：" + data["outcome"]["reason"].string + "——跟我说怎么改，我接着试。",
+                            tone: .warning)
+                        if canReply {
+                            Button("跟我说怎么改") { focused = true }
+                                .buttonStyle(.secondaryCompact)
+                                .accessibilityIdentifier("case-failed-retry")
+                        }
+                    }
                 }
                 letter
+                    .modifier(EnterRise(on: shown, delay: 0.1, y: 12, blur: 5, animation: ComMotion.rise))
+                if !actFail.isEmpty && data["state"].string != "waiting" {
+                    Text(actFail).font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.danger)
+                        .accessibilityIdentifier("case-act-fail")
+                }
                 actions
-                // 10-28 验收工作台：完成条件逐条看证据，缺的能一键让它补
-                AcceptancePanel(data: data["acceptance"], canAsk: canReply) { text in
-                    Task { if await model.caseSend(id, text) { _ = await model.load("/personal/cases/" + id) } }
+                    .modifier(EnterRise(on: shown, delay: 0.14, y: 8, blur: 3, animation: ComMotion.pop))
+                // 10-28 验收工作台：完成条件逐条看证据，缺的能一键让它补；送达失败留页可重试。
+                AcceptancePanel(data: data["acceptance"], canAsk: canReply, locked: locked) { text in
+                    await actSend(text)
                 }
                 let assumptions = data["assumptions"].array
                 if !assumptions.isEmpty {
@@ -270,18 +554,45 @@ struct CaseDetailView: View {
             }
         }
         .confirmationDialog("停止后 Pi 会中断当前这一步，已经做的不会撤回。", isPresented: $confirmCancel, titleVisibility: .visible) {
-            Button("停止", role: .destructive) { Task { await model.caseCancel(id); _ = await model.load("/personal/cases/" + id) } }
+            Button("停止", role: .destructive) {
+                Task { await actCancel() }
+            }
         }
         .navigationTitle("航程").navigationBarTitleDisplayMode(.inline)  // 标题已在正文第一行（来信式），导航栏不再重复
         .toolbarBackground(Palette.background, for: .navigationBar)
-        .refreshable { _ = await model.load("/personal/cases/" + id) }
+        .refreshable { await refreshCase(manual: true) }
+        .onAppear {
+            if reduce { shown = true }
+            else { withAnimation(ComMotion.rise) { shown = true } }
+        }
         .task {
             while !Task.isCancelled {
-                _ = await model.load("/personal/cases/" + id)
+                await refreshCase(manual: false)
                 let live = activeStates.contains(data["state"].string) && data["state"].string != "waiting"
                 try? await Task.sleep(for: .seconds(live ? 3 : 15))
             }
         }
+    }
+    private func refreshCase(manual: Bool) async {
+        if manual {
+            guard !retrying else { return }
+            retrying = true
+        }
+        defer { if manual { retrying = false } }
+        if await model.load(casePath) != nil {
+            pollFail = ""
+            loadedOnce = true
+            return
+        }
+        loadedOnce = true
+        let err = model.errors[casePath] ?? ""
+        pollFail = err.isEmpty
+            ? (data.isNull
+                ? "航程没对齐——检查配对或网络后再试"
+                : "航程没刷新上——下面仍是上一版，可再试")
+            : (data.isNull
+                ? "航程没对齐：" + err + "——可再试"
+                : "航程没刷新上：" + err + "——下面仍是上一版")
     }
     private var canReply: Bool { data["can_send"].bool || data["state"].string == "done" && data["kind"].string != "turn" }
     private var live: Bool { activeStates.contains(data["state"].string) }
@@ -363,33 +674,107 @@ struct CaseDetailView: View {
             if data["can_cancel"].bool {
                 pill("停止", "stop.circle", destructive: true) { confirmCancel = true }
             } else if live {
-                pill("标完成", "checkmark.circle") { Task { await model.caseResolve(id); _ = await model.load("/personal/cases/" + id) } }
+                pill("标完成", "checkmark.circle") { Task { await actResolve() } }
             }
         }
     }
     private func pill(_ title: String, _ symbol: String, destructive: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            guard !locked else { return }
+            action()
+        } label: {
             HStack(spacing: 6) { Text(title); Image(systemName: symbol).font(.system(size: 12, weight: .semibold)) }
                 .font(TypeScale.footnote.weight(.medium)).foregroundStyle(destructive ? Palette.danger : Palette.textPrimary)
                 .frame(maxWidth: .infinity).padding(.vertical, 10)
                 .background(Palette.surface, in: .capsule)
                 .overlay(Capsule().strokeBorder(Palette.separator, lineWidth: 0.8))
+                .opacity(locked ? 0.55 : 1)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftPressStyle(scale: 0.97))
+        .disabled(locked)
     }
     private var waitingCard: some View {
-        Card(.highlighted(.warning), padding: Space.lg) {
+        let question = data["waiting"]["question"].string
+        let deleteish = ["删", "清理", "移除", "清空"].contains { question.contains($0) }
+        return Card(.highlighted(.warning), padding: Space.lg) {
             VStack(alignment: .leading, spacing: Space.md) {
-                Text("等你批准").font(TypeScale.headline)
-                Text(data["waiting"]["question"].string.isEmpty ? "它停在一个需要你批准的操作上。" : data["waiting"]["question"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary)
+                Text("航程停住了").font(TypeScale.headline)
+                Text("没你点头我不会往下动——看清这一步再选。")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                Text(question.isEmpty ? "它停在一个需要你批准的操作上。" : question)
+                    .font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !actFail.isEmpty {
+                    Text(actFail).font(TypeScale.footnote.weight(.medium)).foregroundStyle(Palette.danger)
+                        .accessibilityIdentifier("case-act-fail")
+                }
                 HStack(spacing: Space.sm) {
-                    Button("可以删，继续") { Task { if await model.caseSend(id, "同意，按你说的删，继续做完。") { _ = await model.load("/personal/cases/" + id) } } }.buttonStyle(.primaryCompact)
-                    Button("不用删") { Task { if await model.caseSend(id, "不要删，跳过这一步，把其余的做完。") { _ = await model.load("/personal/cases/" + id) } } }.buttonStyle(.secondaryCompact)
+                    if deleteish {
+                        Button("可以删，继续") {
+                            Task { await actSend("同意，按你说的删，继续做完。") }
+                        }.buttonStyle(.primaryCompact).disabled(locked)
+                        Button("不用删") {
+                            Task { await actSend("不要删，跳过这一步，把其余的做完。") }
+                        }.buttonStyle(.secondaryCompact).disabled(locked)
+                    } else {
+                        Button("可以，继续") {
+                            Task { await actSend("同意，按你说的继续做完。") }
+                        }.buttonStyle(.primaryCompact).disabled(locked)
+                        Button("先别，改做法") {
+                            Task { await actSend("先不要按这个做，等我说清楚再继续。") }
+                        }.buttonStyle(.secondaryCompact).disabled(locked)
+                    }
                     Spacer(minLength: 0)
-                    Button("算了，标完成") { Task { await model.caseResolve(id); _ = await model.load("/personal/cases/" + id) } }.buttonStyle(.quiet)
+                    Button("算了，标完成") {
+                        Task { await actResolve() }
+                    }.buttonStyle(.quiet).disabled(locked)
                 }
             }
         }
+        .accessibilityIdentifier("case-waiting-card")
+    }
+    @discardableResult
+    private func actSend(_ text: String) async -> Bool {
+        guard !locked else { return false }
+        acting = true
+        actFail = ""
+        let ok = await model.caseSend(id, text)
+        if ok {
+            // 送达成功但详情没刷上：别假装页上已是最新现况。
+            if await model.load("/personal/cases/" + id) == nil {
+                actFail = "话已送出，航程现况没刷上——可下拉再试。不会假装页面已是最新。"
+            }
+        } else {
+            actFail = "没送出去，还可以再点"
+        }
+        acting = false
+        return ok
+    }
+    private func actResolve() async {
+        guard !locked else { return }
+        acting = true
+        actFail = ""
+        if await model.caseResolve(id) {
+            if await model.load("/personal/cases/" + id) == nil {
+                actFail = "已标完成，航程现况没刷上——可下拉再试。不会假装页面已是最新。"
+            }
+        } else {
+            actFail = "标完成没成，还可以再试"
+        }
+        acting = false
+    }
+    private func actCancel() async {
+        guard !locked else { return }
+        acting = true
+        actFail = ""
+        if await model.caseCancel(id) {
+            if await model.load("/personal/cases/" + id) == nil {
+                actFail = "已停止，航程现况没刷上——可下拉再试。不会假装页面已是最新。"
+            }
+        } else {
+            actFail = "停止没成，还可以再试"
+        }
+        acting = false
     }
     @ViewBuilder private var timeline: some View {
         let rows = data["timeline"].array
@@ -433,14 +818,26 @@ struct CaseDetailView: View {
                 .accessibilityIdentifier("case-composer")
             Button {
                 let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return }
+                guard !text.isEmpty, !locked else { return }
                 sending = true
+                actFail = ""
                 Task {
-                    if await model.caseSend(id, text) { draft = ""; focused = false; _ = await model.load("/personal/cases/" + id) }
+                    if await model.caseSend(id, text) {
+                        draft = ""; focused = false
+                        // 话已送上；详情没刷上则开口，别假装新一句已显示。
+                        if await model.load("/personal/cases/" + id) == nil {
+                            let err = model.errors["/personal/cases/" + id] ?? ""
+                            actFail = err.isEmpty
+                                ? "话已送上，详情没刷上——可下拉再试。不会假装新一句已显示。"
+                                : "话已送上，详情没刷上：" + err + "——可再试。不会假装新一句已显示。"
+                        }
+                    } else {
+                        actFail = "没送出去，草稿还在"
+                    }
                     sending = false
                 }
             } label: { Image(systemName: sending ? "ellipsis" : "arrow.up").font(.system(size: 15, weight: .bold)).frame(width: 40, height: 40) }
-                .buttonStyle(.primaryCompact).disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .buttonStyle(.primaryCompact).disabled(locked || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityIdentifier("case-send")
         }
     }
@@ -468,42 +865,117 @@ struct TomorrowPlanCard: View {
     @State private var seeded = ""
     @State private var busy = false
     @State private var hidden = false
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var applyFail = ""
+    @State private var loadedOnce = false
     private var plan: JSON { model.planData }
+    private var planOpen: Bool {
+        !hidden && plan["state"].string == "open" && plan["day"].string >= AppModel.dayString(0) && !plan["items"].array.isEmpty
+    }
     var body: some View {
         let items = plan["items"].array
         let checkable = items.filter { $0["checkable"].bool }
-        if !hidden && plan["state"].string == "open" && plan["day"].string >= AppModel.dayString(0) && !items.isEmpty {
-            Card(.highlighted(.accent), padding: Space.lg) {
-                VStack(alignment: .leading, spacing: Space.md) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("明天（周\(plan["weekday"].string)）").font(TypeScale.headline)
-                        Spacer(minLength: 0)
-                        Button { withAnimation(.smooth(duration: 0.25)) { hidden = true } } label: { Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)) }
-                            .buttonStyle(.plain).foregroundStyle(Palette.textTertiary).accessibilityLabel("先不看")
-                    }
-                    Text(plan["headline"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary)
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(items.map(RemoteRow.init)) { row in planRow(row.value) }
-                    }
-                    if !checkable.isEmpty {
-                        Button {
-                            busy = true
-                            Task {
-                                _ = await model.applyPlan(day: plan["day"].string, selected: Array(selected))
-                                busy = false
-                            }
-                        } label: {
-                            HStack { Text(selected.isEmpty ? "都不用，收起" : "放进明天的待办（\(selected.count)）"); Spacer(); Image(systemName: "arrow.right") }
+        VStack(alignment: .leading, spacing: Space.md) {
+            // Next 页可能已拉过 plan——有开口计划就不闪「正在拉齐」；真在拉或尚无缓存才露 busy。
+            if (loading || !loadedOnce) && !planOpen {
+                HStack(spacing: Space.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("正在拉齐明天计划…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                }
+                .accessibilityLabel("正在拉齐明天计划")
+                .accessibilityIdentifier("tomorrow-plan-pulling")
+            }
+            if !failNote.isEmpty {
+                InlineNotice(text: failNote, tone: .danger)
+                Button(loading ? "重试中…" : "再试一次") {
+                    guard !loading else { return }
+                    Task { await refreshPlan(force: true) }
+                }
+                .buttonStyle(.secondaryCompact)
+                .disabled(loading)
+                .accessibilityIdentifier("tomorrow-plan-retry")
+            }
+            if planOpen {
+                Card(.highlighted(.accent), padding: Space.lg) {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("明天（周\(plan["weekday"].string)）").font(TypeScale.headline)
+                            Spacer(minLength: 0)
+                            Button { withAnimation(.smooth(duration: 0.25)) { hidden = true } } label: { Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)) }
+                                .buttonStyle(.plain).foregroundStyle(Palette.textTertiary).accessibilityLabel("先不看")
                         }
-                        .buttonStyle(.primaryCompact).disabled(busy)
-                        .accessibilityIdentifier("plan-apply")
+                        Text(plan["headline"].string.isEmpty ? "我把明天值得先动的事理了一下——勾上要放进待办的。" : plan["headline"].string)
+                            .font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(items.map(RemoteRow.init)) { row in planRow(row.value) }
+                        }
+                        if !applyFail.isEmpty {
+                            InlineNotice(text: applyFail, tone: .danger)
+                                .accessibilityIdentifier("tomorrow-plan-apply-fail")
+                        }
+                        if !checkable.isEmpty {
+                            Button {
+                                guard !busy else { return }
+                                busy = true
+                                applyFail = ""
+                                Task {
+                                    // 成功才本地收起；失败留卡可重试（applyPlan 已拉新 plan）。
+                                    if await model.applyPlan(day: plan["day"].string, selected: Array(selected)) != nil {
+                                        withAnimation(.smooth(duration: 0.25)) { hidden = true }
+                                    } else {
+                                        applyFail = "没放进明天待办——还可以再试，别连点"
+                                    }
+                                    busy = false
+                                }
+                            } label: {
+                                HStack { Text(busy ? "放进去…" : (selected.isEmpty ? "都不用，收起" : "放进明天的待办（\(selected.count)）")); Spacer(); if busy { ProgressView() } else { Image(systemName: "arrow.right") } }
+                            }
+                            .buttonStyle(.primaryCompact).disabled(busy)
+                            .accessibilityIdentifier("plan-apply")
+                        }
                     }
                 }
+                .onAppear { seed(items) }
+                .onChange(of: plan["day"].string) { _, _ in seed(items) }
+                .accessibilityIdentifier("tomorrow-plan")
+            } else if loadedOnce && !loading && !failNote.isEmpty && plan.isNull {
+                Text("明天计划还没读上——先重试；通了我再开口说该先动哪几件。")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    .accessibilityIdentifier("tomorrow-plan-empty-fail")
             }
-            .onAppear { seed(items) }
-            .onChange(of: plan["day"].string) { _, _ in seed(items) }
-            .accessibilityIdentifier("tomorrow-plan")
         }
+        .task { await refreshPlan(force: false) }
+    }
+    private func refreshPlan(force: Bool) async {
+        guard !loading else { return }
+        loading = true
+        if force { failNote = "" }
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        let path = "/personal/plan"
+        let ok: Bool
+        // 与 openPlanDeepLink 同路：入口已在拉则等它结束，避免叠刷。
+        if model.planOpening && !force {
+            while model.planOpening && !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            ok = model.errors[path] == nil && model.datasets[path] != nil
+        } else {
+            ok = await model.load(path) != nil
+        }
+        if ok {
+            failNote = ""
+            model.planOpenNote = ""
+            return
+        }
+        let err = model.errors[path] ?? ""
+        let hadOpen = plan["state"].string == "open" && !plan["items"].array.isEmpty
+        failNote = err.isEmpty
+            ? (hadOpen ? "明天计划没刷新上——下面仍是上一版，可再试" : "明天计划没拉齐——检查配对或网络后再试")
+            : (hadOpen ? "明天计划没刷新上：" + err + "——下面仍是上一版" : "明天计划没拉齐：" + err + "——可再试")
     }
     private func seed(_ items: [JSON]) {
         guard seeded != plan["day"].string else { return }
@@ -619,7 +1091,13 @@ extension AppModel {
 struct AcceptancePanel: View {
     let data: JSON
     let canAsk: Bool
-    let ask: (String) -> Void
+    /// 航程详情正在发送/拍板时一并禁用，避免叠发。
+    var locked: Bool = false
+    /// 送达成功才算补问出去；失败由面板留提示。
+    let ask: (String) async -> Bool
+    @State private var asking = false
+    @State private var failNote = ""
+    private var busy: Bool { locked || asking }
     var body: some View {
         let criteria = data["criteria"].array
         let reported = data["reported"].array
@@ -650,17 +1128,31 @@ struct AcceptancePanel: View {
                         }
                     }
                     if !review.isNull && !review["verdict"].string.isEmpty { reviewBox(review) }
+                    if !failNote.isEmpty {
+                        InlineNotice(text: failNote, tone: .danger)
+                            .accessibilityIdentifier("acceptance-ask-fail")
+                    }
                     if canAsk && (!missing.isEmpty || !review["gaps"].array.isEmpty) {
                         let asks = missing.map { $0["text"].string } + review["gaps"].array.map(\.string)
                         Button {
+                            guard !busy else { return }
                             Haptics.selection()
-                            ask("请补齐验收证据（文件路径或测试输出），逐条对应：\n" + asks.prefix(6).map { "- " + $0 }.joined(separator: "\n"))
+                            asking = true
+                            failNote = ""
+                            let prompt = "请补齐验收证据（文件路径或测试输出），逐条对应：\n" + asks.prefix(6).map { "- " + $0 }.joined(separator: "\n")
+                            Task {
+                                if !(await ask(prompt)) {
+                                    failNote = "补问没送出去——还可以再点。不会假装已催它补证据。"
+                                }
+                                asking = false
+                            }
                         } label: {
-                            Label("让它补证据", systemImage: "arrow.clockwise").font(TypeScale.footnote.weight(.semibold))
+                            Label(asking ? "补问中…" : "让它补证据", systemImage: "arrow.clockwise").font(TypeScale.footnote.weight(.semibold))
                                 .foregroundStyle(Palette.onAccent).padding(.horizontal, Space.md).padding(.vertical, 8)
-                                .background(Palette.accent, in: .capsule)
+                                .background(Palette.accent.opacity(busy ? 0.55 : 1), in: .capsule)
                         }
                         .buttonStyle(.plain)
+                        .disabled(busy)
                         .accessibilityIdentifier("acceptance-ask")
                     }
                 }

@@ -11,11 +11,35 @@ enum ShareInbox {
         var attributes = URLResourceValues(); attributes.isExcludedFromBackup = true; try? directory.setResourceValues(attributes)
         return directory
     }
-    static func all() -> [SharedDraft] {
-        guard let directory else { return [] }
-        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        return files.filter { $0.pathExtension == "json" }.compactMap { url in guard let data = try? Data(contentsOf: url) else { return nil }; return try? JSONDecoder().decode(SharedDraft.self, from: data) }.sorted { $0.createdAt < $1.createdAt }
+    /// 列表拉齐结果：App Group / 目录失败与 decode 坏稿分开，避免假成「还没收过分享」。
+    struct Load: Sendable {
+        var items: [SharedDraft]
+        var decodeFailures: Int
+        var error: String?
     }
+    static func loadAll() -> Load {
+        guard let directory else {
+            return Load(items: [], decodeFailures: 0, error: "App Group 容器不可用——检查分享扩展权限后再试")
+        }
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        } catch {
+            return Load(items: [], decodeFailures: 0, error: error.localizedDescription)
+        }
+        var items: [SharedDraft] = []
+        var failed = 0
+        for url in files where url.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let draft = try? JSONDecoder().decode(SharedDraft.self, from: data) else {
+                failed += 1
+                continue
+            }
+            items.append(draft)
+        }
+        return Load(items: items.sorted { $0.createdAt < $1.createdAt }, decodeFailures: failed, error: nil)
+    }
+    static func all() -> [SharedDraft] { loadAll().items }
     static func save(_ draft: SharedDraft) throws {
         guard let directory else { throw CocoaError(.fileNoSuchFile) }
         try JSONEncoder().encode(draft).write(to: directory.appendingPathComponent(draft.id + ".json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -26,9 +50,22 @@ enum ShareInbox {
         guard !attachment.filename.contains("/"), !draft.id.contains("/") else { return nil }
         return directory.appendingPathComponent(draft.id).appendingPathComponent(attachment.filename)
     }
-    static func remove(_ draft: SharedDraft) {
-        guard let directory, UUID(uuidString: draft.id) != nil else { return }
-        try? FileManager.default.removeItem(at: directory.appendingPathComponent(draft.id + ".json"))
-        try? FileManager.default.removeItem(at: directory.appendingPathComponent(draft.id))
+    /// 删掉收件箱条目。true = 元数据已不在；失败返回 false，调用方勿假装已清掉。
+    @discardableResult
+    static func remove(_ draft: SharedDraft) -> Bool {
+        guard let directory, UUID(uuidString: draft.id) != nil else { return false }
+        let meta = directory.appendingPathComponent(draft.id + ".json")
+        let folder = directory.appendingPathComponent(draft.id)
+        do {
+            if FileManager.default.fileExists(atPath: meta.path) {
+                try FileManager.default.removeItem(at: meta)
+            }
+            if FileManager.default.fileExists(atPath: folder.path) {
+                try FileManager.default.removeItem(at: folder)
+            }
+        } catch {
+            return !FileManager.default.fileExists(atPath: meta.path)
+        }
+        return !FileManager.default.fileExists(atPath: meta.path)
     }
 }

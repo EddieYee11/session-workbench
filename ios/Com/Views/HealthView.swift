@@ -13,10 +13,40 @@ extension AppModel {
         #if DEBUG
         if isUITesting { return }
         #endif
-        _ = try? await mutate("/personal/health/insight/refresh")
-        for _ in 0..<20 {
-            try? await Task.sleep(for: .seconds(3))
-            if let data = await load("/personal/health/insight"), !data["running"].bool { return }
+        // 先亮 running，顶栏立刻 hourglass，别等 mutate 回包前连点叠刷。
+        var kick = healthInsight
+        kick["running"] = .bool(true)
+        datasets["/personal/health/insight"] = kick
+        do {
+            _ = try await mutate("/personal/health/insight/refresh")
+            for _ in 0..<20 {
+                try await Task.sleep(for: .seconds(3))
+                if let data = await load("/personal/health/insight"), !data["running"].bool {
+                    healthOpenNote = ""
+                    return
+                }
+            }
+            // 轮询结束再核：load 失败别假亮 running / 假装评估已写好。
+            if let data = await load("/personal/health/insight") {
+                if !data["running"].bool { healthOpenNote = "" }
+                else {
+                    healthOpenNote = "评估还在整理或超时未齐——可下拉再试。不会假装已写好。"
+                }
+            } else {
+                var stuck = healthInsight
+                stuck["running"] = .bool(false)
+                datasets["/personal/health/insight"] = stuck
+                let err = errors["/personal/health/insight"] ?? ""
+                healthOpenNote = err.isEmpty
+                    ? "评估整理过程中没刷上——可下拉再试。不会假装已写好。"
+                    : "评估整理过程中没刷上：" + err + "——可下拉再试。不会假装已写好。"
+            }
+        } catch {
+            var fail = healthInsight
+            fail["running"] = .bool(false)
+            datasets["/personal/health/insight"] = fail
+            banner = error.localizedDescription
+            healthOpenNote = "重新评估没成：" + error.localizedDescription + "——可下拉再试。不会假装已写好。"
         }
     }
 }
@@ -38,38 +68,161 @@ struct HealthView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var shown = false
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var briefFail = ""
+    @State private var loadedOnce = false
     @Namespace private var zoom
+    private let rangePath = "/personal/health?days=30"
+    private let insightPath = "/personal/health/insight"
     var body: some View {
         let source = model.healthRange
         let all = source["days"].array
         let today = source["today"].isNull ? all.last ?? .null : source["today"]
         let m = today["measurements"]
+        let mEmpty = m.isNull || m.object.isEmpty
+        let briefPoints = model.todayBrief.filter { $0["kind"].string == "health" }
         // 10-17 二版：一级界面只放图形和能点的东西——恢复环 + 四个维度小环、建议卡堆、指标拼图（10-28 起大小不一，含最近活动）；
         // 解释文字、趋势图都收进点开以后（参考 Originkit 的 Swipe Stack / Flip Gallery / Interactive Grid）。
         ScreenScaffold(title: "健康") {
-            if m.isNull || m.object.isEmpty {
-                InlineNotice(text: "还没有今天的 Garmin 数据：手表同步后这里会出评估。", tone: .neutral)
+            if loading && !loadedOnce {
+                HStack(spacing: Space.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("正在拉齐健康曲线和评估…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                }
+                .accessibilityIdentifier("health-pulling")
+            }
+            if !model.healthOpenNote.isEmpty {
+                InlineNotice(text: model.healthOpenNote, tone: .danger)
+                    .accessibilityIdentifier("health-open-fail")
+                Button(loading ? "重试中…" : "再试一次") {
+                    guard !loading else { return }
+                    Task {
+                        await pullHealth(force: true)
+                        await model.refreshHealthInsight()
+                    }
+                }
+                .buttonStyle(.secondaryCompact)
+                .disabled(loading)
+                .accessibilityIdentifier("health-open-retry")
+            } else if !failNote.isEmpty {
+                InlineNotice(text: failNote, tone: .danger)
+                Button(loading ? "重试中…" : "再试一次") {
+                    guard !loading else { return }
+                    Task { await pullHealth(force: true) }
+                }
+                .buttonStyle(.secondaryCompact)
+                .disabled(loading)
+                .accessibilityIdentifier("health-retry")
+            } else if loadedOnce && mEmpty {
+                // 真没数才说手表；别把拉齐失败说成 Garmin 没到。
+                InlineNotice(text: "今天的 Garmin 还没到。你先忙别的——手表同步后我再开口评估。", tone: .neutral)
+            } else if !mEmpty && model.healthInsight["headline"].string.isEmpty && !model.healthInsight["running"].bool {
+                InlineNotice(text: companionHealthLine(m: m), tone: .neutral)
             }
             if !Self.bentoOnly {
                 HealthHero(insight: model.healthInsight, m: m, shown: shown)
-                    .modifier(HealthRise(on: shown, delay: 0.04))
+                    .modifier(EnterRise(on: shown, delay: 0.04, y: 12, blur: 5, animation: ComMotion.lift))
                 ActionStack(actions: model.healthInsight["actions"].array)
-                    .modifier(HealthRise(on: shown, delay: 0.12))
+                    .modifier(EnterRise(on: shown, delay: 0.12, y: 12, blur: 5, animation: ComMotion.lift))
             }
             MetricGrid(today: today, days: all, shown: shown, zoom: zoom)
-                .modifier(HealthRise(on: shown, delay: 0.2))
-            HealthBrief(points: model.todayBrief.filter { $0["kind"].string == "health" })
-                .modifier(HealthRise(on: shown, delay: 0.32))
+                .modifier(EnterRise(on: shown, delay: 0.2, y: 12, blur: 5, animation: ComMotion.lift))
+            HealthBrief(
+                points: briefPoints,
+                loading: loading && !loadedOnce,
+                loadFailed: !briefFail.isEmpty && briefPoints.isEmpty
+            )
+                .modifier(EnterRise(on: shown, delay: 0.32, y: 12, blur: 5, animation: ComMotion.lift))
             BodyCard(shown: shown, showTiles: false)
-                .modifier(HealthRise(on: shown, delay: 0.36))
+                .modifier(EnterRise(on: shown, delay: 0.36, y: 12, blur: 5, animation: ComMotion.lift))
         }
-        .refreshable { await model.refresh(.health); _ = await model.load("/personal/today"); _ = await model.load("/personal/next"); await model.refreshHealthInsight() }
-        // 身体电量曲线、睡眠条来自「今天」的数据，简报里的身体要点来自「下一步」：进页时补读一次。
-        .task { _ = await model.load("/personal/today"); _ = await model.load("/personal/next") }
-        .onAppear { shown = true }
+        .refreshable {
+            await pullHealth(force: true)
+            await model.refreshHealthInsight()
+        }
+        // 进页一次拉齐：今天/下一步（身体要点）+ 健康曲线 + 评估；别只靠切 Tab 的 refresh。
+        .task { await pullHealth(force: false) }
+        .onAppear {
+            if reduce { shown = true }
+            else { withAnimation(ComMotion.lift) { shown = true } }
+        }
         .onDisappear { shown = false }
         .accessibilityIdentifier("health-page")
     }
+
+    private func pullHealth(force: Bool) async {
+        guard !loading else { return }
+        loading = true
+        if force {
+            failNote = ""
+            briefFail = ""
+        }
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        async let range = model.load(rangePath)
+        async let insight = model.load(insightPath)
+        async let today = model.load("/personal/today")
+        async let next = model.load("/personal/next")
+        let gotRange = await range != nil
+        let gotInsight = await insight != nil
+        let gotToday = await today != nil
+        let gotNext = await next != nil
+
+        let hadRange = !model.healthRange["days"].array.isEmpty || !model.healthRange["today"]["measurements"].isNull
+        let rangeErr = model.errors[rangePath] ?? model.errors["/personal/health"] ?? ""
+        let insightErr = model.errors[insightPath] ?? ""
+
+        if gotRange && gotInsight {
+            failNote = ""
+            model.healthOpenNote = ""
+        } else if !gotRange && !gotInsight {
+            let err = [rangeErr, insightErr].first { !$0.isEmpty } ?? ""
+            failNote = err.isEmpty
+                ? (hadRange ? "健康曲线和评估都没刷新上——下面仍是上一版，可再试" : "健康曲线和评估没拉齐——检查配对或网络后再试")
+                : (hadRange ? "健康没刷新上：" + err + "——下面仍是上一版" : "健康没拉齐：" + err + "——可再试")
+        } else if !gotRange {
+            failNote = rangeErr.isEmpty
+                ? (hadRange ? "健康曲线没刷新上——评估若在仍可先看；可再试" : "健康曲线没读上——可再试")
+                : "健康曲线没读上：" + rangeErr + "——可再试"
+        } else {
+            let hadInsight = !model.healthInsight.isNull
+            failNote = insightErr.isEmpty
+                ? (hadInsight ? "身体评估没刷新上——下面仍是上一版，可再试" : "身体评估没拉齐——可再试；别把空白当成已写好")
+                : "身体评估没拉齐：" + insightErr + "——可再试"
+        }
+
+        if gotToday || gotNext {
+            briefFail = ""
+        } else {
+            let tErr = model.errors["/personal/today"] ?? ""
+            let nErr = model.errors["/personal/next"] ?? ""
+            let err = [tErr, nErr].first { !$0.isEmpty } ?? ""
+            briefFail = err.isEmpty
+                ? "身体简报没拉齐——可再试；通了我再开口说一句"
+                : "身体简报没拉齐：" + err + "——可再试"
+            if failNote.isEmpty { failNote = briefFail }
+        }
+    }
+}
+
+/// 评估还没写好时，先用测量值说一句人话，避免健康页像裸仪表盘。
+private func companionHealthLine(m: JSON) -> String {
+    if !m["readiness_score"].isNull {
+        let readiness = m["readiness_score"].double
+        if readiness >= 76 { return "准备度 \(Int(readiness))——身体这会儿挺能打，别空耗。" }
+        if readiness >= 51 { return "准备度 \(Int(readiness))。能做事，别把高强度全排满。" }
+        if readiness > 0 { return "准备度 \(Int(readiness))。今天宜收着点，留力给要紧的。" }
+    }
+    if !m["sleep_seconds"].isNull {
+        let h = m["sleep_seconds"].double / 3600
+        if h > 0 {
+            return String(format: "昨晚睡了约 %.1f 小时。完整评估我还在写，先按感觉安排。", h)
+        }
+    }
+    return "数字在下面。完整评估还没写好——下拉刷新，或等我整理完再看。"
 }
 
 // MARK: 评估
@@ -87,12 +240,12 @@ private struct HealthHero: View {
         let score: Double? = insight["score"].isNull ? (m["readiness_score"].isNull ? nil : m["readiness_score"].double) : insight["score"].double
         let running = insight["running"].bool
         let dims = insight["dimensions"].array
-        let motion: Animation = reduce ? .easeOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.8)
+        let motion: Animation = ComMotion.reduced(reduce, ComMotion.settle)
         VStack(alignment: .leading, spacing: Space.md) {
             HStack(alignment: .center, spacing: Space.lg) {
                 ScoreRing(value: score, shown: shown)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(insight["headline"].string.isEmpty ? (running ? "正在看你的身体…" : "还没有评估") : insight["headline"].string)
+                    Text(insight["headline"].string.isEmpty ? (running ? "我正在看你的身体…" : "我还没写好今天的评估") : insight["headline"].string)
                         .font(.system(size: 19, weight: .bold, design: .rounded)).foregroundStyle(Palette.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .id(insight["headline"].string)
@@ -107,7 +260,7 @@ private struct HealthHero: View {
                             .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.accentText)
                             .padding(.horizontal, 10).padding(.vertical, 5).background(Palette.accent.opacity(0.22), in: .capsule)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(SoftPressStyle(scale: 0.96))
                         .accessibilityIdentifier("health-why")
                     }
                 }
@@ -149,7 +302,7 @@ private struct HealthHero: View {
         .padding(Space.lg)
         .background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
         .elevation(.raised)
-        .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: insight["headline"].string)
+        .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: insight["headline"].string)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("health-hero")
     }
@@ -190,7 +343,7 @@ private struct DimensionGauge: View {
             }
             .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftPressStyle(scale: 0.94))
         .accessibilityLabel(name + (level == "good" ? "好" : level == "low" ? "偏低" : "一般") + "，" + dim["note"].string)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("health-dim-" + dim["key"].string)
@@ -272,8 +425,9 @@ private struct ActionStack: View {
                             Image(systemName: "checkmark.seal.fill").font(.system(size: 34)).foregroundStyle(TodayHue.mint.ink)
                                 .symbolEffect(.bounce, value: finished)
                             Text("今天的都做完了").font(TypeScale.rowTitle).foregroundStyle(Palette.textPrimary)
-                            Button("重来") { withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { doneRaw = "" } }
+                            Button("重来") { withAnimation(ComMotion.reduced(reduce, ComMotion.pop)) { doneRaw = "" } }
                                 .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.accentText)
+                                .buttonStyle(SoftPressStyle(scale: 0.96))
                         }
                         .frame(maxWidth: .infinity).frame(height: 168)
                         .background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
@@ -360,7 +514,7 @@ private struct ActionStack: View {
         .allowsHitTesting(top)
         .onTapGesture {
             Haptics.selection()
-            withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.5, dampingFraction: 0.78)) { flipped.toggle() }
+            withAnimation(ComMotion.reduced(reduce, ComMotion.lift)) { flipped.toggle() }
         }
         .gesture(top ? swipe(a) : nil)
         .transition(.asymmetric(insertion: .opacity, removal: .opacity))
@@ -375,7 +529,7 @@ private struct ActionStack: View {
             .onEnded { value in
                 let w = value.translation.width + value.predictedEndTranslation.width * 0.2
                 if w > 120 { fling(1) { finish(a) } } else if w < -120 { fling(-1) { later(a) } }
-                else { withAnimation(.spring(response: 0.4, dampingFraction: 0.62)) { drag = .zero } }
+                else { withAnimation(ComMotion.reduced(reduce, ComMotion.pop)) { drag = .zero } }
             }
     }
     /// 甩出去：先顺着方向飞出屏幕（0.25s），再把它从堆里拿走，拖动归零给下一张。
@@ -385,7 +539,7 @@ private struct ActionStack: View {
             try? await Task.sleep(for: .milliseconds(220))
             var t = Transaction(); t.disablesAnimations = true
             withTransaction(t) { drag = .zero; flipped = false }
-            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) { then() }
+            withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { then() }
         }
     }
     private func finish(_ a: JSON) {
@@ -403,17 +557,32 @@ private struct ActionStack: View {
 // MARK: 身体简报
 
 /// 「下一步」整理时从身体数据里归纳的几条要点（原来在今天页的简报里）；没有就不占位。
+/// 拉齐失败时要开口，别整块消失像「没什么好说」。
 private struct HealthBrief: View {
     let points: [JSON]
+    var loading: Bool = false
+    var loadFailed: Bool = false
     var body: some View {
         if !points.isEmpty {
-            VStack(spacing: Space.sm) {
-                ForEach(Array(points.enumerated()), id: \.offset) { index, point in
+            VStack(alignment: .leading, spacing: Space.sm) {
+                Text("身体上我说一句")
+                    .font(TypeScale.section)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(Array(points.prefix(3).enumerated()), id: \.offset) { index, point in
                     HStack(alignment: .top, spacing: Space.md) {
-                        Image(systemName: "heart.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(TodayHue.pink.ink)
-                            .frame(width: 34, height: 34).background(TodayHue.pink.fill, in: .rect(cornerRadius: 11, style: .continuous))
-                        Text(point["text"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary).lineSpacing(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Image(systemName: index == 0 ? "quote.opening" : "heart.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(index == 0 ? Palette.accentText : TodayHue.pink.ink)
+                            .frame(width: 34, height: 34)
+                            .background((index == 0 ? Palette.accent.opacity(0.18) : TodayHue.pink.fill),
+                                        in: .rect(cornerRadius: 11, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            if index == 0 {
+                                Text("开场").font(TypeScale.caption.weight(.semibold)).foregroundStyle(Palette.accentText)
+                            }
+                            Text(point["text"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary).lineSpacing(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         Spacer(minLength: 0)
                     }
                     .padding(Space.md)
@@ -422,6 +591,22 @@ private struct HealthBrief: View {
                     .accessibilityIdentifier("health-brief-\(index)")
                 }
             }
+        } else if loading {
+            HStack(spacing: Space.sm) {
+                ProgressView().controlSize(.small)
+                Text("正在拉齐身体简报…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            }
+            .accessibilityIdentifier("health-brief-pulling")
+        } else if loadFailed {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                Text("身体上我说一句")
+                    .font(TypeScale.section)
+                    .accessibilityAddTraits(.isHeader)
+                Text("身体简报还没读上——先重试；通了我再开口说一句。别把失败当成「没什么好说」。")
+                    .font(TypeScale.subheadline).foregroundStyle(Palette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityIdentifier("health-brief-empty-fail")
         }
     }
 }
@@ -774,11 +959,14 @@ private struct MiniTrend: View {
     }
 }
 
-/// 按下时格子微缩、松手弹回（和 Dock 的按压同一组弹簧）。
+/// 按下时格子微缩、松手弹回（对齐 SoftPress / DockPress）。
 private struct TilePress: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduce
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: configuration.isPressed)
+        configuration.label
+            .scaleEffect(reduce ? 1 : (configuration.isPressed ? 0.96 : 1))
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(reduce ? .easeOut(duration: 0.12) : ComMotion.press, value: configuration.isPressed)
     }
 }
 
@@ -816,7 +1004,7 @@ private struct HealthMetricPage: View {
                             .padding(.horizontal, Space.md).padding(.vertical, 6)
                             .background { if span == s { Capsule().fill(Palette.accent).matchedGeometryEffect(id: "span", in: spanSpace) } }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SoftPressStyle(scale: 0.96))
                     .accessibilityIdentifier("health-span-\(s.rawValue)")
                 }
             }
@@ -1123,12 +1311,3 @@ private struct LoadRatioBar: View {
 }
 
 /// 面板错峰上浮：下方 12pt、模糊淡入（和今天页 EnterRise 同语法）。
-private struct HealthRise: ViewModifier {
-    let on: Bool
-    let delay: Double
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    func body(content: Content) -> some View {
-        content.opacity(on || reduce ? 1 : 0).blur(radius: on || reduce ? 0 : 5).offset(y: on || reduce ? 0 : 12)
-            .animation(reduce ? nil : .spring(response: 0.5, dampingFraction: 0.86).delay(delay), value: on)
-    }
-}

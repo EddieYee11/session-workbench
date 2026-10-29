@@ -58,6 +58,16 @@ def setup(tmp_path, brief=None):
     return steps, store, chat, today, cases
 
 
+def test_covers_source_hides_active_todo_from_waiting_logic(tmp_path):
+    """过期待办交给 Com 后 covers_source 为真，等你列表应跳过同一条。"""
+    steps, store, chat, today, cases = setup(tmp_path)
+    assert cases.covers_source('todo', '任务/假的待办.md') is False
+    tid = asyncio.run(cases.delegate('todo', '任务/假的待办.md', '假的待办', '办一下', 'req-cover-todo', todo_path='任务/假的待办.md'))['task_id']
+    assert tid and cases.covers_source('todo', '任务/假的待办.md') is True
+    store.change(tid, 'cancel:' + tid, 'cancelled', status='cancelled')
+    assert cases.covers_source('todo', '任务/假的待办.md') is False
+
+
 def test_delegate_creates_pi_case_and_finish_links_back(tmp_path):
     async def brief(data):
         assert data['title'] == '回复王总的排期邮件' and data['evidence']

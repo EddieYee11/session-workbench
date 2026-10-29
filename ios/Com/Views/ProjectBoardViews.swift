@@ -14,7 +14,11 @@ struct ProjectBoardHome: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     let host: String
     @State private var selected: JSON?
-    private var data: JSON { model.datasets["/personal/projects"] ?? .null }
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var loadedOnce = false
+    private let path = "/personal/projects"
+    private var data: JSON { model.datasets[path] ?? .null }
     private var projects: [JSON] {
         data["projects"].array
             .filter { p in host.isEmpty || p["items"].array.contains { $0["host"].string == host } }
@@ -23,15 +27,44 @@ struct ProjectBoardHome: View {
     private func latest(_ project: JSON) -> Double { project["items"].array.map { $0["updated_at"].double }.max() ?? 0 }
     var body: some View {
         LazyVStack(alignment: .leading, spacing: Space.lg) {
-            if projects.isEmpty {
-                EmptyState(title: data.isNull ? "正在汇总两台电脑的会话" : "这一栏还没有项目", description: "每 15 分钟整理一次有变化的会话；有需要收尾的事会出现在流里。", symbol: "rectangle.3.group")
+            if loading || (!loadedOnce && data.isNull) {
+                HStack(spacing: Space.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("正在把两台电脑的会话拢到一起…").font(TypeScale.subheadline).foregroundStyle(Palette.textTertiary)
+                }
+                .padding(.horizontal, Space.xs)
+                .accessibilityLabel("正在拉齐项目看板")
+                .accessibilityIdentifier("project-board-pulling")
+            }
+            if !failNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    InlineNotice(text: failNote, tone: .danger)
+                    Button(loading ? "重试中…" : "再试一次") {
+                        guard !loading else { return }
+                        Task { await refreshBoard(force: true) }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(loading)
+                    .accessibilityIdentifier("project-board-retry")
+                }
+                .padding(.horizontal, Space.xs)
+            }
+            if projects.isEmpty && loadedOnce && !loading {
+                EmptyState(
+                    title: failNote.isEmpty ? "这一栏还没有项目" : "项目看板还没读上",
+                    description: failNote.isEmpty
+                        ? "有需要收尾的活会自动归到项目里；也可以在工作页先开一段对话。"
+                        : "先重试拉齐；通了我再开口列两台机器上的项目。别把失败当成「没有项目」。",
+                    symbol: "rectangle.3.group"
+                )
+                .accessibilityIdentifier(failNote.isEmpty ? "project-board-empty" : "project-board-empty-fail")
             }
             ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
                 let items = project["items"].array.sorted { $0["updated_at"].double > $1["updated_at"].double }
                 let newest = items.first ?? .null
                 let next = items.first { !$0["next_step"].string.isEmpty && ["pending", "active"].contains($0["status"].string) }
                 let pending = project["counts"]["pending"].int
-                Button { selected = project } label: {
+                Button { selected = project; Haptics.selection() } label: {
                     VStack(alignment: .leading, spacing: Space.md - 2) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(project["title"].string).font(TypeScale.headline).lineLimit(2)
@@ -60,7 +93,7 @@ struct ProjectBoardHome: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .multilineTextAlignment(.leading)
                     .noteSurface()
-                }.buttonStyle(.plain).accessibilityIdentifier("project-card-" + project.id)
+                }.buttonStyle(SoftPressStyle(scale: 0.985)).accessibilityIdentifier("project-card-" + project.id)
                     .transition(reduce ? .opacity : .offset(y: 8).combined(with: .opacity))
             }
             if !data["note"].string.isEmpty || !data["hosts"].array.isEmpty {
@@ -76,8 +109,28 @@ struct ProjectBoardHome: View {
                 }.font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).padding(.horizontal, Space.xs)
             }
         }
-        .animation(reduce ? .easeOut(duration: 0.12) : .spring(response: 0.28, dampingFraction: 0.88), value: projects.map(\.id))
+        .animation(ComMotion.reduced(reduce, ComMotion.settle), value: projects.map(\.id))
+        .task { await refreshBoard(force: false) }
+        .refreshable { await refreshBoard(force: true) }
         .sheet(item: Binding(get: { selected.map(RemoteRow.init) }, set: { selected = $0?.value })) { ProjectBoardDetail(project: $0.value) }
+    }
+    private func refreshBoard(force: Bool) async {
+        guard !loading else { return }
+        loading = true
+        if force { failNote = "" }
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        if await model.load(path) != nil {
+            failNote = ""
+            return
+        }
+        let err = model.errors[path] ?? ""
+        let had = !data["projects"].array.isEmpty
+        failNote = err.isEmpty
+            ? (had ? "项目看板没刷新上——下面仍是上一版，可再试" : "项目看板没拉齐——检查配对或网络后再试")
+            : (had ? "项目看板没刷新上：" + err + "——下面仍是上一版" : "项目看板没拉齐：" + err + "——可再试")
     }
 }
 
@@ -113,7 +166,7 @@ struct ProjectBoardDetail: View {
                                         HStack { Text(row.value["stale"].bool ? "旧快照 · 看依据" : "看依据与会话"); Spacer(); Chevron() }.font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
                                     }
                                 }
-                            }.buttonStyle(.plain).accessibilityIdentifier("project-item-" + row.id)
+                            }.buttonStyle(SoftPressStyle(scale: 0.985)).accessibilityIdentifier("project-item-" + row.id)
                         }
                     }
                 }
@@ -139,6 +192,9 @@ struct BoardSourceView: View {
     @Environment(AppModel.self) private var model
     let item: JSON
     @State private var source: JSON = .null
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var loadedOnce = false
     var body: some View {
         DetailPage(title: "进展依据") {
             DetailHeader(title: item["title"].string, subtitle: [hostName(item["host"].string), agentName(item["agent"].string)].filter { !$0.isEmpty }.joined(separator: " · ")) { Stamp(text: projectStatus(item["status"].string), tone: projectTone(item["status"].string)) }
@@ -152,17 +208,58 @@ struct BoardSourceView: View {
                 }.padding(.top, Space.sm)
             }
             GroupSection("最近的对话") {
-                if source["messages"].array.isEmpty { Text("正在读取来源会话…").font(TypeScale.body).foregroundStyle(Palette.textSecondary) }
-                ForEach(Array(source["messages"].array.enumerated()), id: \.offset) { _, message in
-                    Card {
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            Text(message["role"].string == "user" ? "你" : agentName(item["agent"].string)).font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary)
-                            RichText(text: message["text"].string)
+                if loading || !loadedOnce {
+                    HStack(spacing: Space.sm) {
+                        ProgressView().controlSize(.small)
+                        Text("正在读取来源会话…").font(TypeScale.body).foregroundStyle(Palette.textSecondary)
+                    }
+                    .accessibilityLabel("正在读取来源会话")
+                } else if !failNote.isEmpty {
+                    InlineNotice(text: failNote, tone: .danger)
+                    Button(loading ? "重试中…" : "再试一次") {
+                        guard !loading else { return }
+                        Task { await reload() }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(loading)
+                    .accessibilityIdentifier("board-source-retry")
+                } else if source["messages"].array.isEmpty {
+                    Text("来源会话里暂时没有可摘的消息。")
+                        .font(TypeScale.body).foregroundStyle(Palette.textSecondary)
+                } else {
+                    ForEach(Array(source["messages"].array.enumerated()), id: \.offset) { _, message in
+                        Card {
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                Text(message["role"].string == "user" ? "你" : agentName(item["agent"].string)).font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textSecondary)
+                                RichText(text: message["text"].string)
+                            }
                         }
                     }
                 }
             }
             Text("这是最近消息的只读摘录，打开它不会启动或续接原会话。").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
-        }.task { source = await model.load("/personal/projects/sources/" + item.id.pathEncoded) ?? .null }
+        }
+        .task { await reload() }
+    }
+
+    private func reload() async {
+        guard !loading else { return }
+        // 首次 / 重试：明确 busy，失败别永远停在「正在读取」。
+        loading = true
+        failNote = ""
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        if let data = await model.load("/personal/projects/sources/" + item.id.pathEncoded) {
+            source = data
+            if let err = model.errors["/personal/projects/sources/" + item.id.pathEncoded], !err.isEmpty, data["messages"].array.isEmpty {
+                failNote = "没读到会话摘录：" + err + "——可再试"
+            }
+        } else {
+            source = .null
+            let err = model.errors["/personal/projects/sources/" + item.id.pathEncoded] ?? ""
+            failNote = err.isEmpty ? "没读到来源会话——检查配对或网络后再试" : "没读到会话摘录：" + err + "——可再试"
+        }
     }
 }

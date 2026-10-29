@@ -20,7 +20,7 @@ struct ComTopBar: View {
     private var tab: SectionTab { pinned ?? model.tab }
     /// 她的左边缘（顶栏坐标）：正中往右 26pt。字挂她左边、牌子伸她右边，整组看着居中；哪一页都是这个位置。
     static func figureX(in width: CGFloat) -> CGFloat { (width / 2 + 26 - StripFigure.bodyWidth / 2).rounded() }
-    private var motion: Animation { reduce ? .easeOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 0.86) }
+    private var motion: Animation { ComMotion.reduced(reduce, ComMotion.settle) }
     private var stage: CGFloat { min(1, max(0, model.stageProgress)) }
     /// 标题：工作页是「派给谁」（点开换人 / 会话菜单），其他页是页名。
     private var head: String {
@@ -98,9 +98,12 @@ struct ComTopBar: View {
                     .accessibilityHidden(true)
             }
             ZStack(alignment: .trailing) {
-                Text(model.stripCaption).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).lineLimit(1)
+                Text(model.stripCaption).font(TypeScale.footnote).foregroundStyle(
+                    model.waitingInboxCount > 0 && !talking ? Palette.warning : Palette.textTertiary
+                ).lineLimit(1)
                     .contentTransition(.opacity)
                     .opacity(talking ? 0 : 1)
+                    .attentionBreath(active: model.waitingInboxCount > 0 && !talking && !reduce)
                     // 气泡出来时这行先让开；气泡收回时等它缩到尾尖再露出来，两样东西不在同一处叠着。
                     .animation(reduce ? nil : talking ? .easeOut(duration: 0.12) : .easeOut(duration: 0.2).delay(0.2), value: talking)
                     .accessibilityIdentifier("agent-stage-status")
@@ -189,7 +192,9 @@ struct TopBarTrailing: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     let tab: SectionTab
     var closing = false
-    private var motion: Animation { reduce ? .easeOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 0.86) }
+    /// 本地点按门控：在服务端 running 亮起前挡住连点叠刷。
+    @State private var localBusy = false
+    private var motion: Animation { ComMotion.reduced(reduce, ComMotion.settle) }
     var body: some View {
         let item = trailingItem(closing: closing)
         return Button(action: item.action) {
@@ -210,13 +215,36 @@ struct TopBarTrailing: View {
         if closing { return BarItem(symbol: "chevron.up", label: "收起工作舞台", id: "agent-stage-close") { model.closeStage() } }
         switch tab {
         case .health:
-            let running = model.healthInsight["running"].bool
-            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "重新评估身体", id: "health-refresh", disabled: running) { Task { await model.refreshHealthInsight() } }
+            let running = model.healthInsight["running"].bool || localBusy
+            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "重新评估身体", id: "health-refresh", disabled: running) {
+                guard !localBusy, !model.healthInsight["running"].bool else { return }
+                localBusy = true
+                Task {
+                    await model.refreshHealthInsight()
+                    localBusy = false
+                }
+            }
         case .chat, .doing:
-            return BarItem(symbol: "magnifyingglass", label: "搜索聊天与成果", id: "top-search") { model.showSearch = true }
+            let opening = model.searchOpening
+            return BarItem(
+                symbol: opening ? "hourglass" : "magnifyingglass",
+                label: opening ? "正在打开搜索" : "搜索聊天与成果",
+                id: "top-search",
+                disabled: opening
+            ) {
+                guard !model.searchOpening else { return }
+                model.openSearch()
+            }
         case .next:
-            let running = model.nextData["running"].bool
-            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "让它重新整理", id: "next-refresh", disabled: running) { Task { await model.refreshNext() } }
+            let running = model.nextData["running"].bool || localBusy
+            return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "让它重新整理", id: "next-refresh", disabled: running) {
+                guard !localBusy, !model.nextData["running"].bool else { return }
+                localBusy = true
+                Task {
+                    await model.refreshNext()
+                    localBusy = false
+                }
+            }
         case .work:
             // ChatGPT 右上角：新对话。已经在新对话里就是灰的。
             return BarItem(symbol: "square.and.pencil", label: "新对话", id: "work-new", disabled: model.work.mode == .home) {
@@ -271,21 +299,87 @@ private struct MenuContent: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            row("记忆", "搜索、分类、纠正它记住的事", symbol: "brain") { model.showMemory = true }
-            row("账本", ledger, symbol: "creditcard") { model.showFinance = true }
-            row("连接器", connectorNote.0, symbol: "link", warning: connectorNote.1) { model.showConnectors = true }
+            row("等你", model.waitingOpening ? "打开中…" : (model.waitingInboxCount > 0 ? "\(model.waitingInboxCount) 件要你拍板或回一下" : "审批、航程停顿、微信待回、过期待办"),
+                symbol: "hand.raised", warning: !model.waitingOpening && model.waitingInboxCount > 0, busy: model.waitingOpening) {
+                guard !model.waitingOpening else { return }
+                model.openWaitingInbox()
+            }
+            if !model.waitingOpening, !model.waitingOpenNote.isEmpty {
+                InlineNotice(text: model.waitingOpenNote, tone: .danger)
+                    .padding(.horizontal, Space.sm)
+                    .padding(.bottom, Space.xs)
+                    .accessibilityIdentifier("menu-waiting-open-fail")
+            }
+            row("记忆", model.memoryOpening ? "打开中…" : "搜索、分类、纠正它记住的事",
+                symbol: "brain", busy: model.memoryOpening) {
+                guard !model.memoryOpening else { return }
+                model.openMemory()
+            }
+            if !model.memoryOpening, !model.memoryOpenNote.isEmpty {
+                InlineNotice(text: model.memoryOpenNote, tone: .danger)
+                    .padding(.horizontal, Space.sm)
+                    .padding(.bottom, Space.xs)
+                    .accessibilityIdentifier("menu-memory-open-fail")
+            }
+            row("账本", model.financeOpening ? "打开中…" : ledger,
+                symbol: "creditcard", busy: model.financeOpening) {
+                guard !model.financeOpening else { return }
+                model.openFinance()
+            }
+            if !model.financeOpening, !model.financeOpenNote.isEmpty {
+                InlineNotice(text: model.financeOpenNote, tone: .danger)
+                    .padding(.horizontal, Space.sm)
+                    .padding(.bottom, Space.xs)
+                    .accessibilityIdentifier("menu-finance-open-fail")
+            }
+            row("连接器", model.connectorsOpening ? "打开中…" : connectorNote.0,
+                symbol: "link", warning: !model.connectorsOpening && connectorNote.1, busy: model.connectorsOpening) {
+                guard !model.connectorsOpening else { return }
+                model.openConnectors()
+            }
+            if !model.connectorsOpening, !model.connectorsOpenNote.isEmpty {
+                InlineNotice(text: model.connectorsOpenNote, tone: .danger)
+                    .padding(.horizontal, Space.sm)
+                    .padding(.bottom, Space.xs)
+                    .accessibilityIdentifier("menu-connectors-open-fail")
+            }
             // 10-28：航程和「它做过的事」合成一页动态（ActivityFeedView）：做过的写操作 + 航程进展，事后能看、能纠正
-            row("动态", model.casesData["waiting"].int > 0 ? voyageNote : activityNote.0, symbol: "list.bullet.rectangle",
-                warning: activityNote.1 || model.casesData["waiting"].int > 0) { model.showActivity = true }
-            row("设置", "", symbol: "slider.horizontal.3") { model.showSettings = true }
+            row("动态", model.activityOpening ? "打开中…" : (model.casesData["waiting"].int > 0 ? voyageNote : activityNote.0),
+                symbol: "list.bullet.rectangle",
+                warning: !model.activityOpening && (activityNote.1 || model.casesData["waiting"].int > 0),
+                busy: model.activityOpening) {
+                guard !model.activityOpening else { return }
+                model.openActivityFeed()
+            }
+            if !model.activityOpening, !model.activityOpenNote.isEmpty {
+                InlineNotice(text: model.activityOpenNote, tone: .danger)
+                    .padding(.horizontal, Space.sm)
+                    .padding(.bottom, Space.xs)
+                    .accessibilityIdentifier("menu-activity-open-fail")
+            }
+            row("设置", model.settingsOpening ? "打开中…" : "",
+                symbol: "slider.horizontal.3", busy: model.settingsOpening) {
+                guard !model.settingsOpening else { return }
+                model.openSettings()
+            }
+            if !model.settingsOpening, !model.settingsOpenNote.isEmpty {
+                InlineNotice(text: model.settingsOpenNote, tone: .danger)
+                    .padding(.horizontal, Space.sm)
+                    .padding(.bottom, Space.xs)
+                    .accessibilityIdentifier("menu-settings-open-fail")
+            }
         }
         .padding(.vertical, Space.sm).padding(.horizontal, Space.sm)
         .frame(width: 290)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("main-menu")
     }
-    private func row(_ title: String, _ subtitle: String, symbol: String, warning: Bool = false, action: @escaping () -> Void) -> some View {
-        Button { model.showMenu = false; action() } label: {
+    private func row(_ title: String, _ subtitle: String, symbol: String, warning: Bool = false, busy: Bool = false, action: @escaping () -> Void) -> some View {
+        Button {
+            guard !busy else { return }
+            model.showMenu = false
+            action()
+        } label: {
             HStack(spacing: Space.md) {
                 IconBadge(symbol: symbol, tone: warning ? .warning : .neutral, size: 34)
                 VStack(alignment: .leading, spacing: 2) {
@@ -293,10 +387,16 @@ private struct MenuContent: View {
                     if !subtitle.isEmpty { Text(subtitle).font(TypeScale.footnote).foregroundStyle(warning ? Palette.warning : Palette.textSecondary).lineLimit(1) }
                 }
                 Spacer(minLength: 0)
+                if busy { ProgressView().controlSize(.small) }
             }
             .padding(.vertical, Space.sm + 2).padding(.horizontal, Space.sm)
             .contentShape(.rect)
-        }.buttonStyle(.row).clipShape(.rect(cornerRadius: Radius.sm, style: .continuous)).accessibilityLabel(title + (subtitle.isEmpty ? "" : "，" + subtitle))
+            .opacity(busy ? 0.72 : 1)
+        }
+        .buttonStyle(.row)
+        .disabled(busy)
+        .clipShape(.rect(cornerRadius: Radius.sm, style: .continuous))
+        .accessibilityLabel(title + (subtitle.isEmpty ? "" : "，" + subtitle))
     }
 }
 
@@ -319,7 +419,7 @@ struct ComDock: View {
         // 不包 GlassEffectContainer：每颗各自一块玻璃，徽标才能压在玻璃上面。
         let items = ForEach(tabs) { tab in
             DockItem(tab: tab, selected: (model.splitView ? model.rightTab : model.tab) == tab,
-                     badge: tab == .doing ? model.decisionCount : tab == .next ? model.nextUrgentCount : 0)
+                     badge: tab == .doing ? model.waitingInboxCount : tab == .next ? model.nextUrgentCount : 0)
         }
         // 横屏（Duo 展开）：工具栏贴右边缘竖着排；竖屏仍是底部横排。
         Group {
@@ -360,7 +460,8 @@ private struct DockItem: View {
     let badge: Int
     var body: some View {
         Button {
-            withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.46, dampingFraction: 0.66)) { model.tab = tab }
+            Haptics.selection()
+            withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) { model.tab = tab }
         } label: {
             label
         }
@@ -388,8 +489,18 @@ private struct DockItem: View {
         .clipShape(.capsule)
         .contentShape(.capsule)
         .background { Color.clear.glassEffect(.regular, in: .capsule) }
+        .overlay {
+            if selected {
+                Capsule().strokeBorder(tab.tint.opacity(0.35), lineWidth: 1)
+            }
+        }
+        .scaleEffect(reduce ? 1 : (selected ? 1.02 : 1))
+        .animation(ComMotion.reduced(reduce, ComMotion.snap), value: selected)
         .overlay(alignment: .topTrailing) {
-            if !selected { CountBadge(count: badge).offset(x: 4, y: -3) }
+            if !selected {
+                CountBadge(count: badge).offset(x: 4, y: -3)
+                    .attentionBreath(active: badge > 0 && !reduce)
+            }
         }
     }
     private var bottomLabel: some View {
@@ -406,8 +517,18 @@ private struct DockItem: View {
         .contentShape(.capsule)
         // 玻璃只做底，图标和字压在上面：图标放进玻璃里，按下时会被玻璃的高光吃掉。
         .background { Color.clear.glassEffect(.regular, in: .capsule) }
+        .overlay {
+            if selected {
+                Capsule().strokeBorder(tab.tint.opacity(0.35), lineWidth: 1)
+            }
+        }
+        .scaleEffect(reduce ? 1 : (selected ? 1.02 : 1))
+        .animation(ComMotion.reduced(reduce, ComMotion.snap), value: selected)
         .overlay(alignment: .topTrailing) {
-            if !selected { CountBadge(count: badge).offset(x: 4, y: -3) }
+            if !selected {
+                CountBadge(count: badge).offset(x: 4, y: -3)
+                    .attentionBreath(active: badge > 0 && !reduce)
+            }
         }
     }
     private var name: some View {
@@ -433,10 +554,12 @@ private extension SectionTab {
 
 /// 按下时整颗胶囊微缩。不用玻璃自带的 interactive：它按下时会把胶囊里的 SF Symbol 提亮到看不见。
 private struct DockPress: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduce
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+            .scaleEffect(reduce ? 1 : (configuration.isPressed ? 0.92 : 1))
+            .opacity(configuration.isPressed ? 0.88 : 1)
+            .animation(reduce ? .easeOut(duration: 0.12) : ComMotion.press, value: configuration.isPressed)
     }
 }
 
@@ -529,22 +652,55 @@ struct StagePanel: View {
     }
     /// 展开后的一行实情：下一步 / 在跑 / 信源，各自能跳过去。
     private var stats: some View {
-        HStack(spacing: Space.sm) {
-            chip("下一步 \(model.nextUrgentCount)", symbol: "shoeprints.fill", tone: model.nextUrgentCount > 0 ? .warning : .neutral) { model.closeStage(); model.tab = .next }  // 10-25：「等你」只增不减，换成下一步
-            chip("在跑 \(model.runningTasks.count)", symbol: "play.circle", tone: model.runningTasks.isEmpty ? .neutral : .info) { model.closeStage(); model.tab = .doing }
-            chip(model.brokenSources.isEmpty ? "信源正常" : "信源断了 \(model.brokenSources.count)", symbol: model.brokenSources.isEmpty ? "checkmark.circle" : "exclamationmark.triangle", tone: model.brokenSources.isEmpty ? .success : .danger) { model.closeStage(); model.showConnectors = true }
-            if model.stripState == .done, !model.stage.deliveryID.isEmpty {
-                chip("看回复", symbol: "text.bubble", tone: .accent) { model.closeStage(); Task { await model.locateMessage(model.stage.deliveryID) } }.accessibilityIdentifier("agent-stage-delivery")
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
+                chip(
+                    model.waitingOpening ? "打开中…" : "等你 \(model.waitingInboxCount)",
+                    symbol: model.waitingOpening ? "hourglass" : "hand.raised",
+                    tone: model.waitingOpening ? .neutral : (model.waitingInboxCount > 0 ? .warning : .neutral),
+                    disabled: model.waitingOpening
+                ) {
+                    guard !model.waitingOpening else { return }
+                    model.openWaitingInbox(closeStage: true)
+                }
+                chip("下一步 \(model.nextUrgentCount)", symbol: "shoeprints.fill", tone: model.nextUrgentCount > 0 ? .warning : .neutral) { model.closeStage(); model.tab = .next }
+                chip("在跑 \(model.runningTasks.count)", symbol: "play.circle", tone: model.runningTasks.isEmpty ? .neutral : .info) { model.closeStage(); model.tab = .doing }
+                chip(
+                    model.connectorsOpening ? "打开中…" : (model.brokenSources.isEmpty ? "信源正常" : "信源断了 \(model.brokenSources.count)"),
+                    symbol: model.connectorsOpening ? "hourglass" : (model.brokenSources.isEmpty ? "checkmark.circle" : "exclamationmark.triangle"),
+                    tone: model.connectorsOpening ? .neutral : (model.brokenSources.isEmpty ? .success : .danger),
+                    disabled: model.connectorsOpening
+                ) {
+                    guard !model.connectorsOpening else { return }
+                    model.openConnectors(closeStage: true)
+                }
+                if model.stripState == .done, !model.stage.deliveryID.isEmpty {
+                    chip("看回复", symbol: "text.bubble", tone: .accent) {
+                        // 先对准消息再收舞台；对不上就留着可再点，别假关。
+                        let id = model.stage.deliveryID
+                        Task {
+                            if await model.locateMessage(id) {
+                                model.closeStage()
+                            }
+                            // 失败：locateNote 在舞台开口，可再点「看回复」。
+                        }
+                    }.accessibilityIdentifier("agent-stage-delivery")
+                }
+            }
+            if !model.locateNote.isEmpty {
+                InlineNotice(text: model.locateNote, tone: .danger)
+                    .accessibilityIdentifier("stage-locate-fail")
             }
         }.padding(.horizontal, Space.lg)
     }
-    private func chip(_ text: String, symbol: String, tone: Tone, action: @escaping () -> Void) -> some View {
+    private func chip(_ text: String, symbol: String, tone: Tone, disabled: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 5) { Image(systemName: symbol).font(.system(size: 12, weight: .semibold)); Text(text).font(TypeScale.footnote.weight(.medium)).lineLimit(1) }
                 .foregroundStyle(tone == .neutral ? Palette.textPrimary : tone.color)
                 .padding(.horizontal, Space.md).frame(height: 32)
                 .background(tone.soft, in: .capsule)
-        }.buttonStyle(.plain)
+                .opacity(disabled ? 0.72 : 1)
+        }.buttonStyle(.plain).disabled(disabled)
     }
     /// 展开后，在面板上往上推：跟手收回；松手按位置和速度决定。
     private var panelDrag: some Gesture {

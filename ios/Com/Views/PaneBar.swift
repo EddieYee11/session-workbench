@@ -28,6 +28,6 @@ struct PaneBar: View {
         .background {
             ZStack { Rectangle().fill(.ultraThinMaterial); Palette.background.opacity(0.72) }.ignoresSafeArea(edges: .top)
         }
-        .animation(reduce ? nil : .smooth(duration: 0.28), value: title)
+        .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: title)
     }
 }

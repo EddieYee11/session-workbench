@@ -25,10 +25,14 @@ enum FeedFilter: String, CaseIterable, Identifiable {
 extension AppModel {
     static let feedPath = "/personal/activity?limit=150"
     var feedData: JSON { datasets[Self.feedPath] ?? activityData }
-    func loadFeed() async {
+    /// 拉齐动态两路；返回各自是否成功，便于页内区分假空与真失败。
+    @discardableResult
+    func loadFeed() async -> (activity: Bool, cases: Bool) {
         async let a = load(Self.feedPath)
         async let c = load("/personal/cases")
-        _ = await (a, c)
+        let activity = await a != nil
+        let cases = await c != nil
+        return (activity, cases)
     }
 }
 
@@ -112,11 +116,19 @@ struct FeedItem: Identifiable, Equatable {
 
 struct ActivityFeedSheet: View {
     var initial: FeedFilter = .all
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
             ActivityFeedView(initial: initial)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
+                .toolbar {
+                    if model.activityOpening {
+                        ToolbarItem(placement: .topBarLeading) {
+                            ProgressView().controlSize(.small).accessibilityLabel("正在拉齐动态")
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
+                }
         }
     }
 }
@@ -133,8 +145,13 @@ struct ActivityFeedView: View {
     @State private var sweep: CGFloat = -0.1
     /// 页面开着时新到的动态先攒着，弹药丸；点一下才插到顶上（不在你看的时候把列表往下推）。
     @State private var known: Set<String>?
+    @State private var feedLanded = false
+    @State private var feedLoading = false
+    @State private var feedFail = ""
+    @State private var feedLoadedOnce = false
     @Namespace private var filterSpace
-    private let spring = Animation.spring(response: 0.5, dampingFraction: 0.78)
+    private var spring: Animation { ComMotion.reduced(reduce, ComMotion.pop) }
+    private var feedPulling: Bool { model.activityOpening || feedLoading || !feedLoadedOnce }
 
     private var all: [FeedItem] { FeedItem.build(activity: model.feedData["items"].array, cases: model.casesData["items"].array) }
     private var current: FeedFilter { filter ?? initial }
@@ -149,11 +166,38 @@ struct ActivityFeedView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
                     header(unread: unread).id("top")
+                    if feedPulling {
+                        HStack(spacing: Space.sm) {
+                            ProgressView().controlSize(.small)
+                            Text(current == .work ? "正在拉齐航程…" : "正在拉齐动态…")
+                                .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                        }
+                        .accessibilityLabel("正在拉齐动态")
+                        .accessibilityIdentifier("activity-feed-pulling")
+                    }
+                    if !feedFail.isEmpty {
+                        InlineNotice(text: feedFail, tone: .danger)
+                        Button(feedLoading || model.activityOpening ? "重试中…" : "再试一次") {
+                            guard !feedLoading, !model.activityOpening else { return }
+                            Task { await refreshFeed(force: true) }
+                        }
+                        .buttonStyle(.secondaryCompact)
+                        .disabled(feedLoading || model.activityOpening)
+                        .accessibilityIdentifier("activity-feed-retry")
+                    }
                     filterBar(shown)
                     if visible.isEmpty {
-                        EmptyState(title: current == .all ? "还没有动态" : "这一类里还没有",
-                                   description: "它替你记账、定提醒、改文件、跑航程，都会按时间列在这里；做错的可以直接标出来。", symbol: "list.bullet.rectangle")
+                        EmptyState(title: !feedFail.isEmpty
+                                   ? (current == .work ? "航程还没读上" : "动态还没读上")
+                                   : current == .all ? "眼下还没什么动静" : "这一类还是空的",
+                                   description: !feedFail.isEmpty
+                                   ? "先重试拉齐；通了会按时间列出来。"
+                                   : current == .all
+                                   ? "我记账、定提醒、改文件、跑航程，都会按时间列在这里；看错了可以直接标出来。"
+                                   : "换个筛选，或稍后再来——有动静我会记下来。",
+                                   symbol: "list.bullet.rectangle")
                             .padding(.top, Space.xl)
+                            .enterRise(on: feedLanded, delay: 0.04, y: 14, blur: 6)
                     }
                     ForEach(sections(visible), id: \.0) { name, date, rows in
                         VStack(alignment: .leading, spacing: 2) {
@@ -187,15 +231,67 @@ struct ActivityFeedView: View {
         .background(Palette.background)
         .navigationTitle("动态").navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Palette.background, for: .navigationBar)
-        .refreshable { await model.loadFeed(); withAnimation(reduce ? nil : spring) { known = Set(all.map(\.id)) } }
+        .refreshable {
+            await refreshFeed(force: true)
+            withAnimation(reduce ? nil : spring) { known = Set(all.map(\.id)) }
+        }
+        .onAppear {
+            if reduce { feedLanded = true }
+            else { withAnimation(ComMotion.rise) { feedLanded = true } }
+        }
         .task {
             while !Task.isCancelled {
-                await model.loadFeed()
+                await refreshFeed(force: false)
                 if known == nil { known = Set(all.map(\.id)) }
                 try? await Task.sleep(for: .seconds(model.casesData["active"].int > 0 ? 4 : 15))
             }
         }
         .accessibilityIdentifier("activity-feed")
+    }
+
+    private func refreshFeed(force: Bool) async {
+        if feedLoading { return }
+        feedLoading = true
+        if force { feedFail = "" }
+        defer {
+            feedLoading = false
+            feedLoadedOnce = true
+        }
+        let result: (activity: Bool, cases: Bool)
+        // 与 openActivityFeed 同路：入口已在拉则等它结束，避免叠刷。
+        if model.activityOpening && !force {
+            while model.activityOpening && !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            let actPath = AppModel.feedPath
+            let actOk = model.errors[actPath] == nil && (model.datasets[actPath] != nil || !model.feedData.isNull)
+            let caseOk = model.errors["/personal/cases"] == nil && model.datasets["/personal/cases"] != nil
+            result = (actOk, caseOk)
+        } else {
+            result = await model.loadFeed()
+        }
+        if result.activity && result.cases {
+            feedFail = ""
+            model.activityOpenNote = ""
+            return
+        }
+        let actErr = model.errors[AppModel.feedPath] ?? model.errors["/personal/activity"] ?? ""
+        let caseErr = model.errors["/personal/cases"] ?? ""
+        let hadCache = !all.isEmpty
+        if !result.activity && !result.cases {
+            let err = [actErr, caseErr].first { !$0.isEmpty } ?? ""
+            feedFail = err.isEmpty
+                ? (hadCache ? "动态与航程都没刷新上——下面仍是上一版，可再试" : "动态与航程都没拉齐——检查配对或网络后再试")
+                : (hadCache ? "动态没刷新上：" + err + "——下面仍是上一版" : "动态没拉齐：" + err + "——可再试")
+        } else if !result.cases {
+            feedFail = caseErr.isEmpty
+                ? (hadCache ? "航程列表没刷新上——写操作若在仍可先看；可再试" : "航程列表没读上——可再试")
+                : "航程列表没读上：" + caseErr + "——可再试"
+        } else {
+            feedFail = actErr.isEmpty
+                ? (hadCache ? "写操作动态没刷新上——航程若在仍可先看；可再试" : "写操作动态没读上——可再试")
+                : "写操作动态没读上：" + actErr + "——可再试"
+        }
     }
 
     // MARK: 顶部
@@ -205,12 +301,15 @@ struct ActivityFeedView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                     Text("它替你做的事").font(TypeScale.title)
-                    if unread > 0 {
+                    if model.activityOpening {
+                        ProgressView().controlSize(.small).accessibilityLabel("正在拉齐动态")
+                    } else if unread > 0 {
                         Text("\(unread)").font(TypeScale.section.monospacedDigit()).foregroundStyle(Palette.textTertiary)
                             .contentTransition(.numericText())
                     }
                 }
-                Text("没有执行前的确认，所以都记在这：不对的点开标一下。").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                Text(model.activityOpening ? "正在拉齐最新动静…" : "已经替你动过手的事都记在这；不对的点开标一下。")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
             }
             Spacer(minLength: Space.sm)
             Button { markAllRead() } label: {
@@ -222,7 +321,7 @@ struct ActivityFeedView: View {
                     .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous).strokeBorder(unread == 0 ? .clear : Palette.separator, lineWidth: 0.8))
                     .contentTransition(.symbolEffect(.replace))
             }
-            .buttonStyle(.plain).disabled(unread == 0)
+            .buttonStyle(.plain).disabled(unread == 0 || model.activityOpening)
             .animation(reduce ? nil : spring, value: unread == 0)
             .accessibilityIdentifier("feed-mark-read")
         }
@@ -265,7 +364,7 @@ struct ActivityFeedView: View {
                     let on = current == f
                     Button {
                         Haptics.selection()
-                        withAnimation(reduce ? nil : .spring(response: 0.46, dampingFraction: 0.66)) { filter = f; open = nil }
+                        withAnimation(ComMotion.reduced(reduce, ComMotion.pop)) { filter = f; open = nil }
                     } label: {
                         HStack(spacing: 5) {
                             Text(f.title).font(TypeScale.footnote.weight(on ? .semibold : .medium))
@@ -328,7 +427,7 @@ struct ActivityFeedView: View {
             } else {
                 Button {
                     Haptics.selection()
-                    withAnimation(reduce ? nil : .spring(response: 0.34, dampingFraction: 0.86)) { open = expanded ? nil : item.id }
+                    withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open = expanded ? nil : item.id }
                 } label: { FeedRowLabel(item: item, unread: unread, index: index, chevron: false) }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("feed-row-" + item.id)
@@ -359,7 +458,7 @@ private struct FeedRowLabel: View {
                     .overlay(Circle().strokeBorder(Palette.background, lineWidth: 2.5))
                     .offset(x: -2, y: -1)
                     .scaleEffect(unread ? 1 : 0.01).opacity(unread ? 1 : 0)
-                    .animation(reduce ? nil : .spring(response: 0.4, dampingFraction: 0.7).delay(Double(index) * 0.06), value: unread)
+                    .animation(ComMotion.reduced(reduce, ComMotion.pop.delay(Double(index) * ComMotion.stagger)), value: unread)
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
@@ -427,6 +526,11 @@ private struct FeedDetailCard: View {
     let close: () -> Void
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    /// 乐观选中；失败清掉回弹。服务器 verdict 到了也算点亮。
+    @State private var pending: String?
+    @State private var busy = false
+    /// 核对失败开口（别只靠回弹无文案）。
+    @State private var failNote = ""
     private static let labels = ["action": "动作", "amount": "金额", "category": "分类", "comment": "备注", "note": "备注", "date": "日期", "account": "账户", "type": "类型",
                                  "title": "标题", "summary": "标题", "start": "开始", "end": "结束", "location": "地点", "text": "内容", "at": "时间", "due": "到期",
                                  "list": "清单", "command": "命令", "path": "文件", "file_path": "文件", "name": "名字", "to": "发给", "target": "对象"]
@@ -451,18 +555,31 @@ private struct FeedDetailCard: View {
             if let source = item.entries.first?["source"].string, !source.isEmpty {
                 Text("你当时说：" + source).font(.caption).foregroundStyle(Palette.textSecondary).lineLimit(3)
             }
+            if !failNote.isEmpty {
+                InlineNotice(text: failNote, tone: .danger)
+                    .accessibilityIdentifier("feed-verdict-fail")
+            }
             HStack(spacing: Space.sm) {
                 verdict("做成了", "done", tone: .success)
                 verdict("没做成", "not_done", tone: .neutral)
                 verdict("做错了", "wrong", tone: .danger)
                 Spacer(minLength: 0)
                 Button {
-                    // 做错了就回对话让它改：草稿带上是哪一条
-                    model.draft = "刚才「\(item.title)」做错了，"
-                    model.tab = .chat
-                    dismiss()
+                    // 标错 + 回对话改：草稿优先进 Com；标错失败也不挡改。
+                    guard !busy else { return }
+                    busy = true
+                    failNote = ""
+                    pending = "wrong"
+                    Task {
+                        for e in item.entries { _ = await model.activityVerdict(e["key"].string, "wrong") }
+                        model.draft = "刚才「\(item.title)」做错了，"
+                        model.tab = .chat
+                        dismiss()
+                        busy = false
+                    }
                 } label: { Label("让它改", systemImage: "arrow.uturn.backward").font(.caption.weight(.semibold)) }
                     .buttonStyle(.plain).foregroundStyle(Palette.accentText)
+                    .disabled(busy)
                     .accessibilityIdentifier("feed-fix")
             }
             .padding(.top, 2)
@@ -471,11 +588,24 @@ private struct FeedDetailCard: View {
         .background(Palette.fill.opacity(0.6), in: .rect(cornerRadius: Radius.sm, style: .continuous))
     }
     private func verdict(_ title: String, _ value: String, tone: Tone) -> some View {
-        let on = item.entries.first?["verdict"].string == value
+        let server = item.entries.first?["verdict"].string
+        let on = pending == value || (pending == nil && server == value)
         return Button {
+            guard !busy else { return }
+            busy = true
+            failNote = ""
+            pending = value
             Task {
-                for e in item.entries { await model.activityVerdict(e["key"].string, value) }
-                _ = await model.load(AppModel.feedPath)
+                var ok = true
+                for e in item.entries {
+                    if !(await model.activityVerdict(e["key"].string, value)) { ok = false }
+                }
+                // 全部失败才回弹 + 开口；部分成功保留选中，等 feed 双刷对齐。
+                if !ok {
+                    pending = nil
+                    failNote = "核对没成——还可以再点。不会假装已标好。"
+                }
+                busy = false
             }
         } label: {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(on ? .white : tone.color)
@@ -483,6 +613,7 @@ private struct FeedDetailCard: View {
                 .background(on ? tone.color : tone.color.opacity(0.1), in: .capsule)
         }
         .buttonStyle(.plain)
+        .disabled(busy)
         .accessibilityIdentifier("feed-verdict-" + value)
     }
 }

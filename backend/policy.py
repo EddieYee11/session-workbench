@@ -21,7 +21,7 @@ BOOK_VERB=re.compile(r'记(?:个|一下|一笔|一条)?账|记一(?:笔|条)|记
 CN_AMOUNT=re.compile(r'(?<![\d零〇一二两三四五六七八九十百千万亿.周期拜第])[零〇一二两三四五六七八九十百千万亿]+(?![\d零〇一二两三四五六七八九十百千万亿])')
 CN_AMOUNT_TRAILING=re.compile(r'(?:左右|多|来|余|整|以上|以下)?\s*(?:[。，,！!？?、；;：:）)】\]"\'\s]|$)')
 CN_QUANTITY=re.compile(r'(?:个|笔|条|次|件|份|名|人|位|台|张|本|瓶|杯|套|层|楼|排|遍|周|星期|季|度|岁|斤|公斤|克|升|公里|千米|米|厘米|毫米|分钟|秒|小时|天|年|月|日|号|点|折|成|%|％)')
-EXPENSE_FACT=re.compile(r'花费|花了|消费|支出|付了|支付|付款|到账|收入|收了')
+EXPENSE_FACT=re.compile(r'花费|花了|花的|消费|支出|付了|支付|付款|到账|收入|收了')
 BOOK_BLOCK=re.compile(r'(?:不要|别|不想|不用|不需要|先不|暂不|不能|禁止|不许|先别).{0,8}(?:记|记录|添加|保存)|(?:只是|仅是|只做|只要).{0,8}(?:举例|例子|测试|分析|讨论|候选)|(?:如果|假如|比如|例如|假设)|(?:以后|将来|有空|打算|计划|准备|明天|后天).{0,20}(?:记|花|消费|支出|买)|(?:花|消费|支出).{0,20}(?:预算|预计)|(?:能否|是否|会不会|能不能|可以|能|会).{0,8}(?:记账|记录|记个账).{0,4}(?:吗|么|嘛|不)|(?:记账|记个账).{0,8}(?:系统|软件|工具|功能|能力|怎么|如何)|(?:能|会)(?:记账|记个账)[?？]|(?:查|查询|查看|统计|检索|看看).{0,24}(?:记账|账单|账目|支出|消费|花费)|(?:记账|消费|支出|花费).{0,24}(?:多少|几笔|有哪些|统计)')
 
 
@@ -104,8 +104,9 @@ def bookkeeping_intent(text, *, expense_entry=False):
     if not external or bookkeeping_query(external) or BOOK_BLOCK.search(classified) or re.search(r'(?:为什么|为何).{0,30}(?:记账|记录|花费)',external):return False
     explicit=bool(BOOK_VERB.search(external))
     amounts=_money_matches(external)
+    # 「记一下咖啡18」口语常省略「元/块」；已有金额匹配时仍算明确记账意图。
     if explicit and not re.search(r'记(?:个|一下|一笔|一条)?账|记一笔|记录(?:这笔|一笔)',external):
-        explicit=bool(MONEY.search(external) or COINS.search(external) or re.search(r'[¥￥]',external) or EXPENSE_FACT.search(external))
+        explicit=bool(MONEY.search(external) or COINS.search(external) or re.search(r'[¥￥]',external) or EXPENSE_FACT.search(external) or amounts)
     if explicit and re.search(r'我(?:想|希望)|希望',external) and not amounts:return False
     fact=bool(EXPENSE_FACT.search(external) and amounts and not re.search(r'我(?:想|希望)|最近想|希望|将会|要花|要买|想买|想花|预计|预算',external))
     if not explicit and re.search(r'我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)',external):return False

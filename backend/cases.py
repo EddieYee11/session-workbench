@@ -189,6 +189,14 @@ class Cases:
             row = db.execute('SELECT task_id FROM cases WHERE source=? AND source_id=? ORDER BY created_at DESC LIMIT 1', (source, source_id)).fetchone()
         return row['task_id'] if row else None
 
+    def covers_source(self, source, source_id):
+        """这条来源是否已有进行中的航程——等你里就别再催同一件过期待办。"""
+        tid = self.find(source, source_id)
+        if not tid:
+            return False
+        task = next((t for t in self.store.list() if t['id'] == tid), None)
+        return bool(task and task.get('status') in ACTIVE + ('execution_finished',))
+
     async def delegate(self, source, source_id, title, prompt, request_id, evidence=(), todo_path=''):
         """「交给 Com」。返回 {'mode':'case','task_id'} 或 {'mode':'chat','receipt'}。同一来源已有进行中的航程就直接返回它。"""
         existing = self.find(source, source_id)

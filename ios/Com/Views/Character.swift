@@ -466,7 +466,7 @@ struct StripFigure: View {
         _pose = State(initialValue: Pose(from: state, fromSign: sign, to: state, toSign: sign, at: .distantPast))
         _dress = State(initialValue: Dress(from: outfit, to: outfit, at: .distantPast))
     }
-    private var moving: Bool { animated && !reduce && scene == .active && !ProcessInfo.processInfo.isLowPowerModeEnabled }
+    private var moving: Bool { animated && AmbientMotionPolicy.allowsTimeline(active: scene == .active, reduceMotion: reduce) }
     var body: some View {
         // 画的永远是 pose（不是直接读 state）：onChange 之前那一帧还是旧姿态，不会先闪一下新姿态再从头淡入。
         let loops = moving && pose.to != .done
@@ -586,7 +586,7 @@ struct TalkBubble: View {
             .scaleEffect(open || reduce ? 1 : 0.1, anchor: Self.tail)
             .rotationEffect(.degrees(open || reduce ? 0 : -20), anchor: Self.tail)
             .opacity(open ? 1 : 0)
-            .animation(reduce ? .easeOut(duration: 0.2) : open ? .spring(response: 0.46, dampingFraction: 0.64) : .spring(response: 0.34, dampingFraction: 1), value: open)
+            .animation(ComMotion.reduced(reduce, open ? ComMotion.pop : ComMotion.settle), value: open)
             // 收起后它还在（缩在尾尖等下次展开），无障碍上换个名字，免得读到一个看不见的气泡。
             .accessibilityHidden(!open)
             .accessibilityIdentifier(open ? "agent-work-bubble" : "agent-work-bubble-closed")
@@ -611,7 +611,7 @@ struct StageScene: View {
     }
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.scenePhase) private var scene
-    private var moving: Bool { !reduce && scene == .active && !ProcessInfo.processInfo.isLowPowerModeEnabled }
+    private var moving: Bool { AmbientMotionPolicy.allowsTimeline(active: scene == .active, reduceMotion: reduce) }
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / (state == .idle ? 12 : 30), paused: !moving || state == .done)) { timeline in
             Canvas { context, size in

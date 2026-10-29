@@ -78,7 +78,7 @@ struct BodyCard: View {
     private func sourceNote(_ health: JSON) -> String {
         let garmin = health["sources"]["garmin"]
         if !garmin["error"].string.isEmpty { return "Garmin：" + garmin["error"].string }
-        return "Garmin 每半小时同步一次；也可以在这里读手机健康数据"
+        return "连上 Garmin 或打开手机健康后，我再给你看一眼。Garmin 大约每半小时同步。"
     }
 
     private func garmin(_ m: JSON, days: [JSON]) -> some View {
@@ -127,7 +127,7 @@ struct BodyCard: View {
                     MetricTile(title: title, value: p[key].isNull ? "—" : p[key].double.formatted(.number.precision(.fractionLength(key == "sleep_hours" ? 1 : 0))) + (unit.isEmpty ? "" : " " + unit))
                 }
             }
-            Text("今天还没有 Garmin 数据，先看手机健康。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            Text("今天的 Garmin 还没到，先用手机健康顶一下。").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
         }
         .padding(embedded ? 0 : Space.lg)
         .background(embedded ? .clear : Palette.surface, in: .rect(cornerRadius: Radius.lg, style: .continuous))
@@ -203,7 +203,7 @@ struct SleepBar: View {
                         RoundedRectangle(cornerRadius: 3).fill(stage.2)
                             .frame(width: max(2, (geo.size.width - 6) * stage.1 / total))
                             .scaleEffect(x: shown || reduce ? 1 : 0, anchor: .leading)
-                            .animation(reduce ? nil : .spring(response: 0.55, dampingFraction: 0.85).delay(0.35 + Double(index) * 0.08), value: shown)
+                            .animation(ComMotion.reduced(reduce, ComMotion.rise.delay(0.35 + Double(index) * 0.08)), value: shown)
                     }
                 }
             }
@@ -295,7 +295,7 @@ private struct TileRise: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduce
     func body(content: Content) -> some View {
         content.opacity(on || reduce ? 1 : 0).blur(radius: on || reduce ? 0 : 4).offset(y: on || reduce ? 0 : 10)
-            .animation(reduce ? nil : .spring(response: 0.45, dampingFraction: 0.85).delay(delay), value: on)
+            .animation(ComMotion.reduced(reduce, ComMotion.lift.delay(delay)), value: on)
     }
 }
 
@@ -313,8 +313,12 @@ private struct Sparkline: View {
 }
 
 private struct CardPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduce
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.scaleEffect(configuration.isPressed ? 0.98 : 1).animation(.spring(response: 0.25, dampingFraction: 0.8), value: configuration.isPressed)
+        configuration.label
+            .scaleEffect(reduce ? 1 : (configuration.isPressed ? 0.98 : 1))
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(ComMotion.reduced(reduce, ComMotion.press), value: configuration.isPressed)
     }
 }
 
@@ -325,10 +329,35 @@ struct HealthDetailView: View {
     @State private var data: JSON = .null
     /// 柱子从 0 长到实际值（Swift Charts 在动画事务里改数据就会补间）。
     @State private var grown = false
+    @State private var loading = false
+    @State private var failNote = ""
+    @State private var loadedOnce = false
     var body: some View {
         let source = data.isNull ? model.health : data
         let days = source["days"].array
         DetailPage(title: "身体状态") {
+            if loading || !loadedOnce {
+                HStack(spacing: Space.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("正在对齐近 7 天身体数据…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                }
+                .accessibilityLabel("正在对齐近 7 天身体数据")
+            }
+            if !failNote.isEmpty {
+                InlineNotice(text: failNote, tone: .danger)
+                Button(loading ? "重试中…" : "再试一次") {
+                    guard !loading else { return }
+                    Task { await refreshDetail() }
+                }
+                .buttonStyle(.secondaryCompact)
+                .disabled(loading)
+                .accessibilityIdentifier("health-detail-retry")
+            }
+            if days.isEmpty && loadedOnce && !loading {
+                Text(failNote.isEmpty ? "这几天还没有可画的身体曲线。手表同步后会补上。" : "先用上面的提示重试；没通就先看健康页总览。")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    .padding(.horizontal, Space.xs)
+            }
             if let today = days.last, !today["measurements"]["sleep_seconds"].isNull {
                 Card { SleepBar(m: today["measurements"]) }
             }
@@ -354,13 +383,31 @@ struct HealthDetailView: View {
                 .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary).padding(.horizontal, Space.xs)
         }
         .task {
-            if reduce { grown = true } else { withAnimation(.spring(response: 0.7, dampingFraction: 0.82).delay(0.15)) { grown = true } }
-            if let fresh = await model.load("/personal/health?days=7") { data = fresh }
+            if reduce { grown = true } else { withAnimation(ComMotion.lift.delay(0.15)) { grown = true } }
+            await refreshDetail()
         }
         .accessibilityIdentifier("health-detail")
     }
     private var battery: BodyMetric {
         BodyMetric(id: "battery", title: "起床时身体电量", unit: "", hue: .mint, higherIsBetter: true) { m in m["body_battery_at_wake"].isNull ? nil : m["body_battery_at_wake"].double }
+    }
+    private func refreshDetail() async {
+        guard !loading else { return }
+        loading = true
+        failNote = ""
+        defer {
+            loading = false
+            loadedOnce = true
+        }
+        let path = "/personal/health?days=7"
+        if let fresh = await model.load(path) {
+            data = fresh
+        } else {
+            let err = model.errors[path] ?? model.errors["/personal/health"] ?? ""
+            failNote = err.isEmpty
+                ? "近 7 天身体数据没对齐——可再试，或回健康页看总览"
+                : "近 7 天没对齐：" + err + "——可再试"
+        }
     }
 }
 
