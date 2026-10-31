@@ -129,6 +129,8 @@ extension AppModel {
         }
     }
     func refreshNext() async {
+        nextUserRefresh = true
+        defer { nextUserRefresh = false }
         #if DEBUG
         if isUITesting {
             // 界面验收：按后端真实阶段顺序走一遍构建卡（collect → think → store → 结束）
@@ -181,6 +183,8 @@ struct NextView: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.dockOnSide) private var outer
     private var data: JSON { model.nextData }
+    /// 只有他自己点了「重新整理」才亮构建卡。后台每小时那轮不打断他在看的内容，也不把页面换成「正在整理」。
+    private var building: Bool { model.nextUserRefresh && data["running"].bool }
     /// 10-25 Duo 合上（外屏竖拿，Dock 在右）：最要紧的那件放大成速览卡，下面的列表不再重复它。
     private var glance: JSON? { outer && !model.splitView ? model.nextItems.first : nil }  // 双栏右栏也贴边，但不是外屏
     private var groups: [(String, [JSON])] {
@@ -209,7 +213,7 @@ struct NextView: View {
                 InlineNotice(text: model.planOpenNote, tone: .danger)
                     .accessibilityIdentifier("next-plan-open-fail")
             }
-            if let glance, !data["running"].bool { NextGlanceCard(item: glance) }
+            if let glance, !building { NextGlanceCard(item: glance) }
             let uncertain = model.activityData["uncertain"].array
             if !uncertain.isEmpty {
                 GroupSection("结果待核对") { ForEach(uncertain.map(RemoteRow.init)) { UncertainCard(entry: $0.value) } }
@@ -220,7 +224,7 @@ struct NextView: View {
             if !broken.isEmpty {
                 ForEach(broken.map { RemoteRow(.object(["id": $0["name"], "source": $0])) }) { row in SourceBrokenNote(source: row.value["source"]) }
             }
-            if data["running"].bool {
+            if building {
                 NextBuildingCard(progress: data["progress"])
                     .transition(reduce ? .opacity : .blurLift)
             } else if model.nextItems.isEmpty {
@@ -267,7 +271,7 @@ struct NextView: View {
                     }
                     .padding(.horizontal, Space.xs)
                 }
-            } else if !data["running"].bool {
+            } else {
                 // 有卡时与空态对比：明确「现在」优先、一卡一主动作，避免看起来像普通列表。
                 Text("下面按缓急排。每张卡一个主动作——先点那颗，其它收进「更多」。")
                     .font(TypeScale.footnote)
@@ -289,9 +293,10 @@ struct NextView: View {
             footer
         }
         .animation(reduce ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: model.nextItems.map(\.id))
-        .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: data["running"].bool)
+        .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: building)
+        // 下拉只重新读取。旋转时的回弹也可能触发下拉，不能因此跑一轮大模型整理；重新整理走右上角按钮。
         .refreshable {
-            await model.refreshNext()
+            await model.refresh(.next)
             // 待核对一路失败也开口；别只 silently 丢 activity。
             if await model.load("/personal/activity") == nil {
                 let err = model.errors["/personal/activity"] ?? ""
@@ -332,7 +337,7 @@ struct NextView: View {
     }
     /// Hark：有「现在」就点名那一件；空态与有卡口吻对照，避免只像列表页眉。
     private var headerLead: String {
-        if data["running"].bool { return "正在重新整理…" }
+        if building { return "正在重新整理…" }
         if model.nextItems.isEmpty {
             return "眼下干净——有值得动手的我会推卡上来"
         }

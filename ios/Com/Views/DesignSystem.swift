@@ -151,7 +151,7 @@ enum Layout {
     static let margin: CGFloat = 20          // 页面左右边距
     static let sectionSpacing: CGFloat = 28  // 顶级区块间距
     static let rowInset: CGFloat = 64        // 行带 36pt 徽标时分割线的缩进
-    static let topBar: CGFloat = 60          // 顶栏在安全区以下的高度
+    static let topBar: CGFloat = 44          // 顶栏在安全区以下的高度
     static let dock: CGFloat = 72            // 浮动 Dock 占的底部空间
 }
 

@@ -106,6 +106,8 @@ struct CharacterPainter {
     let paper: Color
     let red: Color
     var sign = ""
+    /// 牌子、盖章台、纸飞机。顶栏里不画：它们在身体右侧，会压住标题。
+    var drawsProps = true
     var danger: Color = Palette.danger
     /// 旁边有对话气泡时，不再画思考点（气泡本身就是她在想的事）。
     var quiet = false
@@ -148,7 +150,7 @@ struct CharacterPainter {
             return
         }
         let a = blend?.amount ?? 1
-        let previous = blend.map { CharacterPainter(state: $0.from, t: t, moving: moving, ink: ink, paper: paper, red: red, sign: $0.fromSign, danger: danger, quiet: quiet) }
+        let previous = blend.map { CharacterPainter(state: $0.from, t: t, moving: moving, ink: ink, paper: paper, red: red, sign: $0.fromSign, drawsProps: drawsProps, danger: danger, quiet: quiet) }
         func mix(_ from: Double?, _ to: Double) -> Double { from.map { $0 + (to - $0) * a } ?? to }
         var ctx = c
         // 换 tab 时轻轻跳一下：抛物线 10pt，起跳时身子往前倾 4°，落地摆正（绕脚底转，脚不打滑）。
@@ -214,6 +216,7 @@ struct CharacterPainter {
 
     /// 当前状态拿在手上的东西。entrance 非空 = 正在进场（0…1，已缓动）。
     private func props(_ base: inout GraphicsContext, opacity: Double, entrance: Double?) {
+        guard drawsProps else { return }
         guard opacity > 0.001 else { return }
         var ctx = base; ctx.opacity *= opacity
         // 进场：牌子从 1.3 倍、-9° 摁下来摊平（03-badge-stamp：落地零回弹）；别的道具从 0.86 倍长出来。离场只淡出。
@@ -405,6 +408,7 @@ struct CharacterPainter {
 /// 姿态换的时候只有变了的部分动（PoseBlend）：表情和手上的东西交叉淡入，头的角度和身体起伏插值过去，
 /// 新举起的牌子像盖章一样摁上来（动效库 03-badge-stamp）。
 struct StripFigure: View {
+    var showsProps = true
     /// 120×132 线稿按 0.38 缩放后她本人的宽度；画布右边再留出牌子、盖章台、纸飞机的地方。
     static let bodyWidth: CGFloat = 120 * 0.38
     static let size = CGSize(width: 124, height: 56)
@@ -461,8 +465,8 @@ struct StripFigure: View {
         /// 画她的这块大画布：顶栏 + 工作台展开部分。
         var canvas: CGSize { CGSize(width: width, height: Layout.topBar + StagePanel.revealHeight) }
     }
-    init(state: StripState, sign: String = "", animated: Bool = true, quiet: Bool = false, hop: Hop? = nil, outfit: CharacterOutfit = .none) {
-        self.state = state; self.sign = sign; self.animated = animated; self.quiet = quiet; self.hop = hop; self.outfit = outfit
+    init(state: StripState, sign: String = "", showsProps: Bool = true, animated: Bool = true, quiet: Bool = false, hop: Hop? = nil, outfit: CharacterOutfit = .none) {
+        self.state = state; self.sign = sign; self.showsProps = showsProps; self.animated = animated; self.quiet = quiet; self.hop = hop; self.outfit = outfit
         _pose = State(initialValue: Pose(from: state, fromSign: sign, to: state, toSign: sign, at: .distantPast))
         _dress = State(initialValue: Dress(from: outfit, to: outfit, at: .distantPast))
     }
@@ -482,7 +486,7 @@ struct StripFigure: View {
             let spin: CharacterPainter.Spin? = !reduce && worn < 1 && dress.from != dress.to
                 ? .init(from: dress.from, theta: curve.theta, velocity: (ahead.theta - curve.theta) * 120, lift: curve.lift, squash: curve.squash) : nil
             // 换装透明度走 power2.out；跳的那条抛物线自带起落。
-            let painter = CharacterPainter(state: pose.to, t: timeline.date.timeIntervalSinceReferenceDate, moving: moving, ink: Palette.ink, paper: Palette.surface, red: Palette.accent, sign: pose.toSign, quiet: quiet,
+            let painter = CharacterPainter(state: pose.to, t: timeline.date.timeIntervalSinceReferenceDate, moving: moving, ink: Palette.ink, paper: Palette.surface, red: Palette.accent, sign: pose.toSign, drawsProps: showsProps, quiet: quiet,
                                            outfit: dress.to, outfitBlend: reduce && worn < 1 ? (dress.from, worn) : nil, hops: false, spin: spin)
             FigureLayer(progress: hop?.progress ?? 0, hop: hop, painter: painter, blend: blend,
                         plane: pose.to == .send ? (blend != nil && pose.from != .send ? blend?.amount ?? 1 : 1) : nil, reduce: reduce)

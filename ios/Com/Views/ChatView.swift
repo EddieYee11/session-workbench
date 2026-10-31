@@ -16,183 +16,27 @@ struct ChatView: View {
     @State private var flights: [String: OutgoingFlight] = [:]
     @State private var unread: Set<String> = []
     @State private var knownAssistants: Set<String> = []
-    @State private var followKeyboard = false
-    @State private var composing = false
-    @State private var manuallyReading = false
-    @State private var interacting = false
-    @State private var followLatest = true
-    @State private var timeline: [ChatTimelineRow] = []
-    /// 分页按字符预算而不是条数：一屏长回复和十条短句不该占同样的内存。
-    @State private var historyBudget = ChatPage.standardBudget
-    @State private var scrollPosition = ScrollPosition(idType: String.self)
-    @State private var positioned = false
-    @State private var viewport = ChatViewport()
+    @State private var displayRows: [ChatDisplayRow] = []
+    @State private var entries: [ChatListEntry] = []
+    @State private var list = ChatListController()
+    @State private var expansion = ChatExpansion()
+    @State private var stageOrigin: CGPoint = .zero
+    @State private var rebuildQueued = false
     /// r2-chat：点过的建议卡所在消息（点完立刻收起，不等服务端回执）。
     @State private var usedSuggestions: String?
     /// 全部中断进行中，防连点。
     @State private var interruptingAll = false
-    private var rows: [ChatTimelineRow] { ChatPage.window(timeline, budget: historyBudget) }
-    private var assistants: Set<String> { Set(model.conversation.messages.filter { $0["role"].string == "assistant" }.map(\.id)) }
+    @Environment(\.detailSpace) private var detailSpace
     var body: some View {
-        ScrollViewReader { proxy in
+        Group {
             VStack(spacing: 0) {
             ZStack(alignment: .top) {
             VStack(spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
-            ScrollView {
-                // LazyVStack：只布局可见附近的气泡。长对话用 VStack 会整窗同步布局，滚动必掉帧。
-                LazyVStack(spacing: Space.xl) {
-                    if (rows.count < timeline.count || model.moreHistory) && !model.conversation.messages.isEmpty {
-                        VStack(spacing: Space.sm) {
-                            Button(historyLoading ? "正在读取…" : "更早的对话") {
-                                guard !historyLoading else { return }
-                                followLatest = false; manuallyReading = true
-                                // 不用 onScrollTargetVisibilityChange：那套依赖 scrollTargetLayout，长列表上滑必卡。
-                                let anchor = (scrollPosition.viewID as? String) ?? rows.first?.id
-                                historyLoading = true
-                                historyFailNote = ""
-                                Task {
-                                    if rows.count < timeline.count {
-                                        historyBudget += ChatPage.standardBudget
-                                    } else {
-                                        let ok = await model.loadHistory()
-                                        if ok {
-                                            historyBudget += ChatPage.standardBudget
-                                        } else {
-                                            historyFailNote = "更早的对话没读上——可再点一次"
-                                        }
-                                    }
-                                    await Task.yield()
-                                    if let anchor { proxy.scrollTo(anchor, anchor: .top) }
-                                    historyLoading = false
-                                }
-                            }
-                            .buttonStyle(.secondaryAction)
-                            .disabled(historyLoading)
-                            .accessibilityIdentifier("chat-load-history")
-                            if !historyFailNote.isEmpty {
-                                Label(historyFailNote, systemImage: "exclamationmark.circle")
-                                    .font(TypeScale.footnote.weight(.medium))
-                                    .foregroundStyle(Palette.danger)
-                                    .accessibilityIdentifier("chat-history-fail")
-                            }
-                        }
-                    }
-                    if model.conversation.messages.isEmpty && rows.isEmpty {
-                        ChatEmptyPresence()
-                    }
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                        let isAgent = row.message["role"].string == "assistant"
-                        let previousIsAgent = index > 0 ? rows[index - 1].message["role"].string == "assistant" : false
-                        let isConsecutiveAgent = isAgent && previousIsAgent
-
-                        // 连续的主动消息（晨晚报、提醒、回执）折成一条「N 条主动消息」，只展开最新那条，不让它们堆成一整屏字。
-                        let foldsIntoNext = ProactiveMessage.matches(row.message) && index + 1 < rows.count && ProactiveMessage.matches(rows[index + 1].message)
-                        let runStart = foldsIntoNext && !(index > 0 && ProactiveMessage.matches(rows[index - 1].message))
-                        Group {
-                            if runStart {
-                                ProactiveStack(run: ProactiveMessage.run(in: rows, from: index))
-                            } else if foldsIntoNext {
-                                EmptyView()
-                            } else {
-                                MessageView(message: row.message, layoutID: row.id, flying: flights[row.id] != nil, pending: row.pending, isConsecutiveAgent: isConsecutiveAgent)
-                                    .equatable()
-                            }
-                        }
-                            .id(row.id)
-                            // 长列表里 scale+offset 进场会牵动邻居布局；只留淡入，滚动更稳。
-                            .transition(.opacity)
-
-                    }
-                    if let latest = suggestionHost, latest.id != usedSuggestions {
-                        let options = ReplyOptions.options(for: latest)
-                        if !options.isEmpty {
-                            SuggestionChips(messageID: latest.id, options: options) { option in
-                                // 先亮一下再发；送达成功才收起整组；失败芯片回弹可重试。
-                                if !reduce { try? await Task.sleep(for: .milliseconds(200)) }
-                                let ok = await model.send(textOverride: option)
-                                if ok {
-                                    withAnimation(reduce ? nil : .smooth(duration: 0.28)) { usedSuggestions = latest.id }
-                                }
-                                return ok
-                            }
-                            .id(latest.id)  // r2-chat 验收修正：新回复换一组卡片时重建状态，重新播弹入
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .transition(.asymmetric(insertion: .identity, removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading))))
-                        }
-                    }
-                    Color.clear.frame(height: 1).id("latest")
-                // 不加 scrollTargetLayout：会逼 ScrollView 为每条消息维护目标几何，上滑建格掉帧。
-                }.padding(.horizontal, Layout.margin).padding(.top, Space.md).padding(.bottom, Space.md)
-            }
-            .accessibilityIdentifier("chat-timeline-scroll")
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .alignment)
-            .scrollPosition($scrollPosition)
-            .scrollDismissesKeyboard(.interactively)
-            .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: Bool.self) { g in g.contentSize.height + g.contentInsets.bottom - g.visibleRect.maxY < 70 } action: { old, near in
-                // 只在跨越底部边界时写 @State，避免每帧刷 ChatView。
-                if old != near {
-                    atBottom = near
-                    if near { unread = [] }
-                }
-            }
-            .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { old, new in
-                if followLatest && !interacting && old.height != new.height {
-                    Task { @MainActor in
-                        await Task.yield()
-                        guard followLatest && !interacting else { return }
-                        scrollPosition.scrollTo(edge: .bottom)
-                    }
-                }
-            }
-            .onScrollPhaseChange { _, phase in
-                if phase == .idle { viewport.frames.stop() }
-                let quiet = phase == .tracking || phase == .interacting || phase == .decelerating
-                // 只写静态闸门，不碰 AppModel——Observation 通知会在起滑瞬间整树失效。
-                AmbientMotionPolicy.scrollQuiet = quiet
-                if interacting != quiet { interacting = quiet }
-                if phase == .tracking || phase == .interacting {
-                    manuallyReading = true; followKeyboard = false; followLatest = false
-                }
-                if phase == .idle && atBottom { followLatest = true; manuallyReading = false }
-            }
-            .transaction { txn in
-                if interacting { txn.animation = nil }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
-                guard !manuallyReading else { return }
-                followKeyboard = composing || followKeyboard || atBottom
-                guard followKeyboard else { return }
-                let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
-                Task { @MainActor in
-                    await Task.yield()
-                    guard followKeyboard && !manuallyReading && !interacting else { return }
-                    withAnimation(.easeOut(duration: duration)) { scrollPosition.scrollTo(edge: .bottom) }
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
-                if followKeyboard {
-                    Task { @MainActor in
-                        await Task.yield()
-                        guard !manuallyReading && !interacting && followLatest else { return }
-                        scrollPosition.scrollTo(edge: .bottom)
-                    }
-                }
-                followKeyboard = false
-            }
-            .onChange(of: model.conversation.revision) { _, _ in
-                let new = assistants.subtracting(knownAssistants)
-                knownAssistants = assistants
-                if !historyLoading && !atBottom { unread.formUnion(new) }
-                if followLatest && !interacting && !historyLoading {
-                    Task { @MainActor in
-                        await Task.yield()
-                        guard followLatest && !interacting && !historyLoading else { return }
-                        scrollPosition.scrollTo(edge: .bottom)
-                    }
-                }
+            ChatCollectionView(controller: list, entries: entries)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in
+                // 贴底交给列表自己：跟随时键盘把列表压矮，layoutSubviews 会贴回底部。
+                if atBottom { list.scrollToLatest(animated: false) }
             }
             .onChange(of: model.lastSubmittedID) { _, id in
                 guard let id, let entry = model.pending.first(where: { $0.id == id }) else { return }
@@ -200,12 +44,12 @@ struct ChatView: View {
                 if !reduce, let origin = frames["composer"], origin.width > 0 {
                     flights[key] = OutgoingFlight(id: key, text: entry.text, origin: origin.insetBy(dx: -18, dy: -7))
                 }
-                unread = []; atBottom = true; manuallyReading = false; followLatest = true; interacting = false
+                unread = []; atBottom = true
                 AmbientMotionPolicy.scrollQuiet = false
+                rebuildNow()
+                list.scrollToLatest(animated: false)
                 Task { @MainActor in
-                    await Task.yield()
-                    scrollPosition.scrollTo(edge: .bottom)
-                    // Resolve the landing after the scroll/layout transaction,
+                    // Resolve the landing after the layout transaction,
                     // rather than targeting the row's old offscreen position.
                     try? await Task.sleep(for: .milliseconds(50))
                     flights[key]?.layoutReady = true
@@ -217,43 +61,30 @@ struct ChatView: View {
             }
             .onChange(of: model.jumpMessage) { _, id in
                 guard let id else { return }
-                followLatest = false; manuallyReading = true
-                rebuildTimeline()
-                if let index = timeline.firstIndex(where: { $0.message.id == id }) {
-                    historyBudget = max(historyBudget, ChatPage.weight(of: Array(timeline[index...])))
-                }
-                let target = timeline.first(where: { $0.message.id == id })?.id ?? id
+                rebuildNow()
+                let target = displayRows.first(where: { $0.contains(messageID: id) })?.id ?? id
                 Task { @MainActor in
                     await Task.yield()
-                    withAnimation(reduce ? nil : .smooth(duration: 0.25)) { proxy.scrollTo(target, anchor: .center) }
+                    list.scrollTo(id: target, animated: !reduce)
                 }
                 model.jumpMessage = nil
             }
             .onAppear {
-                knownAssistants = assistants
-                if !positioned {
-                    positioned = true
-                    Task { @MainActor in
-                        await Task.yield()
-                        guard followLatest && !interacting else { return }
-                        scrollPosition.scrollTo(edge: .bottom)
-                    }
-                }
+                configureList()
+                rebuildNow()
+                knownAssistants = assistantIDs(model.conversation.messages)
             }
-            .onChange(of: model.conversation.messages, initial: true) { _, _ in rebuildTimeline() }
-            .onChange(of: model.pending) { _, _ in rebuildTimeline() }
+            .onChange(of: model.conversation.messages) { _, _ in scheduleRebuild() }
+            .onChange(of: model.pending) { _, _ in rebuildNow() }
+            .onChange(of: flights.keys.sorted()) { _, _ in syncEntries() }
+            .onChange(of: historyLoading) { _, _ in syncEntries() }
+            .onChange(of: historyFailNote) { _, _ in syncEntries() }
+            .onChange(of: usedSuggestions) { _, _ in syncEntries() }
+            .onChange(of: model.moreHistory) { _, _ in syncEntries() }
                 if !atBottom {
                     Button {
-                        manuallyReading = false; followLatest = true; interacting = false
                         AmbientMotionPolicy.scrollQuiet = false
-                        // This sibling button sits outside text selection and scroll hit testing.
-                        // Animate the measured edge of this fully laid-out page.
-                        Task { @MainActor in
-                            await Task.yield()
-                            withAnimation(reduce ? nil : .easeInOut(duration: 0.48)) {
-                                scrollPosition.scrollTo(edge: .bottom)
-                            }
-                        }
+                        list.scrollToLatest(animated: !reduce)
                     } label: {
                         HStack(spacing: Space.sm) { if !unread.isEmpty { Text("\(unread.count) 条新回复").font(TypeScale.footnote.weight(.semibold)) }; Image(systemName: "arrow.down").font(TypeScale.footnote.weight(.semibold)) }
                             .foregroundStyle(Palette.textPrimary)
@@ -354,15 +185,11 @@ struct ChatView: View {
                 .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: model.interruptNote.isEmpty)
             }
             // 有对话时仍提示「等你 / 下一步」，保持 Muse 式对话重心。
-            if !model.conversation.messages.isEmpty || !rows.isEmpty {
+            if !displayRows.isEmpty {
                 ChatAttentionStrip()
             }
             // 输入区独占一整行；功能 Dock 在它下面（RootView 统一挂，打字时让位）。
-            ComposerView(focusChanged: { focused in
-                composing = focused
-                followKeyboard = focused || atBottom
-                if focused && atBottom { manuallyReading = false; followLatest = true }
-            }).padding(.horizontal, Space.lg).padding(.top, Space.xs).padding(.bottom, Space.xs)
+            ComposerView().padding(.horizontal, Space.lg).padding(.top, Space.xs).padding(.bottom, Space.xs)
             }
             }
             .clipped()
@@ -373,31 +200,27 @@ struct ChatView: View {
         .toolbar(.hidden, for: .navigationBar)
         .coordinateSpace(name: "chat-stage")
         .onPreferenceChange(ChatFramePreference.self) { values in
-            // 滚动途中 preference 几乎每帧变；只在有气泡飞行时才跟，否则跳过，避免整页重绘。
-            if interacting && flights.isEmpty { return }
-            if frames != values { frames = values }
-            for key in Array(flights.keys) {
-                if flights[key]?.layoutReady == true && flights[key]?.destination == nil, let target = values[key] { flights[key]?.destination = target }
-            }
+            // 现在只有输入框走 preference；气泡落点由格子经 chatBubbleFrameSink 上报。
+            if let composer = values["composer"], frames["composer"] != composer { frames["composer"] = composer }
         }
         .overlay(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
                 ForEach(Array(flights.values)) { flight in OutgoingBubbleFlight(flight: flight) { flights.removeValue(forKey: flight.id) } }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).allowsHitTesting(false)
         }
+        .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { stageOrigin = $0 }
         .onDisappear {
-            viewport.frames.stop()
+            list.stopMonitoring()
             AmbientMotionPolicy.scrollQuiet = false
         }
         .onChange(of: model.active) { _, active in
             if !active {
                 flights = [:]
-                viewport.frames.stop()
+                list.stopMonitoring()
                 AmbientMotionPolicy.scrollQuiet = false
             }
         }
         .onChange(of: reduce) { _, enabled in if enabled { flights = [:] } }
-        .refreshable { await model.refresh(.chat) }
         #if DEBUG
         .safeAreaInset(edge: .top, spacing: 0) {
             if model.isUITesting && ProcessInfo.processInfo.arguments.contains("--ui-incoming-control") {
@@ -407,28 +230,128 @@ struct ChatView: View {
         #endif
     }
     /// 只有最后一条是已完成的助手回复时，才在它下面挂建议卡；历史消息不挂。
-    private var suggestionHost: JSON? {
-        guard let last = rows.last, last.pending == nil, last.message["role"].string == "assistant",
+    private func suggestionHost(_ rows: [ChatDisplayRow]) -> JSON? {
+        guard let lastRow = rows.last, case .message(let last, _) = lastRow.kind, last.pending == nil, last.message["role"].string == "assistant",
               !["streaming", "running", "failed", "unknown"].contains(last.message["status"].string) else { return nil }
         return last.message
     }
-    private func rebuildTimeline() {
-        let next = ChatTimeline.rows(messages: model.conversation.messages, pending: model.pending)
-        if next != timeline {
-            // A new reply must not evict the first rendered row and shift the reader.
-            // Grow this mounted page from its stable first identity; older pages load explicitly.
-            if let first = rows.first?.id, let index = next.firstIndex(where: { $0.id == first }) {
-                historyBudget = max(historyBudget, ChatPage.weight(of: Array(next[index...])))
-            }
-            timeline = next
+    private func assistantIDs(_ messages: [JSON]) -> Set<String> {
+        Set(messages.filter { $0["role"].string == "assistant" }.map(\.id))
+    }
+    private func configureList() {
+        list.onNearBottom = { near in
+            atBottom = near
+            if near { unread = [] }
         }
+        list.onNearTop = { loadEarlier() }
+        list.onRefresh = { await model.refresh(.chat) }
+        list.content = { entry in AnyView(cell(entry)) }
+    }
+    /// 流式时消息每秒变很多次：合并成约 12 帧一次，排序和折叠放到后台算。
+    private func scheduleRebuild() {
+        guard !rebuildQueued else { return }
+        rebuildQueued = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            let messages = model.conversation.messages, pending = model.pending
+            let next = await Task.detached(priority: .userInitiated) {
+                ChatDisplay.rows(ChatTimeline.rows(messages: messages, pending: pending))
+            }.value
+            rebuildQueued = false
+            apply(next, messages: messages)
+        }
+    }
+    private func rebuildNow() {
+        let messages = model.conversation.messages
+        apply(ChatDisplay.rows(ChatTimeline.rows(messages: messages, pending: model.pending)), messages: messages)
+    }
+    private func apply(_ next: [ChatDisplayRow], messages: [JSON]) {
+        let assistants = assistantIDs(messages)
+        let new = assistants.subtracting(knownAssistants)
+        knownAssistants = assistants
+        if !historyLoading && !atBottom { unread.formUnion(new) }
+        displayRows = next
+        syncEntries()
+    }
+    private func syncEntries() {
+        var next: [ChatListEntry] = []
+        next.reserveCapacity(displayRows.count + 2)
+        if model.moreHistory && !displayRows.isEmpty { next.append(.history(loading: historyLoading, note: historyFailNote)) }
+        if displayRows.isEmpty { next.append(.empty) }
+        next.append(contentsOf: displayRows.map { .row($0, flying: flights[$0.id] != nil) })
+        if let latest = suggestionHost(displayRows), latest.id != usedSuggestions {
+            let options = ReplyOptions.options(for: latest)
+            if !options.isEmpty { next.append(.suggestions(messageID: latest.id, options: options)) }
+        }
+        if next != entries { entries = next }
+    }
+    private func loadEarlier() {
+        guard !historyLoading, model.moreHistory, historyFailNote.isEmpty else { return }
+        retryEarlier()
+    }
+    private func retryEarlier() {
+        guard !historyLoading else { return }
+        historyLoading = true
+        historyFailNote = ""
+        Task {
+            let ok = await model.loadHistory()
+            if !ok { historyFailNote = "更早的对话没读上——可再点一次" }
+            historyLoading = false
+        }
+    }
+    @ViewBuilder private func cell(_ entry: ChatListEntry) -> some View {
+        Group {
+            switch entry {
+            case .history(let loading, let note):
+                VStack(spacing: Space.sm) {
+                    Button(loading ? "正在读取…" : "更早的对话") { retryEarlier() }
+                        .buttonStyle(.secondaryAction)
+                        .disabled(loading)
+                        .accessibilityIdentifier("chat-load-history")
+                    if !note.isEmpty {
+                        Label(note, systemImage: "exclamationmark.circle")
+                            .font(TypeScale.footnote.weight(.medium))
+                            .foregroundStyle(Palette.danger)
+                            .accessibilityIdentifier("chat-history-fail")
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            case .empty:
+                ChatEmptyPresence()
+            case .suggestions(let messageID, let options):
+                SuggestionChips(messageID: messageID, options: options) { option in
+                    // 先亮一下再发；送达成功才收起整组；失败芯片回弹可重试。
+                    if !reduce { try? await Task.sleep(for: .milliseconds(200)) }
+                    let ok = await model.send(textOverride: option)
+                    if ok { usedSuggestions = messageID }
+                    return ok
+                }
+                .id(messageID)  // r2-chat 验收修正：新回复换一组卡片时重建状态，重新播弹入
+                .frame(maxWidth: .infinity, alignment: .leading)
+            case .row(let row, let flying):
+                switch row.kind {
+                case .day(let label):
+                    ChatDayAnchor(label: label)
+                case .proactiveStack(let run):
+                    ProactiveStack(id: row.id, run: run)
+                case .message(let item, let consecutive):
+                    MessageView(message: item.message, layoutID: item.id, flying: flying, pending: item.pending, isConsecutiveAgent: consecutive)
+                        .equatable()
+                }
+            }
+        }
+        .padding(.horizontal, Layout.margin)
+        .environment(model)
+        .environment(expansion)
+        .environment(\.detailSpace, detailSpace)
+        .environment(\.chatBubbleFrameSink, { id, rect in
+            let local = rect.offsetBy(dx: -stageOrigin.x, dy: -stageOrigin.y)
+            frames[id] = local
+            if flights[id]?.layoutReady == true && flights[id]?.destination == nil { flights[id]?.destination = local }
+        })
     }
 }
 
-@MainActor private final class ChatViewport {
-    var visibleRows: [String] = []
-    let frames = ScrollFrameMonitor()
-}
 
 /// 空流里的三个提示：胶囊按钮。
 private struct PromptChipStyle: ButtonStyle {
@@ -510,7 +433,7 @@ struct MessageView: View, Equatable {
             if user {
                 // 不挂 textSelection：列表滚动时 UITextInteraction 很贵；复制走长按菜单。
                 Text(text).font(TypeScale.callout).userBubble()
-                    .chatFrame(layoutID ?? message.id, enabled: flying).opacity(flying ? 0 : 1)
+                    .modifier(ChatBubbleFrameReport(id: layoutID ?? message.id, enabled: flying)).opacity(flying ? 0 : 1)
                     .accessibilityIdentifier("chat-bubble-" + message.id)
             } else {
                 VStack(alignment: .leading, spacing: Space.xs) {
@@ -524,7 +447,7 @@ struct MessageView: View, Equatable {
                                 if age >= 0, age < 3 { Haptics.success() }
                             }
                     }
-                    ClampedWhenProactive(proactive: ProactiveMessage.matches(message), text: text) {
+                    ClampedWhenProactive(id: message.id, proactive: ProactiveMessage.matches(message), text: text) {
                         ReplyText(text: text, motionID: message.id, createdAt: message["created_at"].double)
                     }
                     .foregroundStyle(Palette.textPrimary)
@@ -537,6 +460,12 @@ struct MessageView: View, Equatable {
                     }
                 }
                 .accessibilityIdentifier("agent-bubble-" + message.id)
+            }
+            if !user && !message["receipts"].array.isEmpty {
+                ReceiptStrip(receipts: message["receipts"].array)
+            }
+            if !user && !message["widgets"].array.isEmpty {
+                MessageWidgets(messageID: message.id, widgets: message["widgets"].array)
             }
             if !message["attachments"].array.isEmpty {
                 ForEach(message["attachments"].array.map(RemoteRow.init)) { row in
@@ -574,6 +503,24 @@ struct MessageView: View, Equatable {
                 MessageReplyMenuButton(message: message, sourceSession: sourceSession, user: user, text: text)
             }
             ShareLink(item: text) { Label("分享文字", systemImage: "square.and.arrow.up") }
+        }
+    }
+}
+
+/// 回复里的互动内容：原生组件和内嵌小工具都走这里，点了发的是一条真实的用户消息。
+private struct MessageWidgets: View {
+    @Environment(AppModel.self) private var model
+    let messageID: String
+    let widgets: [JSON]
+    private var html: [(Int, JSON)] { widgets.enumerated().filter { $0.element["type"].string == "html" }.map { ($0.offset, $0.element) } }
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            ReplyWidgetStack(messageID: messageID, widgets: widgets) { text in await model.send(textOverride: text) }
+            ForEach(html, id: \.0) { index, widget in
+                ReplyHTMLWidget(id: "\(messageID):\(index)", title: widget["title"].string, html: widget["html"].string) { text in
+                    Task { _ = await model.send(textOverride: text) }
+                }
+            }
         }
     }
 }
@@ -926,14 +873,7 @@ struct ComposerView: View {
 enum ProactiveMessage {
     /// 不是被我问出来的、由后台主动写进对话的助手消息（回执通道 task_receipt 的 request_id 都以此开头）。
     static func matches(_ message: JSON) -> Bool {
-        message["role"].string == "assistant" && message["request_id"].string.hasPrefix("task-result:")
-    }
-    /// 从 start 起连续的主动消息，最后一条（最新）不在内——它单独完整显示。
-    static func run(in rows: [ChatTimelineRow], from start: Int) -> [ChatTimelineRow] {
-        var out: [ChatTimelineRow] = []
-        var i = start
-        while i + 1 < rows.count, matches(rows[i].message), matches(rows[i + 1].message) { out.append(rows[i]); i += 1 }
-        return out
+        ChatDisplay.isProactive(message)
     }
     /// 折叠行里的一句话：去掉 markdown 标记，取第一行。
     static func preview(_ text: String) -> String {
@@ -944,14 +884,16 @@ enum ProactiveMessage {
 
 /// N 条连续的主动消息折成一行；点开在原位展开，再点收起。
 struct ProactiveStack: View {
+    let id: String
     let run: [ChatTimelineRow]
-    @State private var open = false
+    @Environment(ChatExpansion.self) private var expansion
     @Environment(\.accessibilityReduceMotion) private var reduce
+    private var open: Bool { expansion.isOpen(id) }
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             Button {
                 Haptics.selection()
-                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { open.toggle() }
+                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { expansion.toggle(id) }
             } label: {
                 HStack(spacing: Space.sm) {
                     Image(systemName: "bell.badge").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accentText)
@@ -984,10 +926,12 @@ struct ProactiveStack: View {
 
 /// 主动消息超过约 6 行时收起，底部渐隐 +「展开」；普通对话回复原样不动。
 struct ClampedWhenProactive<Content: View>: View {
+    let id: String
     let proactive: Bool
     let text: String
     @ViewBuilder var content: () -> Content
-    @State private var open = false
+    @Environment(ChatExpansion.self) private var expansion
+    private var open: Bool { expansion.isOpen("clamp:" + id) }
     private var long: Bool { proactive && (text.count > 150 || text.filter { $0 == "\n" }.count >= 5) }
     var body: some View {
         if long && !open {
@@ -996,7 +940,7 @@ struct ClampedWhenProactive<Content: View>: View {
                 .clipped()
                 .mask(LinearGradient(stops: [.init(color: .black, location: 0.7), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
                 .overlay(alignment: .bottomLeading) {
-                    Button("展开全文") { withAnimation(ComMotion.settle) { open = true } }
+                    Button("展开全文") { withAnimation(ComMotion.settle) { expansion.set("clamp:" + id, true) } }
                         .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.accentText)
                         .accessibilityIdentifier("proactive-expand")
                 }
@@ -1004,7 +948,7 @@ struct ClampedWhenProactive<Content: View>: View {
             VStack(alignment: .leading, spacing: Space.xs) {
                 content()
                 if long {
-                    Button("收起") { withAnimation(ComMotion.settle) { open = false } }
+                    Button("收起") { withAnimation(ComMotion.settle) { expansion.set("clamp:" + id, false) } }
                         .font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
                 }
             }

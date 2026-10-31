@@ -12,11 +12,19 @@ from pathlib import Path
 # 回复正文里提到的工作区文件（`work/航程产出/…html`、`~/AI_Work_System/work/…`）：自动登记成可点开的成果。
 TEXT_PATH = re.compile(r'(?:~/AI_Work_System/|/Users/[^/\s]+/AI_Work_System/)?((?:work|research|life|projects)/[^\s`\'"“”「」（）()，。、；]+?\.(?:html|md|pdf|png|jpe?g|csv|xlsx|docx|pptx))')
 OUTPUTS = Path('work') / '航程产出'
+# 工作区之外，Agent 常把成品放在这两处（如 ~/Documents/youtube/processed/…/report.html）。
+EXTRA_ROOTS = ('Documents', 'Downloads')
+_EXT = r'\.(?:html|md|pdf|png|jpe?g|csv|xlsx|docx|pptx)'
+_NAME = r"[^\s`'\"“”「」（）()，。、；]+?"
+ABSOLUTE_PATH = re.compile(r'((?:~|/Users/[^/\s]+)/(?:Documents|Downloads)/' + _NAME + _EXT + ')')
+# 只写了文件名：到航程产出目录里找。
+BARE_NAME = re.compile(r'(?<![/\w.\-一-鿿])([\w一-鿿][\w一-鿿.\-]*' + _EXT + r')(?![\w.])')
 SHELF = {'.html', '.md', '.pdf', '.png', '.jpg', '.jpeg'}
 ALLOWED = {'.pdf','.png','.jpg','.jpeg','.webp','.gif','.md','.html','.txt','.csv','.docx','.xlsx','.pptx','.mov','.mp4','.patch'}
 class ArtifactAccess:
     def __init__(self, tasks, workspace, state=None):
         self.tasks, self.workspace = tasks, Path(workspace).resolve()
+        self.extra_roots = [(self.workspace.parent / name).resolve() for name in EXTRA_ROOTS]
         self.path=Path(state)/'artifacts.sqlite' if state else None
         if self.path:
             with closing(sqlite3.connect(self.path)) as db:
@@ -26,7 +34,7 @@ class ArtifactAccess:
             self.path.chmod(0o600)
 
     def register(self, message_id, relative_path):
-        raw=Path(relative_path)
+        raw=Path(str(relative_path)).expanduser()
         if not raw.is_absolute():raw=self.workspace/raw
         path=self._safe(raw)
         aid='art_'+hashlib.sha256(('message:'+message_id+'\0'+str(path)).encode()).hexdigest()[:32]
@@ -42,12 +50,37 @@ class ArtifactAccess:
     def link_text(self, message_id, text):
         """正文里提到的文件逐个登记；不在工作区、不存在、类型不允许的跳过。"""
         out, seen = [], set()
-        for rel in TEXT_PATH.findall(text or ''):
+        text = text or ''
+        candidates = TEXT_PATH.findall(text) + ABSOLUTE_PATH.findall(text)
+        stripped = TEXT_PATH.sub(' ', text)
+        stripped = ABSOLUTE_PATH.sub(' ', stripped)
+        for name in BARE_NAME.findall(stripped):
+            if (self.workspace / OUTPUTS / name).is_file():
+                candidates.append(str(OUTPUTS / name))
+        for rel in candidates:
             if rel in seen:
                 continue
             seen.add(rel)
             try:
                 out.append(self.register(message_id, rel))
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+        return out
+
+    def link_turn_files(self, message_id, since, paths):
+        """这一轮工具提到的文件里确实刚写出来的，加上航程产出目录里的新文件。"""
+        out, seen = [], set()
+        folder = self.workspace / OUTPUTS
+        fresh = [p for p in folder.iterdir() if p.suffix.lower() in SHELF and not p.name.startswith(('.', '_'))] if folder.is_dir() else []
+        for raw in [Path(str(p)).expanduser() for p in paths] + fresh:
+            path = raw if raw.is_absolute() else self.workspace / raw
+            if str(path) in seen:
+                continue
+            seen.add(str(path))
+            try:
+                if path.stat().st_mtime < since:
+                    continue
+                out.append(self.register(message_id, path))
             except (PermissionError, FileNotFoundError, OSError):
                 continue
         return out
@@ -93,9 +126,10 @@ class ArtifactAccess:
 
     def _safe(self, raw):
         path=raw.resolve()
-        if not path.is_relative_to(self.workspace) or raw.is_symlink() or path.suffix.lower() not in ALLOWED:
+        root=next((r for r in [self.workspace,*self.extra_roots] if path.is_relative_to(r)),None)
+        if root is None or raw.is_symlink() or path.suffix.lower() not in ALLOWED:
             raise PermissionError('不允许访问该成果')
-        if any(part.startswith('.') for part in path.relative_to(self.workspace).parts):
+        if any(part.startswith('.') for part in path.relative_to(root).parts):
             raise PermissionError('隐藏文件不是公开成果')
         if not path.is_file():
             raise FileNotFoundError(path.name)

@@ -12,67 +12,188 @@ struct DeviceReceiptsView: View {
     @State private var loading = false
     @State private var failNote = ""
     @State private var loadedOnce = false
+    @State private var report: [JSON] = []
+    @State private var reportLoaded = false
+    @State private var reportLoading = false
+    @State private var reportFail = ""
+    private static let domains: [(String, String)] = [
+        ("calendar", "日历"), ("reminders", "提醒事项"), ("contacts", "联系人"),
+        ("health", "健康"), ("location", "位置"), ("", "设备")]
+    private static let actionNames: [String: String] = [
+        "calendar.list": "读日历", "calendar.create": "写日历", "calendar.update": "改日历", "calendar.delete": "删日历事件",
+        "reminders.list": "读提醒", "reminders.create": "加提醒", "reminders.update": "改提醒", "reminders.delete": "删提醒",
+        "contacts.search": "查联系人", "contacts.create": "新建联系人", "contacts.update": "改联系人", "contacts.delete": "删联系人",
+        "health.summary": "读健康摘要", "location.last": "读最近位置",
+        "apps.list": "读应用列表", "apps.usage": "读应用使用时长", "apps.launch": "打开应用",
+        "notifications.list": "读通知", "notifications.dismiss": "清除通知",
+        "alarm.set": "设闹钟", "alarm.show": "看闹钟", "media.list": "读相册",
+        "device.status": "读设备状态", "device.vibrate": "震动", "device.torch": "开关手电筒", "device.volume": "调音量"]
+    private func toolName(_ tool: String) -> String { Self.actionNames[tool] ?? tool }
+    private func domainKey(_ tool: String) -> String {
+        let head = String(tool.split(separator: ".").first ?? "")
+        return Self.domains.contains { $0.0 == head } ? head : ""
+    }
+    private func reportRows(_ key: String) -> [JSON] { report.filter { domainKey($0["tool"].string) == key } }
+
     var body: some View {
-        ScrollPage(spacing: Space.md) {
-            Text("在这台手机上动过设备的事都留底；能撤销的会给你按钮，不确定的先查回执，别连点两次。")
-                .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
-                .modifier(EnterRise(on: land, delay: 0, y: 10, blur: 4, animation: ComMotion.rise))
-            if loading || !loadedOnce {
-                HStack(spacing: Space.sm) {
-                    ProgressView().controlSize(.small)
-                    Text("正在拉齐设备回执…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-                }
-                .accessibilityLabel("正在拉齐设备回执")
-                .accessibilityIdentifier("device-receipts-pulling")
+        ScrollPage(spacing: Space.xl) {
+            GroupSection("Com 能做什么", footer: "这些数据由手机发到你自己的 Mac mini，不经过别的服务器。") {
+                capabilityBody
             }
-            if !failNote.isEmpty {
-                InlineNotice(text: failNote, tone: .danger)
-                Button(loading ? "重试中…" : "再试一次") {
-                    guard !loading else { return }
-                    reloadReceipts()
-                }
-                .buttonStyle(.secondaryCompact)
-                .disabled(loading)
-                .accessibilityIdentifier("device-receipts-retry")
-            }
-            if records.isEmpty && loadedOnce && !loading {
-                EmptyState(title: failNote.isEmpty ? "还没有设备操作回执" : "回执还没读上",
-                           description: failNote.isEmpty
-                            ? "用语音或聊天让我操作本机时，结果会记在这里——方便你核对，也能撤销。"
-                            : "先重试拉齐本机回执；撤销前请先确认列表能读到。",
-                           symbol: "checkmark.seal")
-                    .modifier(EnterRise(on: land, delay: 0.04, y: 12, blur: 5, animation: ComMotion.pop))
-            }
-            if !note.isEmpty { InlineNotice(text: note, tone: noteFailed ? .danger : .neutral) }
-            ForEach(Array(records.map(RemoteRow.init).enumerated()), id: \.element.id) { index, row in
-                Card {
-                    VStack(alignment: .leading, spacing: Space.md) {
-                        HStack {
-                            Text(row.value["tool"].string).font(TypeScale.headline)
-                            Spacer()
-                            StatusPill(text: displayStatus(row.value["status"].string), tone: row.value["status"].string == "succeeded" ? .success : statusTone(row.value["status"].string))
-                        }
-                        RawDetails(title: "回读与操作证据", value: row.value["result"])
-                        if row.value["status"].string == "succeeded" && row.value["result"]["verified"].bool && !row.value["result"]["undo"].isNull {
-                            Button(role: .destructive) { Task { await undo(row.value) } } label: {
-                                Text(working ? "撤销中…" : (row.value["undo_requested"].bool ? "已申请撤销，请核对回执" : "撤销此操作"))
-                            }
-                            .buttonStyle(.quiet)
-                            .disabled(working || row.value["undo_requested"].bool)
-                            .opacity(working || row.value["undo_requested"].bool ? 0.5 : 1)
-                            .accessibilityIdentifier("device-undo-" + row.id)
-                        }
-                    }
-                }
-                .modifier(EnterRise(on: land, delay: 0.06 + Double(min(index, 6)) * ComMotion.stagger, y: 10, blur: 4, animation: ComMotion.pop))
+            .modifier(EnterRise(on: land, delay: 0, y: 10, blur: 4, animation: ComMotion.rise))
+            GroupSection("最近的操作", footer: "在这台手机上动过设备的事都留底；能撤销的会给你按钮，不确定的先查回执，别连点两次。") {
+                receiptsBody
             }
         }
-        .navigationTitle("设备回执").navigationBarTitleDisplayMode(.inline)
-        .refreshable { reloadReceipts() }
+        .navigationTitle("这台手机").navigationBarTitleDisplayMode(.inline)
+        .refreshable {
+            reloadReceipts()
+            await loadReport()
+        }
         .onAppear {
             reloadReceipts()
             if reduce { land = true }
             else { withAnimation(ComMotion.lift) { land = true } }
+        }
+        .task { await loadReport() }
+    }
+
+    @ViewBuilder private var capabilityBody: some View {
+        if !reportFail.isEmpty {
+            InlineNotice(text: reportFail, tone: .danger)
+            Button(reportLoading ? "重试中…" : "再试一次") { Task { await loadReport() } }
+                .buttonStyle(.secondaryCompact).disabled(reportLoading)
+                .accessibilityIdentifier("capability-report-retry")
+        }
+        if reportLoading && !reportLoaded {
+            HStack(spacing: Space.sm) {
+                ProgressView().controlSize(.small)
+                Text("正在读取能力清单…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            }
+        }
+        if reportLoaded && report.isEmpty && reportFail.isEmpty {
+            EmptyState(title: "还没登记任何能力", description: "手机连上 mini 并授权后，这里会列出 Com 能做的事。", symbol: "iphone")
+        }
+        ForEach(Self.domains, id: \.0) { key, title in
+            let rows = reportRows(key)
+            if !rows.isEmpty {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    Text(title).font(TypeScale.callout).foregroundStyle(Palette.textSecondary).padding(.horizontal, Space.xs)
+                    GroupedCard {
+                        ForEach(rows, id: \.["tool"].string) { capabilityRow($0) }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                }
+            }
+        }
+    }
+
+    private func capabilityRow(_ item: JSON) -> some View {
+        let granted = item["permission"].bool
+        let available = item["available"].bool || item["available"].isNull
+        let success = item["last_success_at"].double
+        let failedAt = item["last_failed_at"].double
+        let deniedAt = item["last_denied_at"].double
+        let reason = item["last_failed_reason"].string
+        return VStack(alignment: .leading, spacing: Space.xs) {
+            HStack {
+                Text(toolName(item["tool"].string)).font(TypeScale.headline)
+                Spacer(minLength: Space.sm)
+                StatusPill(text: !available ? "不支持" : granted ? "已授权" : "未授权",
+                           tone: !available ? .neutral : granted ? .success : .warning)
+            }
+            if success > 0 {
+                Text("最近成功 " + relativeTime(success) + "，" + (item["via_sync"].bool ? "后台同步" : "聊天里用的")
+                     + (item["recent_7d"].int > 0 ? "；近 7 天 \(item["recent_7d"].int) 次" : ""))
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+            } else if granted && available {
+                Text("还没用过").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            }
+            if deniedAt > 0 && deniedAt >= success {
+                Text("被拒绝于 " + relativeTime(deniedAt) + "：手机上没给这项权限")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.warning)
+            }
+            if failedAt > 0 && failedAt >= success && !reason.isEmpty {
+                Text("失败于 " + relativeTime(failedAt) + "：" + reason)
+                    .font(TypeScale.footnote).foregroundStyle(Palette.danger)
+            }
+            if !granted && available {
+                Button("去设置") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                }
+                .buttonStyle(.secondaryCompact)
+                .accessibilityIdentifier("capability-settings-" + item["tool"].string)
+            }
+        }
+        .rowPadding()
+    }
+
+    @ViewBuilder private var receiptsBody: some View {
+        if loading || !loadedOnce {
+            HStack(spacing: Space.sm) {
+                ProgressView().controlSize(.small)
+                Text("正在拉齐设备回执…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            }
+            .accessibilityLabel("正在拉齐设备回执")
+            .accessibilityIdentifier("device-receipts-pulling")
+        }
+        if !failNote.isEmpty {
+            InlineNotice(text: failNote, tone: .danger)
+            Button(loading ? "重试中…" : "再试一次") {
+                guard !loading else { return }
+                reloadReceipts()
+            }
+            .buttonStyle(.secondaryCompact)
+            .disabled(loading)
+            .accessibilityIdentifier("device-receipts-retry")
+        }
+        if records.isEmpty && loadedOnce && !loading {
+            EmptyState(title: failNote.isEmpty ? "还没有设备操作回执" : "回执还没读上",
+                       description: failNote.isEmpty
+                        ? "用语音或聊天让我操作本机时，结果会记在这里——方便你核对，也能撤销。"
+                        : "先重试拉齐本机回执；撤销前请先确认列表能读到。",
+                       symbol: "checkmark.seal")
+        }
+        if !note.isEmpty { InlineNotice(text: note, tone: noteFailed ? .danger : .neutral) }
+        ForEach(Array(records.map(RemoteRow.init).enumerated()), id: \.element.id) { index, row in
+            Card {
+                VStack(alignment: .leading, spacing: Space.md) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: Space.xxs) {
+                            Text(toolName(row.value["tool"].string)).font(TypeScale.headline)
+                            let when = relativeTime(row.value["finished_at"].double)
+                            if !when.isEmpty { Text(when).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary) }
+                        }
+                        Spacer()
+                        StatusPill(text: displayStatus(row.value["status"].string), tone: row.value["status"].string == "succeeded" ? .success : statusTone(row.value["status"].string))
+                    }
+                    RawDetails(title: "技术细节", value: row.value["result"])
+                    if row.value["status"].string == "succeeded" && row.value["result"]["verified"].bool && !row.value["result"]["undo"].isNull {
+                        Button(role: .destructive) { Task { await undo(row.value) } } label: {
+                            Text(working ? "撤销中…" : (row.value["undo_requested"].bool ? "已申请撤销，请核对回执" : "撤销此操作"))
+                        }
+                        .buttonStyle(.quiet)
+                        .disabled(working || row.value["undo_requested"].bool)
+                        .opacity(working || row.value["undo_requested"].bool ? 0.5 : 1)
+                        .accessibilityIdentifier("device-undo-" + row.id)
+                    }
+                }
+            }
+            .modifier(EnterRise(on: land, delay: 0.06 + Double(min(index, 6)) * ComMotion.stagger, y: 10, blur: 4, animation: ComMotion.pop))
+        }
+    }
+
+    private func loadReport() async {
+        guard !reportLoading else { return }
+        reportLoading = true
+        defer { reportLoading = false; reportLoaded = true }
+        let path = "/personal/devices/" + model.devices.nodeID.pathEncoded + "/capability-report"
+        if let data = await model.load(path) {
+            report = data["items"].array
+            reportFail = ""
+        } else {
+            let err = model.errors[path] ?? ""
+            reportFail = "能力清单没读上" + (err.isEmpty ? "" : "：" + err) + "——可再试"
         }
     }
     private func reloadReceipts() {

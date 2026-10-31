@@ -68,3 +68,78 @@ public enum ChatPage {
         return Array(rows.suffix(count))
     }
 }
+
+/// 一行真正要画的东西。折叠进主动消息堆的行不再占位，日期条也是一行，列表层只管摆放。
+public struct ChatDisplayRow: Identifiable, Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        case day(String)
+        case message(ChatTimelineRow, consecutiveAgent: Bool)
+        case proactiveStack([ChatTimelineRow])
+    }
+    public let id: String
+    public let kind: Kind
+
+    /// 这一行是否画了某条消息（跳转定位用：消息可能折在主动消息堆里）。
+    public func contains(messageID: String) -> Bool {
+        switch kind {
+        case .day: return false
+        case .message(let row, _): return row.message.id == messageID || row.id == messageID
+        case .proactiveStack(let run): return run.contains { $0.message.id == messageID || $0.id == messageID }
+        }
+    }
+}
+
+public enum ChatDisplay {
+    /// 后台主动写进对话的助手消息（回执通道的 request_id 都以此开头）。
+    public static func isProactive(_ message: JSON) -> Bool {
+        message["role"].string == "assistant" && message["request_id"].string.hasPrefix("task-result:")
+    }
+
+    /// 带附件或互动内容的主动消息要能直接点，不折进堆里。
+    static func isFoldable(_ message: JSON) -> Bool {
+        isProactive(message) && message["artifacts"].array.isEmpty && message["widgets"].array.isEmpty
+    }
+
+    /// 早于这个时间戳的是测试夹具的小序号，不当真实日期。
+    private static let earliestRealDate = 1_000_000_000.0
+
+    public static func rows(_ rows: [ChatTimelineRow], calendar: Calendar = .current) -> [ChatDisplayRow] {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "M月d日 EEE"
+        var out: [ChatDisplayRow] = []
+        out.reserveCapacity(rows.count + 16)
+        var lastDay: DateComponents?
+        var index = 0
+        while index < rows.count {
+            let row = rows[index]
+            let stamp = row.message["created_at"].double
+            if stamp >= earliestRealDate {
+                let date = Date(timeIntervalSince1970: stamp)
+                let day = calendar.dateComponents([.year, .month, .day], from: date)
+                if day != lastDay {
+                    lastDay = day
+                    out.append(ChatDisplayRow(id: "day:\(day.year ?? 0)-\(day.month ?? 0)-\(day.day ?? 0)", kind: .day(formatter.string(from: date))))
+                }
+            }
+            // 连续主动消息：除最新一条外折成一堆，最新那条照常显示。
+            if isFoldable(row.message) {
+                var end = index
+                while end + 1 < rows.count, isFoldable(rows[end + 1].message) { end += 1 }
+                if end > index {
+                    let run = Array(rows[index..<end])
+                    out.append(ChatDisplayRow(id: "stack:" + row.id, kind: .proactiveStack(run)))
+                    index = end
+                    continue
+                }
+            }
+            let previousIsAgent = index > 0 && rows[index - 1].message["role"].string == "assistant"
+            let isAgent = row.message["role"].string == "assistant"
+            out.append(ChatDisplayRow(id: row.id, kind: .message(row, consecutiveAgent: isAgent && previousIsAgent)))
+            index += 1
+        }
+        return out
+    }
+}

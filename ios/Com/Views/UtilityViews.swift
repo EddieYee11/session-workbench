@@ -643,11 +643,23 @@ struct ArtifactList: View {
     @State private var retryItem: JSON?
     /// HTML 勾选/输入态写回失败时提示（原先 try? 静默吞掉）。
     @State private var saveNote = ""
+    private func isPage(_ artifact: JSON) -> Bool {
+        let name = artifact["name"].string.isEmpty ? artifact["path"].string : artifact["name"].string
+        return name.lowercased().hasSuffix(".html")
+    }
+    private var pages: [JSON] { artifacts.filter(isPage) }
+    private var files: [JSON] { artifacts.filter { !isPage($0) } }
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             if chips && !artifacts.isEmpty {
+                // 网页成品最常要打开：单独一张整行大卡，点一下全屏看。其余文件是两列小片。
+                ForEach(Array(pages.enumerated()), id: \.offset) { _, artifact in
+                    Button { Task { await open(artifact) } } label: { PageArtifactCard(artifact: artifact, loading: loading == artifact.id) }
+                        .buttonStyle(SoftPressStyle(scale: 0.98)).disabled(loading != nil)
+                        .accessibilityIdentifier("artifact-page-" + artifact.id)
+                }
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.sm), GridItem(.flexible(), spacing: Space.sm)], spacing: Space.sm) {
-                    ForEach(Array(artifacts.enumerated()), id: \.offset) { _, artifact in
+                    ForEach(Array(files.enumerated()), id: \.offset) { _, artifact in
                         Button { Task { await open(artifact) } } label: { AttachmentChip(artifact: artifact, loading: loading == artifact.id) }
                             .buttonStyle(.plain).disabled(loading != nil)
                     }
@@ -781,6 +793,38 @@ struct ArtifactList: View {
         }
     }
 }
+/// 聊天里的网页成品：名字放大，整张卡都能点，不用再去「动态」或「成果」里找。
+private struct PageArtifactCard: View {
+    let artifact: JSON
+    let loading: Bool
+    private var title: String {
+        let name = artifact["name"].string.isEmpty ? URL(fileURLWithPath: artifact["path"].string).lastPathComponent : artifact["name"].string
+        return URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
+    }
+    private var missing: Bool { artifact["availability"].string == "missing" }
+    var body: some View {
+        HStack(spacing: Space.md) {
+            Image(systemName: "safari")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(Palette.accentText)
+                .frame(width: 44, height: 44)
+                .background(Palette.accent.opacity(0.22), in: .rect(cornerRadius: Radius.sm, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(TypeScale.rowTitle).foregroundStyle(Palette.textPrimary).lineLimit(2).multilineTextAlignment(.leading)
+                Text(missing ? "文件已移动或不存在" : "网页 · 点开就能看").font(TypeScale.footnote).foregroundStyle(missing ? Palette.warning : Palette.textTertiary)
+            }
+            Spacer(minLength: 0)
+            if loading { ProgressView().controlSize(.small) } else { Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.textTertiary) }
+        }
+        .padding(Space.md)
+        .background(Palette.surface, in: .rect(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous).strokeBorder(Palette.separator, lineWidth: 0.5))
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title + "，打开网页")
+    }
+}
+
 private struct AttachmentChip: View {
     let artifact: JSON
     let loading: Bool

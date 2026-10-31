@@ -18,6 +18,7 @@ from reactions import ReactionStore, install_schema, project_message
 from message_references import canonical_reference, reference_identity, referenced_input
 from work_cards import accepted, linked_card, project_work
 from reply_options import split_options, strip_partial
+from reply_widgets import split_widgets, strip_partial_widget
 
 
 # 主对话每轮都注入任务上下文，所以只给身份、路由和短摘要；
@@ -138,6 +139,9 @@ class HermesClient:
                     raise RuntimeError("hermes_truncated_event")
 
 
+TURN_FILE = re.compile(r'((?:~|/)[^\s"\'`<>|;&]+\.(?:html|pdf|md|png|jpe?g|csv|xlsx|docx|pptx))')
+
+
 class PersonalConversation:
     def __init__(self, state: Path, client: HermesClient | None = None):
         self.path = state / "personal-conversation.sqlite"
@@ -148,6 +152,10 @@ class PersonalConversation:
         self.client = client or HermesClient(state)
         # 10-25：回复里提到的产出文件自动挂成卡片（app 注入 ArtifactAccess.link_text）
         self.artifact_linker = None
+        self.task_artifacts = None
+        self.receipts_source = None
+        self.turn_file_linker = None
+        self._turn_files = {}
         self.reactions = ReactionStore(state)
         self.wake = asyncio.Event()
         self.changed = asyncio.Condition()
@@ -234,6 +242,7 @@ class PersonalConversation:
                        (key, key, parent_id, 'assistant', text, 'completed', 'completed', revision, at, at))
         self._notify()
         self._link_artifacts(key, text)
+        self._link_task_artifacts(key, task_id)
 
     def backfill_artifacts(self, days: int = 14) -> int:
         """近 days 天的回复里提到了产出文件、却没挂卡片的：补挂一次（幂等）。"""
@@ -246,6 +255,33 @@ class PersonalConversation:
             self._link_artifacts(row["id"], row["text"])
         return len(rows)
 
+    def _link_task_artifacts(self, message_id: str, task_id: str) -> None:
+        """任务 / 航程做完时，产物直接挂到回执消息上，不用再去动态页找。"""
+        if not self.task_artifacts:
+            return
+        try:
+            for artifact in self.task_artifacts(task_id, message_id):
+                self.attach_artifact(message_id, artifact)
+        except Exception:
+            pass  # 登记失败不影响回执本身
+
+    def _note_turn_file(self, mid: str, payload: dict) -> None:
+        """工具开始时记下这一轮的起点，以及预览里提到的文件路径。"""
+        turn = self._turn_files.setdefault(mid, {"since": time.time() - 2, "paths": set()})
+        preview = payload.get("preview")
+        if isinstance(preview, str):
+            turn["paths"].update(TURN_FILE.findall(preview))
+
+    def _link_turn_files(self, message_id: str, since: float, paths) -> None:
+        """这一轮工具写出的文件，以及航程产出目录里新出现的文件。回复没提路径也要挂上。"""
+        if not self.turn_file_linker:
+            return
+        try:
+            for artifact in self.turn_file_linker(message_id, since, paths):
+                self.attach_artifact(message_id, artifact)
+        except Exception:
+            pass
+
     def _link_artifacts(self, message_id: str, text: str) -> None:
         if not self.artifact_linker or not text:
             return
@@ -254,6 +290,19 @@ class PersonalConversation:
                 self.attach_artifact(message_id, artifact)
         except Exception:
             pass  # 登记失败不影响回复本身
+
+    def _with_receipts(self, messages: list[dict]) -> list[dict]:
+        """操作记在用户那条消息上，回执显示在它的回复下面。"""
+        if not self.receipts_source:
+            return messages
+        try:
+            receipts = self.receipts_source()
+        except Exception:
+            return messages  # 回执读不到不能影响聊天
+        for message in messages:
+            if message["role"] == "assistant" and message.get("parent_id") in receipts:
+                message["receipts"] = receipts[message["parent_id"]]
+        return messages
 
     def task_receipt_for_message(self, task_id: str, text: str, parent_id: str):
         return self.task_receipt(task_id, text, parent_id)
@@ -350,11 +399,14 @@ class PersonalConversation:
         suggestions = json.loads(raw_suggestions) if isinstance(raw_suggestions, str) else (raw_suggestions or [])
         if message["role"] == "assistant" and isinstance(message["text"], str):
             if message["status"] == "streaming":
-                message["text"] = strip_partial(message["text"])
+                message["text"] = strip_partial_widget(strip_partial(message["text"]))
             else:
                 message["text"], parsed = split_options(message["text"])
                 suggestions = suggestions or parsed
         message["suggestions"] = suggestions
+        message["widgets"] = []
+        if message["role"] == "assistant" and message["status"] != "streaming":
+            message["text"], message["widgets"] = split_widgets(message["text"])
         return project_work(message)
 
     def attach_artifact(self, message_id, artifact):
@@ -417,7 +469,7 @@ class PersonalConversation:
             ).fetchall()
             runs = self._active_runs(db)
             tasks = [json.loads(r[0]) for r in db.execute('SELECT data FROM ledger_cards ORDER BY revision')]
-        messages = [self._project_message(row) for row in reversed(rows)]
+        messages = self._with_receipts([self._project_message(row) for row in reversed(rows)])
         return {
             "conversation_id": "personal-main", "revision": revision,
             "messages": messages, "runs": runs, "tasks": tasks,
@@ -435,7 +487,7 @@ class PersonalConversation:
             ).fetchall()
             runs = self._active_runs(db)
             tasks = [json.loads(r[0]) for r in db.execute('SELECT data FROM ledger_cards WHERE revision>? AND revision<=? ORDER BY revision', (revision, current))]
-        messages = [self._project_message(row) for row in rows]
+        messages = self._with_receipts([self._project_message(row) for row in rows])
         return {
             "conversation_id": "personal-main", "revision": current,
             "messages": messages, "runs": runs, "changed_tasks": tasks,
@@ -462,7 +514,7 @@ class PersonalConversation:
                     rows = db.execute(self._message_query("ORDER BY created_at DESC,id DESC LIMIT ?"), (limit,)).fetchall()
                 rows = list(reversed(rows))
             more = bool(rows and db.execute("SELECT 1 FROM messages WHERE (created_at,id)<(?,?) LIMIT 1", (rows[0]["created_at"], rows[0]["id"])).fetchone())
-        return {"messages": [self._project_message(r) for r in rows], "has_more": more,
+        return {"messages": self._with_receipts([self._project_message(r) for r in rows]), "has_more": more,
                 "next_before": rows[0]["id"] if more else ""}
 
     def search(self, query: str = "", date: str = "", limit: int = 40) -> dict:
@@ -820,6 +872,9 @@ class PersonalConversation:
         self._notify()
         if reply:
             self._link_artifacts(reply["id"], reply["text"])
+            turn = self._turn_files.pop(mid, None)
+            if turn:
+                self._link_turn_files(reply["id"], turn["since"], turn["paths"])
 
     def _delivery(self, mid: str, state: str) -> None:
         with self.db() as db:
@@ -1112,6 +1167,7 @@ class PersonalConversation:
                     elif event == "tool.started":
                         flush()
                         name = payload.get("tool_name")
+                        self._note_turn_file(mid, payload)
                         self._set(
                             mid, "running", phase="executing",
                             active_tool=name[:120] if isinstance(name, str) else None,

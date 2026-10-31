@@ -94,6 +94,7 @@ work_proposals = WorkProposalStore(STATE, HOME / "AI_Work_System")
 task_store = TaskStore(STATE)
 artifact_access = ArtifactAccess(task_store, HOME / "AI_Work_System", STATE)
 conversation.artifact_linker = artifact_access.link_text
+conversation.turn_file_linker = artifact_access.link_turn_files
 attachment_store = AttachmentStore(STATE)
 task_controller = TaskController(task_store, runtime, conversation)
 heartbeat = Heartbeat(
@@ -185,6 +186,7 @@ next_steps.runsheets = runsheets
 from activity import Activity
 
 activity = Activity(STATE / "tool-effects.sqlite", conversation, task_store)
+conversation.receipts_source = activity.receipts_by_message
 from herdr_bridge import HerdrBridge
 from rex_bridge import RexBridge
 
@@ -2115,6 +2117,14 @@ async def device_invoke(node: str, request: Request):
     )
 
 
+@app.get("/personal/devices/{node}/capability-report")
+async def device_capability_report(node: str):
+    try:
+        return await asyncio.to_thread(device_nodes.capability_report, node)
+    except KeyError:
+        raise HTTPException(404, "设备不存在")
+
+
 @app.get("/personal/invocations/{invocation_id}")
 async def device_invocation(invocation_id: str):
     row = device_nodes.get(invocation_id)
@@ -2484,6 +2494,7 @@ cases = Cases(
     next_steps=next_steps,
     brief=case_brief if MAIN_AGENT == "hermes" else None,
 )
+conversation.task_artifacts = cases.artifacts_for
 agent_tools.cases = cases
 cases.artifact_access = artifact_access
 tomorrow_plan = TomorrowPlan(STATE, next_steps, today_view, cases, conversation)

@@ -129,6 +129,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
     /// 定位某条消息失败开口（搜索/线索/推送；别只靠 banner alert）。
     var locateNote = ""
     var moreHistory = true
+    /// 他亲手点了重新整理，等结果中。
+    var nextUserRefresh = false
     var voice = VoiceRecorder()
     var devices: DeviceBridge!
     private var api: APIClient?
@@ -1475,7 +1477,8 @@ extension AppModel {
             conversation.messages = (0..<35).map { i in .object(["id": .string("history-\(i)"), "role": .string(i % 2 == 0 ? "user" : "assistant"), "text": .string("历史消息 \(i)。保留阅读位置，也能顺畅查看新消息。"), "created_at": .number(Double(i)), "status": .string("completed")]) }
         }
         if ProcessInfo.processInfo.arguments.contains("--ui-stress-chat") {
-            conversation.messages = (0..<301).map { i in
+            let stressCount = ProcessInfo.processInfo.arguments.contains("--ui-stress-1500") ? 1501 : 301
+            conversation.messages = (0..<stressCount).map { i in
                 let text = i % 3 == 1 ? "## 回复 \(i)\n\n" + String(repeating: "这一段包含**重点**、上下文与核验说明。长消息也应顺畅阅读。\n\n", count: 12) : "历史消息 \(i)。保持阅读位置，回到最新可可靠到达。"
                 return .object(["id": .string("stress-\(i)"), "role": .string(i % 2 == 0 ? "user" : "assistant"), "text": .string(text), "created_at": .number(Double(i)), "status": .string("completed")])
             }
@@ -1484,10 +1487,13 @@ extension AppModel {
         if ProcessInfo.processInfo.arguments.contains("--ui-rich-reply") {
             conversation.messages = [.object(["id": .string("rich-preview"), "role": .string("assistant"), "text": .string("## 今日重点\n\n**先完成核心任务**，再处理零散事项。\n\n### 下一步\n\n- 梳理项目资料\n- 确认交付时间\n\n> 来源与建议分开核对。")])]
         }
+        if ProcessInfo.processInfo.arguments.contains("--ui-reply-widgets") {
+            conversation.messages = [.object(["id": .string("widgets-preview"), "role": .string("assistant"), "text": .string("互动组件演示"), "status": .string("completed"), "receipts": .array([.object(["key": .string("r1"), "tool": .string("calendar_event"), "type": .string("schedule"), "summary": .string("日程新建「看房」周六 10:30"), "state": .string("done")]), .object(["key": .string("r2"), "tool": .string("bookkeeping"), "type": .string("ledger"), "summary": .string("记账 ¥38 餐饮 午饭"), "state": .string("uncertain")])]), "artifacts": .array([.object(["id": .string("art_preview"), "name": .string("攀岩生活节复盘.html"), "availability": .string("available")]), .object(["id": .string("art_preview2"), "name": .string("预算.pdf"), "size": .number(120000), "availability": .string("available")])]), "widgets": .array(ReplyWidgetFixture.widgets + [.object(["type": .string("html"), "title": .string("房贷小算盘"), "html": .string("<button id=b style='font-size:17px;padding:10px 16px' onclick=\"Com.send('月供按 8000 算')\">按 8000 算</button>")])])])]
+        }
         if ProcessInfo.processInfo.arguments.contains("--ui-work-process") { seedWorkProcessPreview() }  // chat 轨道：工作过程验收
         if ProcessInfo.processInfo.arguments.contains("--ui-reply-layout") { seedReplyLayoutPreview() }  // r2-chat：排版 + 建议卡验收
         // 聊天机制类的验收（长对话、压力、发送失败、语音）不铺流里的便签，免得把最新一条气泡顶出屏幕。
-        let chatOnly = ["--ui-long-chat", "--ui-stress-chat", "--ui-send-rejected", "--ui-reduce-motion", "--ui-voice-during-send", "--ui-quick-voice"].contains { ProcessInfo.processInfo.arguments.contains($0) }
+        let chatOnly = ["--ui-long-chat", "--ui-stress-chat", "--ui-send-rejected", "--ui-reduce-motion", "--ui-voice-during-send", "--ui-quick-voice", "--ui-reply-widgets"].contains { ProcessInfo.processInfo.arguments.contains($0) }
         datasets["/personal/connectors"] = .object(["sources": .array([
             .object(["name": .string("gmail"), "status": .string("needs_connection")]),
             .object(["name": .string("github"), "status": .string("connected")]),

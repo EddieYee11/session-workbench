@@ -24,6 +24,31 @@ class DeviceNodes:
     def list(self):
         with self.db() as d:rows=[json.loads(r[0]) for r in d.execute('SELECT data FROM devices')]
         return [{**r,'online':r['id'] in self.sockets,'capability_count':len(r['capabilities'])} for r in rows]
+    def capability_report(self,node):
+        with self.db() as d:
+            r=d.execute('SELECT data FROM devices WHERE id=?',(node,)).fetchone()
+            rows=[json.loads(x[0]) for x in d.execute('SELECT data FROM invocations WHERE node=?',(node,))]
+        if not r:raise KeyError(node)
+        now=time.time();by={}
+        for x in rows:by.setdefault(x.get('tool'),[]).append(x)
+        fail={'failed','unavailable','offline','unregistered','unknown'}
+        out=[]
+        for c in json.loads(r[0]).get('capabilities',[]):
+            items=by.get(c['tool'],[])
+            at=lambda x:x.get('finished_at') or x.get('created_at') or 0
+            ok=sorted((x for x in items if x.get('status')=='succeeded'),key=at)
+            den=sorted((x for x in items if x.get('status')=='permission_denied'),key=at)
+            bad=sorted((x for x in items if x.get('status') in fail),key=at)
+            reason=''
+            if bad:
+                x=bad[-1];res=x.get('result')
+                reason=x.get('reason') or (res.get('error','') if isinstance(res,dict) else '') or x.get('status','')
+            out.append({'tool':c['tool'],'permission':c.get('permission',False),'available':c.get('available',True),
+                'last_success_at':at(ok[-1]) if ok else None,'last_denied_at':at(den[-1]) if den else None,
+                'last_failed_at':at(bad[-1]) if bad else None,'last_failed_reason':reason,
+                'recent_7d':sum(1 for x in ok if now-at(x)<=7*86400),
+                'via_sync':bool(ok) and str(ok[-1].get('id','')).startswith('sync-')})
+        return {'node':node,'items':out}
     def get(self,ident):
         with self.db() as d:r=d.execute('SELECT data FROM invocations WHERE id=?',(ident,)).fetchone()
         return json.loads(r[0]) if r else None

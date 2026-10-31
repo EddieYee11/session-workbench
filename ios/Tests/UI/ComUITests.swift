@@ -187,6 +187,26 @@ final class ComUITests: XCTestCase {
         XCTAssertFalse(app.buttons["连接"].exists)
         capture("connected-source-actions", app: app)
     }
+    @MainActor func testReplyWidgets() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-reply-widgets", "-appearance", "light"]
+        app.launch()
+        let item = app.buttons["widget-checklist-item-b"]
+        XCTAssertTrue(item.waitForExistence(timeout: 15))
+        item.tap()
+        let choice = app.buttons.matching(identifier: "widget-choice-0").firstMatch
+        XCTAssertTrue(choice.exists)
+        choice.tap()
+        XCTAssertTrue(app.buttons["widget-table-header-1"].exists)
+        app.buttons["widget-table-header-1"].tap()
+        XCTAssertTrue(app.buttons["widget-table-expand"].exists)
+        app.buttons["widget-table-expand"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["widget-chart"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["widget-form-submit"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["chat-receipts"].firstMatch.exists)
+        XCTAssertTrue(app.buttons.matching(identifier: "artifact-page-art_preview").firstMatch.exists)
+        capture("reply-widgets", app: app)
+    }
     @MainActor func testNavigationAndScreenshots() throws {
         let app = app()
         XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
@@ -524,7 +544,7 @@ final class ComUITests: XCTestCase {
         app.launch()
         let last = app.staticTexts["chat-bubble-stress-300"]
         XCTAssertTrue(last.waitForExistence(timeout: 15))
-        for _ in 0..<4 { app.scrollViews["chat-timeline-scroll"].swipeDown(velocity: .fast) }
+        for _ in 0..<4 { app.collectionViews["chat-timeline-scroll"].swipeDown(velocity: .fast) }
         let jump = app.buttons["chat-jump-latest"]
         XCTAssertTrue(jump.waitForExistence(timeout: 5))
         XCTAssertGreaterThanOrEqual(jump.frame.width, 44)
@@ -536,7 +556,7 @@ final class ComUITests: XCTestCase {
         let result = XCTWaiter.wait(for: [returned], timeout: 5)
         capture("stress-first-return", app: app)
         XCTAssertEqual(result, .completed)
-        app.scrollViews["chat-timeline-scroll"].swipeDown(); app.scrollViews["chat-timeline-scroll"].swipeDown()
+        app.collectionViews["chat-timeline-scroll"].swipeDown(); app.collectionViews["chat-timeline-scroll"].swipeDown()
         XCTAssertTrue(jump.waitForExistence(timeout: 5))
         app.buttons["模拟新回复"].tap()
         XCTAssertTrue(jump.exists, "Incoming data must not pull the reader away from history")
@@ -553,7 +573,7 @@ final class ComUITests: XCTestCase {
         app.launchArguments = ["--ui-testing", "--ui-stress-chat", "--ui-incoming-control", "--ui-stage=working", "-appearance", "light"]
         app.launch()
         XCTAssertTrue(app.staticTexts["chat-bubble-stress-300"].waitForExistence(timeout: 15))
-        app.scrollViews["chat-timeline-scroll"].swipeDown(velocity: .slow); app.scrollViews["chat-timeline-scroll"].swipeDown(velocity: .slow)
+        app.collectionViews["chat-timeline-scroll"].swipeDown(velocity: .slow); app.collectionViews["chat-timeline-scroll"].swipeDown(velocity: .slow)
         let bubbles = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat-bubble-stress-"))
         let anchor = try XCTUnwrap(bubbles.allElementsBoundByIndex.first { $0.isHittable && $0.frame.maxY > 200 && $0.frame.minY < 700 })
         let id = anchor.identifier

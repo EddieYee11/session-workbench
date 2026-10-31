@@ -112,6 +112,33 @@ class Activity:
                         'detail': d.get('detail') or {}, 'message_id': d.get('origin_message_id', '')})
         return out
 
+    def receipts_by_message(self, scan=600):
+        """聊天气泡下的回执：这条消息替他动过哪些数据。只收账本、日程提醒、外发，读文件跑命令不算。
+
+        快照每次推送都会调到这里，账本没变就不重读。
+        """
+        if not self.path.exists():
+            return {}
+        with sqlite3.connect(self.path) as db:
+            stamp = db.execute('SELECT MAX(rowid), COUNT(*), SUM(state="disputed"), SUM(state="uncertain") FROM effects').fetchone()
+        now = self.clock()
+        cached = getattr(self, '_receipts', None)
+        if cached and cached[0] == stamp and now - cached[1] < 30:
+            return cached[2]
+        out = {}
+        for rowid, key, state, raw in reversed(self._rows(scan)):
+            data = json.loads(raw)
+            mid, tool = data.get('origin_message_id'), data.get('tool')
+            if not mid or not tool or not data.get('summary'):
+                continue
+            type_ = kind(tool, data.get('task_id', ''))
+            if type_ not in ('ledger', 'schedule', 'outbound'):
+                continue
+            out.setdefault(mid, []).append({'key': key, 'tool': tool, 'type': type_, 'summary': data['summary'], 'state': state,
+                                            'verdict': data.get('verdict', ''), 'at': data.get('at') or 0})
+        self._receipts = (stamp, now, out)
+        return out
+
     def uncertain(self, within=14 * 86400):
         now = self.clock()
         return [i for i in self.items(200) if i['state'] == 'uncertain' and i['at'] and 600 < now - i['at'] < within]

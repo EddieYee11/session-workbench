@@ -18,8 +18,11 @@ struct ComTopBar: View {
     /// 双栏时左栏的顶栏固定是 Com 主对话，不跟着右栏换页。
     var pinned: SectionTab? = nil
     private var tab: SectionTab { pinned ?? model.tab }
-    /// 她的左边缘（顶栏坐标）：正中往右 26pt。字挂她左边、牌子伸她右边，整组看着居中；哪一页都是这个位置。
-    static func figureX(in width: CGFloat) -> CGFloat { (width / 2 + 26 - StripFigure.bodyWidth / 2).rounded() }
+    /// 她在顶栏里缩小的比例：Duo 外屏只有约 466×678pt，顶栏要把高度让给内容。拉开工作台时回到原尺寸。
+    static let restScale: CGFloat = 0.72
+    static var figureWidth: CGFloat { StripFigure.bodyWidth * restScale }
+    /// 她靠左，标题跟在她右边，右侧留给这一页的一个动作。
+    static func figureX(hasLeadingButton: Bool) -> CGFloat { Space.lg + (hasLeadingButton ? 44 + Space.xs : 0) }
     private var motion: Animation { ComMotion.reduced(reduce, ComMotion.settle) }
     private var stage: CGFloat { min(1, max(0, model.stageProgress)) }
     /// 标题：工作页是「派给谁」（点开换人 / 会话菜单），其他页是页名。
@@ -33,9 +36,9 @@ struct ComTopBar: View {
     var body: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
-            let x = Self.figureX(in: width)
-            let leading = Space.lg + (tab == .work ? 44 + Space.sm : 0)
-            let titleWidth = max(56, x - 6 - leading)
+            let x = Self.figureX(hasLeadingButton: tab == .work)
+            let titleLeading = x + Self.figureWidth + Space.sm
+            let titleWidth = max(56, width - titleLeading - Space.lg - 44)
             // 往下拉时标题先走（拉到 0.2 就没了）：她要往左下跳，不能从字上面穿过去。
             let center = Double(1 - min(1, stage * 5))
             ZStack(alignment: .topLeading) {
@@ -44,13 +47,14 @@ struct ComTopBar: View {
                     .opacity(Double(max(0, (stage - 0.4) / 0.6)))
                     .accessibilityHidden(!model.stageExpanded)
                 titleBlock
-                    .frame(width: titleWidth, height: Layout.topBar, alignment: .trailing)
+                    .frame(width: titleWidth, height: Layout.topBar, alignment: .leading)
                     .overlay { titleTarget }
-                    .padding(.leading, x - 6 - titleWidth)
+                    .padding(.leading, titleLeading)
                     .opacity(center).allowsHitTesting(stage < 0.05)
                 // 她不跟着淡出：往下拉时她自己跳到桌前（StripFigure.Hop），收起时原路跳回来。
                 figure(hop: hop(width: width, x: x))
-                    .padding(.leading, x).padding(.top, (Layout.topBar - StripFigure.size.height) / 2)
+                    .scaleEffect(stage > 0.001 ? 1 : Self.restScale, anchor: .topLeading)
+                    .padding(.leading, x).padding(.top, Self.figureTop)
                     .allowsHitTesting(stage < 0.05)
                 HStack(spacing: 0) {
                     if tab == .work {
@@ -84,10 +88,16 @@ struct ComTopBar: View {
         .animation(motion, value: tab)
     }
 
+    static var figureTop: CGFloat { (Layout.topBar - StripFigure.size.height * restScale) / 2 }
+    /// 聊天页底部已有「等你」条，顶栏不再重复说一遍。
+    private var caption: String {
+        tab == .chat && model.waitingInboxCount > 0 ? "" : model.stripCaption
+    }
+
     /// 标题 + 她现在的状态；她说话时状态那行换成手绘气泡（尾巴指向她）。
     private var titleBlock: some View {
         let talking = !model.workBubble.isEmpty
-        return VStack(alignment: .trailing, spacing: 2) {
+        return VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 0) {
                 Text(head).font(TypeScale.headline).foregroundStyle(Palette.textPrimary).lineLimit(1)
                     .contentTransition(.opacity)
@@ -98,8 +108,8 @@ struct ComTopBar: View {
                     .opacity(tab == .work ? 1 : 0)
                     .accessibilityHidden(true)
             }
-            ZStack(alignment: .trailing) {
-                Text(model.stripCaption).font(TypeScale.footnote).foregroundStyle(
+            ZStack(alignment: .leading) {
+                Text(caption).font(TypeScale.footnote).foregroundStyle(
                     model.waitingInboxCount > 0 && !talking ? Palette.warning : Palette.textTertiary
                 ).lineLimit(1)
                     .contentTransition(.opacity)
@@ -110,7 +120,7 @@ struct ComTopBar: View {
                     .accessibilityIdentifier("agent-stage-status")
                 TalkBubble(text: model.workBubble)
             }
-            .frame(height: talking ? 30 : 17, alignment: .trailing)
+            .frame(height: talking ? 26 : (caption.isEmpty ? 0 : 16), alignment: .leading)
         }
         .animation(reduce ? nil : .smooth(duration: 0.28), value: head)
         .animation(reduce ? nil : .smooth(duration: 0.24), value: model.stripCaption)
@@ -129,7 +139,7 @@ struct ComTopBar: View {
 
     /// 往下拉工作台时她的路线：从顶栏的位置跳到桌前（桌子的位置跟着工作台展开时的缩放走）。一直传，进度 0 就是待在顶栏。
     private func hop(width: CGFloat, x: CGFloat) -> StripFigure.Hop {
-        let top = (Layout.topBar - StripFigure.size.height) / 2
+        let top = Self.figureTop
         return StripFigure.Hop(progress: min(1, max(0, model.stageProgress)), start: CGPoint(x: x, y: top + 6), width: width, frameOrigin: CGPoint(x: x, y: top))
     }
 
@@ -137,7 +147,7 @@ struct ComTopBar: View {
     private func figure(hop: StripFigure.Hop) -> some View {
         @Bindable var model = model
         return Button { Haptics.selection(); model.showMenu.toggle() } label: {
-            StripFigure(state: model.stripState, sign: model.stripSign, animated: model.active && !AmbientMotionPolicy.scrollQuiet, quiet: !model.workBubble.isEmpty, hop: hop, outfit: tab.outfit)
+            StripFigure(state: model.stripState, sign: "", showsProps: stage > 0.001, animated: model.active && !AmbientMotionPolicy.scrollQuiet, quiet: !model.workBubble.isEmpty, hop: hop, outfit: tab.outfit)
                 .frame(width: StripFigure.bodyWidth + 6, height: StripFigure.size.height, alignment: .leading)
                 .contentShape(Rectangle())
         }
@@ -199,12 +209,12 @@ struct TopBarTrailing: View {
     var body: some View {
         let item = trailingItem(closing: closing)
         return Button(action: item.action) {
-            Image(systemName: item.symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(Palette.textPrimary)
+            // 没有圆底：只留图标，点击区仍是 44pt。
+            Image(systemName: item.symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(Palette.textSecondary)
                 .contentTransition(.symbolEffect(.replace))
                 .opacity(item.disabled ? 0.4 : 1)
                 .frame(width: 44, height: 44)
-                .background(Palette.surface, in: .circle)
-                .overlay(Circle().strokeBorder(Palette.separator, lineWidth: 0.5))
+                .contentShape(Rectangle())
         }
         .buttonStyle(MessagePressStyle())
         .disabled(item.disabled)
@@ -238,9 +248,9 @@ struct TopBarTrailing: View {
                 model.openSearch()
             }
         case .next:
-            let running = model.nextData["running"].bool || localBusy
+            let running = model.nextUserRefresh || localBusy
             return BarItem(symbol: running ? "hourglass" : "arrow.clockwise", label: "让它重新整理", id: "next-refresh", disabled: running) {
-                guard !localBusy, !model.nextData["running"].bool else { return }
+                guard !localBusy, !model.nextUserRefresh else { return }
                 localBusy = true
                 Task {
                     await model.refreshNext()

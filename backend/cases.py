@@ -426,6 +426,26 @@ class Cases:
 
     # ---------- 中途插话 / 取消 ----------
 
+    def artifacts_for(self, receipt_key, message_id):
+        """回执 key 里带任务 id 时（task_x / case-wait:task_x:ts），把它的产物登记到这条回执消息上。"""
+        match = re.search(r'task_[0-9a-f]+', receipt_key or '')
+        if not match or not self.artifact_access:
+            return []
+        task = self.tasks.get(match.group(0))
+        if not task:
+            return []
+        with self.db() as db:
+            row = db.execute('SELECT data FROM cases WHERE task_id=?', (task['id'],)).fetchone()
+        case = json.loads(row[0]) if row else {}
+        paths = case.get('artifacts', []) + [a.get('path', '') for a in task.get('artifacts', []) if isinstance(a, dict)]
+        out = []
+        for path in dict.fromkeys(p for p in paths if p and not p.startswith('http')):
+            try:
+                out.append(self.artifact_access.register(message_id, path))
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+        return out
+
     def _artifacts(self, task, case):
         """产出登记成可直接打开的成果（带 id 和下载路径）；HTML 排最前，手机点开就能看。"""
         paths = case.get('artifacts', []) + [a.get('path', '') for a in task.get('artifacts', []) if isinstance(a, dict) and a.get('path')]

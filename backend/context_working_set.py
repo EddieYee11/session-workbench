@@ -110,6 +110,6 @@ def read_history(state,query='',reference='',limit=5,offset=0,before=''):
 
 
 def read_module(name):
-    if name not in ('memory','business','tasks','personal'):raise ValueError('Unknown context module')
+    if name not in ('memory','business','tasks','personal','reply'):raise ValueError('Unknown context module')
     path=Path(__file__).with_name('context_modules')/(name+'.md')
     return {'module':name,'content':path.read_text(),'version':1}
