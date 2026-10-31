@@ -17,5 +17,33 @@ struct ComActivityAttributes: ActivityAttributes {
         var urgent: Int
         /// 在跑时从这一刻起计时；不在跑为 nil。
         var since: Date?
+        /// 灵动岛 compact / 锁屏一眼可读的短标题（≤16 字）。
+        var headline: String
+        /// 深链后缀：waiting / plan / today / cases / voice（拼成 com-eddie://…）。
+        var deepLink: String
+
+        enum CodingKeys: String, CodingKey {
+            case mood, caption, waiting, running, urgent, since, headline, deepLink
+        }
+
+        init(mood: String, caption: String, waiting: Int, running: Int, urgent: Int, since: Date?,
+             headline: String = "", deepLink: String = "plan") {
+            self.mood = mood; self.caption = caption; self.waiting = waiting
+            self.running = running; self.urgent = urgent; self.since = since
+            self.headline = headline; self.deepLink = deepLink
+        }
+
+        /// 旧 Live Activity 没有 headline/deepLink 时仍能解码。
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            mood = try c.decode(String.self, forKey: .mood)
+            caption = try c.decode(String.self, forKey: .caption)
+            waiting = try c.decode(Int.self, forKey: .waiting)
+            running = try c.decode(Int.self, forKey: .running)
+            urgent = try c.decode(Int.self, forKey: .urgent)
+            since = try c.decodeIfPresent(Date.self, forKey: .since)
+            headline = try c.decodeIfPresent(String.self, forKey: .headline) ?? ""
+            deepLink = try c.decodeIfPresent(String.self, forKey: .deepLink) ?? "plan"
+        }
     }
 }

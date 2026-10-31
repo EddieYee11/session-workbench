@@ -14,6 +14,11 @@ export const W = {
   lastAgent: store.get('work.lastAgent', 'codex'), host: store.get('work.host', 'mini'), filter: store.get('work.agent', ''),
   // 与 iOS 一致：历史对话默认收起，只由左上角按钮打开；用户手动开过才记住
   sidebar: store.get('work.sidebar', false), limit: 40, sending: false, openSteps: new Set(), jump: '',
+  /** 工作面：对话 | 终端（对照 iOS WorkSurface） */
+  surface: store.get('work.surface', 'sessions'),
+  remoteHost: store.get('work.remoteHost', 'mini-lan'),
+  remoteStatus: 'idle', // idle | connecting | probed | failed
+  remoteDetail: '',
 };
 const agent = () => (W.mode === 'home' ? W.lastAgent : W.mode === 'snapshot' ? W.snapshot.agent : W.metadata.agent) || 'codex';
 const status = () => W.live.status || W.metadata.status || '';
@@ -169,6 +174,7 @@ export function mountWork(root) {
   root.innerHTML = html`<div class="work">
     <aside class="work-sidebar" id="workSidebar"></aside>
     <div class="work-main">
+      <div class="work-surface" id="workSurface"></div>
       <div class="work-scroll" id="workScroll"><div class="work-inner" id="workInner"></div></div>
       <div class="work-composer" id="workComposer"></div>
     </div>
@@ -177,15 +183,110 @@ export function mountWork(root) {
   W.nearBottom = true;
   renderWork(true);
   renderWorkComposer(true);
+  if (W.surface === 'remote') probeComLink();
+}
+function renderSurfacePicker() {
+  const el = $('#workSurface'); if (!el) return;
+  el.innerHTML = html`<div class="seg work-surf" role="tablist" aria-label="工作面">
+    <button class="${W.surface === 'sessions' ? 'on' : ''}" data-act="work-surface" data-s="sessions">对话</button>
+    <button class="${W.surface === 'remote' ? 'on' : ''}" data-act="work-surface" data-s="remote">终端</button>
+  </div>`.s;
+}
+function remoteHTML() {
+  const hosts = [
+    { id: 'mini-lan', title: 'Mac mini · 家里', detail: '192.168.5.215 · Tailscale / 局域网' },
+    { id: 'mini-wan', title: 'Mac mini · 公网', detail: 'ssh.eddiegao.fun:22022 · 已通公钥' },
+  ];
+  const st = W.remoteStatus;
+  const label = ({ idle: '还没探测', connecting: '探测中…', probed: 'Com 通 · herdr 未接', failed: '探测失败' })[st];
+  const tone = ({ idle: 'neutral', connecting: 'info', probed: 'warning', failed: 'danger' })[st];
+  const lead = ({
+    idle: 'Heeler 管连接与终端，Moshi 管结构化 transcript / 审批。默认工作对话还在「对话」那一面。',
+    connecting: '我先开口问 Com 后端通不通——通了也只说「Com 通 · herdr 未接」。',
+    probed: 'Com 通了，herdr 还没接。Heeler 管连接与终端，Moshi 管结构化层——真 SSH 续白天。',
+    failed: '探测没成，我直说。修好配对或网络后再试；工作对话仍在「对话」那一面。',
+  })[st];
+  const honesty = ({
+    idle: '进这面我会先探测一次。不会假装 herdr 已连上；只验证 Com 配对与后端可达。',
+    connecting: '正在开口问 Com 后端通不通；通了也只报「Com 通 · herdr 未接」，不冒充 SSH。',
+    probed: 'Com 后端通了。herdr SSH / PTY 还没接线——不会假装已连上。',
+    failed: '链路没通我直说——别把失败当成「已连上」。修好配对或 mini 上的 sessions，再点「再试一次」。',
+  })[st];
+  const line = ({
+    idle: '$ ready\n# 进页会自动探测——不冒充 herdr',
+    connecting: '$ curl …/health\n# pairing + backend probe',
+    probed: '$ ok com-backend\n# herdr.sock SSH = not wired yet',
+    failed: '$ probe failed\n# see notice below — retry',
+  })[st];
+  const hostLine = W.remoteHost === 'mini-wan' ? 'ssh.eddiegao.fun:22022' : '192.168.5.215';
+  const btn = st === 'connecting' ? '探测中…' : st === 'failed' ? '再试一次' : st === 'probed' ? '再探测' : '探测 Com 链路';
+  return html`<div class="work-remote rise">
+    <div class="row between"><h2>远程终端</h2>${stamp(label, tone)}</div>
+    <p class="sub">${lead}</p>
+    <section class="group"><div class="group-head"><h3>连哪台</h3></div>
+      <div class="card list">${hosts.map((h) => html`<button class="list-row ${W.remoteHost === h.id ? 'on' : ''}" data-act="work-remote-host" data-h="${h.id}">
+        <span class="badge ${W.remoteHost === h.id ? 'info' : ''}">${icon(h.id === 'mini-wan' ? 'globe' : 'macmini')}</span>
+        <span class="grow"><b>${h.title}</b><small>${h.detail}</small></span>${W.remoteHost === h.id ? icon('checkCircle') : ''}</button>`)}</div></section>
+    <section class="group"><div class="group-head"><h3>取长补短</h3></div>
+      <div class="card list">
+        <div class="list-row static"><span class="badge">${icon('terminal')}</span><span><b>Heeler · 连接与终端</b><small>SSH → herdr.sock，会话树 / 纯终端</small></span></div>
+        <div class="list-row static"><span class="badge">${icon('message')}</span><span><b>Moshi · 结构化层</b><small>transcript / 审批 / 计划；对接「等你」</small></span></div>
+        <div class="list-row static"><span class="badge">${icon('layers')}</span><span><b>自研桥 · HerdrKit</b><small>真 SSH 续白天，今晚不接线</small></span></div>
+      </div></section>
+    <div class="term-placeholder"><div class="term-bar">${icon('terminal')}<code>${hostLine}</code></div>
+      <pre>${line}</pre>${W.remoteDetail ? html`<pre class="faint"># ${W.remoteDetail}</pre>` : ''}</div>
+    ${st === 'failed' && W.remoteDetail ? notice(W.remoteDetail, 'danger') : ''}
+    <div class="row actions">
+      <button class="btn primary compact" data-act="work-remote-probe" ${st === 'connecting' ? raw('disabled') : ''}>${icon(st === 'connecting' ? 'hourglass' : 'wifiOff')}${btn}</button>
+      <button class="btn secondary compact" data-act="work-remote-reset" ${st === 'idle' || st === 'connecting' ? raw('disabled') : ''}>重置</button>
+      <button class="btn quiet compact" data-act="waiting-open">${icon('hand')}等你</button>
+    </div>
+    <p class="foot">${honesty}</p>
+    <div class="notice neutral">${icon('sparkles')}<span>真 SSH / herdr 终端和审批回流还在白天清单里。今晚只验证 Com 能连上 mini；原来的工作对话还在「对话」那一面。</span></div>
+  </div>`;
+}
+async function probeComLink() {
+  if (W.remoteStatus === 'connecting') return;
+  W.remoteStatus = 'connecting'; W.remoteDetail = '正在问 Com 后端…'; changed('work');
+  const name = ({ 'mini-lan': 'Mac mini · 家里', 'mini-wan': 'Mac mini · 公网' })[W.remoteHost] || '主机';
+  if (!S.token) {
+    await new Promise((r) => setTimeout(r, 200));
+    W.remoteStatus = 'failed';
+    W.remoteDetail = '还没跟 Mac mini 配对——先回 Com 对话页完成配对，再来探测。不会假装 herdr 已通。';
+    changed('work'); return;
+  }
+  const health = await load('/health', { timeout: 12000 });
+  if (health) {
+    const bits = [name, '已配对'];
+    if (health.version) bits.push('v' + health.version);
+    if (health.main_operation_mode) bits.push(health.main_operation_mode);
+    bits.push('herdr SSH 未接线');
+    W.remoteStatus = 'probed'; W.remoteDetail = bits.join(' · ');
+  } else {
+    const err = S.errors['/health'] || '';
+    W.remoteStatus = 'failed';
+    W.remoteDetail = err
+      ? `已配对，但 /health 没读到：${err}——可再试；不会假装 herdr 已通。`
+      : '已配对，但 /health 没读到——检查网络或 mini 上的 sessions。可再试；不会假装 herdr 已通。';
+  }
+  changed('work');
 }
 export function renderWork(first) {
   const root = $('#page-work .work'); if (!root) return;
   root.classList.toggle('side-open', !!W.sidebar);
+  root.classList.toggle('remote-on', W.surface === 'remote');
   root.style.setProperty('--wash', agentBrand(agent()) ? agentBrand(agent()).wash : 'transparent');
+  renderSurfacePicker();
   renderSidebar();
   const inner = $('#workInner'), sc = $('#workScroll');
   const gen = W.generation;
   const wasBottom = W.nearBottom || first || gen !== renderedGen;
+  if (W.surface === 'remote') {
+    inner.innerHTML = remoteHTML().s;
+    const composer = $('#workComposer'); if (composer) composer.classList.add('hidden');
+    return;
+  }
+  $('#workComposer')?.classList.remove('hidden');
   if (W.mode === 'home') {
     inner.innerHTML = html`<div class="work-home ${gen !== renderedGen ? 'enter' : ''}"><div class="avatar-pick"><button class="avatar-btn" data-act="work-agent-menu">${agentAvatar(W.lastAgent, 64, W.lastAgent)}</button>
       <div class="menu-pop hidden" id="agentMenu">${AGENTS.map((a) => html`<button data-act="work-pick-agent" data-a="${a}" class="${a === W.lastAgent ? 'on' : ''}">${agentMark(a, 16)}${agentName(a)}</button>`)}</div></div>
@@ -286,6 +387,8 @@ function routeHint() {
 }
 export function renderWorkComposer(force) {
   const host = $('#workComposer'); if (!host) return;
+  if (W.surface === 'remote') { host.classList.add('hidden'); host.innerHTML = ''; return; }
+  host.classList.remove('hidden');
   const ta = host.querySelector('textarea');
   if (!force && ta && document.activeElement === ta) { syncWorkAction(); return; }
   loadModels();
@@ -397,6 +500,18 @@ export function titleMenuHTML() {
 }
 
 // ─── 动作 ───
+act('work-surface', (b) => {
+  W.surface = b.dataset.s || 'sessions';
+  store.set('work.surface', W.surface);
+  if (W.surface === 'remote') { W.remoteStatus = 'idle'; W.remoteDetail = ''; renderWork(); probeComLink(); }
+  else { renderWork(); renderWorkComposer(true); }
+});
+act('work-remote-host', (b) => {
+  W.remoteHost = b.dataset.h; store.set('work.remoteHost', W.remoteHost);
+  W.remoteStatus = 'idle'; W.remoteDetail = ''; renderWork(); probeComLink();
+});
+act('work-remote-probe', () => probeComLink());
+act('work-remote-reset', () => { W.remoteStatus = 'idle'; W.remoteDetail = ''; changed('work'); });
 act('work-sidebar', () => { W.sidebar = !W.sidebar; store.set('work.sidebar', W.sidebar); renderWork(); });
 act('work-host', (b) => { W.host = b.dataset.h; store.set('work.host', W.host); W.limit = 40; renderSidebar(); });
 act('work-filter', (b) => { W.filter = b.dataset.a; store.set('work.agent', W.filter); W.limit = 40; renderSidebar(); });

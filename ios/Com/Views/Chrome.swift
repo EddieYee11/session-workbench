@@ -68,7 +68,8 @@ struct ComTopBar: View {
         }
         .frame(height: Layout.topBar)
         .background {
-            ZStack { Rectangle().fill(.ultraThinMaterial); Palette.background.opacity(0.72) }
+            // 实色顶栏：ultraThinMaterial 叠在滚动列表上会每帧重模糊，上滑掉帧。
+            Palette.background.opacity(0.94)
                 .opacity(Double(1 - min(1, stage * 2)))
                 .ignoresSafeArea(edges: .top)
         }
@@ -136,7 +137,7 @@ struct ComTopBar: View {
     private func figure(hop: StripFigure.Hop) -> some View {
         @Bindable var model = model
         return Button { Haptics.selection(); model.showMenu.toggle() } label: {
-            StripFigure(state: model.stripState, sign: model.stripSign, animated: model.active, quiet: !model.workBubble.isEmpty, hop: hop, outfit: tab.outfit)
+            StripFigure(state: model.stripState, sign: model.stripSign, animated: model.active && !AmbientMotionPolicy.scrollQuiet, quiet: !model.workBubble.isEmpty, hop: hop, outfit: tab.outfit)
                 .frame(width: StripFigure.bodyWidth + 6, height: StripFigure.size.height, alignment: .leading)
                 .contentShape(Rectangle())
         }
@@ -202,9 +203,10 @@ struct TopBarTrailing: View {
                 .contentTransition(.symbolEffect(.replace))
                 .opacity(item.disabled ? 0.4 : 1)
                 .frame(width: 44, height: 44)
+                .background(Palette.surface, in: .circle)
+                .overlay(Circle().strokeBorder(Palette.separator, lineWidth: 0.5))
         }
         .buttonStyle(MessagePressStyle())
-        .floatingGlass(.circle)
         .disabled(item.disabled)
         .accessibilityLabel(item.label)
         .accessibilityIdentifier(item.id)
@@ -255,7 +257,7 @@ struct TopBarTrailing: View {
     }
 }
 
-/// 顶栏右侧的玻璃圆按钮。
+/// 顶栏右侧圆按钮（实色：压在聊天滚动上时不做玻璃合成）。
 struct GlassIconButton: View {
     let symbol: String
     let label: String
@@ -265,10 +267,11 @@ struct GlassIconButton: View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(Palette.textPrimary)
                 .frame(width: 44, height: 44)
+                .background(Palette.surface, in: .circle)
+                .overlay(Circle().strokeBorder(Palette.separator, lineWidth: 0.5))
                 .overlay(alignment: .topTrailing) { CountBadge(count: badge).offset(x: 4, y: -4) }
         }
         .buttonStyle(MessagePressStyle())
-        .floatingGlass(.circle)
         .accessibilityLabel(label)
     }
 }
@@ -488,10 +491,12 @@ private struct DockItem: View {
         .frame(width: 48).frame(minHeight: 48)
         .clipShape(.capsule)
         .contentShape(.capsule)
-        .background { Color.clear.glassEffect(.regular, in: .capsule) }
+        .background(Palette.surface, in: .capsule)
         .overlay {
             if selected {
                 Capsule().strokeBorder(tab.tint.opacity(0.35), lineWidth: 1)
+            } else {
+                Capsule().strokeBorder(Palette.separator, lineWidth: 0.5)
             }
         }
         .scaleEffect(reduce ? 1 : (selected ? 1.02 : 1))
@@ -515,11 +520,13 @@ private struct DockItem: View {
         .frame(minWidth: 48, minHeight: 48)
         .clipShape(.capsule)
         .contentShape(.capsule)
-        // 玻璃只做底，图标和字压在上面：图标放进玻璃里，按下时会被玻璃的高光吃掉。
-        .background { Color.clear.glassEffect(.regular, in: .capsule) }
+        // 实色底：玻璃胶囊压在聊天滚动上会跟列表抢合成预算。
+        .background(Palette.surface, in: .capsule)
         .overlay {
             if selected {
                 Capsule().strokeBorder(tab.tint.opacity(0.35), lineWidth: 1)
+            } else {
+                Capsule().strokeBorder(Palette.separator, lineWidth: 0.5)
             }
         }
         .scaleEffect(reduce ? 1 : (selected ? 1.02 : 1))
@@ -621,14 +628,17 @@ struct StagePanel: View {
                 VStack(spacing: 0) {
                     Color.clear.frame(height: Layout.topBar)
                     ZStack(alignment: .top) {
-                        VStack(spacing: 0) {
-                            StageScene(state: model.stripState, sign: model.stripSign, sourceBroken: !model.brokenSources.isEmpty, machineLit: model.stripMachine, drawsFigure: false)
-                                .frame(height: 200)
-                            stats.frame(height: 48)
-                            Capsule().fill(Palette.separator).frame(width: 40, height: 5).frame(height: 28).accessibilityHidden(true)
+                        // 收起时不挂 StageScene：否则 opacity=0 仍在跑 TimelineView+Canvas，白烧帧预算。
+                        if progress > 0.04 {
+                            VStack(spacing: 0) {
+                                StageScene(state: model.stripState, sign: model.stripSign, sourceBroken: !model.brokenSources.isEmpty, machineLit: model.stripMachine, drawsFigure: false)
+                                    .frame(height: 200)
+                                stats.frame(height: 48)
+                                Capsule().fill(Palette.separator).frame(width: 40, height: 5).frame(height: 28).accessibilityHidden(true)
+                            }
+                            .scaleEffect(0.9 + 0.1 * min(1, progress), anchor: .top)
+                            .opacity(Double(min(1, max(0, (progress - 0.1) / 0.6))))
                         }
-                        .scaleEffect(0.9 + 0.1 * min(1, progress), anchor: .top)
-                        .opacity(Double(min(1, max(0, (progress - 0.1) / 0.6))))
                     }
                     .frame(height: Self.revealHeight * max(0, progress), alignment: .top)
                     .clipped()
@@ -636,8 +646,9 @@ struct StagePanel: View {
                 .padding(.top, top)
                 .frame(maxWidth: .infinity)
                 .background { shape.fill(Palette.background.opacity(0.55)) }
-                .glassEffect(.regular, in: shape)
-                .shadow(color: .black.opacity(0.18 * Double(min(1, progress))), radius: 24, y: 12)
+                // 收起时不做 Liquid Glass：系统玻璃合成在 opacity=0 时仍耗 GPU。
+                .modifier(StageGlass(progress: progress, shape: shape))
+                .shadow(color: .black.opacity(0.18 * Double(min(1, progress))), radius: progress > 0.04 ? 24 : 0, y: 12)
                 .contentShape(Rectangle())
                 .gesture(panelDrag)
                 .accessibilityElement(children: .contain)
@@ -716,5 +727,18 @@ struct StagePanel: View {
                 let predicted = 1 + value.predictedEndTranslation.height / Self.revealHeight
                 DispatchQueue.main.async { model.settleStage(predicted: predicted) }  // r3-work：松手弹簧单独一帧起，不被最后一次跟手吞掉
             }
+    }
+}
+
+/// 只在舞台真正展开时挂 glassEffect，收起不合成。
+private struct StageGlass: ViewModifier {
+    let progress: CGFloat
+    let shape: UnevenRoundedRectangle
+    func body(content: Content) -> some View {
+        if progress > 0.04 {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content
+        }
     }
 }

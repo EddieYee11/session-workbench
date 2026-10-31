@@ -443,21 +443,32 @@ private struct TimelineNode: View {
             case "doing" where live:
                 // 参考视频：浅底盘 + 实心中心点 + 外圈一段弧在转。
                 // 10-28 三轮：弧长随呼吸伸缩（1.9 秒一口气）、中心点同步轻轻起伏，转速不变，读起来是「活的」而不是机械转圈。
+                // 滚动中直接画静帧，不挂 TimelineView，避免上滑时仍 12fps 刷气泡。
                 Circle().fill(Palette.accent.opacity(0.32)).frame(width: 18, height: 18)
                 Circle().strokeBorder(Palette.accentText.opacity(0.18), lineWidth: 1.8).frame(width: 18, height: 18)
-                TimelineView(.animation(paused: reduce)) { context in
-                    let now = context.date.timeIntervalSinceReferenceDate
-                    let turn = now.truncatingRemainder(dividingBy: 0.95) / 0.95
-                    let breath = 0.5 - 0.5 * cos(now.truncatingRemainder(dividingBy: 1.9) / 1.9 * 2 * .pi)
+                if reduce || AmbientMotionPolicy.scrollQuiet {
                     ZStack {
-                        Circle().fill(Palette.accentText).frame(width: 7, height: 7).scaleEffect(reduce ? 1 : 0.86 + 0.14 * breath)
-                        Circle().inset(by: 0.9).trim(from: 0, to: reduce ? 0.28 : 0.16 + 0.22 * breath)
+                        Circle().fill(Palette.accentText).frame(width: 7, height: 7)
+                        Circle().inset(by: 0.9).trim(from: 0, to: 0.28)
                             .stroke(Palette.accentText, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
                             .frame(width: 18, height: 18)
-                            .rotationEffect(.degrees(reduce ? -90 : turn * 360 - 90))
+                            .rotationEffect(.degrees(-90))
                     }
+                } else {
+                    TimelineView(.animation(minimumInterval: AmbientMotionPolicy.effectInterval, paused: false)) { context in
+                        let now = context.date.timeIntervalSinceReferenceDate
+                        let turn = now.truncatingRemainder(dividingBy: 0.95) / 0.95
+                        let breath = 0.5 - 0.5 * cos(now.truncatingRemainder(dividingBy: 1.9) / 1.9 * 2 * .pi)
+                        ZStack {
+                            Circle().fill(Palette.accentText).frame(width: 7, height: 7).scaleEffect(0.86 + 0.14 * breath)
+                            Circle().inset(by: 0.9).trim(from: 0, to: 0.16 + 0.22 * breath)
+                                .stroke(Palette.accentText, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                                .frame(width: 18, height: 18)
+                                .rotationEffect(.degrees(turn * 360 - 90))
+                        }
+                    }
+                    .transition(.opacity)
                 }
-                .transition(.opacity)
             case "doing":
                 Image(systemName: "circle.dotted").font(.system(size: 15, weight: .medium)).foregroundStyle(Palette.textTertiary)
             case "blocked":
@@ -483,8 +494,8 @@ struct ShimmerText: View {
         let label = Text(text).font(font)
         label.foregroundStyle(color)
             .overlay {
-                if !reduce {
-                    TimelineView(.animation) { context in
+                if !reduce && !AmbientMotionPolicy.scrollQuiet {
+                    TimelineView(.animation(minimumInterval: AmbientMotionPolicy.effectInterval)) { context in
                         let t = Motion.easeInOutSine(min(1, context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.3))
                         GeometryReader { geo in
                             let band = max(18, geo.size.width * 0.7)
@@ -578,7 +589,8 @@ private struct FlowComet<S: Shape>: View {
     var period: Double = 1.9
     var color: Color = Palette.accentText
     var body: some View {
-        TimelineView(.animation) { context in
+        // 列表内多颗彗星若跟屏刷，滚动必卡；12fps 足够读出流动。
+        TimelineView(.animation(minimumInterval: AmbientMotionPolicy.effectInterval)) { context in
             let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
             let head = Motion.easeInOutCubic(min(1, t / 0.74))
             let tail = Motion.easeInOutQuart(max(0, (t - 0.2) / 0.8))
@@ -586,16 +598,15 @@ private struct FlowComet<S: Shape>: View {
             // 收得很短时整体淡出，避免线头的圆点残留；起步时同样从无到有
             let alpha = min(1, length / 0.08)
             ZStack {
-                // 尾巴 → 头：三层叠出渐变，越靠前越亮
-                ForEach(0..<3, id: \.self) { layer in
-                    let from = tail + length * Double(layer) / 3
+                // 尾巴 → 头：两层叠出渐变（原三层再加 blur 过重）
+                ForEach(0..<2, id: \.self) { layer in
+                    let from = tail + length * Double(layer) / 2
                     shape.trim(from: from, to: head)
-                        .stroke(color.opacity(0.34), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                        .stroke(color.opacity(0.34 + 0.12 * Double(layer)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 }
-                // 头部柔光
+                // 头部加亮，不用 blur
                 shape.trim(from: max(tail, head - 0.06), to: head)
-                    .stroke(color.opacity(0.55), style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                    .blur(radius: 2.2)
+                    .stroke(color.opacity(0.7 * alpha), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
             }
             .opacity(alpha)
         }

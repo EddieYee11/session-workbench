@@ -42,6 +42,10 @@ import ComCore
                         model.applyPairDeepLink(url)
                     }
                     if url.host == "voice" { model.openVoice(quick: true) }
+                    if url.host == "work" {
+                        model.tab = .work
+                        Task { await model.refresh(.work) }
+                    }
                     if url.host == "share" {
                         let text = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "text" })?.value
                         if let text, !text.isEmpty {

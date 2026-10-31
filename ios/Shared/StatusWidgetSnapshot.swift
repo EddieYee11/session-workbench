@@ -6,7 +6,27 @@ struct StatusWidgetSnapshot: Codable {
     let reviewCount: Int
     let briefingCount: Int
     let updatedAt: Date
+    /// 一眼文案（等你/下一步/下一档日程）；旧快照没有此字段时为空。
+    var headline: String
+    /// 点开深链：waiting / plan / today。
+    var deepLink: String
     static let kind = "work.eddie.com.status"
+
+    enum CodingKeys: String, CodingKey { case reviewCount, briefingCount, updatedAt, headline, deepLink }
+
+    init(reviewCount: Int, briefingCount: Int, updatedAt: Date, headline: String = "", deepLink: String = "today") {
+        self.reviewCount = reviewCount; self.briefingCount = briefingCount
+        self.updatedAt = updatedAt; self.headline = headline; self.deepLink = deepLink
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        reviewCount = try c.decode(Int.self, forKey: .reviewCount)
+        briefingCount = try c.decode(Int.self, forKey: .briefingCount)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        headline = try c.decodeIfPresent(String.self, forKey: .headline) ?? ""
+        deepLink = try c.decodeIfPresent(String.self, forKey: .deepLink) ?? "today"
+    }
     private static var query: [String: Any]? {
         guard let group = Bundle.main.object(forInfoDictionaryKey: "ComWidgetAccessGroup") as? String,
               !group.contains("$(") else { return nil }

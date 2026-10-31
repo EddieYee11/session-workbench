@@ -470,8 +470,10 @@ struct StripFigure: View {
     var body: some View {
         // 画的永远是 pose（不是直接读 state）：onChange 之前那一帧还是旧姿态，不会先闪一下新姿态再从头淡入。
         let loops = moving && pose.to != .done
-        // 转身那一秒跑满 60 帧（残影和弹簧回弹在 30 帧下会一顿一顿）；平时照旧 12 / 30 帧省电。
-        TimelineView(.animation(minimumInterval: 1.0 / (blending ? 60 : pose.to == .idle ? 12 : 30), paused: !loops && !blending)) { timeline in
+        // 转身最高 30fps；忙态 15、空闲 6。顶栏常驻，帧率过高会跟聊天滚动抢主线程。
+        let interval = blending ? AmbientMotionPolicy.blendInterval
+            : (pose.to == .idle ? AmbientMotionPolicy.idleInterval : AmbientMotionPolicy.busyInterval)
+        TimelineView(.animation(minimumInterval: interval, paused: !loops && !blending)) { timeline in
             let raw = min(1, max(0, timeline.date.timeIntervalSince(pose.at) / Self.blendDuration))
             let blend: CharacterPainter.PoseBlend? = raw < 1 ? .init(from: pose.from, fromSign: pose.fromSign, amount: 1 - pow(1 - raw, 3)) : nil  // GSAP power3.out
             let elapsed = timeline.date.timeIntervalSince(dress.at)
@@ -613,7 +615,8 @@ struct StageScene: View {
     @Environment(\.scenePhase) private var scene
     private var moving: Bool { AmbientMotionPolicy.allowsTimeline(active: scene == .active, reduceMotion: reduce) }
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / (state == .idle ? 12 : 30), paused: !moving || state == .done)) { timeline in
+        let interval = state == .idle ? AmbientMotionPolicy.idleInterval : AmbientMotionPolicy.busyInterval
+        TimelineView(.animation(minimumInterval: interval, paused: !moving || state == .done)) { timeline in
             Canvas { context, size in
                 let now = timeline.date.timeIntervalSinceReferenceDate
                 let s = size.width / 402

@@ -1,5 +1,5 @@
 // 「下一步」：它把邮件、日程、项目、任务和账本收拢成几件现在值得做的事（iOS NextView.swift）。
-import { S, $, html, raw, nextData, nextItems, brokenSources, sourceName, relativeTime, clockTime, nextAction, refreshNext, onChange, D, yuan, agentName, hostName, agencyCards, tasks } from './core.js';
+import { S, $, html, raw, nextData, nextItems, brokenSources, sourceName, relativeTime, clockTime, nextAction, refreshNext, onChange, D, yuan, agentName, hostName, agencyCards, tasks, noteOf } from './core.js';
 import { icon, act, stamp, empty, section, pushSheet, openSheet } from './ui.js';
 import { voyageBanner, planCard, nextActions } from './cases.js';
 
@@ -74,24 +74,28 @@ function nextCard(item, i) {
 
 export function renderNext(root) {
   const data = nextData();
-  const groups = [['现在', 'now'], ['今天', 'today'], ['这周', 'week']].map(([t, k]) => [t, nextItems().filter((i) => i.urgency === k)]).filter(([, r]) => r.length);
+  const items = nextItems();
+  const groups = [['现在', 'now'], ['今天', 'today'], ['这周', 'week']].map(([t, k]) => [t, items.filter((i) => i.urgency === k)]).filter(([, r]) => r.length);
   const fin = D('/personal/finance');
   const week = data.week || {};
   const open = new Set([...root.querySelectorAll('.pocket.open')].map((p) => p.dataset.pocket));
+  const head = items[0];
+  const note = noteOf('next');
   let n = 0;
   root.innerHTML = html`<div class="page">
-    <div class="page-head rise"><div class="row between"><p class="sub">${data.running ? '正在重新整理…' : '我从邮件、日程、项目和账本里挑的'}</p></div>
+    <div class="page-head rise"><div class="row between"><p class="sub">${data.running ? '正在重新整理…' : head ? `先办这一件：${head.title}` : '没什么要推的'}</p></div>
       ${data.updated_at > 0 ? html`<small class="muted">上次整理 ${relativeTime(data.updated_at)}${data.source === 'rule' ? ' · 模型没接上，先按规则排' : ''}</small>` : ''}
-      ${S.errors['/personal/next'] ? html`<small class="danger-text">${S.errors['/personal/next']}</small>` : ''}</div>
+      ${S.errors['/personal/next'] ? html`<small class="danger-text">${S.errors['/personal/next']}</small>` : ''}
+      ${note ? html`<div class="notice warning inline-note">${icon('warning')}<span>${note}</span></div>` : ''}</div>
     ${voyageBanner()}
     ${planCard()}
     ${brokenSources().map(sourceBrokenNote)}
-    ${data.running ? buildingCard(data.progress) : !nextItems().length && D('/personal/next') ? empty('眼下没有要提的事', '我每小时会自己再看一遍；有新邮件、新日程或项目有进展，会整理成下一步放在这里。', 'sparkles') : ''}
+    ${data.running ? buildingCard(data.progress) : !items.length && D('/personal/next') ? empty('没什么要推的', '我每小时会自己再看一遍；有新邮件、新日程或项目有进展，会整理成下一步放在这里。', 'sparkles') : ''}
     ${!D('/personal/next') && !S.errors['/personal/next'] ? html`<div class="skeleton"></div><div class="skeleton"></div>` : ''}
-    ${groups.map(([t, rows]) => section(t, html`${rows.map((r) => nextCard(r, n++))}`))}
+    ${groups.map(([t, rows]) => section(t === '现在' ? '现在 · 先办' : t, html`${rows.map((r) => nextCard(r, n++))}`))}
     ${fin && fin.available ? section('账本', ledgerNote(fin)) : ''}
     ${week.shown > 0 ? html`<p class="foot">这周提了 ${week.shown} 件，你用上 ${week.acted || 0} 件、划掉 ${week.dismissed || 0} 件${week.precision != null ? '，准确率 ' + Math.round(week.precision * 100) + '%' : ''}${week.resolved > 0 ? '；群里已经办完、我自动收起 ' + week.resolved + ' 件' : ''}。${Object.keys(week.reasons || {}).length ? '划掉的理由：' + Object.entries(week.reasons).sort((a, b) => b[1] - a[1]).map(([k, n]) => k + ' ' + n).join(' · ') + '。' : ''}</p>` : ''}
-    <button class="btn quiet" data-act="open-activity">${icon('list')}看它替你做过的事</button>
+    <button class="btn quiet" data-act="open-activity">${icon('checklist')}看它替你做过的事</button>
   </div>`.s;
   for (const id of open) root.querySelector(`.pocket[data-pocket="${CSS.escape(id)}"]`)?.classList.add('open', 'instant');
 }
@@ -102,7 +106,11 @@ act('next-do', async (b) => {
   const card = b.closest('.next-card');
   card?.querySelectorAll('button').forEach((x) => (x.disabled = true));
   if (b.dataset.a !== 'discuss') card?.classList.add('leaving');
-  await nextAction(item, b.dataset.a, b.dataset.reason);
+  const ok = await nextAction(item, b.dataset.a, b.dataset.reason);
+  if (!ok && b.dataset.a !== 'discuss') {
+    card?.classList.remove('leaving');
+    card?.querySelectorAll('button').forEach((x) => (x.disabled = false));
+  }
 });
 act('pocket-toggle', (b) => { const p = b.closest('.pocket'); p.classList.remove('instant'); p.classList.toggle('open'); });
 act('next-refresh', () => refreshNext());

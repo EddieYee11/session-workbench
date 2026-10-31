@@ -249,7 +249,8 @@ struct ScreenEdgeGlow: View {
                 Palette.coral.opacity(0.85), lime.opacity(0.9), Color(red: 0.45, green: 0.80, blue: 0.78), lime]
     }
     var body: some View {
-        TimelineView(.animation(paused: reduce)) { timeline in
+        // 全屏双层 blur 在 120Hz 下极贵；压到 ~15fps，并合并成一层柔边 + 一层硬边。
+        TimelineView(.animation(minimumInterval: AmbientMotionPolicy.busyInterval, paused: reduce)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             let energy = processing ? 0.35 + 0.15 * sin(t * 2.4) : smoothed
             let spin = Angle.degrees(reduce ? 0 : (t * (processing ? 70 : 28)).truncatingRemainder(dividingBy: 360))
@@ -257,11 +258,13 @@ struct ScreenEdgeGlow: View {
             let gradient = AngularGradient(colors: colors, center: .center, angle: spin)
             let base = scheme == .dark ? 0.55 : 0.5
             ZStack {
-                shape.strokeBorder(gradient, lineWidth: 10 + 22 * energy).blur(radius: 18 + 14 * energy)
-                    .opacity(base + 0.35 * energy)
-                shape.strokeBorder(gradient, lineWidth: 2 + 3 * energy).blur(radius: 3)
-                    .opacity(0.35 + 0.4 * energy)
+                shape.strokeBorder(gradient, lineWidth: 8 + 14 * energy)
+                    .blur(radius: 12 + 8 * energy)
+                    .opacity(base + 0.3 * energy)
+                shape.strokeBorder(gradient, lineWidth: 2 + 2.5 * energy)
+                    .opacity(0.4 + 0.35 * energy)
             }
+            .drawingGroup(opaque: false, colorMode: .linear)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)

@@ -41,12 +41,21 @@ private extension ComActivityAttributes.ContentState {
     }
     var tint: Color { mood == "broken" ? LiveInk.coral : LiveInk.lime }
     var busy: Bool { since != nil }
-    var isResting: Bool { mood == "idle" && !busy && urgent == 0 }
-    /// 点灵动岛 / 锁屏卡：进下一步（Eddie 用得最多）。
-    var link: URL { URL(string: "com-eddie://plan")! }
-    /// 回主对话（com-eddie://today 在 App 里落到聊天页）。
+    var isResting: Bool { mood == "idle" && !busy && urgent == 0 && waiting == 0 }
+    /// 按 deepLink 跳到真正有事的那一面；缺省下一步。
+    var link: URL {
+        let path = deepLink.isEmpty ? "plan" : deepLink
+        return URL(string: "com-eddie://\(path)") ?? URL(string: "com-eddie://plan")!
+    }
     var chatLink: URL { URL(string: "com-eddie://today")! }
     var voiceLink: URL { URL(string: "com-eddie://voice")! }
+    /// compact 右侧优先短标题，而不是只报件数。
+    var compactText: String {
+        let h = headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !h.isEmpty { return h }
+        if urgent > 0 { return "\(urgent)" }
+        return ""
+    }
 }
 
 struct ComLiveActivityWidget: Widget {
@@ -217,11 +226,15 @@ private struct WorkspacePreview: View {
                     .contentTransition(.symbolEffect(.replace))
             }
 
-            // 任务概览
+            // 任务概览：优先可行动短标题
             VStack(alignment: .leading, spacing: 2) {
-                Text(state.busy ? "正在处理" : state.urgent > 0 ? "下一步" : "待命中")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(LiveInk.dim)
+                Text(state.headline.isEmpty
+                     ? (state.busy ? "正在处理" : state.urgent > 0 ? "下一步" : state.waiting > 0 ? "等你" : "待命中")
+                     : state.headline)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
 
                 HStack(spacing: 6) {
                     if state.running > 0 {
@@ -229,6 +242,9 @@ private struct WorkspacePreview: View {
                     }
                     if state.urgent > 0 {
                         Label("\(state.urgent)", systemImage: "exclamationmark.circle.fill")
+                    }
+                    if state.waiting > 0 {
+                        Label("\(state.waiting)", systemImage: "hand.raised.fill")
                     }
                 }
                 .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -275,21 +291,24 @@ private struct Caption: View {
     }
 }
 
-/// compact 右边：先说下一步现在该做的件数；没有就在跑时走秒；都没有就一个状态小图标。
+/// compact 右边：优先可行动短标题；没有就在跑走秒；都没有才图标。
 private struct CompactStatus: View {
     let state: ComActivityAttributes.ContentState
     let stale: Bool
     var body: some View {
         Group {
-            if state.urgent > 0 {
-                HStack(spacing: 3) {
-                    Image(systemName: "shoeprints.fill").font(.system(size: 11, weight: .bold))
-                    Text("\(state.urgent)").font(.system(size: 15, weight: .bold, design: .rounded)).monospacedDigit()
-                        .contentTransition(.numericText(value: Double(state.urgent)))
-                }
-                .foregroundStyle(LiveInk.lime)
-                .transition(.push(from: .bottom))
-            } else if let since = state.since, !stale {
+            if stale {
+                Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(LiveInk.dim)
+            } else if !state.compactText.isEmpty {
+                Text(state.compactText)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(LiveInk.lime)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(maxWidth: 88, alignment: .trailing)
+                    .transition(.push(from: .bottom))
+            } else if let since = state.since {
                 Text(timerInterval: since...Date.distantFuture, countsDown: false)
                     .font(.system(size: 14, weight: .semibold, design: .rounded)).monospacedDigit()
                     .foregroundStyle(LiveInk.lime)

@@ -185,6 +185,11 @@ next_steps.runsheets = runsheets
 from activity import Activity
 
 activity = Activity(STATE / "tool-effects.sqlite", conversation, task_store)
+from herdr_bridge import HerdrBridge
+from rex_bridge import RexBridge
+
+rex_bridge = RexBridge(STATE)
+herdr_bridge = HerdrBridge(STATE)
 
 
 def wechat_candidates():
@@ -2308,6 +2313,33 @@ async def personal_hot(refresh: bool = False):
         return await aihot.snapshot(refresh)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/remote/rex/snapshot")
+async def remote_rex_snapshot():
+    """Rex 控制面快照：session/window/block 卡片。失败诚实返回 ok=false，不假装在线。"""
+    return await asyncio.to_thread(rex_bridge.snapshot)
+
+
+@app.post("/remote/rex/action")
+async def remote_rex_action(request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(422, "需要 JSON 对象")
+    name = str(data.get("action") or "")
+    args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    result = await asyncio.to_thread(rex_bridge.action, name, args)
+    if not result.get("ok") and result.get("error") == "forbidden":
+        raise HTTPException(403, result.get("detail") or "不允许的动作")
+    if not result.get("ok") and result.get("error") == "bad_args":
+        raise HTTPException(422, result.get("detail") or "参数无效")
+    return result
+
+
+@app.get("/remote/herdr/snapshot")
+async def remote_herdr_snapshot():
+    """herdr 只读会话树。server_not_running 时 ok=false，不假装已连。"""
+    return await asyncio.to_thread(herdr_bridge.snapshot)
 
 
 @app.post("/personal/news/{ident}")

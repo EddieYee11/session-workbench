@@ -144,7 +144,57 @@ export const S = {
   reference: null, attachments: [],
   sending: false, streaming: false, active: !document.hidden, moreHistory: true,
   banner: '',
+  /** 面级伙伴开口（mutate 成功但列表没刷齐时）：key → 文案；对照 iOS InlineNotice。 */
+  notes: {},
 };
+/** 上海时区小时，避免设备时区漂时早晚说错。 */
+export function shanghaiHour() {
+  try {
+    return Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false }).format(new Date()));
+  } catch { return new Date().getHours(); }
+}
+export function setNote(key, text) {
+  if (!text) { if (S.notes[key]) { delete S.notes[key]; changed('note:' + key); } return; }
+  if (S.notes[key] === text) return;
+  S.notes[key] = text; changed('note:' + key);
+}
+export const noteOf = (key) => S.notes[key] || '';
+/** 发送队列里这条是否已真正送达（门控跳页用）。 */
+export function wasDelivered(entryId) {
+  if (!entryId) return false;
+  const p = S.pending.find((e) => e.id === entryId);
+  return !p || p.state === 'delivered';
+}
+/** load 失败返回 null 且不 throw——用这个判断「有没有刷齐」。 */
+export async function reload(path, opts) {
+  const data = await load(path, opts);
+  return { ok: data != null && !S.errors[path], data };
+}
+/** 乐观改本地缓存（对照 iOS datasets patch）。 */
+export function patchData(path, fn) {
+  const cur = S.data[path];
+  if (cur == null) return false;
+  let next;
+  try { next = fn(JSON.parse(JSON.stringify(cur))); } catch { return false; }
+  if (next == null) return false;
+  S.data[path] = next;
+  if (FLOW_PATHS.has(path)) recomputeFlow();
+  changed(path);
+  return true;
+}
+/**
+ * mutate 已成功后拉齐若干列表。load 失败不 throw，所以必须看返回值。
+ * 失败可乐观 patch + setNote，别假装列表已是最新。
+ */
+export async function afterWrite(paths, { noteKey = '', failNote = '这件事办了，但列表没刷齐——下拉或稍后再看。不会假装列表已是最新。', onFail } = {}) {
+  const list = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
+  const results = await Promise.all(list.map((p) => (typeof p === 'string' ? reload(p) : p())));
+  const ok = results.every((r) => r && r.ok !== false);
+  if (ok) { if (noteKey) setNote(noteKey, ''); return true; }
+  try { onFail && onFail(); } catch { /* noop */ }
+  if (noteKey) setNote(noteKey, failNote);
+  return false;
+}
 
 // ─── 接口 ───
 export class APIError extends Error { constructor(status, detail) { super(detail); this.status = status; } }
@@ -552,9 +602,23 @@ export function setTab(tab) {
 export async function nextAction(item, act, reason) {
   try {
     await mutate('/personal/next/' + encodeURIComponent(item.id), { action: act, ...(reason ? { reason } : {}) });
-    await load('/personal/next');
-    if (act === 'discuss') { setTab('chat'); await refresh('chat'); }
-  } catch { /* toast already */ }
+    const ok = await afterWrite(['/personal/next'], {
+      noteKey: 'next',
+      failNote: '这一步记上了，但列表没刷齐——稍后再看或点右上角重整理。不会假装列表已是最新。',
+      onFail: () => {
+        // 乐观收卡，重绘时不回弹成「没办」
+        patchData('/personal/next', (d) => {
+          d.items = (d.items || []).filter((x) => x.id !== item.id);
+          return d;
+        });
+      },
+    });
+    if (act === 'discuss') {
+      setTab('chat');
+      await afterWrite(['/personal/conversation'], { noteKey: 'chat', failNote: '已经丢进对话，但消息列表没刷齐。' });
+    }
+    return ok;
+  } catch { return false; }
 }
 export async function refreshNext() {
   try {

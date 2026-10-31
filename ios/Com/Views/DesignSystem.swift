@@ -185,19 +185,20 @@ enum ComMotion {
     }
 }
 
-/// 页面进场：模糊 + 上移，错峰 delay。Today / Health / 等你列表共用。
+/// 页面进场：上移 + 淡入，错峰 delay。
+/// `blur` 参数保留以兼容调用方，但不再应用——离屏模糊在 ProMotion 上很贵，是掉帧主因之一。
 struct EnterRise: ViewModifier {
     let on: Bool
     var delay: Double = 0
     var y: CGFloat = 26
-    var blur: CGFloat = 10
+    var blur: CGFloat = 0
     var animation: Animation = ComMotion.rise
     @Environment(\.accessibilityReduceMotion) private var reduce
     func body(content: Content) -> some View {
+        let _ = blur  // 刻意忽略：见类型注释
         content
             .opacity(on || reduce ? 1 : 0)
             .offset(y: on || reduce ? 0 : y)
-            .blur(radius: on || reduce ? 0 : blur)
             .animation(reduce ? .easeOut(duration: 0.2) : on ? animation.delay(delay) : nil, value: on)
     }
 }
@@ -215,26 +216,30 @@ struct SoftPressStyle: ButtonStyle {
 }
 
 /// 注意力条柔和呼吸：只动描边/透明度，不做位移（避免阅读抖动）。
+/// 发热 / 低电量时停掉，避免 Dock 角标常驻动画抢帧。
 struct AttentionBreath: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var pulse = false
     var active: Bool = true
+    private var allowed: Bool {
+        AmbientMotionPolicy.allowsTimeline(active: true, reduceMotion: reduce)
+    }
     func body(content: Content) -> some View {
         content
-            .opacity(reduce || !active ? 1 : (pulse ? 1 : 0.82))
+            .opacity(!active || !allowed ? 1 : (pulse ? 1 : 0.82))
             .onAppear {
-                guard active, !reduce else { return }
+                guard active, allowed else { return }
                 withAnimation(ComMotion.breath) { pulse = true }
             }
             .onChange(of: active) { _, on in
-                if !on || reduce { pulse = false }
+                if !on || !allowed { pulse = false }
                 else { withAnimation(ComMotion.breath) { pulse = true } }
             }
     }
 }
 
 extension View {
-    func enterRise(on: Bool, delay: Double = 0, y: CGFloat = 26, blur: CGFloat = 10) -> some View {
+    func enterRise(on: Bool, delay: Double = 0, y: CGFloat = 26, blur: CGFloat = 0) -> some View {
         modifier(EnterRise(on: on, delay: delay, y: y, blur: blur))
     }
     func attentionBreath(active: Bool = true) -> some View {
@@ -242,11 +247,25 @@ extension View {
     }
 }
 
-/// 前台可见、非低电量、未开减少动态效果时才跑 ambient Canvas。
+/// 前台可见、非低电量、未严重发热、未开减少动态效果时才跑 ambient Canvas。
 enum AmbientMotionPolicy {
+    /// 角色空闲呼吸 / 流光等装饰动画的目标帧间隔（秒）。
+    static let idleInterval: TimeInterval = 1.0 / 6
+    static let busyInterval: TimeInterval = 1.0 / 15
+    static let blendInterval: TimeInterval = 1.0 / 30
+    static let effectInterval: TimeInterval = 1.0 / 12
+    /// 聊天正在手指/惯性滑动时置位；不走 Observation，避免起滑瞬间整树失效。
+    /// 只在主线程读写（ChatView 滚动相位）。
+    nonisolated(unsafe) static var scrollQuiet = false
+
     static func allowsTimeline(active: Bool, reduceMotion: Bool) -> Bool {
         guard active, !reduceMotion else { return false }
+        if scrollQuiet { return false }
         if ProcessInfo.processInfo.isLowPowerModeEnabled { return false }
+        // 严重发热时停掉常驻 Timeline，把帧预算还给滚动。
+        if ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical {
+            return false
+        }
         return true
     }
 }
@@ -279,9 +298,10 @@ extension View {
         font(TypeScale.callout).padding(.horizontal, Space.md).padding(.vertical, Space.md - 1)
             .background(Palette.fill, in: .rect(cornerRadius: Radius.sm, style: .continuous))
     }
-    /// 输入区：玻璃胶囊，浮在时间线上。
+    /// 输入区：实色圆角底。不用 glassEffect——列表从下面滑过时玻璃每帧重合成，上滑必卡。
     func composerSurface() -> some View {
-        glassEffect(.regular, in: .rect(cornerRadius: Radius.xl, style: .continuous))
+        background(Palette.surface, in: .rect(cornerRadius: Radius.xl, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous).strokeBorder(Palette.separator, lineWidth: 0.5))
     }
     /// 普通卡面（旧便签入口保留名字；倾斜参数忽略）。
     func noteSurface(tilt: Double = 0, fill: Color = Palette.surface) -> some View {

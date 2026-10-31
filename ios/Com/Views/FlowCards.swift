@@ -197,46 +197,91 @@ extension AppModel {
         default: return stage.state.strip
         }
     }
-    var stripCaption: String {
-        if !isPaired { return "先连上 Mac mini，我才动得了" }
-        // 10-17：这一轮有 todo 清单时，锁屏/灵动岛直接说「任务名 · 正在做的那步」
-        if let plan = liveProcess?.plan, !plan.active.isEmpty { return plan.title.isEmpty ? plan.active : plan.title + " · " + plan.active }
+    /// 灵动岛 / 顶栏 / 小组件共用的可行动摘要（优先具体标题，问候垫底）。
+    var glanceSummary: (caption: String, headline: String, deepLink: String) {
+        if !isPaired {
+            return ("先连上 Mac mini，我才动得了", "先配对", "today")
+        }
+        if let plan = liveProcess?.plan, !plan.active.isEmpty {
+            let full = plan.title.isEmpty ? plan.active : plan.title + " · " + plan.active
+            return (full, Self.clipHeadline(plan.active.isEmpty ? plan.title : plan.active), "today")
+        }
         switch stage.state {
-        case .offline: return "连不上 mini——我先歇着，连上再接着"
-        case .failed: return "这步卡住了，看对话里怎么修"
-        case .delivered: return "办完了，在下面"
-        case .review: return "这一步要你点头"
+        case .offline: return ("连不上 mini——我先歇着，连上再接着", "掉线了", "today")
+        case .failed: return ("这步卡住了，看对话里怎么修", "卡住了", "today")
+        case .delivered: return ("办完了，在下面", "办完了", "today")
+        case .review: return ("这一步要你点头", "要你点头", "waiting")
         case .idle, .waiting:
             if waitingInboxCount > 0 {
                 if let tip = ChatAttentionHint.topWaitingTitle(self) {
-                    return waitingInboxCount == 1 ? "等你拍板：\(tip)" : "等你拍板：\(tip)（还有 \(waitingInboxCount - 1)）"
+                    let cap = waitingInboxCount == 1 ? "等你拍板：\(tip)" : "等你拍板：\(tip)（还有 \(waitingInboxCount - 1)）"
+                    return (cap, Self.clipHeadline(tip), "waiting")
                 }
-                return "有 \(waitingInboxCount) 件在等你拍板"
+                return ("有 \(waitingInboxCount) 件在等你拍板", "等你 \(waitingInboxCount)", "waiting")
             }
-            if let broken = brokenSources.first { return "读不到 " + sourceName(broken["name"].string) + " 了" }
-            if stage.state == .waiting { return "还在等新进展" }
+            if let broken = brokenSources.first {
+                let name = sourceName(broken["name"].string)
+                return ("读不到 " + name + " 了", Self.clipHeadline(name + "断了"), "today")
+            }
+            if stage.state == .waiting { return ("还在等新进展", "等进展", "today") }
             if nextUrgentCount > 0 {
                 if let tip = ChatAttentionHint.topNextTitle(self) {
-                    return "下一步：\(tip)"
+                    return ("下一步：\(tip)", Self.clipHeadline(tip), "plan")
                 }
-                return "有 \(nextUrgentCount) 件现在就该看"
+                return ("有 \(nextUrgentCount) 件现在就该看", "该做 \(nextUrgentCount)", "plan")
             }
-            if casesData["active"].int > 0 { return "\(casesData["active"].int) 段航程在跑，随时问我" }
-            let hour = Calendar.current.component(.hour, from: Date())
-            switch hour {
-            case 5..<11: return "早，我在这儿"
-            case 11..<14: return "在这儿，随时叫我"
-            case 14..<18: return "还醒着，随时叫我"
-            case 18..<23: return "晚上也在，随时叫我"
-            default: return "夜深了，我还醒着"
+            if let run = runningTasks.first {
+                let title = run["title"].string
+                if !title.isEmpty {
+                    return ("在跑：\(title)", Self.clipHeadline(title), "today")
+                }
             }
-        case .searching: return "在翻找相关资料"
-        case .remembering: return "在想之前记下的事"
-        case .calendar: return "在看你的日程"
-        case .handoff: return "交给电脑上的伙伴"
-        case .thinking: return "在想怎么帮你办"
-        case .working, .writing: return runningTasks.isEmpty ? "正在处理这件事" : "正在处理 · \(runningTasks.count) 件在跑"
+            if let next = nextCalendarGlance() {
+                return (next.0, next.1, "today")
+            }
+            if casesData["active"].int > 0 {
+                let n = casesData["active"].int
+                let title = casesData["items"].array.first(where: { ["running", "queued", "dispatching", "waiting"].contains($0["state"].string) })?["title"].string ?? ""
+                if !title.isEmpty {
+                    return ("航程：\(title)", Self.clipHeadline(title), "cases")
+                }
+                return ("\(n) 段航程在跑", "航程 \(n)", "cases")
+            }
+            return ("无待办 · 点开记一笔", "无待办", "voice")
+        case .searching: return ("在翻找相关资料", "翻资料", "today")
+        case .remembering: return ("在想之前记下的事", "想着", "today")
+        case .calendar: return ("在看你的日程", "看日程", "today")
+        case .handoff: return ("交给电脑上的伙伴", "派活中", "work")
+        case .thinking: return ("在想怎么帮你办", "在想", "today")
+        case .working, .writing:
+            if let title = runningTasks.first?["title"].string, !title.isEmpty {
+                return ("在跑：\(title)", Self.clipHeadline(title), "today")
+            }
+            return ("正在处理这件事", "处理中", "today")
         }
+    }
+    var stripCaption: String { glanceSummary.caption }
+    var glanceHeadline: String { glanceSummary.headline }
+    var glanceDeepLink: String { glanceSummary.deepLink }
+
+    /// 今日下一档未开始的日程 → (caption, headline)。
+    private func nextCalendarGlance() -> (String, String)? {
+        let now = Date().timeIntervalSince1970
+        let events = (datasets["/personal/today"]?["events"].array ?? [])
+            .filter { !$0["all_day"].bool && !$0["informational"].bool && $0["start"].double > now }
+            .sorted { $0["start"].double < $1["start"].double }
+        guard let e = events.first else { return nil }
+        let start = e["start"].double
+        let title = e["title"].string
+        guard start > 0, !title.isEmpty else { return nil }
+        let clock = clockTime(start)
+        return ("\(clock) \(title)", Self.clipHeadline("\(clock) \(title)"))
+    }
+
+    private static func clipHeadline(_ text: String, limit: Int = 16) -> String {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.count <= limit { return t }
+        return String(t.prefix(limit - 1)) + "…"
     }
     var stripSign: String {
         switch stage.state {

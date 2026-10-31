@@ -45,6 +45,12 @@ struct ReplyText: View {
         .animation(reduce ? nil : .smooth(duration: 0.28), value: layout.lead != nil)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
+            // 上滑建格时不播进场：claim 掉避免下次再闪，直接落定。
+            if AmbientMotionPolicy.scrollQuiet {
+                if let motionID { _ = ReplyMotion.claim(motionID, createdAt: createdAt) }
+                if !shown || sweep < 1 { var t = Transaction(); t.disablesAnimations = true; withTransaction(t) { shown = true; sweep = 1 } }
+                return
+            }
             guard !reduce, let motionID, ReplyMotion.claim(motionID, createdAt: createdAt) else {
                 // 已播过 / 减少动态效果：直接落定，不动。
                 if !shown || sweep < 1 { var t = Transaction(); t.disablesAnimations = true; withTransaction(t) { shown = true; sweep = 1 } }
@@ -97,7 +103,7 @@ private struct ReplyMarkdown: View {
                 .code(.monospaced, .fontScale(0.88), .backgroundColor(Palette.fill))
                 .strong(.fontWeight(.semibold), .backgroundColor(Palette.accent.opacity(0.32)))
                 .link(.foregroundColor(Palette.info)))
-            .textual.textSelection(.enabled)
+            // 不挂 textSelection：上滑建格时 UITextInteraction 会拖垮主线程；复制走气泡长按菜单。
             // 整套 GitHub 样式放最外层只做兜底（代码块、表格）；上面的逐项样式离视图更近，优先生效。
             .textual.structuredTextStyle(.gitHub)
             .font(TypeScale.body)
@@ -125,13 +131,14 @@ enum ReplyMotion {
     }
 }
 
-/// 动效库 20-build-checklist 的「模糊上浮」：位移 + 高斯模糊 + 透明度一起收。
+/// 回复进场：位移 + 淡入。blur 参数保留兼容，但不应用（离屏模糊拖滚动帧）。
 struct BlurRise: ViewModifier {
     let shown: Bool
     var distance: CGFloat = 12
     var blur: CGFloat = 6
     func body(content: Content) -> some View {
-        content.opacity(shown ? 1 : 0).offset(y: shown ? 0 : distance).blur(radius: shown ? 0 : blur)
+        let _ = blur
+        content.opacity(shown ? 1 : 0).offset(y: shown ? 0 : distance)
     }
 }
 

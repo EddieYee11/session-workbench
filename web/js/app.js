@@ -149,22 +149,32 @@ function bindPull() {
   });
 }
 
-// ─── Dock ───
+// ─── Dock（签名不变则不重画，减少切页掉帧） ───
+let dockSig = '';
 function renderDock() {
   const badges = { today: waitingCount(), next: nextUrgentCount() };
+  const sig = TABS.map((t) => `${t.id}:${S.tab === t.id ? 1 : 0}:${badges[t.id] || 0}`).join('|');
+  if (sig === dockSig && $('#dock').children.length) return;
+  dockSig = sig;
   $('#dock').innerHTML = TABS.map((t, i) => html`<button class="dock-item ${S.tab === t.id ? 'on' : ''}" style="--tint:${raw(t.tint)}" data-act="go-tab" data-tab="${t.id}" aria-label="${t.name}" title="${t.name}（⌘${i + 1}）">
     ${icon(t.ic)}${S.tab === t.id ? html`<span class="dock-name">${t.name}</span>` : ''}${S.tab !== t.id && badges[t.id] ? html`<b class="badge-count">${Math.min(99, badges[t.id])}</b>` : ''}</button>`).join('');
-  // 徽标挂在右上角（iOS CountBadge(offset: 4,-3)），未选中才显示
-
 }
 
-// ─── 页面切换 ───
+// ─── 页面切换（页保持挂载，用 .on 淡入，避免 display:none 冷启动） ───
 const pages = {};
 function showTab(tab, again) {
-  for (const t of TABS) $('#page-' + t.id).classList.toggle('on', t.id === tab);
+  for (const t of TABS) {
+    const p = $('#page-' + t.id);
+    const on = t.id === tab;
+    p.classList.toggle('on', on);
+    p.toggleAttribute('aria-hidden', !on);
+  }
   document.body.dataset.tab = tab;
   const el = $('#page-' + tab);
-  if (!again) { el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('enter'), 1600); }
+  if (!again) {
+    el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter');
+    clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('enter'), 700);
+  }
   renderPage(tab);
   renderDock(); renderTop();
   if (tab === 'work') pollWork(true);
@@ -184,10 +194,12 @@ onTab(showTab);
 setTodayRender(() => { if (S.tab === 'today') renderPage('today'); });
 onChange((keys) => {
   if (!S.token) return;
-  renderTop(); renderDock();
+  // 顶栏/角标只在相关脏键时刷新，避免 SSE 心跳整树重画
+  const chromeKeys = ['stage', '*', '/personal/waiting', '/personal/next', '/personal/tasks', '/personal/work/proposals?limit=20', '/personal/agency', '/personal/connectors', 'conversation'];
+  if ([...keys].some((k) => chromeKeys.includes(k) || k.startsWith('note:'))) { renderTop(); renderDock(); }
   if (S.tab === 'health' && [...keys].some((k) => k.startsWith('/personal/health') || k === '/personal/today' || k === '/personal/next')) renderPage('health');
   if (S.tab === 'next' || S.tab === 'today') {
-    const relevant = ['/personal/next', '/personal/today', '/personal/connectors', '/personal/finance', '/personal/agency', '/personal/tasks', '/personal/work/proposals?limit=20', '/personal/automations', '/personal/cases', '/personal/plan', '/personal/waiting', 'stage', '*'];
+    const relevant = ['/personal/next', '/personal/today', '/personal/connectors', '/personal/finance', '/personal/agency', '/personal/tasks', '/personal/work/proposals?limit=20', '/personal/automations', '/personal/cases', '/personal/plan', '/personal/waiting', 'stage', '*', 'note:next', 'note:today', 'note:doing'];
     if (relevant.some((k) => keys.has(k))) renderPage(S.tab);
   }
 });

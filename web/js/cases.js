@@ -1,6 +1,6 @@
 // 航程 + 下一步闭环 + 线索 + 统一「等你」（2026-10-17/18，对应 iOS CasesViews.swift / ThreadsViews.swift）。
 // 后端：/personal/cases、/personal/plan、/personal/thread、/personal/waiting（backend/cases.py、tomorrow_plan.py、threads.py）。
-import { S, BASE, html, raw, D, load, mutate, changed, setTab, send, relativeTime, clockTime, toast, md, decisionCount, flowItems, locateMessage } from './core.js';
+import { S, BASE, html, raw, D, load, mutate, changed, setTab, send, relativeTime, clockTime, toast, md, decisionCount, flowItems, locateMessage, setNote, noteOf, wasDelivered, afterWrite, patchData, agencyCards, reload } from './core.js';
 import { icon, act, stamp, empty, section, openSheet, pushSheet, closeSheets, confirmBox } from './ui.js';
 import { checklist } from './chat.js';
 import { pendingNoteHTML } from './sheets.js';
@@ -141,10 +141,41 @@ act('case-send', async (b) => {
   b.disabled = true; if (await caseSend(b.dataset.id, text)) box.value = ''; b.disabled = false;
 });
 act('case-reply', async (b) => { b.disabled = true; await caseSend(b.dataset.id, b.dataset.text); });
-act('case-resolve', async (b) => { b.disabled = true; try { await mutate(pathOf(b.dataset.id) + '/resolve'); await load(pathOf(b.dataset.id)); } catch { /* toast */ } });
+async function refreshAfterCaseChange(id, head) {
+  await load(pathOf(id));
+  const ok = await afterWrite(['/personal/cases', '/personal/waiting'], {
+    noteKey: 'waiting',
+    failNote: head + '，等你/航程列表没刷齐——可再拉开等你。不会假装角标已更新。',
+    onFail: () => {
+      patchData('/personal/cases', (d) => {
+        d.items = (d.items || []).map((c) => (c.id === id ? { ...c, state: 'done', state_label: '已完成' } : c));
+        d.active = (d.items || []).filter((c) => ACTIVE.has(c.state)).length;
+        d.waiting = (d.items || []).filter((c) => c.state === 'waiting').length;
+        return d;
+      });
+      patchData('/personal/waiting', (d) => {
+        d.items = (d.items || []).filter((i) => i.case_id !== id && i.id !== 'case:' + id);
+        d.count = (d.items || []).length;
+        return d;
+      });
+    },
+  });
+  return ok;
+}
+act('case-resolve', async (b) => {
+  b.disabled = true;
+  try {
+    await mutate(pathOf(b.dataset.id) + '/resolve');
+    await refreshAfterCaseChange(b.dataset.id, '航程已标完成');
+  } catch { b.disabled = false; }
+});
 act('case-cancel', async (b) => {
   if (!(await confirmBox({ title: '停止这段航程？', message: '停止后 Pi 会中断当前这一步，已经做的不会撤回。', ok: '停止', danger: true }))) return;
-  try { await mutate(pathOf(b.dataset.id) + '/cancel'); await load(pathOf(b.dataset.id)); } catch { /* toast */ }
+  b.disabled = true;
+  try {
+    await mutate(pathOf(b.dataset.id) + '/cancel');
+    await refreshAfterCaseChange(b.dataset.id, '已请它停下');
+  } catch { b.disabled = false; }
 });
 
 // ─── 线索条 ───
@@ -173,105 +204,276 @@ act('thread-go', async (b) => {
   if (url) window.open(url, '_blank', 'noopener');
 });
 
-// ─── 统一「等你」 ───
+// ─── 统一「等你」（对照 iOS WaitingSheet：一卡一件、ack、agency 整理） ───
+function agencyCardHTML(c, hi) {
+  const pack = c.preparation;
+  return html`<div class="card agency-wait ${hi ? 'wait-first' : ''}" data-aid="${c.id}">
+    <div class="meta">${icon('sparkles')}<span>${c.source_label || '事项'}</span><span class="grow"></span>${stamp('等你', 'warning')}</div>
+    <h3>${c.title}</h3>${c.why ? html`<p class="sub">${c.why}</p>` : ''}
+    ${pack ? html`<div class="card inset"><small class="label">资料已整理</small><p>${pack.summary || ''}</p></div>` : ''}
+    <div class="row actions">
+      <button class="btn primary compact" data-act="agency-act" data-a="discuss" data-id="${c.id}">交给我办</button>
+      ${pack ? html`<button class="btn secondary compact" data-act="agency-act" data-a="later" data-id="${c.id}">晚点</button>`
+        : html`<button class="btn secondary compact" data-act="agency-act" data-a="prepare" data-id="${c.id}">先整理资料</button>`}
+    </div></div>`;
+}
 function waitingView() {
   return {
     title: '等你', wide: true,
     render: () => {
       const decisions = flowItems.filter((i) => !i.stale);
-      const items = (waitingData().items || []).filter((i) => !hiddenWaiting.has(i.id));
+      const cards = agencyCards();
+      const items = waitingData().items || [];
       const of = (k) => items.filter((i) => i.kind === k);
-      const row = (i, ic, tone, actAttr) => html`<button class="list-row" ${raw(actAttr)}><span class="badge ${tone}">${icon(ic)}</span><span><b>${i.title}</b><small>${i.why}</small></span>${icon('right', 'chev')}</button>`;
-      return html`${!decisions.length && !items.length ? empty('没有在等你的事', '要你拍板的审批、停下来等你批准的航程、微信里有人在等回话、过期的待办，都会汇到这里。', 'checkCircle') : ''}
-        ${decisions.length ? section(`要你拍板 · ${decisions.length}`, html`<div class="stack">${decisions.map((d) => pendingNoteHTML(d))}</div>`) : ''}
-        ${of('case').length ? section(`航程停下来等你 · ${of('case').length}`, html`<div class="card list">${of('case').map((i) => row(i, 'layers', 'warning', `data-act="case-open" data-id="${i.case_id}"`))}</div>`) : ''}
-        ${of('wechat').length ? section(`微信在等你回 · ${of('wechat').length}`, html`<div class="card list">${of('wechat').map((i) => html`<div class="wx-wait"><div class="row"><span class="badge info">${icon('message')}</span><span class="grow"><b>${i.title}</b><small>${i.why}</small></span></div>
-            <div class="row actions"><button class="btn secondary compact" data-act="wx-draft" data-title="${i.title}" data-why="${i.why}">让 Com 起草回复</button><button class="btn quiet" data-act="wx-done" data-id="${i.id}">已经回了</button></div></div>`)}</div>`) : ''}
-        ${of('todo').length ? section(`过期的待办 · ${of('todo').length}`, html`<div class="card list">${of('todo').map((i) => html`<div class="todo-wait"><span class="badge warning">${icon('checklist')}</span><span class="grow"><b>${i.title}</b><small>${i.why}</small></span>
+      const total = decisions.length + cards.length + items.length;
+      const tip = decisions[0]?.title || cards[0]?.title || items[0]?.title || '';
+      const intro = !total ? '' : tip
+        ? html`<p class="wait-intro">先看这件：「${tip}」——一卡一个动作，办完再说下一件。</p>`
+        : html`<p class="wait-intro">我先把要你点头的放最上面——一卡看一件。</p>`;
+      const note = noteOf('waiting') || noteOf('agency');
+      const firstKind = decisions.length ? 'decision' : cards.length ? 'agency' : of('case').length ? 'case' : of('wechat').length ? 'wechat' : of('todo').length ? 'todo' : '';
+      const row = (i, ic, tone, actAttr, hi) => html`<button class="list-row ${hi ? 'wait-first' : ''}" ${raw(actAttr)}><span class="badge ${tone}">${icon(ic)}</span><span><b>${i.title}</b><small>${i.why}</small></span>${icon('right', 'chev')}</button>`;
+      return html`${note ? html`<div class="notice warning inline-note">${icon('warning')}<span>${note}</span></div>` : ''}
+        ${!total ? empty('眼下没有要你拍板的', '审批、航程停顿、微信待回、过期待办会汇到这里。有事我会先整理好再找你。', 'checkCircle') : intro}
+        ${decisions.length ? section(`要你拍板 · ${decisions.length}`, html`<div class="stack">${decisions.map((d, i) => html`<div class="${firstKind === 'decision' && i === 0 ? 'wait-first' : ''}">${pendingNoteHTML(d)}</div>`)}</div>`) : ''}
+        ${cards.length ? section(`要跟进的事 · ${cards.length}`, html`<div class="stack">${cards.map((c, i) => agencyCardHTML(c, firstKind === 'agency' && i === 0))}</div>`) : ''}
+        ${of('case').length ? section(`航程停下来等你 · ${of('case').length}`, html`<div class="card list">${of('case').map((i, n) => row(i, 'layers', 'warning', `data-act="case-open" data-id="${i.case_id}"`, firstKind === 'case' && n === 0))}</div>`) : ''}
+        ${of('wechat').length ? section(`微信在等你回 · ${of('wechat').length}`, html`<div class="card list">${of('wechat').map((i, n) => html`<div class="wx-wait ${firstKind === 'wechat' && n === 0 ? 'wait-first' : ''}" data-wid="${i.id}"><div class="row"><span class="badge info">${icon('message')}</span><span class="grow"><b>${i.title}</b><small>${i.why}</small></span></div>
+            <div class="row actions"><button class="btn secondary compact" data-act="wx-draft" data-title="${i.title}" data-why="${i.why}">让 Com 起草回复</button><button class="btn quiet" data-act="wx-done" data-id="${i.id}" data-at="${i.at || 0}">已经回了</button></div></div>`)}</div>`) : ''}
+        ${of('todo').length ? section(`过期的待办 · ${of('todo').length}`, html`<div class="card list">${of('todo').map((i, n) => html`<div class="todo-wait ${firstKind === 'todo' && n === 0 ? 'wait-first' : ''}" data-path="${i.path}"><span class="badge warning">${icon('checklist')}</span><span class="grow"><b>${i.title}</b><small>${i.why}</small></span>
             <button class="btn quiet compact" data-act="waiting-todo" data-a="postpone" data-path="${i.path}">改到明天</button><button class="btn quiet compact" data-act="waiting-todo" data-a="done" data-path="${i.path}">完成</button>
-            <button class="btn secondary compact" data-act="todo-delegate" data-path="${i.path}">交给 Com</button></div>`)}</div>`) : ''}`;
+            <button class="btn secondary compact" data-act="todo-delegate" data-path="${i.path}">交给我办</button></div>`)}</div>`) : ''}`;
     },
-    mounted: () => { load('/personal/waiting'); },
+    mounted: async () => {
+      setNote('waiting', '');
+      const r = await reload('/personal/waiting');
+      if (!r.ok) setNote('waiting', S.errors['/personal/waiting'] ? `等你清单没读上：${S.errors['/personal/waiting']}——下面仍可能是上一版。` : '等你清单没读上——下面仍可能是上一版。可再拉开。');
+      load('/personal/agency'); load('/personal/work/proposals?limit=20'); load('/personal/tasks');
+    },
   };
 }
-const hiddenWaiting = new Set();
 export function openWaiting() { document.querySelector('#sheet.on') ? pushSheet(waitingView()) : openSheet(waitingView()); }
 act('waiting-open', () => openWaiting());
-act('wx-draft', async (b) => {
-  closeSheets(); setTab('chat');
-  await send({ textOverride: `帮我起草一条回复给「${b.dataset.title}」的微信，对方最后说：${b.dataset.why}。先给我看草稿，不要替我发。` });
+act('agency-act', async (b) => {
+  const id = b.dataset.id, a = b.dataset.a;
+  const card = agencyCards().find((c) => c.id === id); if (!card) return;
+  b.disabled = true;
+  const wrap = b.closest('.agency-wait');
+  try {
+    const fields = { action: a, ...(card.version != null ? { version: card.version } : card.updated_at != null ? { version: card.updated_at } : {}), ...(a === 'later' ? { hours: 24 } : {}) };
+    const result = await mutate('/personal/agency/actions/' + encodeURIComponent(id), fields);
+    if (a === 'discuss') {
+      await afterWrite(['/personal/agency', '/personal/waiting'], {
+        noteKey: 'waiting',
+        failNote: '已交给 Com，等你列表没刷齐——可再拉开等你。不会假装角标已更新。',
+        onFail: () => patchData('/personal/agency', (d) => { d.cards = (d.cards || []).filter((c) => c.id !== id); return d; }),
+      });
+      closeSheets(); setTab('chat');
+      return;
+    }
+    if (a === 'prepare') {
+      const pack = result && result.result;
+      await afterWrite(['/personal/agency'], {
+        noteKey: 'agency',
+        failNote: '资料已整理，卡片列表没刷齐——可下拉等你或重开详情。不会假装列表已是最新。',
+        onFail: () => {
+          if (!pack) return;
+          patchData('/personal/agency', (d) => {
+            d.cards = (d.cards || []).map((c) => (c.id === id ? { ...c, preparation: pack } : c));
+            return d;
+          });
+        },
+      });
+      toast('资料已整理');
+      return;
+    }
+    // later / handled / mute：乐观收卡
+    wrap?.classList.add('leaving');
+    await afterWrite(['/personal/agency'], {
+      noteKey: 'waiting',
+      failNote: (a === 'later' ? '已留到稍后' : '已记下') + '，卡片列表没刷齐——可再拉开等你。不会假装列表已是最新。',
+      onFail: () => patchData('/personal/agency', (d) => { d.cards = (d.cards || []).filter((c) => c.id !== id); return d; }),
+    });
+  } catch { b.disabled = false; wrap?.classList.remove('leaving'); setNote('waiting', '没成，卡还在——可以再试'); }
 });
-act('wx-done', (b) => { hiddenWaiting.add(b.dataset.id); changed('/personal/waiting'); });
+act('wx-draft', async (b) => {
+  b.disabled = true;
+  const entry = await send({ textOverride: `帮我起草一条回复给「${b.dataset.title}」的微信，对方最后说：${b.dataset.why}。先给我看草稿，不要替我发。` });
+  if (!wasDelivered(entry && entry.id)) { b.disabled = false; setNote('waiting', '草稿没送进对话，卡还在——再说一次。'); return; }
+  setNote('waiting', ''); closeSheets(); setTab('chat');
+});
+act('wx-done', async (b) => {
+  const id = b.dataset.id, at = Number(b.dataset.at || 0);
+  const card = b.closest('.wx-wait');
+  b.disabled = true; card?.classList.add('leaving');
+  try {
+    await mutate('/personal/waiting/ack', { id, at });
+    await afterWrite(['/personal/waiting'], {
+      noteKey: 'waiting',
+      failNote: '已经记下你回了，但列表没刷齐——可再拉开等你。不会假装角标已更新。',
+      onFail: () => patchData('/personal/waiting', (d) => {
+        d.items = (d.items || []).filter((i) => i.id !== id);
+        d.count = (d.items || []).length;
+        return d;
+      }),
+    });
+  } catch { card?.classList.remove('leaving'); b.disabled = false; }
+});
 act('waiting-todo', async (b) => {
   b.disabled = true;
-  try { await mutate('/personal/today/todos/' + b.dataset.a, { path: b.dataset.path }); toast(b.dataset.a === 'done' ? '已完成' : '已改到明天'); await Promise.all([load('/personal/waiting'), load('/personal/today')]); } catch { b.disabled = false; }
+  const wrap = b.closest('.todo-wait'); wrap?.classList.add('leaving');
+  const path = b.dataset.path;
+  try {
+    await mutate('/personal/today/todos/' + b.dataset.a, { path });
+    toast(b.dataset.a === 'done' ? '已完成' : '已改到明天');
+    const ok = await afterWrite(['/personal/waiting', '/personal/today'], {
+      noteKey: 'waiting',
+      failNote: '待办改了，但等你/今天没刷齐——可再拉开。不会假装列表已是最新。',
+      onFail: () => {
+        patchData('/personal/waiting', (d) => {
+          d.items = (d.items || []).filter((i) => i.path !== path);
+          d.count = (d.items || []).length;
+          return d;
+        });
+        setNote('today', '待办已改，今天页没刷上——可下拉再试。');
+      },
+    });
+    if (!ok) { wrap?.classList.remove('leaving'); b.disabled = false; }
+  } catch { wrap?.classList.remove('leaving'); b.disabled = false; }
 });
 
-// ─── 交给 Com / 加到待办 / 稍后再说 ───
+// ─── 交给我办 / 加到待办 / 稍后再说（成功才消卡/跳页；刷失败开口） ───
 export async function delegateNext(item) {
   try {
     const r = await mutate('/personal/next/' + encodeURIComponent(item.id), { action: 'delegate' });
-    await Promise.all([load('/personal/next'), load('/personal/cases')]);
-    if (r.mode === 'chat') { setTab('chat'); return; }
-    if (r.task_id) openCase(r.task_id);
-  } catch { /* toast */ }
+    await afterWrite(['/personal/next', '/personal/cases', '/personal/waiting'], {
+      noteKey: 'next',
+      failNote: '已交给我办，但列表没刷齐——角标可能还在。不会假装列表已是最新。',
+      onFail: () => patchData('/personal/next', (d) => { d.items = (d.items || []).filter((x) => x.id !== item.id); return d; }),
+    });
+    if (r.mode === 'chat') { setTab('chat'); return true; }
+    if (r.task_id) { openCase(r.task_id); return true; }
+    return true;
+  } catch { return false; }
 }
 act('next-run', async (b) => {
   const item = ((D('/personal/next') || {}).items || []).find((i) => i.id === b.dataset.id); if (!item || !item.action) return;
   const a = item.action, card = b.closest('.next-card');
   card?.querySelectorAll('button').forEach((x) => (x.disabled = true));
-  const done = async (kind) => { try { await mutate('/personal/next/' + encodeURIComponent(item.id), { action: kind }); await load('/personal/next'); } catch { card?.querySelectorAll('button').forEach((x) => (x.disabled = false)); } };
-  if (a.type === 'reply_wechat') { try { await navigator.clipboard.writeText(a.draft || ''); toast('草稿已复制，去微信粘贴发送'); } catch { toast('复制失败，请在草稿里手动复制'); card?.querySelectorAll('button').forEach((x) => (x.disabled = false)); return; } await done('drafted'); }
-  else if (a.type === 'reply_mail') { const q = new URLSearchParams({ subject: a.subject || '', body: a.draft || '' }).toString().replace(/\+/g, '%20'); window.open('mailto:' + encodeURIComponent(a.to || '') + '?' + q, '_blank'); await done('drafted'); }
-  else if (a.type === 'bookkeep') { await send({ textOverride: '记一笔 ' + amount(a.amount) + ' 元' + (a.note ? ' ' + a.note : '') }); setTab('chat'); await done('done'); }
-  else if (a.type === 'calendar') { await send({ textOverride: '加个日程：' + a.title + ' ' + a.start + (a.end ? ' 到 ' + a.end : '') }); setTab('chat'); await done('done'); }
+  const fail = () => { card?.classList.remove('leaving'); card?.querySelectorAll('button').forEach((x) => (x.disabled = false)); };
+  const done = async (kind) => {
+    await mutate('/personal/next/' + encodeURIComponent(item.id), { action: kind });
+    await afterWrite(['/personal/next'], {
+      noteKey: 'next',
+      failNote: '办了，但下一步列表没刷齐。不会假装列表已是最新。',
+      onFail: () => patchData('/personal/next', (d) => { d.items = (d.items || []).filter((x) => x.id !== item.id); return d; }),
+    });
+  };
+  try {
+    if (a.type === 'reply_wechat') {
+      try { await navigator.clipboard.writeText(a.draft || ''); toast('草稿已复制，去微信粘贴发送'); } catch { toast('复制失败，请在草稿里手动复制'); fail(); return; }
+      card?.classList.add('leaving'); await done('drafted');
+    } else if (a.type === 'reply_mail') {
+      const q = new URLSearchParams({ subject: a.subject || '', body: a.draft || '' }).toString().replace(/\+/g, '%20');
+      window.open('mailto:' + encodeURIComponent(a.to || '') + '?' + q, '_blank');
+      card?.classList.add('leaving'); await done('drafted');
+    } else if (a.type === 'bookkeep' || a.type === 'calendar') {
+      const text = a.type === 'bookkeep'
+        ? ('记一笔 ' + amount(a.amount) + ' 元' + (a.note ? ' ' + a.note : ''))
+        : ('加个日程：' + a.title + ' ' + a.start + (a.end ? ' 到 ' + a.end : ''));
+      const entry = await send({ textOverride: text });
+      if (!wasDelivered(entry && entry.id)) { fail(); setNote('next', '没送进对话，卡还在——再点一次。'); return; }
+      card?.classList.add('leaving'); await done('done'); setTab('chat');
+    }
+  } catch { fail(); }
 });
 act('next-delegate', async (b) => {
   const item = ((D('/personal/next') || {}).items || []).find((i) => i.id === b.dataset.id); if (!item) return;
-  b.closest('.next-card')?.querySelectorAll('button').forEach((x) => (x.disabled = true));
-  await delegateNext(item);
+  const card = b.closest('.next-card');
+  card?.querySelectorAll('button').forEach((x) => (x.disabled = true));
+  card?.classList.add('leaving');
+  if (!(await delegateNext(item))) { card?.classList.remove('leaving'); card?.querySelectorAll('button').forEach((x) => (x.disabled = false)); }
 });
 act('next-todo', async (b) => {
   const offset = Number(b.dataset.day || 1), when = day(offset);
+  const id = b.dataset.id;
   const card = b.closest('.next-card'); card?.classList.add('leaving');
   try {
-    await mutate('/personal/next/' + encodeURIComponent(b.dataset.id), { action: 'todo', day: when, ...(b.dataset.remind ? { remind_at: when + ' ' + b.dataset.remind } : {}) });
+    await mutate('/personal/next/' + encodeURIComponent(id), { action: 'todo', day: when, ...(b.dataset.remind ? { remind_at: when + ' ' + b.dataset.remind } : {}) });
     toast(b.dataset.remind ? `已加到待办，${b.dataset.remind} 提醒你` : '已加到待办');
-    await Promise.all([load('/personal/next'), load('/personal/today')]);
+    await afterWrite(['/personal/next', '/personal/today'], {
+      noteKey: 'next',
+      failNote: '已加到待办，但下一步/今天没刷齐。不会假装列表已是最新。',
+      onFail: () => {
+        patchData('/personal/next', (d) => { d.items = (d.items || []).filter((x) => x.id !== id); return d; });
+        setNote('today', '已加到待办，今天页没刷上——可下拉再试。');
+      },
+    });
   } catch { card?.classList.remove('leaving'); }
 });
 act('next-snooze', async (b) => {
-  b.closest('.next-card')?.classList.add('leaving');
-  try { await mutate('/personal/next/' + encodeURIComponent(b.dataset.id), { action: 'snooze' }); toast('明天再提'); await load('/personal/next'); } catch { /* toast */ }
+  const id = b.dataset.id;
+  const card = b.closest('.next-card'); card?.classList.add('leaving');
+  try {
+    await mutate('/personal/next/' + encodeURIComponent(id), { action: 'snooze' });
+    toast('明天再提');
+    await afterWrite(['/personal/next'], {
+      noteKey: 'next',
+      failNote: '已稍后，但列表没刷齐。不会假装列表已是最新。',
+      onFail: () => patchData('/personal/next', (d) => { d.items = (d.items || []).filter((x) => x.id !== id); return d; }),
+    });
+  } catch { card?.classList.remove('leaving'); }
 });
 act('todo-delegate', async (b) => {
   b.disabled = true;
+  const wrap = b.closest('.todo-wait'); wrap?.classList.add('leaving');
+  const path = b.dataset.path;
   try {
-    const r = await mutate('/personal/today/todos/delegate', { path: b.dataset.path });
-    await load('/personal/cases');
+    const r = await mutate('/personal/today/todos/delegate', { path });
+    await afterWrite(['/personal/cases', '/personal/waiting', '/personal/today'], {
+      noteKey: 'waiting',
+      failNote: '已接进航程，但等你角标可能还在。不会假装角标已更新。',
+      onFail: () => patchData('/personal/waiting', (d) => {
+        d.items = (d.items || []).filter((i) => i.path !== path);
+        d.count = (d.items || []).length;
+        return d;
+      }),
+    });
     closeSheets();
     if (r.mode === 'chat') { setTab('chat'); return; }
     if (r.task_id) setTimeout(() => openCase(r.task_id), 280);
-  } catch { b.disabled = false; }
+  } catch { wrap?.classList.remove('leaving'); b.disabled = false; }
 });
-/** 下一步卡片底部的按钮行。 */
+/** 下一步：一卡一主动作，其余收进「更多」（对照 iOS NextView 10-29）。 */
 export function nextActions(item) {
   const inTodo = item.in_todo;
+  const hasAction = !!(item.action && item.action.type);
   return html`${inTodo ? html`<small class="muted row in-todo">${icon('checklist')}已在待办 · ${inTodo.due ? inTodo.due.slice(5) : '未定日期'}</small>` : ''}
     ${nextDraft(item.action)}
-    <div class="row actions">${item.action && item.action.type ? html`<button class="btn primary compact" data-act="next-run" data-id="${item.id}">${nextActionTitle(item.action)}</button><button class="btn secondary compact" data-act="next-delegate" data-id="${item.id}">交给 Com</button>` : html`<button class="btn primary compact" data-act="next-delegate" data-id="${item.id}">交给 Com</button>`}
-    ${inTodo ? html`<button class="btn secondary compact" data-act="next-do" data-a="done" data-id="${item.id}">已经做了</button>` : html`<details class="menu"><summary class="btn secondary compact">加到待办</summary><div class="menu-pop">
-      <button data-act="next-todo" data-day="0" data-id="${item.id}">今天</button><button data-act="next-todo" data-day="1" data-id="${item.id}">明天</button><button data-act="next-todo" data-day="2" data-id="${item.id}">后天</button>
-      <hr><button data-act="next-todo" data-day="1" data-remind="09:00" data-id="${item.id}">明天 9:00 提醒我</button><button data-act="next-todo" data-day="0" data-remind="20:00" data-id="${item.id}">今晚 20:00 提醒我</button></div></details>`}
-    <span class="grow"></span><button class="btn quiet" data-act="next-snooze" data-id="${item.id}" title="今天不提，明天再出现">稍后再说</button>
-    <details class="menu"><summary class="btn quiet" title="告诉我为什么，以后少提">不用</summary><div class="menu-pop">
-      ${DISMISS_REASONS.map(([k, t]) => html`<button data-act="next-do" data-a="dismiss" data-reason="${k}" data-id="${item.id}">${t}</button>`)}<hr><button data-act="next-do" data-a="dismiss" data-id="${item.id}">只是划掉</button></div></details></div>`;
+    <div class="row actions">
+      ${hasAction
+        ? html`<button class="btn primary compact" data-act="next-run" data-id="${item.id}">${nextActionTitle(item.action)}</button>`
+        : html`<button class="btn primary compact" data-act="next-delegate" data-id="${item.id}">跟我说怎么办</button>`}
+      <details class="menu next-more"><summary class="btn secondary compact" aria-label="更多">${icon('dots')}</summary><div class="menu-pop">
+        ${hasAction ? html`<button data-act="next-delegate" data-id="${item.id}">交给我办</button>` : ''}
+        ${inTodo ? html`<button data-act="next-do" data-a="done" data-id="${item.id}">已经做了</button>` : html`
+          <button data-act="next-todo" data-day="0" data-id="${item.id}">加到今天待办</button>
+          <button data-act="next-todo" data-day="1" data-id="${item.id}">加到明天待办</button>
+          <button data-act="next-todo" data-day="1" data-remind="09:00" data-id="${item.id}">明天 9:00 提醒我</button>
+          <button data-act="next-do" data-a="done" data-id="${item.id}">已经做了</button>`}
+        <button data-act="next-snooze" data-id="${item.id}">稍后再说</button>
+        <hr>
+        ${DISMISS_REASONS.map(([k, t]) => html`<button data-act="next-do" data-a="dismiss" data-reason="${k}" data-id="${item.id}">${t}</button>`)}
+        <button data-act="next-do" data-a="dismiss" data-id="${item.id}">只是划掉</button>
+      </div></details>
+      <span class="grow"></span>
+    </div>`;
 }
 // 划掉的理由（后端 next_steps.REASONS）：「已经办了」算做完；「别人在负责」不静音整个项目话题
 const DISMISS_REASONS = [['elsewhere', '已经办了'], ['others', '别人在负责'], ['unimportant', '不重要'], ['not_mine', '不是我的事']];
 const amount = (v) => String(Math.round(Number(v || 0) * 100) / 100);
 export function nextActionTitle(a) {
-  return ({ reply_wechat: '复制去微信回', reply_mail: '用邮件回', bookkeep: '记这笔 ¥' + amount(a.amount), calendar: '加到日程' })[a.type] || '去办';
+  return ({ reply_wechat: '复制草稿去微信', reply_mail: '用邮件回', bookkeep: '记这笔 ¥' + amount(a.amount), calendar: '加到日程' })[a.type] || '现在去办';
 }
 // 替他写好的回复草稿 / 要记的账 / 要加的日程，点开看全文
 function nextDraft(a) {
@@ -305,7 +507,16 @@ act('plan-toggle', (b) => {
 act('plan-hide', () => { planHidden = planData().day; changed('/personal/plan'); });
 act('plan-apply', async (b) => {
   b.disabled = true;
-  try { await mutate('/personal/plan/apply', { day: planData().day, selected: [...planPick.set] }); toast('放进明天的待办了'); await Promise.all([load('/personal/plan'), load('/personal/next'), load('/personal/today')]); } catch { b.disabled = false; }
+  const dayKey = planData().day;
+  try {
+    await mutate('/personal/plan/apply', { day: dayKey, selected: [...planPick.set] });
+    toast('放进明天的待办了');
+    await afterWrite(['/personal/plan', '/personal/next', '/personal/today'], {
+      noteKey: 'next',
+      failNote: '已放进待办，但计划/下一步没刷齐。不会假装列表已是最新。',
+      onFail: () => patchData('/personal/plan', (d) => { if (d.day === dayKey) d.state = 'closed'; return d; }),
+    });
+  } catch { b.disabled = false; }
 });
 
 export { S };

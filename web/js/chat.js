@@ -2,8 +2,13 @@
 import {
   S, $, html, raw, esc, md, textContent, clockTime, changed, onChange, send, deliver, restoreRejected, interrupt, loadHistory,
   stage, isBusy, api, uuid, toast, durationText, seedOf, store, setTab, tasks, stampLabel, statusTone,
+  shanghaiHour, decisionCount, nextUrgentCount, nextItems, D, noteOf, setNote, wasDelivered, brokenSources, flowItems, sourceName,
 } from './core.js';
 import { icon, act, stamp, openSheet } from './ui.js';
+
+const waitingInboxCount = () => decisionCount() + ((D('/personal/waiting') || {}).count || 0);
+const topWaitingTitle = () => (flowItems.find((i) => !i.stale) || {}).title || ((D('/personal/waiting') || {}).items || [])[0]?.title || '';
+const topNextTitle = () => (nextItems().find((i) => i.urgency === 'now') || nextItems()[0] || {}).title || '';
 
 // ─── 工作过程（WorkProcess.swift）：工具名 → 类别 → 口语化说法，同类连续步骤合并 ───
 const STEP_TABLE = [
@@ -193,6 +198,42 @@ export function taskSummary(t) {
 }
 
 const openProcess = new Set();
+
+/** 空对话 Presence：时段问候 + 等你/下一步点名 + starter ≤2（对照 ChatPresence.swift）。 */
+function presenceHTML() {
+  const hour = shanghaiHour();
+  const wc = waitingInboxCount(), nu = nextUrgentCount();
+  const tipW = topWaitingTitle(), tipN = topNextTitle();
+  const greeting = wc > 0
+    ? (hour < 5 ? '还醒着？有件事先说' : hour < 11 ? '早。有件事想先跟你对齐' : hour < 14 ? '中午好。先办要紧的' : hour < 18 ? '下午。我拦了一件等你' : hour < 23 ? '晚上。还差你点一下' : '还醒着？有件事先说')
+    : (hour < 5 ? '还没睡？我醒着' : hour < 11 ? '早，我在这儿' : hour < 14 ? '中午好，随时叫我' : hour < 18 ? '下午好，我闲着' : hour < 23 ? '晚上好，还在岗' : '还没睡？我醒着');
+  let status;
+  if (wc > 0) status = tipW ? `先看这一件：${tipW}${wc > 1 ? `（还有 ${wc - 1} 件）` : ''}。点下面去拍板，或直接跟我说怎么处理。` : `有 ${wc} 件在等你拍板。办完再聊也行，或者直接跟我说怎么处理。`;
+  else if (nu > 0) status = tipN ? `「下一步」里最要紧的是：${tipN}。点下面，或告诉我先办哪件。` : `「下一步」里有 ${nu} 件现在就该看的。点下面，或直接告诉我先办哪件。`;
+  else if (brokenSources()[0]) status = `读不到 ${sourceName(brokenSources()[0].name)} 了——修一下，或先跟我说别的。`;
+  else if (((D('/personal/cases') || {}).active || 0) > 0) status = `我这边有 ${(D('/personal/cases') || {}).active} 段航程在跑。问进度，或丢给我下一件事。`;
+  else status = hour < 11 ? '邮件、日历和账本我扫过了。今天想先办哪件，直接丢给我。' : hour < 14 ? '这会儿安静。记一笔、改日程、查邮件——开口就行。' : hour < 18 ? '我还在看两边电脑。有事随时叫，不用先找菜单。' : hour < 23 ? '晚上也在岗。琐事丢过来，我帮你收口。' : '夜深了我也醒着。一句话能办的，现在说也行。';
+  const starters = [];
+  if (wc > 0) starters.push({ label: tipW ? `去拍板：${tipW}` : `去处理等你的 ${wc} 件`, act: 'waiting-open' });
+  if (nu > 0) starters.push({ label: tipN ? `下一步：${tipN}` : '看看下一步', act: 'go-tab', tab: 'next' });
+  const cap = (wc > 0 || nu > 0) ? 2 : 3;
+  for (const [label, text] of [['记一笔开销', '记一下咖啡18'], ['明天要准备什么', '明天要准备什么'], ['这个月花了多少', '这个月花了多少']]) {
+    if (starters.length >= cap) break;
+    if (starters.some((s) => s.label === label)) continue;
+    starters.push({ label, act: 'chat-prompt', text });
+  }
+  const fail = noteOf('chat');
+  return html`<div class="chat-empty presence rise">
+    <h2>${greeting}</h2><p>${status}</p>
+    ${fail ? html`<div class="notice warning inline-note">${icon('warning')}<span>${fail}</span></div>` : ''}
+    <div class="chips">${starters.map((s, i) => s.tab
+      ? html`<button class="chip ${i === 0 ? 'accent' : ''}" data-act="go-tab" data-tab="${s.tab}">${s.label}</button>`
+      : s.text
+        ? html`<button class="chip ${i === 0 ? 'accent' : ''}" data-act="chat-prompt" data-text="${s.text}">${s.label}</button>`
+        : html`<button class="chip ${i === 0 ? 'accent' : ''}" data-act="${s.act}">${s.label}</button>`)}</div>
+  </div>`;
+}
+
 function messageHTML(row, prevAgent) {
   const m = row.message, user = m.role === 'user';
   const text = user ? textContent(m.text ?? m.content) : splitOptions(textContent(m.text ?? m.content))[0];
@@ -281,12 +322,11 @@ export function renderChat(first = false) {
     prevAgent = m.role === 'assistant';
   }
   for (const [id, e] of rendered) if (!seen.has(id)) { e.el.remove(); rendered.delete(id); }
-  // 顶部：更早的对话 / 空状态
+  // 顶部：更早的对话 / Presence 空态（对照 ChatPresence.swift）
   const top = $('#chatTop');
   const more = (win < all.length || S.moreHistory) && S.conv.messages.length;
   top.innerHTML = (S.conv.messages.length || all.length) ? (more ? html`<button class="btn secondary small center" data-act="chat-older">更早的对话</button>`.s : '')
-    : html`<div class="chat-empty"><h2>今天还没有要你管的事</h2><p>邮件、日历、群消息和两台电脑我都在看。有变化，我会先整理好放到这里。</p>
-      <div class="chips">${['明天要准备什么', '这个月花了多少', 'Codex 跑完了吗'].map((p) => html`<button class="chip" data-act="chat-prompt" data-text="${p}">${p}</button>`)}</div></div>`.s;
+    : presenceHTML().s;
   // 建议卡：只挂在最后一条已完成的助手回复下面
   const last = rows[rows.length - 1];
   const host = last && !last.pending && last.message.role === 'assistant' && !['streaming', 'running', 'failed', 'unknown'].includes(last.message.status) ? last.message : null;
@@ -297,8 +337,16 @@ export function renderChat(first = false) {
     sug.dataset.key = key;
     sug.innerHTML = opts.length ? html`<div class="suggest">${opts.map((o, i) => html`<button class="sug" style="--i:${i}" data-act="chat-suggest" data-mid="${host.id}" data-text="${o}">${icon(optionIcon(o))}<span>${o}</span></button>`)}</div>`.s : '';
   }
-  // 中断按钮
-  $('#interruptRow').innerHTML = isBusy(stage.state) ? html`<button class="interrupt" data-act="chat-interrupt">${icon('stopCircle')}<span>中断</span></button>`.s : '';
+  // 中断 / 等你一卡注意力条（有等待时主聊底栏只一卡，不是件数芯片）
+  const ir = $('#interruptRow');
+  if (isBusy(stage.state)) ir.innerHTML = html`<button class="interrupt" data-act="chat-interrupt">${icon('stopCircle')}<span>中断</span></button>`.s;
+  else if ((S.conv.messages.length || all.length) && waitingInboxCount() > 0) {
+    const tip = topWaitingTitle() || `${waitingInboxCount()} 件等你`;
+    ir.innerHTML = html`<button class="attention-card" data-act="waiting-open"><span class="grow"><small>等你拍板</small><b>${tip}</b></span><em>去拍板</em>${icon('right')}</button>`.s;
+  } else {
+    const note = noteOf('chat');
+    ir.innerHTML = note ? html`<div class="notice warning inline-note">${icon('warning')}<span>${note}</span></div>`.s : '';
+  }
   // 滚动：在底部就跟着走；往前加载时保住阅读位置
   if (S.jumpMessage) {
     const target = list.querySelector(`[data-mid="${CSS.escape(S.jumpMessage)}"]`);
@@ -467,10 +515,23 @@ act('chat-older', async (b) => {
   if (win < all) win += 30; else { const n = await loadHistory(); win += n; }
   renderChat();
 });
-act('chat-prompt', (b) => { atBottom = true; send({ textOverride: b.dataset.text }); });
+act('chat-prompt', async (b) => {
+  if (!b.dataset.text) return;
+  b.disabled = true; atBottom = true; setNote('chat', '');
+  const entry = await send({ textOverride: b.dataset.text });
+  if (!wasDelivered(entry && entry.id)) { b.disabled = false; setNote('chat', '没送出去，开口还在——再点一次。'); renderChat(); }
+});
 act('chat-suggest', (b) => {
   b.classList.add('picked');
-  setTimeout(() => { usedSuggestion = b.dataset.mid; $('#chatSuggest').dataset.key = ''; renderChat(); atBottom = true; send({ textOverride: b.dataset.text }); }, 200);
+  setTimeout(async () => {
+    usedSuggestion = b.dataset.mid; $('#chatSuggest').dataset.key = ''; renderChat(); atBottom = true;
+    const entry = await send({ textOverride: b.dataset.text });
+    if (!wasDelivered(entry && entry.id)) {
+      usedSuggestion = '';
+      setNote('chat', '建议没送出去，还能再点。');
+      renderChat();
+    }
+  }, 200);
 });
 act('chat-interrupt', () => interrupt());
 act('chat-receipt', (b) => deliver(b.dataset.id));
@@ -494,7 +555,8 @@ document.addEventListener('click', (e) => { if (!e.target.closest('.plus-wrap'))
 
 onChange((keys) => {
   if (!mounted) return;
-  if (keys.has('conversation') || keys.has('pending') || keys.has('stage') || keys.has('*')) renderChat();
+  if (keys.has('conversation') || keys.has('pending') || keys.has('stage') || keys.has('*')
+    || keys.has('/personal/waiting') || keys.has('note:chat') || keys.has('/personal/next')) renderChat();
   if (keys.has('composer')) renderComposer();
   else if (keys.has('pending')) syncAction();
 });

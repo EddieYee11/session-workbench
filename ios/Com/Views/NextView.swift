@@ -692,7 +692,7 @@ private struct ProgressTrack: View {
 private struct BuildSpinner: View {
     let reduce: Bool
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduce)) { context in
+        TimelineView(.animation(minimumInterval: AmbientMotionPolicy.effectInterval, paused: reduce)) { context in
             Circle().trim(from: 0, to: 0.28)
                 .stroke(Palette.accentText, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .frame(width: 17, height: 17)
@@ -701,10 +701,10 @@ private struct BuildSpinner: View {
     }
 }
 
-/// 模糊上浮：从下方 24pt、10pt 模糊淡入；离场时同路反向。
+/// 上浮淡入（不再 blur：过渡里离屏模糊会拖垮列表滚动）。
 private struct BlurLift: ViewModifier {
     let on: Bool
-    func body(content: Content) -> some View { content.opacity(on ? 0 : 1).blur(radius: on ? 10 : 0).offset(y: on ? 24 : 0) }
+    func body(content: Content) -> some View { content.opacity(on ? 0 : 1).offset(y: on ? 24 : 0) }
 }
 extension AnyTransition {
     static var blurLift: AnyTransition { .modifier(active: BlurLift(on: true), identity: BlurLift(on: false)) }

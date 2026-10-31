@@ -1,11 +1,11 @@
 // 「今天」：日程、提醒、行动台待办和等你拍板的事排成一条时间线（iOS TodayView.swift + BodyViews.swift）。
 import {
   S, $, html, raw, esc, D, nextData, flowItems, clockTime, relativeTime, sourceName, WEEK, mutate, load, send, setTab, runningTasks, decisionCount, staleItems,
-  refreshNext, store, toast, sleep, onChange,
+  refreshNext, store, toast, sleep, onChange, noteOf, nextUrgentCount, nextItems, afterWrite, patchData, setNote, shanghaiHour,
 } from './core.js';
-import { icon, act, stamp, empty, openSheet, pushSheet, kv, section, countUp } from './ui.js';
+import { icon, act, stamp, empty, openSheet, pushSheet, kv, section, countUp, closeSheets } from './ui.js';
 import { pendingNoteHTML } from './sheets.js';
-import { threadStrip } from './cases.js';
+import { threadStrip, waitingCount } from './cases.js';
 
 // ─── 条目（TodayEntry） ───
 export const todayData = () => D('/personal/today') || null;
@@ -88,9 +88,26 @@ export function renderToday(root) {
   const allDay = todayEntries().filter((e) => e.kind === 'event' && !e.value.informational && e.start === 0);
   const timed = [...allDay, ...rows.filter((e) => e.start > 0)];
   const errs = Object.keys((todayData() || {}).errors || {}).filter((k) => k === 'events' || k === 'reminders');
+  const wc = waitingCount(), nu = nextUrgentCount();
+  const tipW = (flowItems.find((i) => !i.stale) || {}).title || '';
+  const tipN = (nextItems().find((i) => i.urgency === 'now') || nextItems()[0] || {}).title || '';
+  const hour = shanghaiHour();
+  const greet = hour < 5 ? '还醒着' : hour < 11 ? '早' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : hour < 23 ? '晚上好' : '还醒着';
+  const sub = wc > 0
+    ? (tipW ? `${greet} · 等你：${tipW}${wc > 1 ? `（还有 ${wc - 1}）` : ''}` : `${greet} · ${wc} 件等你`)
+    : nu > 0
+      ? (tipN ? `${greet} · 下一步先办：${tipN}` : `${greet} · ${nu} 件下一步`)
+      : `${greet} · ${todaySummary()}`;
+  const note = noteOf('today') || noteOf('doing');
+  const brief = ((nextData().brief || []).filter((b) => b.text) || []).slice(0, 3);
   root.innerHTML = html`<div class="page today">
-    <div class="today-head"><div><h1 class="beam">${d.getFullYear()}年${d.getMonth() + 1}月</h1><h2 class="beam" style="--d:60ms">${todaySummary()}</h2></div>
-      <button class="round fill" data-act="open-taskhub" aria-label="任务与目标">${icon('layers')}${decisionCount() ? html`<em class="badge-count">${decisionCount()}</em>` : ''}</button></div>
+    <div class="today-head"><div><h1 class="beam">${d.getFullYear()}年${d.getMonth() + 1}月</h1><h2 class="beam" style="--d:60ms">${sub}</h2></div>
+      <div class="row">
+        <button class="round fill ${wc ? 'warn' : ''}" data-act="waiting-open" aria-label="等你">${icon('hand')}${wc ? html`<em class="badge-count">${Math.min(99, wc)}</em>` : ''}</button>
+        <button class="round fill" data-act="open-taskhub" aria-label="任务与目标">${icon('layers')}${decisionCount() ? html`<em class="badge-count">${decisionCount()}</em>` : ''}</button>
+      </div></div>
+    ${note ? html`<div class="notice warning inline-note">${icon('warning')}<span>${note}</span></div>` : ''}
+    ${brief.length ? html`<div class="card rise today-brief" style="--d:40ms"><small class="label">我说几句</small>${brief.map((b, i) => html`<p class="${i === 0 ? '' : 'sub'}">${b.text}</p>`)}</div>` : ''}
     ${S.errors['/personal/today'] && !todayData() ? html`<div class="notice danger">${icon('warning')}<span>今天的安排读取失败：${S.errors['/personal/today']}</span><button class="link" data-act="today-retry">重试</button></div>` : ''}
     ${weekStrip(now)}
     ${scheduleTimeline(timed, now)}
@@ -139,12 +156,42 @@ function todayDetail(e) {
     },
   };
 }
+/** 对照 iOS reminderAction：写回后今天没刷齐则乐观改 + doing 开口。 */
+async function reminderAction(reminder, action) {
+  await mutate('/personal/reminders/' + encodeURIComponent(reminder.id) + '/action', {
+    action,
+    expected: { due: reminder.due, status: reminder.status },
+  });
+  await afterWrite(['/personal/today'], {
+    noteKey: 'doing',
+    failNote: (action === 'confirm' ? '已标完成' : action === 'cancel' ? '已取消提醒' : '已改提醒')
+      + '，今天页没刷上——可下拉再试。不会假装提醒已更新。',
+    onFail: () => patchData('/personal/today', (d) => {
+      d.reminders = (d.reminders || []).map((row) => {
+        if (row.id !== reminder.id) return row;
+        if (action === 'cancel') return null;
+        if (action === 'confirm') return { ...row, status: 'done', overdue: false };
+        return row;
+      }).filter(Boolean);
+      return d;
+    }),
+  });
+  return true;
+}
 act('rem-act', async (b) => {
   const r = ((todayData() || {}).reminders || []).find((x) => x.id === b.dataset.id); if (!r) return;
-  b.disabled = true; await reminderAction(r, b.dataset.a);
-  import('./ui.js').then((m) => m.closeSheets());
+  b.disabled = true;
+  try {
+    await reminderAction(r, b.dataset.a);
+    closeSheets();
+  } catch { b.disabled = false; }
 });
-act('hand-to-com', async (b) => { b.disabled = true; await send({ textOverride: b.dataset.text }); import('./ui.js').then((m) => m.closeSheets()); setTab('chat'); });
+act('hand-to-com', async (b) => {
+  b.disabled = true;
+  const entry = await send({ textOverride: b.dataset.text });
+  if (!entry) { b.disabled = false; return; }
+  closeSheets(); setTab('chat');
+});
 
 let renderHook = () => {};
 export const setTodayRender = (fn) => { renderHook = fn; };

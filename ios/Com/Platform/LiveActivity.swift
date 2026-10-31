@@ -178,8 +178,10 @@ import ComCore
         runningSince = running > 0 ? (runningSince ?? busySince ?? Date()) : nil
         // 电脑上的任务有创建时间就从那一刻算，计时才是真的「跑了多久」。
         let taskStart = tasks.map { $0["created_at"].double }.filter { $0 > 0 }.min().map { Date(timeIntervalSince1970: $0) }
-        return State(mood: model.stripState.rawValue, caption: model.stripCaption, waiting: model.waitingInboxCount,
-                     running: running, urgent: model.nextUrgentCount, since: running > 0 ? (taskStart ?? runningSince) : nil)
+        let glance = model.glanceSummary
+        return State(mood: model.stripState.rawValue, caption: glance.caption, waiting: model.waitingInboxCount,
+                     running: running, urgent: model.nextUrgentCount, since: running > 0 ? (taskStart ?? runningSince) : nil,
+                     headline: glance.headline, deepLink: glance.deepLink)
     }
 
     #if DEBUG

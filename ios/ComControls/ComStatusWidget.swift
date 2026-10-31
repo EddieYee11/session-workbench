@@ -36,13 +36,21 @@ private struct StatusWidgetView: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    Label("Com · 今天", systemImage: "sparkles").font(.headline)
+                    Label("Com", systemImage: "sparkles").font(.headline)
                     if fresh, let snapshot = entry.snapshot {
-                        Text("\(snapshot.reviewCount) 项待确认 · \(snapshot.briefingCount) 条简报").font(.caption)
+                        if !snapshot.headline.isEmpty {
+                            Text(snapshot.headline).font(.caption).lineLimit(2)
+                        } else {
+                            Text("\(snapshot.reviewCount) 项待确认 · \(snapshot.briefingCount) 条简报").font(.caption)
+                        }
                         Text("更新于 \(snapshot.updatedAt, style: .time)").font(.caption2).foregroundStyle(.secondary)
                     } else { Text("打开 Com 更新进展").font(.caption) }
                 }
             }
-        }.widgetURL(URL(string: fresh && (entry.snapshot?.reviewCount ?? 0) > 0 ? "com-eddie://tasks" : "com-eddie://today"))
+        }.widgetURL(URL(string: {
+            guard fresh, let s = entry.snapshot else { return "com-eddie://today" }
+            let path = s.deepLink.isEmpty ? (s.reviewCount > 0 ? "waiting" : "today") : s.deepLink
+            return "com-eddie://\(path)"
+        }()))
     }
 }

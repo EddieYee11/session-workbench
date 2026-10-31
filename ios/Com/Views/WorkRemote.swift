@@ -1,12 +1,11 @@
 import SwiftUI
 import ComCore
 
-/// 工作 Tab 的第二面：远程终端（Heeler × Moshi 取长补短）。
+/// 工作 Tab 的第二面：远程控制面（Rex 状态卡 + herdr 只读树）。
 /// 不覆盖「对话」派活面；由 `WorkSurface` 切换进入。
 ///
-/// - Heeler（ZingerLittleBee/Heeler，Claude 10-26 选型）：SSH → herdr.sock、原生终端/会话树
-/// - Moshi（REA + moshi-ios）：moshi-hook 结构化 transcript / 审批 / 计划
-/// 本夜先交付可切换的终端壳与能力说明；真 PTY / HerdrKit 接线续白天。
+/// - Rex：mini 后端 `/remote/rex/snapshot`（控制面，不嵌终端）
+/// - herdr：`/remote/herdr/snapshot` 只读会话树；真 PTY / HerdrKit 写输入另开
 
 enum WorkSurface: String, CaseIterable, Identifiable {
     case sessions, remote
@@ -57,65 +56,64 @@ struct WorkSurfacePicker: View {
     }
 }
 
-/// 终端面：主机入口 + Heeler/Moshi 能力分工 + 连接占位。
+/// 终端面：Com / Rex / herdr 三分态诚实探测 + Rex 列表 + herdr 只读树。
 struct WorkRemoteSurface: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @AppStorage("work.remote.host") private var hostPreset = "mini-lan"
     @State private var shown = false
-    @State private var status: RemoteStatus = .idle
+    @State private var loading = false
+    @State private var comOK = false
+    @State private var rex: JSON = .null
+    @State private var herdr: JSON = .null
+    @State private var failNote = ""
+    @State private var actionNote = ""
 
-    private enum RemoteStatus: Equatable {
-        case idle, connecting, probed(String), failed(String)
-        var label: String {
-            switch self {
-            case .idle: return "还没探测"
-            case .connecting: return "探测中…"
-            case .probed: return "Com 通 · herdr 未接"
-            case .failed: return "探测失败"
-            }
-        }
-        var tone: Tone {
-            switch self {
-            case .idle: return .neutral
-            case .connecting: return .info
-            case .probed: return .warning  // 诚实：不是 herdr 已连上
-            case .failed: return .danger
-            }
-        }
-        var detail: String {
-            switch self {
-            case .idle: return ""
-            case .connecting: return "正在问 Com 后端…"
-            case .probed(let s), .failed(let s): return s
-            }
-        }
+    private var rexOK: Bool { rex["ok"].bool }
+    private var herdrOK: Bool { herdr["ok"].bool }
+    private var rexItems: [JSON] { rex["items"].array }
+    private var herdrItems: [JSON] { herdr["items"].array }
+
+    private var statusLabel: String {
+        if loading { return "探测中…" }
+        if !model.isPaired { return "未配对" }
+        if !comOK { return "Com 不通" }
+        if rexOK && herdrOK { return "Com · Rex · herdr 通" }
+        if rexOK { return "Com · Rex 通 · herdr 未接" }
+        if herdrOK { return "Com · herdr 通 · Rex 未接" }
+        return "Com 通 · Rex/herdr 未接"
     }
 
-    private var hosts: [(id: String, title: String, detail: String)] {
-        [
-            ("mini-lan", "Mac mini · 家里", "192.168.5.215 · Tailscale / 局域网"),
-            ("mini-wan", "Mac mini · 公网", "ssh.eddiegao.fun:22022 · 已通公钥"),
-        ]
+    private var statusTone: Tone {
+        if loading { return .info }
+        if !model.isPaired || !comOK { return .danger }
+        if rexOK || herdrOK { return rexOK && herdrOK ? .success : .warning }
+        return .warning
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Layout.sectionSpacing) {
                 header
-                    .modifier(EnterRise(on: shown, delay: 0, y: 16, blur: 8, animation: ComMotion.pop))
+                    .modifier(EnterRise(on: shown, delay: 0, y: 16, blur: 0, animation: ComMotion.pop))
 
-                hostBlock
-                    .modifier(EnterRise(on: shown, delay: 0.05, y: 14, blur: 6, animation: ComMotion.rise))
+                linkCard
+                    .modifier(EnterRise(on: shown, delay: 0.04, y: 12, blur: 0, animation: ComMotion.rise))
 
-                capabilities
-                    .modifier(EnterRise(on: shown, delay: 0.1, y: 14, blur: 6, animation: ComMotion.rise))
+                rexSection
+                    .modifier(EnterRise(on: shown, delay: 0.08, y: 12, blur: 0, animation: ComMotion.rise))
 
-                terminalPlaceholder
-                    .modifier(EnterRise(on: shown, delay: 0.15, y: 12, blur: 5, animation: ComMotion.pop))
+                herdrSection
+                    .modifier(EnterRise(on: shown, delay: 0.12, y: 12, blur: 0, animation: ComMotion.rise))
 
-                InlineNotice(text: "真 SSH / herdr 终端和审批回流还在白天清单里。今晚只验证 Com 能连上 mini；原来的工作对话还在「对话」那一面。", tone: .neutral)
-                    .modifier(EnterRise(on: shown, delay: 0.2, y: 10, blur: 4, animation: ComMotion.rise))
+                if !failNote.isEmpty {
+                    InlineNotice(text: failNote, tone: .danger)
+                }
+                if !actionNote.isEmpty {
+                    InlineNotice(text: actionNote, tone: .neutral)
+                }
+
+                InlineNotice(text: honestyNote, tone: .neutral)
+                    .accessibilityIdentifier("work-remote-honesty")
             }
             .padding(.horizontal, Layout.margin)
             .padding(.bottom, Space.xxxl)
@@ -126,11 +124,8 @@ struct WorkRemoteSurface: View {
             if reduce { shown = true }
             else { withAnimation(ComMotion.lift) { shown = true } }
         }
-        // 进终端面 / 换主机：自动开口探测一次；失败用 InlineNotice，不假 herdr。
-        .task(id: hostPreset) {
-            status = .idle
-            await probeComLink()
-        }
+        .task { await refreshAll() }
+        .refreshable { await refreshAll() }
     }
 
     private var header: some View {
@@ -139,236 +134,225 @@ struct WorkRemoteSurface: View {
                 Text("远程终端")
                     .font(TypeScale.title)
                 Spacer(minLength: 0)
-                StatusPill(text: status.label, tone: status.tone)
+                StatusPill(text: statusLabel, tone: statusTone)
             }
             Text(headerLead)
                 .font(TypeScale.callout)
                 .foregroundStyle(Palette.textSecondary)
                 .lineSpacing(3)
-                .contentTransition(.opacity)
-                .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: headerLead)
                 .accessibilityIdentifier("work-remote-opening")
         }
     }
 
     private var headerLead: String {
-        switch status {
-        case .connecting:
-            return "我先开口问 Com 后端通不通——通了也只说「Com 通 · herdr 未接」。"
-        case .failed:
-            return "探测没成，我直说。修好配对或网络后再试；工作对话仍在「对话」那一面。"
-        case .probed:
-            return "Com 通了，herdr 还没接。Heeler 管连接与终端，Moshi 管结构化层——真 SSH 续白天。"
-        case .idle:
-            return "Heeler 管连接与终端，Moshi 管结构化 transcript / 审批。默认工作对话还在「对话」那一面。"
-        }
-    }
-
-    private var hostBlock: some View {
-        GroupSection("连哪台") {
-            GroupedCard {
-                ForEach(hosts, id: \.id) { host in
-                    Button {
-                        Haptics.selection()
-                        // 换主机由 .task(id:) 重新开口探测；别停在旧成功态冒充仍通。
-                        hostPreset = host.id
-                    } label: {
-                        HStack(spacing: Space.md) {
-                            IconBadge(symbol: host.id == "mini-wan" ? "globe" : "desktopcomputer",
-                                      tone: hostPreset == host.id ? .info : .neutral)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(host.title).font(TypeScale.rowTitle).foregroundStyle(Palette.textPrimary)
-                                Text(host.detail).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-                            }
-                            Spacer(minLength: 0)
-                            if hostPreset == host.id {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(Palette.accentText)
-                            }
-                        }
-                        .rowPadding()
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(SoftPressStyle(scale: 0.985))
-                    .accessibilityIdentifier("work-remote-host-\(host.id)")
-                }
-            }
-        }
-    }
-
-    private var capabilities: some View {
-        GroupSection("取长补短") {
-            GroupedCard {
-                capabilityRow(symbol: "terminal", title: "Heeler · 连接与终端",
-                              detail: "SSH → herdr.sock，会话树 / 纯终端 / Composer；Apache-2.0，可拆底层进 Com")
-                capabilityRow(symbol: "text.bubble", title: "Moshi · 结构化层",
-                              detail: "moshi-hook transcript / 审批 / 计划 / diff；对接「等你」与主对话语义")
-                capabilityRow(symbol: "shippingbox", title: "自研桥 · HerdrKit",
-                              detail: "projects/moshi-ios：Citadel SSH + herdr protocol 22，不整仓搬 Heeler UI")
-            }
-        }
-    }
-
-    private func capabilityRow(symbol: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: Space.md) {
-            IconBadge(symbol: symbol, tone: .neutral)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(TypeScale.rowTitle)
-                Text(detail).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .rowPadding()
-    }
-
-    private var terminalPlaceholder: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                    .fill(Color.black.opacity(0.92))
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    HStack(spacing: Space.sm) {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(Palette.accent)
-                        Text(hostPreset == "mini-wan" ? "ssh.eddiegao.fun:22022" : "192.168.5.215")
-                            .font(TypeScale.code)
-                            .foregroundStyle(Color.white.opacity(0.45))
-                        Spacer(minLength: 0)
-                    }
-                    TimelineView(.periodic(from: .now, by: reduce ? 3600 : 0.55)) { context in
-                        let blink = reduce ? true : Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
-                        Text(placeholderLine + (status == .idle || status == .connecting ? (blink ? " ▍" : "  ") : ""))
-                            .font(TypeScale.code)
-                            .foregroundStyle(Color.white.opacity(0.78))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentTransition(.opacity)
-                    }
-                    if !status.detail.isEmpty {
-                        Text("# " + status.detail)
-                            .font(TypeScale.code)
-                            .foregroundStyle(Color.white.opacity(0.45))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .padding(Space.lg)
-            }
-            .frame(minHeight: 168)
-            .accessibilityLabel("终端占位")
-            .accessibilityValue(status.label + " " + status.detail)
-
-            if case .failed(let detail) = status {
-                InlineNotice(text: detail, tone: .danger)
-                    .accessibilityIdentifier("work-remote-fail")
-            }
-
-            HStack(spacing: Space.sm) {
-                Button {
-                    guard status != .connecting else { return }
-                    Task { await probeComLink() }
-                } label: {
-                    Label(probeButtonTitle, systemImage: status == .connecting ? "hourglass" : "antenna.radiowaves.left.and.right")
-                }
-                .buttonStyle(.primaryCompact)
-                .disabled(status == .connecting)
-                .accessibilityIdentifier("work-remote-connect")
-
-                Button {
-                    status = .idle
-                    Haptics.selection()
-                } label: {
-                    Label("重置", systemImage: "arrow.counterclockwise")
-                }
-                .buttonStyle(.secondaryCompact)
-                .disabled(status == .idle || status == .connecting)
-
-                Button {
-                    guard !model.waitingOpening else { return }
-                    model.openWaitingInbox()
-                } label: {
-                    Label(model.waitingOpening ? "打开中…" : "等你",
-                          systemImage: model.waitingOpening ? "hourglass" : "hand.raised")
-                }
-                .buttonStyle(.secondaryCompact)
-                .disabled(model.waitingOpening)
-                .accessibilityIdentifier("work-remote-waiting")
-            }
-
-            Text(honestyNote)
-                .font(TypeScale.footnote)
-                .foregroundStyle(Palette.textTertiary)
-                .contentTransition(.opacity)
-                .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: honestyNote)
-                .accessibilityIdentifier("work-remote-honesty")
-        }
-    }
-
-    private var probeButtonTitle: String {
-        switch status {
-        case .connecting: return "探测中…"
-        case .failed: return "再试一次"
-        case .probed: return "再探测"
-        case .idle: return "探测 Com 链路"
-        }
+        if loading { return "正在问 Com 后端、Rex 和 herdr——通了才说通，不通直说。" }
+        if !model.isPaired { return "还没配对 Mac mini，远程面动不了。" }
+        if !comOK { return "Com 后端没通。修好配对或 mini 上的 sessions 再刷。" }
+        if rexOK && herdrOK { return "Rex 控制面和 herdr 会话树都读到了。真 PTY 输入还没开——不会假装能打字进窗格。" }
+        if rexOK { return "Rex 通了。herdr 没接上（多半没开 herdr server）——不假装已连。" }
+        if herdrOK { return "herdr 通了。Rex 快照没读到——检查 mini 上 rex server / 隧道。" }
+        return "Com 通了，Rex 和 herdr 都还没接。不会假装远程已连上。"
     }
 
     private var honestyNote: String {
-        switch status {
-        case .probed:
-            return "Com 后端通了。herdr SSH / PTY 还没接线——不会假装已连上；白天再接 HerdrKit。"
-        case .failed:
-            return "链路没通我直说——别把失败当成「已连上」。修好配对或 mini 上的 sessions，再点「再试一次」。"
-        case .connecting:
-            return "正在开口问 Com 后端通不通；通了也只报「Com 通 · herdr 未接」，不冒充 SSH。"
-        case .idle:
-            return "进这面我会先探测一次。不会假装 herdr 已连上；本夜只验证 Com 配对与后端可达。"
+        "控制面走 Com 后端调 rex/herdr CLI；手机不嵌闭源 Rex GUI。写命令只允许白名单模板（换行 / 中断 / clear）。"
+    }
+
+    private var linkCard: some View {
+        GroupSection("链路") {
+            GroupedCard {
+                HStack(spacing: Space.md) {
+                    Button {
+                        guard !loading else { return }
+                        Task { await refreshAll() }
+                    } label: {
+                        Label(loading ? "刷新中…" : "刷新状态", systemImage: loading ? "hourglass" : "arrow.clockwise")
+                    }
+                    .buttonStyle(.primaryCompact)
+                    .disabled(loading)
+                    .accessibilityIdentifier("work-remote-connect")
+
+                    Button {
+                        guard !model.waitingOpening else { return }
+                        model.openWaitingInbox()
+                    } label: {
+                        Label(model.waitingOpening ? "打开中…" : "等你",
+                              systemImage: model.waitingOpening ? "hourglass" : "hand.raised")
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(model.waitingOpening)
+                    .accessibilityIdentifier("work-remote-waiting")
+                    Spacer(minLength: 0)
+                }
+                .rowPadding()
+            }
         }
     }
 
-    private var placeholderLine: String {
-        switch status {
-        case .idle:
-            return "$ ready\n# 进页会自动探测——不冒充 herdr"
-        case .connecting:
-            return "$ curl …/health\n# pairing + backend probe"
-        case .probed:
-            return "$ ok com-backend\n# herdr.sock SSH = not wired yet"
-        case .failed:
-            return "$ probe failed\n# see notice below — retry"
+    private var rexSection: some View {
+        GroupSection("Rex · 控制面") {
+            if !rexOK {
+                GroupedCard {
+                    Text(rex["detail"].string.isEmpty ? "Rex 未接通" : rex["detail"].string)
+                        .font(TypeScale.footnote)
+                        .foregroundStyle(Palette.textSecondary)
+                        .rowPadding()
+                }
+            } else if rexItems.isEmpty {
+                GroupedCard {
+                    Text("Rex 通了，但没有 session / 窗格。")
+                        .font(TypeScale.footnote)
+                        .foregroundStyle(Palette.textSecondary)
+                        .rowPadding()
+                }
+            } else {
+                GroupedCard {
+                    ForEach(Array(rexItems.prefix(24).enumerated()), id: \.offset) { _, item in
+                        rexRow(item)
+                    }
+                }
+            }
         }
     }
 
-    /// 诚实探测：只查配对 + `/health`。成功也不宣称 herdr/SSH 已通。
-    private func probeComLink() async {
-        guard status != .connecting else { return }
-        status = .connecting
-        let name = hosts.first(where: { $0.id == hostPreset })?.title ?? "主机"
+    private func rexRow(_ item: JSON) -> some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(alignment: .top, spacing: Space.md) {
+                IconBadge(symbol: agentSymbol(item["agent_hint"].string), tone: item["focused"].bool ? .info : .neutral)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item["title"].string.isEmpty ? item["id"].string : item["title"].string)
+                        .font(TypeScale.rowTitle)
+                        .foregroundStyle(Palette.textPrimary)
+                    Text(item["detail"].string.isEmpty ? item["status"].string : item["detail"].string)
+                        .font(TypeScale.footnote)
+                        .foregroundStyle(Palette.textTertiary)
+                }
+                Spacer(minLength: 0)
+                StatusPill(text: item["status"].string.isEmpty ? item["kind"].string : item["status"].string,
+                           tone: item["status"].string == "error" ? .danger : .neutral)
+            }
+            HStack(spacing: Space.sm) {
+                if !item["window_id"].string.isEmpty, !item["session_id"].string.isEmpty {
+                    Button("聚焦") {
+                        Task { await runRexAction("focus_window", args: [
+                            "session_id": .string(item["session_id"].string),
+                            "window_id": .string(item["window_id"].string),
+                        ]) }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                }
+                if !item["block_id"].string.isEmpty {
+                    Button("中断 ⌃C") {
+                        Task { await runRexAction("send_template", args: [
+                            "block_id": .string(item["block_id"].string),
+                            "template": .string("interrupt"),
+                        ]) }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                }
+                Button("丢给 Com") {
+                    let title = item["title"].string
+                    model.draft = model.draft.isEmpty
+                        ? "看一下 Rex 上的「\(title)」并告诉我状态"
+                        : model.draft
+                    model.tab = .chat
+                    Haptics.selection()
+                }
+                .buttonStyle(.secondaryCompact)
+            }
+        }
+        .rowPadding()
+        .accessibilityIdentifier("work-remote-rex-\(item.id)")
+    }
+
+    private var herdrSection: some View {
+        GroupSection("herdr · 只读会话树") {
+            if !herdrOK {
+                GroupedCard {
+                    Text(herdr["detail"].string.isEmpty ? "herdr 未接通（可能没开 server）" : herdr["detail"].string)
+                        .font(TypeScale.footnote)
+                        .foregroundStyle(Palette.textSecondary)
+                        .rowPadding()
+                }
+            } else if herdrItems.isEmpty {
+                GroupedCard {
+                    Text("herdr 通了，快照里没有 tab/pane。")
+                        .font(TypeScale.footnote)
+                        .foregroundStyle(Palette.textSecondary)
+                        .rowPadding()
+                }
+            } else {
+                GroupedCard {
+                    ForEach(Array(herdrItems.prefix(24).enumerated()), id: \.offset) { _, item in
+                        HStack(spacing: Space.md) {
+                            IconBadge(symbol: "rectangle.split.3x1", tone: item["focused"].bool ? .info : .neutral)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item["title"].string)
+                                    .font(TypeScale.rowTitle)
+                                Text(item["detail"].string.isEmpty ? item["status"].string : item["detail"].string)
+                                    .font(TypeScale.footnote)
+                                    .foregroundStyle(Palette.textTertiary)
+                            }
+                            Spacer(minLength: 0)
+                            StatusPill(text: item["status"].string.isEmpty ? item["kind"].string : item["status"].string, tone: .neutral)
+                        }
+                        .rowPadding()
+                        .accessibilityIdentifier("work-remote-herdr-\(item.id)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func agentSymbol(_ hint: String) -> String {
+        switch hint {
+        case "claude": return "sparkles"
+        case "pi": return "circle.hexagongrid"
+        case "codex": return "chevron.left.forwardslash.chevron.right"
+        case "herdr": return "rectangle.split.3x1"
+        case "shell": return "terminal"
+        default: return "square.grid.2x2"
+        }
+    }
+
+    private func refreshAll() async {
+        guard !loading else { return }
+        loading = true
+        failNote = ""
+        defer { loading = false }
         guard model.isPaired else {
-            try? await Task.sleep(for: .milliseconds(reduce ? 80 : 280))
-            guard !Task.isCancelled else { return }
-            status = .failed("还没跟 Mac mini 配对——先回 Com 对话页完成配对，再来探测。不会假装 herdr 已通。")
-            Haptics.selection()
+            comOK = false; rex = .null; herdr = .null
+            failNote = "还没跟 Mac mini 配对——先回 Com 对话页完成配对。"
             return
         }
         let health = await model.load("/health")
-        guard !Task.isCancelled else { return }
-        if let health, !health.isNull {
-            let ver = health["version"].string
-            let mode = health["main_operation_mode"].string
-            var bits: [String] = [name, "已配对"]
-            if !ver.isEmpty { bits.append("v\(ver)") }
-            if !mode.isEmpty { bits.append(mode) }
-            bits.append("herdr SSH 未接线")
-            status = .probed(bits.joined(separator: " · "))
-            Haptics.selection()  // 不用 success：避免「连上 herdr」的错觉
-        } else {
-            let err = model.errors["/health"] ?? ""
-            status = .failed(
-                err.isEmpty
-                    ? "已配对，但 /health 没读到——检查网络或 mini 上的 sessions。可再试；不会假装 herdr 已通。"
-                    : "已配对，但 /health 没读到：\(err)——可再试；不会假装 herdr 已通。"
-            )
-            Haptics.selection()
+        comOK = health != nil && !(health?.isNull ?? true)
+        async let rexLoad = model.load("/remote/rex/snapshot")
+        async let herdrLoad = model.load("/remote/herdr/snapshot")
+        let (r, h) = await (rexLoad, herdrLoad)
+        rex = r ?? .object(["ok": .bool(false), "detail": .string(model.errors["/remote/rex/snapshot"] ?? "Rex 快照没读到"), "items": .array([])])
+        herdr = h ?? .object(["ok": .bool(false), "detail": .string(model.errors["/remote/herdr/snapshot"] ?? "herdr 快照没读到"), "items": .array([])])
+        if !comOK {
+            failNote = model.errors["/health"] ?? "已配对，但 /health 没读到。"
+        }
+        Haptics.selection()
+    }
+
+    private func runRexAction(_ name: String, args: [String: JSON]) async {
+        actionNote = ""
+        do {
+            let result = try await model.mutate("/remote/rex/action", fields: [
+                "action": .string(name),
+                "args": .object(args),
+            ])
+            if result["ok"].bool {
+                actionNote = "已执行 \(name)。"
+                await refreshAll()
+            } else {
+                actionNote = result["detail"].string.isEmpty ? "动作没成功。" : result["detail"].string
+            }
+        } catch {
+            actionNote = error.localizedDescription
         }
     }
 }

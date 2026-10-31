@@ -266,6 +266,51 @@ class PushNotifications:
         self._jwt_at = self.clock()
         return self._jwt
 
+    @staticmethod
+    def _clip(text: str, limit: int = 28) -> str:
+        text = (text or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1] + "…"
+
+    def _bark_headline(self, mid: str, text: str, preview: bool):
+        """Return (title, url, body) with actionable short titles for waiting / calendar / next."""
+        plain = self._clip(text, 80) if text else ""
+        # 等你批准的航程
+        if mid.startswith("task-result:case-wait:"):
+            # 文案形如：航程「标题」等你批准：问题
+            headline = plain
+            if "等你批准：" in plain:
+                headline = plain.split("等你批准：", 1)[-1]
+            elif "「" in plain and "」" in plain:
+                headline = plain.split("「", 1)[1].split("」", 1)[0]
+            return "Com · 等你拍板", "com-eddie://waiting", self._clip(headline or "有一步要你点头", 40)
+        # 日程前 15 分钟 / 提醒到期（Nudges → task-result:nudge:…）
+        if mid.startswith("task-result:nudge:"):
+            kind = mid[len("task-result:nudge:") :]
+            url = "com-eddie://today"
+            if kind.startswith("calendar:"):
+                return "Com · 日程将至", url, self._clip(plain or "有一场日程快到了", 48)
+            if kind.startswith("reminder:"):
+                return "Com · 提醒", url, self._clip(plain or "有一条提醒到点了", 48)
+            return "Com · 提醒你", url, self._clip(plain or "有一件事要看", 48)
+        if mid.startswith("task-result:plan:"):
+            return "Com · 下一步", "com-eddie://plan", self._clip(plain or "有新的下一步建议", 48)
+        if mid.startswith("task-result:task_"):
+            return "Com · 航程", "com-eddie://cases", self._clip(plain or "电脑上的活有进展", 48)
+        if mid.startswith("approval:"):
+            return "Com · 需要你决定", "com-eddie://waiting", self._clip(plain or "有一步在等你决定", 48)
+        body = plain if preview and plain else ("已为你整理好，点开查看。" if not plain else self._clip(plain, 48))
+        title = "Com · " + self._clip(plain, 18) if plain and not preview else "Com"
+        if preview and plain:
+            title = "Com"
+            body = plain[:80]
+        elif plain:
+            # preview=false：通知标题给短摘要，正文不泄细节
+            title = "Com · " + self._clip(plain, 18)
+            body = "点开查看详情"
+        return title, "com-eddie://today", body
+
     async def send_bark(self, row):
         cfg = self.bark() or {}
         if not cfg:
@@ -287,23 +332,18 @@ class PushNotifications:
                 except ValueError:
                     reason = "invalid_response"
             return response.status_code, reason
-        body = "已为你整理好，点开查看。"
-        if cfg["preview"]:
-            with self.conversation.db() as chat:
-                found = chat.execute("SELECT text FROM messages WHERE id=?", (row["message_id"],)).fetchone()
-            if found and found[0]:
-                body = str(found[0]).strip().replace("\n", " ")[:80]
-        # 10-29：等你批准的航程进统一 Waiting；明天计划仍去下一步；其余回对话
         mid = str(row["message_id"])
-        if mid.startswith("task-result:plan:"):
-            url = "com-eddie://plan"
-        elif mid.startswith("task-result:case-wait:"):
-            url = "com-eddie://waiting"
-        elif mid.startswith("task-result:task_"):
-            url = "com-eddie://cases"
-        else:
-            url = "com-eddie://today"
-        payload = {"device_key": cfg["device_key"], "title": "Com", "body": body, "group": "com", "url": url, "isArchive": "1"}
+        text = ""
+        request_id = ""
+        with self.conversation.db() as chat:
+            found = chat.execute("SELECT text, request_id FROM messages WHERE id=?", (mid,)).fetchone()
+        if found:
+            if found[0]:
+                text = str(found[0]).strip().replace("\n", " ")
+            request_id = str(found[1] or "")
+        # outbox 里存的是 message UUID；分类靠 request_id（task-result:…）。
+        title, url, body = self._bark_headline(request_id or mid, text, preview=bool(cfg.get("preview")))
+        payload = {"device_key": cfg["device_key"], "title": title, "body": body, "group": "com", "url": url, "isArchive": "1"}
         async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
             response = await client.post(cfg["server"] + "/push", json=payload)
         reason = ""

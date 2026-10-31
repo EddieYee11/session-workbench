@@ -393,10 +393,13 @@ enum SectionTab: String, CaseIterable, Identifiable {
         let reviews = proposals["items"].array.filter { ["proposed", "awaiting_review", "approval_required"].contains($0["status"].string) }.count
         let count = agency["cards"].array.count
         let updated = min(fetchedAt["/personal/work/proposals?limit=20"] ?? .distantPast, fetchedAt["/personal/agency"] ?? .distantPast)
+        let glance = glanceSummary
         let old = StatusWidgetSnapshot.read()
         // Token-stream updates never trigger widget reloads.
-        guard old?.reviewCount != reviews || old?.briefingCount != count || Date().timeIntervalSince(old?.updatedAt ?? .distantPast) > 900 else { return }
-        if StatusWidgetSnapshot(reviewCount: reviews, briefingCount: count, updatedAt: updated).save() {
+        guard old?.reviewCount != reviews || old?.briefingCount != count || old?.headline != glance.headline
+                || Date().timeIntervalSince(old?.updatedAt ?? .distantPast) > 900 else { return }
+        if StatusWidgetSnapshot(reviewCount: reviews, briefingCount: count, updatedAt: updated,
+                                headline: glance.headline, deepLink: glance.deepLink).save() {
             widgetUpdateNote = ""
             WidgetCenter.shared.reloadTimelines(ofKind: StatusWidgetSnapshot.kind)
         } else {

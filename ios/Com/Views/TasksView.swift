@@ -322,7 +322,7 @@ private struct RunningRow: View {
 private struct RunningTicks: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 12, paused: reduce)) { timeline in
+        TimelineView(.animation(minimumInterval: AmbientMotionPolicy.effectInterval, paused: reduce)) { timeline in
             let phase = reduce ? 0 : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4
             Path { $0.move(to: CGPoint(x: 0, y: 3)); $0.addLine(to: CGPoint(x: 4000, y: 3)) }
                 .stroke(Palette.accent, style: StrokeStyle(lineWidth: 6, lineCap: .round, dash: [6, 5], dashPhase: CGFloat(-phase * 11)))
