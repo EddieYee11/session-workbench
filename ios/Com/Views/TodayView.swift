@@ -362,42 +362,6 @@ private struct TodayHeader: View {
                     .accessibilityIdentifier("today-summary")
             }
             Spacer(minLength: Space.sm)
-            // 10-29：等你收件箱是主入口；任务档案退到次要。
-            Button {
-                guard !model.waitingOpening else { return }
-                Haptics.selection()
-                model.openWaitingInbox()
-            } label: {
-                Group {
-                    if model.waitingOpening {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "hand.raised").font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(model.waitingInboxCount > 0 ? Palette.warning : Palette.textSecondary)
-                    }
-                }
-                .frame(width: 40, height: 40).background(Palette.surface, in: .circle)
-                .overlay(alignment: .topTrailing) {
-                    if !model.waitingOpening, model.waitingInboxCount > 0 {
-                        Text("\(model.waitingInboxCount)").font(.system(size: 10, weight: .bold).monospacedDigit()).foregroundStyle(Palette.onAccent)
-                            .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16).background(Palette.accent, in: .capsule).offset(x: 5, y: -5)
-                            .contentTransition(.numericText())
-                    }
-                }
-                .opacity(model.waitingOpening ? 0.72 : 1)
-                .attentionBreath(active: model.waitingInboxCount > 0 && !model.waitingOpening && !reduce)
-            }
-            .buttonStyle(SoftPressStyle(scale: 0.94))
-            .disabled(model.waitingOpening)
-            .accessibilityLabel({
-                if model.waitingOpening { return "正在打开等你" }
-                if model.waitingInboxCount <= 0 { return "等你" }
-                if let tip = ChatAttentionHint.topWaitingTitle(model) {
-                    return "等你拍板：\(tip)，共 \(model.waitingInboxCount) 件"
-                }
-                return "等你，\(model.waitingInboxCount) 件"
-            }())
-            .accessibilityIdentifier("today-waiting")
             NavigationLink { TaskHubView() } label: {
                 Image(systemName: "square.stack").font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.textSecondary)
                     .frame(width: 40, height: 40).background(Palette.surface, in: .circle)

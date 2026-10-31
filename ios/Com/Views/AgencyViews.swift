@@ -82,7 +82,6 @@ struct AgencyDetail: View {
                 Task {
                     do {
                         _ = try await model.agencyAction(card, action: "discuss")
-                        model.showWaiting = false
                         model.tab = .chat
                         dismiss()
                     } catch {

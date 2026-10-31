@@ -108,7 +108,6 @@ extension AppModel {
         }
         do {
             _ = try await agencyAction(item.value, action: "discuss")
-            showWaiting = false
             tab = .chat
             Haptics.success()
             return true

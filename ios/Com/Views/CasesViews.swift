@@ -42,7 +42,6 @@ extension AppModel {
             }
             Haptics.success()
             if result["mode"].string == "chat" {
-                showWaiting = false
                 tab = .chat
                 await refresh(.chat)
                 return ""

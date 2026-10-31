@@ -19,10 +19,9 @@ extension AppModel {
                 return
             }
             presentedCase = nil
-            showWaiting = false
             Task { try? await Task.sleep(for: .milliseconds(350)); presentedCase = ident }
         case "next":
-            presentedCase = nil; showCases = false; showWaiting = false; tab = .next
+            presentedCase = nil; showCases = false; tab = .next
         case "msg":
             guard !ident.isEmpty else {
                 locateNote = "消息编号空了，没法对准。"
@@ -33,7 +32,6 @@ extension AppModel {
                 if await locateMessage(ident) {
                     presentedCase = nil
                     showCases = false
-                    showWaiting = false
                 }
             }
         case "session":
@@ -41,7 +39,7 @@ extension AppModel {
                 banner = "这条工作会话对不上——编号空了。可回侧栏再点。不会假装已打开。"
                 return
             }
-            presentedCase = nil; showCases = false; showWaiting = false
+            presentedCase = nil; showCases = false
             selectedSession = .object(["id": .string(ident), "agent": node["agent"].isNull ? .string("pi") : node["agent"]])
         default:
             if let url = URL(string: node["url"].string), !node["url"].string.isEmpty { UIApplication.shared.open(url) }
@@ -58,7 +56,6 @@ extension AppModel {
         let ok = await send(textOverride: "帮我起草一条回复给「" + item["title"].string + "」的微信，对方最后说：" + item["why"].string + "。先给我看草稿，不要替我发。")
         // 先送达再关等你/跳聊天；失败留在收件箱，别丢上下文。
         guard ok else { return false }
-        showWaiting = false
         tab = .chat
         return true
     }
@@ -275,11 +272,42 @@ struct WaitingSheet: View {
         }
         return "我先把要你点头的放最上面——一卡看一件，办完再说下一件。"
     }
+    /// 嵌在「下一步」顶上时不要自己的导航和空态。
+    var embedded = false
     var body: some View {
-        NavigationStack {
-            ScrollPage(spacing: Layout.sectionSpacing) {
-                let decisions = model.pendingItems.filter { !$0.stale }
+        if embedded {
+            VStack(alignment: .leading, spacing: Layout.sectionSpacing) { sections }
+                .task { await pullWaiting(force: false) }
+                .onAppear {
+                    if reduce { shown = true }
+                    else { withAnimation(ComMotion.rise) { shown = true } }
+                }
+                .accessibilityIdentifier("next-waiting-section")
+        } else {
+            NavigationStack {
+                ScrollPage(spacing: Layout.sectionSpacing) { sections }
+            .navigationTitle("等你").navigationBarTitleDisplayMode(.large)
+            .toolbarBackground(Palette.background, for: .navigationBar)
+            .toolbar {
                 if pulling {
+                    ToolbarItem(placement: .topBarLeading) {
+                        ProgressView().controlSize(.small).accessibilityLabel("正在拉齐等你")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
+            }
+            .refreshable { await pullWaiting(force: true) }
+            .task { await pullWaiting(force: false) }
+            .onAppear {
+                if reduce { shown = true }
+                else { withAnimation(ComMotion.rise) { shown = true } }
+            }
+            }
+        }
+    }
+    @ViewBuilder private var sections: some View {
+                let decisions = model.pendingItems.filter { !$0.stale }
+                if pulling && !embedded {
                     HStack(spacing: Space.sm) {
                         ProgressView().controlSize(.small)
                         Text("正在拉齐等你清单…").font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
@@ -305,7 +333,7 @@ struct WaitingSheet: View {
                     InlineNotice(text: model.locateNote, tone: .danger)
                         .accessibilityIdentifier("waiting-locate-fail")
                 }
-                if !pulling && decisions.isEmpty && items.isEmpty {
+                if !embedded && !pulling && decisions.isEmpty && items.isEmpty {
                     EmptyState(
                         title: failNote.isEmpty ? "眼下没有要你拍板的" : "等你清单还没读上",
                         description: failNote.isEmpty
@@ -316,11 +344,11 @@ struct WaitingSheet: View {
                     .enterRise(on: shown, delay: 0.02, y: 16, blur: 8)
                     .accessibilityIdentifier(failNote.isEmpty ? "waiting-empty" : "waiting-empty-fail")
                 } else if !(decisions.isEmpty && items.isEmpty) {
-                    Text(leadIntro)
+                    if !embedded { Text(leadIntro)
                         .font(TypeScale.footnote)
                         .foregroundStyle(Palette.textSecondary)
                         .contentTransition(.opacity)
-                        .enterRise(on: shown, delay: 0.01, y: 10, blur: 4)
+                        .enterRise(on: shown, delay: 0.01, y: 10, blur: 4) }
                     if !handoffNote.isEmpty {
                         // 划卡/批准失败别用成功勾；人话开口可再试。
                         let failed = handoffNote.contains("没成") || handoffNote.contains("还可以") || handoffNote.contains("没接进") || handoffNote.contains("卡还在")
@@ -442,7 +470,6 @@ struct WaitingSheet: View {
                                         todoFailNote = "没接上，待办还在——可再试「交给我办」"
                                         return
                                     }
-                                    model.showWaiting = false
                                     if id.isEmpty {
                                         handoffNote = "已接进主对话——去 Com 页继续"
                                     } else {
@@ -455,24 +482,6 @@ struct WaitingSheet: View {
                         }
                 }
                 .enterRise(on: shown, delay: 0.16, y: 12, blur: 5)
-            }
-            .navigationTitle("等你").navigationBarTitleDisplayMode(.large)
-            .toolbarBackground(Palette.background, for: .navigationBar)
-            .toolbar {
-                if pulling {
-                    ToolbarItem(placement: .topBarLeading) {
-                        ProgressView().controlSize(.small).accessibilityLabel("正在拉齐等你")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
-            }
-            .refreshable { await pullWaiting(force: true) }
-            .task { await pullWaiting(force: false) }
-            .onAppear {
-                if reduce { shown = true }
-                else { withAnimation(ComMotion.rise) { shown = true } }
-            }
-        }
     }
     private func pullWaiting(force: Bool) async {
         // 入口 openWaitingInbox 可能已在拉——等它结束，避免叠刷；再根据 errors 开口。
@@ -541,7 +550,7 @@ extension AppModel {
             .object(["key": .string("session:pi:com-demo"), "kind": .string("session"), "id": .string("pi:com-demo"), "label": .string("工作会话"), "title": .string("Pi 执行会话"), "state": .string("deepseek-v4.1-flash"), "current": .bool(false)]),
             .object(["key": .string("project:合同与劳务结算"), "kind": .string("project"), "id": .string("合同与劳务结算"), "label": .string("项目页"), "title": .string("合同与劳务结算"), "state": .string("项目"), "current": .bool(false)])])])
         datasets["/personal/thread?key=case:task_demo_running"] = thread
-        if ProcessInfo.processInfo.environment["COM_PREVIEW_SHEET"] == "waiting" { showWaiting = true }
+        if ProcessInfo.processInfo.environment["COM_PREVIEW_SHEET"] == "waiting" { tab = .next }
     }
 }
 #endif

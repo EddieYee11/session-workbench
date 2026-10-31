@@ -119,7 +119,6 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var presentedCase: String?
     var showCases = false
     /// 10-18 统一「等你」收件箱：审批 + 等你批准的航程 + 微信在等回话 + 过期待办。
-    var showWaiting = false
     var localHealth: JSON = .null
     var banner = ""
     /// 主聊 Composer 发送失败开口（别只靠气泡旁注或 banner alert）。
@@ -528,7 +527,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         showCases = false
         presentedCase = nil
         showActivity = false
-        showWaiting = true
+        tab = .next  // 「等你」现在是下一步页最上面那一段
         waitingOpenNote = ""
         guard menuOpening.insert("waiting").inserted else { return }
         Task {
@@ -555,7 +554,6 @@ enum SectionTab: String, CaseIterable, Identifiable {
     /// 深链 `com-eddie://cases`：打开动态「电脑上的活」并 loadFeed；失败写 activityOpenNote，不假装已读上。
     func openCasesDeepLink() {
         tab = .next
-        showWaiting = false
         showActivity = false
         showCases = true
         beginActivityFeedLoad()
@@ -1484,6 +1482,7 @@ extension AppModel {
             }
         }
         datasets["/personal/work/proposals?limit=20"] = .object(["items": .array([])])
+        if datasets["/personal/waiting"] == nil { datasets["/personal/waiting"] = .object(["items": .array([]), "count": .number(0)]) }
         if ProcessInfo.processInfo.arguments.contains("--ui-rich-reply") {
             conversation.messages = [.object(["id": .string("rich-preview"), "role": .string("assistant"), "text": .string("## 今日重点\n\n**先完成核心任务**，再处理零散事项。\n\n### 下一步\n\n- 梳理项目资料\n- 确认交付时间\n\n> 来源与建议分开核对。")])]
         }

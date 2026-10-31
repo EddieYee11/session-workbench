@@ -432,7 +432,7 @@ struct ComDock: View {
         // 不包 GlassEffectContainer：每颗各自一块玻璃，徽标才能压在玻璃上面。
         let items = ForEach(tabs) { tab in
             DockItem(tab: tab, selected: (model.splitView ? model.rightTab : model.tab) == tab,
-                     badge: tab == .doing ? model.waitingInboxCount : tab == .next ? model.nextUrgentCount : 0)
+                     badge: tab == .next ? model.waitingInboxCount + model.nextUrgentCount : 0)
         }
         // 横屏（Duo 展开）：工具栏贴右边缘竖着排；竖屏仍是底部横排。
         Group {

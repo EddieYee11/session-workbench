@@ -461,6 +461,9 @@ struct MessageView: View, Equatable {
                 }
                 .accessibilityIdentifier("agent-bubble-" + message.id)
             }
+            if ProactiveMessage.matches(message) {
+                ProactiveAction(requestID: message["request_id"].string, messageID: message.id)
+            }
             if !user && !message["receipts"].array.isEmpty {
                 ReceiptStrip(receipts: message["receipts"].array)
             }
@@ -503,6 +506,38 @@ struct MessageView: View, Equatable {
                 MessageReplyMenuButton(message: message, sourceSession: sourceSession, user: user, text: text)
             }
             ShareLink(item: text) { Label("分享文字", systemImage: "square.and.arrow.up") }
+        }
+    }
+}
+
+/// 主动消息不只是一段字：按来源给一个能直接办事的按钮。
+private struct ProactiveAction: View {
+    @Environment(AppModel.self) private var model
+    let requestID: String
+    let messageID: String
+    private var action: (title: String, symbol: String, run: () -> Void)? {
+        let key = requestID.replacingOccurrences(of: "task-result:", with: "")
+        if key.hasPrefix("case-wait:") { return ("去拍板", "hand.raised", { model.openWaitingInbox() }) }
+        if key.hasPrefix("nudge:") { return ("看今天的安排", "calendar", { model.tab = .doing }) }
+        if key.hasPrefix("plan:") { return ("看明天的计划", "list.bullet", { model.openPlanDeepLink() }) }
+        if key.hasPrefix("task_") { return ("看结果", "doc.text.magnifyingglass", { model.openCasesDeepLink() }) }
+        if key.hasPrefix("event:") || key.hasPrefix("observation") { return ("看下一步", "arrow.right.circle", { model.tab = .next }) }
+        return nil
+    }
+    var body: some View {
+        if let action {
+            Button {
+                Haptics.selection()
+                action.run()
+            } label: {
+                Label(action.title, systemImage: action.symbol)
+                    .font(TypeScale.footnote.weight(.semibold))
+                    .foregroundStyle(Palette.accentText)
+                    .padding(.horizontal, Space.md).frame(minHeight: 34)
+                    .background(Palette.accent.opacity(0.18), in: .capsule)
+            }
+            .buttonStyle(SoftPressStyle(scale: 0.96))
+            .accessibilityIdentifier("proactive-action-" + messageID)
         }
     }
 }

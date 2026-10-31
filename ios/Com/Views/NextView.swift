@@ -213,6 +213,8 @@ struct NextView: View {
                 InlineNotice(text: model.planOpenNote, tone: .danger)
                     .accessibilityIdentifier("next-plan-open-fail")
             }
+            // 等你拍板的永远排第一：这一页是唯一的行动面，不再单独开一层。
+            if model.waitingInboxCount > 0 { WaitingSheet(embedded: true) }
             if let glance, !building { NextGlanceCard(item: glance) }
             let uncertain = model.activityData["uncertain"].array
             if !uncertain.isEmpty {
