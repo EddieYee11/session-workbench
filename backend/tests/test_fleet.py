@@ -101,3 +101,4 @@ def test_internal_markup_never_shows_as_title():
     from fleet import _clean_title
     assert _clean_title('<local-command-caveat>x</local-command-caveat>') == '未命名会话'
     assert _clean_title('修 bug') == '修 bug'
+    assert _clean_title('The command below was run') == '未命名会话'

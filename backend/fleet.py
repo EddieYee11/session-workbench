@@ -53,7 +53,10 @@ REX_STATE = {"running": "running", "error": "failed"}
 def _clean_title(title):
     """会话标题可能是客户端注入的内部标记（<local-command-caveat>…），不给人看。"""
     text = re.sub(r"<[^>]*>.*?</[^>]*>|<[^>]*>", " ", str(title or ""), flags=re.S)
-    return " ".join(text.split())[:80] or "未命名会话"
+    text = " ".join(text.split())
+    if text.startswith(("The command below", "Caveat:")):  # 客户端注入的说明，不是他说的话
+        return "未命名会话"
+    return text[:80] or "未命名会话"
 
 
 def _host() -> str:
