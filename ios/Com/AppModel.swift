@@ -190,7 +190,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
             // 今天页记住的展开状态每次验收都从默认开始；要先展开表盘 / 时间线的用例带 --ui-today-dial / --ui-today-timeline。
             let args = ProcessInfo.processInfo.arguments, defaults = UserDefaults.standard
-            ["today.brief.open", "today.now.open", "today.deck", "health.done", "health.span"].forEach(defaults.removeObject(forKey:))
+            ["today.brief.open", "today.now.open", "today.deck", "health.done", "health.span", "work.surface"].forEach(defaults.removeObject(forKey:))
             if args.contains("--ui-today-dial") { defaults.set("dial", forKey: "today.now.open") }
             if args.contains("--ui-today-timeline") { defaults.set("timeline", forKey: "today.deck") }
             // 双栏验收：--ui-tab=下一步 / 今天 / 健康 / 工作，启动就停在那一页（折叠屏右栏逐页截图用）。

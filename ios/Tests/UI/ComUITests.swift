@@ -72,7 +72,7 @@ final class ComUITests: XCTestCase {
         app.buttons["完成"].firstMatch.tap()
         app.buttons["tab-工作"].tap()
         // 工作页的历史在侧栏：MacBook 上 Codex 的这段只有进展快照，点开是只读依据。
-        app.buttons["work-sidebar"].tap()
+        app.tapWorkSidebar()
         XCTAssertTrue(app.buttons["work-host-macbook"].waitForExistence(timeout: 5))
         app.buttons["work-host-macbook"].tap()
         app.buttons["work-agent-all"].tap()
@@ -83,7 +83,7 @@ final class ComUITests: XCTestCase {
         // r3-work：只读快照在工作页原地打开（不再弹「进展依据」页），依据卡在聊天流顶上。
         XCTAssertTrue(app.staticTexts["会话中的依据"].waitForExistence(timeout: 5))
         // 项目看板收在侧栏分区栏右边。
-        app.buttons["work-sidebar"].tap()
+        app.tapWorkSidebar()
         XCTAssertTrue(app.buttons["work-board"].waitForExistence(timeout: 5))
         app.buttons["work-board"].tap()
         XCTAssertTrue(app.buttons["project-card-preview-project"].waitForExistence(timeout: 5))
@@ -332,7 +332,7 @@ final class ComUITests: XCTestCase {
         app.buttons["tab-工作"].tap()
         XCTAssertTrue(app.buttons["work-sidebar"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["work-host-mini"].exists, "历史默认收在侧栏里")
-        app.buttons["work-sidebar"].tap()
+        app.tapWorkSidebar()
         XCTAssertTrue(app.buttons["work-host-mini"].waitForExistence(timeout: 5))
         app.buttons["work-host-mini"].tap()
         app.buttons["work-agent-claude"].tap()
@@ -391,7 +391,7 @@ final class ComUITests: XCTestCase {
         XCTAssertTrue(app.buttons["work-title-menu"].exists)  // r3-work：派给谁挪到顶栏标题
         sleep(1)
         capture("work-agent-logo", app: app)
-        app.buttons["work-sidebar"].tap()
+        app.tapWorkSidebar()
         XCTAssertTrue(app.buttons["work-host-mini"].waitForExistence(timeout: 5))
         app.buttons["work-host-mini"].tap()
         XCTAssertTrue(app.buttons["work-agent-claude"].waitForExistence(timeout: 5))
@@ -448,7 +448,7 @@ final class ComUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["work-new-chat"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertFalse(app.descendants(matching: .any)["work-sidebar-panel"].firstMatch.exists)
         capture("work-new-chat", app: app)
-        app.buttons["work-sidebar"].tap()
+        app.tapWorkSidebar()
         XCTAssertTrue(app.descendants(matching: .any)["work-sidebar-panel"].firstMatch.waitForExistence(timeout: 5))
         capture("work-sidebar", app: app)
         app.buttons["work-sidebar-close"].tap()
