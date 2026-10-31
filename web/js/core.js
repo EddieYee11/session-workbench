@@ -406,7 +406,7 @@ export async function refresh(tab) {
   load('/personal/waiting');  // 10-18：「等你」角标全局可见
   switch (tab) {
     case 'chat': { const d = await load('/personal/conversation'); if (d) applyConversation(d, true); break; }
-    case 'next': await Promise.all([load('/personal/next'), load('/personal/connectors'), load('/personal/finance'), load('/personal/plan'), load('/personal/cases')]); break;
+    case 'next': await Promise.all([load('/personal/next'), load('/personal/connectors'), load('/personal/finance'), load('/personal/plan'), load('/personal/cases'), load('/personal/routines')]); break;
     case 'today': await Promise.all([refreshFlow(), load('/personal/today', { timeout: 60000 }), load('/personal/automations'), load('/personal/cases')]); break;
     case 'health': await Promise.all([load('/personal/health?days=30'), load('/personal/health/insight'), load('/personal/today'), load('/personal/next')]); break;
     case 'work': await Promise.all([load('/personal/projects'), load('/sessions')]); break;
@@ -621,6 +621,8 @@ export async function nextAction(item, act, reason) {
   } catch { return false; }
 }
 export async function refreshNext() {
+  // 「正在整理」只在用户自己点了重新整理时显示；后台 running:true 不替换页面。
+  S.nextRefreshing = true; changed('/personal/next');
   try {
     await mutate('/personal/next/refresh');
     const d = { ...(nextData()), running: true }; S.data['/personal/next'] = d; changed('/personal/next');
@@ -630,4 +632,5 @@ export async function refreshNext() {
       if (data && !data.running) break;
     }
   } catch { /* toast already */ }
+  finally { S.nextRefreshing = false; changed('/personal/next'); }
 }

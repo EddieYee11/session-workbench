@@ -4,7 +4,8 @@ import {
   stage, isBusy, api, uuid, toast, durationText, seedOf, store, setTab, tasks, stampLabel, statusTone,
   shanghaiHour, decisionCount, nextUrgentCount, nextItems, D, noteOf, setNote, wasDelivered, brokenSources, flowItems, sourceName,
 } from './core.js';
-import { icon, act, stamp, openSheet } from './ui.js';
+import { icon, act, ACT, stamp, openSheet } from './ui.js';
+import { widgetKey, stateful, usable, widgetHTML, submitText, undoText, receiptHTML, proactiveButton, artifactsHTML, clampHeight } from './widgets.js';
 
 const waitingInboxCount = () => decisionCount() + ((D('/personal/waiting') || {}).count || 0);
 const topWaitingTitle = () => (flowItems.find((i) => !i.stale) || {}).title || ((D('/personal/waiting') || {}).items || [])[0]?.title || '';
@@ -234,6 +235,113 @@ function presenceHTML() {
   </div>`;
 }
 
+// ─── 结构化组件（widgets.js 出 HTML；这里管状态持久化和交互） ───
+const WCTX = { icon, height: 0 };
+const wstate = new Map(), wload = new Set(), wsort = new Map(), wheight = new Map(), wbusy = new Set();
+const wget = (key) => wstate.get(key) || {};
+function widgetOf(m, w, i) {
+  if (!usable(w)) return '';
+  const key = widgetKey(m.id, i);
+  if (stateful(w)) ensureState(key);
+  return widgetHTML(w, m.id, i, wget(key), { icon, height: wheight.get(key) }, wsort.get(key)).s;
+}
+function ensureState(key) {
+  if (wstate.has(key) || wload.has(key)) return;
+  wload.add(key);
+  api('/personal/artifact-state/' + encodeURIComponent(key))
+    .then((r) => wstate.set(key, r && r.state && typeof r.state === 'object' ? r.state : {}))
+    .catch(() => wstate.set(key, {}))
+    .finally(() => { wload.delete(key); refreshWidget(key); });
+}
+async function saveState(key, st) {
+  wstate.set(key, st);
+  try { await api('/personal/artifact-state/' + encodeURIComponent(key), { body: { state: st } }); }
+  catch (e) { toast('这一步没存上，刷新后可能丢：' + e.message); }
+}
+/** 原地重画一个组件（不动同条消息里的 iframe）。 */
+function refreshWidget(key) {
+  const el = document.querySelector(`.widget[data-wk="${CSS.escape(key)}"]`); if (!el) return;
+  const m = S.conv.messages.find((x) => x.id === el.dataset.mid), w = m && (m.widgets || [])[Number(el.dataset.wi)];
+  if (!w) return;
+  const wrap = document.createElement('div'); wrap.innerHTML = widgetOf(m, w, Number(el.dataset.wi));
+  if (wrap.firstElementChild) el.replaceWith(wrap.firstElementChild);
+}
+const widgetCtx = (b) => {
+  const el = b.closest('.widget'); if (!el) return null;
+  const m = S.conv.messages.find((x) => x.id === el.dataset.mid), i = Number(el.dataset.wi), w = m && (m.widgets || [])[i];
+  return w ? { el, m, w, key: widgetKey(m.id, i) } : null;
+};
+async function submitWidget(c, st) {
+  if (wbusy.has(c.key)) return;
+  const text = submitText(c.w, st); if (!text) return;
+  wbusy.add(c.key); atBottom = true;
+  c.el.querySelectorAll('button').forEach((x) => (x.disabled = true));
+  try {
+    const entry = await send({ textOverride: text });
+    if (!wasDelivered(entry && entry.id)) { toast('没送出去，还可以再点一次'); return; }
+    await saveState(c.key, { ...st, submitted: true });
+  } finally { wbusy.delete(c.key); refreshWidget(c.key); }
+}
+act('w-check', (b) => {
+  const c = widgetCtx(b); if (!c) return;
+  const st = { ...wget(c.key), checked: { ...(wget(c.key).checked || {}) } };
+  const it = (c.w.items || []).find((x) => String(x.id) === b.dataset.item); if (!it) return;
+  st.checked[it.id] = !(it.id in st.checked ? st.checked[it.id] : it.checked);
+  saveState(c.key, st); refreshWidget(c.key);
+});
+act('w-pick', (b) => {
+  const c = widgetCtx(b); if (!c) return;
+  const o = (c.w.options || [])[Number(b.dataset.i)]; if (o == null) return;
+  const label = typeof o === 'object' ? String(o.label ?? o.text ?? o.value ?? '') : String(o);
+  const cur = wget(c.key).picked || [];
+  if (!c.w.multi) { submitWidget(c, { ...wget(c.key), picked: [label] }); return; }
+  saveState(c.key, { ...wget(c.key), picked: cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label] }); refreshWidget(c.key);
+});
+act('w-submit', (b) => {
+  const c = widgetCtx(b); if (!c) return;
+  const st = { ...wget(c.key) };
+  if (c.w.type === 'form') {
+    st.values = {};
+    c.el.querySelectorAll('[data-fid]').forEach((f) => { st.values[f.dataset.fid] = f.type === 'checkbox' ? f.checked : f.type === 'number' && f.value !== '' ? Number(f.value) : f.value; });
+  }
+  submitWidget(c, st);
+});
+act('w-sort', (b) => {
+  const c = widgetCtx(b); if (!c) return;
+  const col = Number(b.dataset.col), cur = wsort.get(c.key);
+  wsort.set(c.key, cur && cur.col === col ? { col, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' });
+  refreshWidget(c.key);
+});
+act('receipt-undo', (b) => {
+  const m = S.conv.messages.find((x) => x.id === b.dataset.mid), r = m && (m.receipts || [])[Number(b.dataset.i)]; if (!r) return;
+  S.draft = undoText(r);
+  try { sessionStorage.setItem('com.draft', S.draft); } catch { /* noop */ }
+  const ta = $('#chatInput'); if (ta) { ta.value = S.draft; autosize(ta); ta.focus(); }
+  syncComposerBits(); toast('已放进输入框，看一眼再发送');
+});
+act('proactive-go', (b) => {
+  const to = b.dataset.to;
+  if (to === 'task') {
+    const m = S.conv.messages.find((x) => x.id === b.dataset.mid) || {};
+    const t = (m.linked_tasks || [])[0] || tasks().find((x) => m.request_id && String(m.request_id).includes(x.id));
+    if (t && t.id) { ACT['open-task']({ dataset: { id: t.id } }); return; }
+    setTab('today'); return;
+  }
+  setTab(to);
+});
+// html 组件的 iframe 消息：只认来自我们自己 iframe 的；send 还要求用户刚点过。
+let lastFrameSend = 0;
+window.addEventListener('message', (e) => {
+  const d = e.data; if (!d || typeof d !== 'object') return;
+  const frame = Array.from(document.querySelectorAll('iframe.widget-frame')).find((f) => f.contentWindow === e.source); if (!frame) return;
+  if (d.com === 'height') { const h = clampHeight(d.height); wheight.set(frame.dataset.wk, h); frame.style.height = h + 'px'; return; }
+  if (d.com !== 'send') return;
+  if (!(navigator.userActivation && navigator.userActivation.isActive)) { toast('先点一下组件里的按钮再发送'); return; }
+  const text = String(d.text == null ? '' : d.text).trim().slice(0, 2000);
+  if (!text || Date.now() - lastFrameSend < 1000) return;
+  lastFrameSend = Date.now(); atBottom = true; send({ textOverride: text });
+});
+
 function messageHTML(row, prevAgent) {
   const m = row.message, user = m.role === 'user';
   const text = user ? textContent(m.text ?? m.content) : splitOptions(textContent(m.text ?? m.content))[0];
@@ -245,13 +353,18 @@ function messageHTML(row, prevAgent) {
     ? html`<div class="bubble user">${text}</div>`
     : html`<div class="bubble agent ${prevAgent ? 'cont' : ''} md">${md(text)}</div>`;
   const evs = !process && taskEvents.length ? html`<details class="note-surface events"><summary>工作过程 · ${taskEvents.length}</summary>${taskEvents.slice(-12).map((e, i, arr) => stepRow(AGENT_EVENT(e), i < arr.length - 1 ? 'done' : stepState(e), clockTime(e.at)))}</details>` : '';
-  const arts = (m.artifacts || []).length ? html`<div class="arts">${m.artifacts.map((a) => html`<button class="att art" data-act="open-artifact" data-path="${a.path || ''}" data-id="${a.id || ''}" data-name="${a.name || ''}">${icon(String(a.mime || '').startsWith('image') ? 'photo' : 'doc')}${a.name || String(a.path || '').split('/').pop()}</button>`)}</div>` : '';
+  const arts = (m.artifacts || []).length ? artifactsHTML(m.artifacts, WCTX) : '';
+  const widgets = user ? '' : (m.widgets || []).map((w, i) => widgetOf(m, w, i)).join('');
+  const receipts = user ? '' : (m.receipts || []).map((r, i) => receiptHTML(r, m.id, i, WCTX)).join('');
+  const pb = user ? null : proactiveButton(m);
+  const go = pb ? html`<div class="row actions"><button class="btn secondary compact" data-act="proactive-go" data-to="${pb.to}" data-mid="${m.id}">${pb.label}</button></div>` : '';
   const extra = taskEvents.slice(-8).map((e, i, arr) => stepRow(AGENT_EVENT(e), i < arr.length - 1 ? 'done' : stepState(e), clockTime(e.at)));
   return html`<div class="msg ${user ? 'me' : 'it'}" data-row="${row.id}" data-mid="${m.id}">
     <div class="col">${ref}${bubble}${atts.length ? html`<div class="atts">${atts}</div>` : ''}
       ${user ? deliveryLine(m, row.pending, process) : ''}
       ${m.error ? html`<div class="notice danger small">${icon('warning')}<span>${m.error}</span></div>` : ''}
-      ${(m.linked_tasks || []).map(taskSummary)}${evs}${arts}
+      ${receipts ? raw(receipts) : ''}${raw(widgets)}
+      ${(m.linked_tasks || []).map(taskSummary)}${evs}${arts}${go}
       <div class="msg-tools"><button data-act="msg-copy" title="复制">${icon('copy')}</button>${row.pending ? '' : html`<button data-act="msg-reply" title="回复">${icon('reply')}</button>`}<time>${clockTime(m.created_at)}</time></div>
     </div>
     ${process ? processRow(process, openProcess.has(m.id) || false, m.id, extra) : ''}
@@ -305,7 +418,7 @@ export function renderChat(first = false) {
   let prev = null, prevAgent = false;
   for (const row of rows) {
     const m = row.message;
-    const sig = [m.status, m.phase, (m.text || '').length, m.revision, (m.tasks || []).length, JSON.stringify((m.tasks || []).slice(-1)), row.pending && row.pending.state, row.pending && row.pending.note, prevAgent, openProcess.has(m.id), (m.linked_tasks || []).map((t) => t.status).join(), (m.work_events || []).length, m.error].join('|');
+    const sig = [m.status, m.phase, (m.text || '').length, m.revision, (m.tasks || []).length, JSON.stringify((m.tasks || []).slice(-1)), row.pending && row.pending.state, row.pending && row.pending.note, prevAgent, openProcess.has(m.id), (m.linked_tasks || []).map((t) => t.status).join(), (m.work_events || []).length, m.error, JSON.stringify(m.widgets || []).length, JSON.stringify(m.receipts || []).length, (m.artifacts || []).length, m.request_id].join('|');
     let entry = rendered.get(row.id);
     if (!entry || entry.sig !== sig) {
       const wrap = document.createElement('div');

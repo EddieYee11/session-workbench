@@ -1,7 +1,7 @@
 // 「下一步」：它把邮件、日程、项目、任务和账本收拢成几件现在值得做的事（iOS NextView.swift）。
-import { S, $, html, raw, nextData, nextItems, brokenSources, sourceName, relativeTime, clockTime, nextAction, refreshNext, onChange, D, yuan, agentName, hostName, agencyCards, tasks, noteOf } from './core.js';
+import { S, $, html, raw, nextData, nextItems, brokenSources, sourceName, relativeTime, clockTime, nextAction, refreshNext, onChange, D, yuan, agentName, hostName, agencyCards, tasks, noteOf, api, patchData, load, toast, flowItems } from './core.js';
 import { icon, act, stamp, empty, section, pushSheet, openSheet } from './ui.js';
-import { voyageBanner, planCard, nextActions } from './cases.js';
+import { voyageBanner, planCard, nextActions, waitingData, waitingCount } from './cases.js';
 
 const EV_ICON = { mail: 'envelope', event: 'calendar', project: 'desktop', task: 'checklist', finance: 'card', goal: 'scope', wechat: 'message', health: 'heart', todo: 'checklist', inbox: 'tray', reminder: 'bell', sms: 'message', plaud: 'waveform', weather: 'cloud' };
 const EV_NAME = { mail: '邮件', event: '日程', project: '项目', task: '任务', finance: '账本', goal: '目标', wechat: '微信', health: '身体', todo: '行动台', inbox: '速记', reminder: '提醒事项', sms: '短信', plaud: '录音纪要', weather: '天气' };
@@ -72,6 +72,50 @@ function nextCard(item, i) {
     ${nextActions(item)}</div>`;
 }
 
+// ─── 等你（放在页面最上面）与已排程 ───
+function waitingBlock() {
+  const n = waitingCount(); if (!n) return '';
+  const rows = [...flowItems.filter((i) => !i.stale), ...(waitingData().items || [])].slice(0, 3);
+  return section(`等你 · ${n}`, html`<div class="card list">${rows.map((i) => html`<button class="list-row" data-act="waiting-open"><span class="badge warning">${icon('hand')}</span><span><b>${i.title}</b>${i.why ? html`<small>${i.why}</small>` : ''}</span>${icon('right', 'chev')}</button>`)}
+    ${n > rows.length ? html`<button class="list-row" data-act="waiting-open"><span><b>还有 ${n - rows.length} 件，去看全部</b></span>${icon('right', 'chev')}</button>` : ''}</div>`);
+}
+let routinesOpen = false;
+const routineBusy = new Set();
+const whenText = (sec) => { if (!(sec > 0)) return ''; const t = new Date(sec * 1000); return `${t.getMonth() + 1}月${t.getDate()}日 ${clockTime(sec)}`; };
+function routinesBlock() {
+  const d = D('/personal/routines'), err = S.errors['/personal/routines'];
+  const items = (d && d.items) || [];
+  const head = html`<button class="list-row" data-act="routines-toggle">${icon('calendar')}<span><b>已排程${items.length ? ' · ' + items.length : ''}</b><small>${err ? '没读到' : d && d.paused ? '已全部暂停' : '定时在跑的事'}</small></span>${icon('right', routinesOpen ? 'rot' : 'chev')}</button>`;
+  if (!routinesOpen) return html`<div class="card list routines">${head}</div>`;
+  const row = (r) => html`<div class="routine-row ${r.enabled === false ? 'off' : ''}">
+    <span class="grow"><b>${r.title}</b><small>${[r.group, r.trigger].filter(Boolean).join(' · ')}</small>
+      <small>${[r.next_run_at > 0 ? '下次 ' + whenText(r.next_run_at) : '', r.last_run_at > 0 ? '上次 ' + relativeTime(r.last_run_at) + (r.last_status ? '（' + r.last_status + '）' : '') : ''].filter(Boolean).join(' · ')}</small>
+      ${r.note ? html`<small class="muted">${r.note}</small>` : ''}</span>
+    ${r.controllable === false ? stamp('只读', 'neutral') : html`<button class="btn secondary compact" data-act="routine-toggle" data-id="${r.id}" data-a="${r.enabled === false ? 'resume' : 'pause'}" ${routineBusy.has(r.id) ? raw('disabled') : ''}>${r.enabled === false ? '恢复' : '暂停'}</button>`}</div>`;
+  return html`<div class="card list routines">${head}
+    ${err ? html`<div class="notice warning inline-note">${icon('warning')}<span>排程清单没读上：${err}</span></div>` : ''}
+    ${d ? html`<div class="routine-all"><small class="muted">${d.paused ? '全部排程已暂停' : '全部排程在跑'}</small>
+      <button class="btn quiet compact" data-act="routine-toggle" data-id="_all" data-a="${d.paused ? 'resume' : 'pause'}" ${routineBusy.has('_all') ? raw('disabled') : ''}>${d.paused ? '全部恢复' : '全部暂停'}</button></div>` : ''}
+    ${items.length ? items.map(row) : d && !err ? html`<p class="muted small">现在没有排程。</p>` : ''}</div>`;
+}
+act('routines-toggle', () => { routinesOpen = !routinesOpen; if (routinesOpen) load('/personal/routines'); renderRoutines(); });
+function renderRoutines() { const el = document.querySelector('#page-next .routines'); if (el) { const w = document.createElement('div'); w.innerHTML = routinesBlock().s; el.replaceWith(w.firstElementChild); } }
+act('routine-toggle', async (b) => {
+  const id = b.dataset.id, a = b.dataset.a; if (routineBusy.has(id)) return;
+  const prev = D('/personal/routines'); if (!prev) return;
+  const snapshot = JSON.parse(JSON.stringify(prev));
+  routineBusy.add(id);
+  patchData('/personal/routines', (x) => { if (id === '_all') x.paused = a === 'pause'; else (x.items || []).forEach((r) => { if (r.id === id) r.enabled = a === 'resume'; }); return x; });
+  renderRoutines();
+  try {
+    await api('/personal/routines/' + encodeURIComponent(id), { body: { action: a } });
+    await load('/personal/routines');
+  } catch (e) {
+    patchData('/personal/routines', () => snapshot);
+    toast('没改成，已恢复原样：' + e.message);
+  } finally { routineBusy.delete(id); renderRoutines(); }
+});
+
 export function renderNext(root) {
   const data = nextData();
   const items = nextItems();
@@ -83,18 +127,20 @@ export function renderNext(root) {
   const note = noteOf('next');
   let n = 0;
   root.innerHTML = html`<div class="page">
-    <div class="page-head rise"><div class="row between"><p class="sub">${data.running ? '正在重新整理…' : head ? `先办这一件：${head.title}` : '没什么要推的'}</p></div>
+    <div class="page-head rise"><div class="row between"><p class="sub">${S.nextRefreshing ? '正在重新整理…' : head ? `先办这一件：${head.title}` : '没什么要推的'}</p></div>
       ${data.updated_at > 0 ? html`<small class="muted">上次整理 ${relativeTime(data.updated_at)}${data.source === 'rule' ? ' · 模型没接上，先按规则排' : ''}</small>` : ''}
       ${S.errors['/personal/next'] ? html`<small class="danger-text">${S.errors['/personal/next']}</small>` : ''}
       ${note ? html`<div class="notice warning inline-note">${icon('warning')}<span>${note}</span></div>` : ''}</div>
+    ${waitingBlock()}
     ${voyageBanner()}
     ${planCard()}
     ${brokenSources().map(sourceBrokenNote)}
-    ${data.running ? buildingCard(data.progress) : !items.length && D('/personal/next') ? empty('没什么要推的', '我每小时会自己再看一遍；有新邮件、新日程或项目有进展，会整理成下一步放在这里。', 'sparkles') : ''}
+    ${S.nextRefreshing ? buildingCard(data.progress) : !items.length && D('/personal/next') ? empty('没什么要推的', '我每小时会自己再看一遍；有新邮件、新日程或项目有进展，会整理成下一步放在这里。', 'sparkles') : ''}
     ${!D('/personal/next') && !S.errors['/personal/next'] ? html`<div class="skeleton"></div><div class="skeleton"></div>` : ''}
     ${groups.map(([t, rows]) => section(t === '现在' ? '现在 · 先办' : t, html`${rows.map((r) => nextCard(r, n++))}`))}
     ${fin && fin.available ? section('账本', ledgerNote(fin)) : ''}
     ${week.shown > 0 ? html`<p class="foot">这周提了 ${week.shown} 件，你用上 ${week.acted || 0} 件、划掉 ${week.dismissed || 0} 件${week.precision != null ? '，准确率 ' + Math.round(week.precision * 100) + '%' : ''}${week.resolved > 0 ? '；群里已经办完、我自动收起 ' + week.resolved + ' 件' : ''}。${Object.keys(week.reasons || {}).length ? '划掉的理由：' + Object.entries(week.reasons).sort((a, b) => b[1] - a[1]).map(([k, n]) => k + ' ' + n).join(' · ') + '。' : ''}</p>` : ''}
+    ${routinesBlock()}
     <button class="btn quiet" data-act="open-activity">${icon('checklist')}看它替你做过的事</button>
   </div>`.s;
   for (const id of open) root.querySelector(`.pocket[data-pocket="${CSS.escape(id)}"]`)?.classList.add('open', 'instant');

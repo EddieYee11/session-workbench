@@ -189,6 +189,7 @@ function renderSurfacePicker() {
   const el = $('#workSurface'); if (!el) return;
   el.innerHTML = html`<div class="seg work-surf" role="tablist" aria-label="工作面">
     <button class="${W.surface === 'sessions' ? 'on' : ''}" data-act="work-surface" data-s="sessions">对话</button>
+    <button class="${W.surface === 'fleet' ? 'on' : ''}" data-act="work-surface" data-s="fleet">运行</button>
     <button class="${W.surface === 'remote' ? 'on' : ''}" data-act="work-surface" data-s="remote">终端</button>
   </div>`.s;
 }
@@ -274,13 +275,19 @@ async function probeComLink() {
 export function renderWork(first) {
   const root = $('#page-work .work'); if (!root) return;
   root.classList.toggle('side-open', !!W.sidebar);
-  root.classList.toggle('remote-on', W.surface === 'remote');
+  root.classList.toggle('remote-on', W.surface === 'remote' || W.surface === 'fleet');
   root.style.setProperty('--wash', agentBrand(agent()) ? agentBrand(agent()).wash : 'transparent');
   renderSurfacePicker();
   renderSidebar();
   const inner = $('#workInner'), sc = $('#workScroll');
   const gen = W.generation;
   const wasBottom = W.nearBottom || first || gen !== renderedGen;
+  if (W.surface === 'fleet') {
+    inner.innerHTML = fleetHTML().s;
+    const composer = $('#workComposer'); if (composer) composer.classList.add('hidden');
+    fleetEnsure();
+    return;
+  }
   if (W.surface === 'remote') {
     inner.innerHTML = remoteHTML().s;
     const composer = $('#workComposer'); if (composer) composer.classList.add('hidden');
@@ -387,7 +394,7 @@ function routeHint() {
 }
 export function renderWorkComposer(force) {
   const host = $('#workComposer'); if (!host) return;
-  if (W.surface === 'remote') { host.classList.add('hidden'); host.innerHTML = ''; return; }
+  if (W.surface === 'remote' || W.surface === 'fleet') { host.classList.add('hidden'); host.innerHTML = ''; return; }
   host.classList.remove('hidden');
   const ta = host.querySelector('textarea');
   if (!force && ta && document.activeElement === ta) { syncWorkAction(); return; }
@@ -499,12 +506,105 @@ export function titleMenuHTML() {
   return html`<small class="menu-label">${hostName(W.snapshot.host)} 上的只读摘录</small><button class="menu-row" data-act="work-new">${icon('compose')}<span><b>新对话</b></span></button>`;
 }
 
+// ─── 运行视图：mini 上各处在跑的任务和会话（/remote/fleet），来源失败就明说 ───
+const FLEET = { items: [], sources: [], loaded: false, error: '', loading: false, timer: 0, detail: {}, openFiles: new Set() };
+const FLEET_GROUPS = [['需要你', 'needs_you', 'warning'], ['失败', 'failed', 'danger'], ['在跑', 'running', 'info'], ['做完了', 'done', 'success']];
+const fleetGroupOf = (it) => (['needs_you', 'failed', 'running'].includes(it.state) ? it.state : 'done');
+async function fleetLoad() {
+  if (FLEET.loading) return;
+  FLEET.loading = true;
+  try {
+    const d = await api('/remote/fleet');
+    FLEET.items = (d && d.items) || []; FLEET.sources = (d && d.sources) || []; FLEET.error = '';
+  } catch (e) { FLEET.error = e.message; }
+  FLEET.loading = false; FLEET.loaded = true; FLEET.at = Date.now();
+  if (W.surface === 'fleet' && S.tab === 'work') renderWork();
+  fleetSchedule();
+}
+// 有运行中的项才每 10 秒刷一次；离开视图（换面或换页）就停。
+function fleetSchedule() {
+  clearTimeout(FLEET.timer); FLEET.timer = 0;
+  if (W.surface !== 'fleet' || S.tab !== 'work' || !S.active || !FLEET.items.some((i) => i.state === 'running')) return;
+  FLEET.timer = setTimeout(() => { FLEET.timer = 0; if (W.surface === 'fleet' && S.tab === 'work') fleetLoad(); }, 10000);
+}
+function fleetStop() { clearTimeout(FLEET.timer); FLEET.timer = 0; }
+function fleetEnsure() { if ((!FLEET.loaded || Date.now() - FLEET.at > 15000) && !FLEET.loading) fleetLoad(); else if (!FLEET.timer && !FLEET.loading) fleetSchedule(); }
+const FLEET_STATE = { running: ['在跑', 'info'], needs_you: ['等你', 'warning'], failed: ['失败', 'danger'], done: ['做完了', 'success'], idle: ['空闲', 'neutral'] };
+function fleetHTML() {
+  const bad = FLEET.sources.filter((x) => !x.ok), good = FLEET.sources.filter((x) => x.ok);
+  const row = (it) => html`<button class="list-row" data-act="fleet-open" data-id="${it.id}"><span class="badge">${agentMark(it.agent, 16)}</span>
+    <span><b>${it.title || it.goal || '未命名'}</b><small>${[agentName(it.agent), hostName(it.host), it.last_activity_at > 0 ? relativeTime(it.last_activity_at) : ''].filter(Boolean).join(' · ')}${it.state === 'needs_you' && it.waiting_reason ? ' · ' + it.waiting_reason : ''}</small></span>
+    ${stamp(...(FLEET_STATE[it.state] || FLEET_STATE.idle))}${icon('right', 'chev')}</button>`;
+  return html`<div class="fleet rise">
+    <div class="row between"><h2>运行</h2><button class="btn quiet compact" data-act="fleet-refresh" ${FLEET.loading ? raw('disabled') : ''}>${icon(FLEET.loading ? 'hourglass' : 'refresh')}刷新</button></div>
+    ${FLEET.error ? notice('运行视图读不到：' + FLEET.error + '。下面如果有内容，是上一次读到的。') : ''}
+    ${bad.map((x) => notice(`${x.name} 没连上${x.error || x.detail ? '：' + (x.error || x.detail) : ''}。这一路的任务现在看不到，不代表没有。`, 'warning'))}
+    ${!FLEET.loaded ? html`<div class="skeleton"></div>` : ''}
+    ${FLEET.loaded && !FLEET.items.length && !FLEET.error ? html`<p class="muted small">${bad.length ? '能连上的来源里没有任务；没连上的那几路看不到。' : '所有来源都连着，现在没有任务。'}</p>` : ''}
+    ${FLEET_GROUPS.map(([t, k]) => { const rows = FLEET.items.filter((i) => fleetGroupOf(i) === k); return rows.length ? html`<section class="group"><div class="group-head"><h3>${t} · ${rows.length}</h3></div><div class="card list">${rows.map(row)}</div></section>` : ''; })}
+    ${good.length ? html`<p class="foot">已连上：${good.map((x) => x.name + (x.count != null ? ` ${x.count}` : '')).join(' · ')}</p>` : ''}
+  </div>`;
+}
+/** 把整段 diff 按文件拆开：key 是 b/ 后面的路径。 */
+export function splitDiff(diff) {
+  const out = {}; let cur = null;
+  for (const line of String(diff || '').split('\n')) {
+    const m = line.match(/^diff --git a\/(.*?) b\/(.*)$/);
+    if (m) { cur = m[2]; out[cur] = []; }
+    if (cur) out[cur].push(line);
+  }
+  return out;
+}
+const diffLines = (lines) => html`<pre class="diff">${lines.map((l) => html`<span class="${l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : l.startsWith('@@') ? 'hunk' : ''}">${l}</span>`)}</pre>`;
+const CHANGE_MARK = { M: '改', A: '新', D: '删', R: '改名', '?': '未跟踪', U: '冲突' };
+function fleetDetailView(id) {
+  return {
+    title: '运行详情', wide: true,
+    render: () => {
+      const it = FLEET.items.find((x) => x.id === id); if (!it) return html`<p class="muted">这一项已经不在列表里。</p>`;
+      const ch = FLEET.detail[it.session_id], st = FLEET_STATE[it.state] || FLEET_STATE.idle;
+      let changes;
+      if (!it.session_id) changes = html`<p class="muted small">这一项没有对应的会话，看不到代码改动。</p>`;
+      else if (!ch || ch.loading) changes = html`<div class="skeleton"></div>`;
+      else if (ch.error) changes = notice('改动没读到：' + ch.error, 'warning');
+      else {
+        const d = ch.data, files = d.files || [], per = splitDiff(d.diff);
+        changes = !d.git ? html`<p class="muted small">${d.reason || '这里不是 git 目录，没有可看的改动。'}</p>`
+          : html`${d.stat ? html`<pre class="diff stat">${d.stat}</pre>` : ''}
+            ${files.length ? html`<div class="card list">${files.map((f) => { const open = FLEET.openFiles.has(it.session_id + '|' + f.path); return html`<div><button class="list-row" data-act="fleet-file" data-sid="${it.session_id}" data-path="${f.path}"><span class="badge">${CHANGE_MARK[String(f.status).trim().charAt(0)] || f.status}</span><span><b>${f.path}</b></span>${icon('right', open ? 'rot' : 'chev')}</button>${open ? (per[f.path] ? diffLines(per[f.path]) : html`<p class="muted small pad">这个文件没有可显示的 diff（可能是未跟踪文件或太大被截掉）。</p>`) : ''}</div>`; })}</div>` : html`<p class="muted small">没有文件改动。</p>`}
+            ${d.truncated ? notice('diff 太长被截掉了' + (d.reason ? '：' + d.reason : '') + '，后面的文件可能看不到。', 'warning') : ''}`;
+      }
+      return html`<div class="stack">
+        <div class="card"><div class="row between"><h3>${it.title || it.goal}</h3>${stamp(...st)}</div>
+          ${it.goal && it.goal !== it.title ? html`<p class="sub">${it.goal}</p>` : ''}
+          ${it.waiting_reason ? html`<p class="lined">${it.waiting_reason}</p>` : ''}
+          <small class="muted">${[agentName(it.agent), hostName(it.host), it.last_activity_at > 0 ? relativeTime(it.last_activity_at) : ''].filter(Boolean).join(' · ')}</small>
+          ${it.case_id ? html`<div class="row actions"><button class="btn secondary compact" data-act="case-open" data-id="${it.case_id}">看航程</button></div>` : ''}</div>
+        <section class="group"><div class="group-head"><h3>代码改动</h3></div>${changes}</section></div>`;
+    },
+    mounted: () => {
+      const it = FLEET.items.find((x) => x.id === id); if (!it || !it.session_id) return;
+      const cur = FLEET.detail[it.session_id];
+      if (cur && (cur.loading || cur.data)) return;
+      FLEET.detail[it.session_id] = { loading: true };
+      api('/sessions/' + encodeURIComponent(it.session_id) + '/changes')
+        .then((data) => { FLEET.detail[it.session_id] = { data: data || {} }; })
+        .catch((e) => { FLEET.detail[it.session_id] = { error: e.message }; })
+        .finally(() => changed('fleet-detail'));
+    },
+  };
+}
+act('fleet-open', (b) => { const it = FLEET.items.find((x) => x.id === b.dataset.id); if (it && it.session_id) delete FLEET.detail[it.session_id]; openSheet(fleetDetailView(b.dataset.id)); });
+act('fleet-refresh', () => fleetLoad());
+act('fleet-file', (b) => { const k = b.dataset.sid + '|' + b.dataset.path; FLEET.openFiles.has(k) ? FLEET.openFiles.delete(k) : FLEET.openFiles.add(k); changed('fleet-detail'); });
+
 // ─── 动作 ───
 act('work-surface', (b) => {
   W.surface = b.dataset.s || 'sessions';
   store.set('work.surface', W.surface);
   if (W.surface === 'remote') { W.remoteStatus = 'idle'; W.remoteDetail = ''; renderWork(); probeComLink(); }
   else { renderWork(); renderWorkComposer(true); }
+  if (W.surface !== 'fleet') fleetStop();
 });
 act('work-remote-host', (b) => {
   W.remoteHost = b.dataset.h; store.set('work.remoteHost', W.remoteHost);

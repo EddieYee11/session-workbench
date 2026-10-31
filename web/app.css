@@ -1054,3 +1054,59 @@ body[data-tab="health"] .dock-item.on { color: var(--hue-pink-ink); }
 .list-row.on { background: var(--accent-soft); }
 .list-row.static { cursor: default; }
 .agency-wait { margin-bottom: 8px; }
+
+/* ─── 聊天结构化组件 / 回执 / 网页成果卡 / 排程 / 运行视图 ─── */
+.widget { background: var(--surface); border: 1px solid var(--sep); border-radius: var(--r-md); padding: 12px 14px; max-width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.w-title { margin: 0; font: 600 15px/1.35 var(--font); }
+.w-checks, .w-options { display: flex; flex-direction: column; gap: 4px; }
+.w-options { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+.w-check { display: flex; align-items: center; gap: 10px; padding: 6px 2px; font-size: 15px; }
+.w-check i { width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--text-3); display: grid; place-items: center; flex: none; }
+.w-check i .ic { width: 14px; height: 14px; }
+.w-check.on i { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.w-check.on span { color: var(--text-2); text-decoration: line-through; }
+.w-opt { padding: 9px 14px; border-radius: 14px; background: var(--fill); border: 1px solid var(--sep); font-size: 14px; }
+.w-opt:hover:not(:disabled) { background: var(--accent-soft); }
+.w-opt.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.w-opt:disabled:not(.on) { opacity: .5; }
+.w-scroll { overflow-x: auto; }
+.widget table { border-collapse: collapse; font-size: 13px; width: 100%; }
+.widget th, .widget td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--sep); white-space: nowrap; }
+.widget th button { font-weight: 700; color: var(--text-2); }
+.widget td { font-variant-numeric: tabular-nums; }
+.w-chart { width: 100%; max-width: 360px; height: auto; }
+.w-grid { stroke: var(--sep); stroke-width: 1; }
+.w-tick { fill: var(--text-3); font-size: 9px; }
+.w-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
+.w-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--text-2); }
+.w-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; }
+.widget .check-step span { display: flex; flex-direction: column; color: var(--text); font-size: 14px; }
+.widget .check-step.done span b { color: var(--text-2); }
+.widget .block { display: block; }
+.w-form { display: flex; flex-direction: column; gap: 10px; }
+.w-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); }
+.w-field input[type="text"], .w-field input[type="number"], .w-field input[type="date"], .w-field select, .w-field textarea { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--sep); background: var(--fill); color: var(--text); }
+.w-field input[type="checkbox"] { width: 20px; height: 20px; }
+.widget-frame { width: 100%; border: 0; border-radius: var(--r-sm); background: transparent; display: block; }
+.receipt { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: var(--r-sm); background: var(--fill); font-size: 13px; color: var(--text-2); }
+.receipt .ic { width: 14px; height: 14px; flex: none; }
+.receipt .stamp { font-size: 11px; padding: 1px 6px; }
+.receipt .stamp.success { color: var(--success); } .receipt .stamp.warning { color: var(--warning); } .receipt .stamp.danger { color: var(--danger); }
+.receipt .link { font-size: 12px; color: var(--accent-text); white-space: nowrap; }
+.art-card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; background: var(--surface); border: 1px solid var(--sep); border-radius: var(--r-md); box-shadow: 0 1px 2px rgba(0, 0, 0, .04); }
+.art-card:hover { background: var(--accent-soft); }
+.art-card span { display: flex; flex-direction: column; min-width: 0; }
+.art-card b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-card small { color: var(--text-2); }
+.routines .routine-row { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--sep); }
+.routines .routine-row.off b { color: var(--text-3); }
+.routines .routine-row span { display: flex; flex-direction: column; }
+.routines .routine-row small { color: var(--text-2); font-size: 12px; }
+.routines .routine-all { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px; }
+.fleet { padding: 4px 0 24px; }
+.diff { margin: 6px 0; padding: 8px 10px; background: var(--fill); border-radius: var(--r-sm); font: 12px/1.5 var(--mono); overflow-x: auto; white-space: pre; }
+.diff span { display: block; }
+.diff .add { background: var(--success-soft); color: var(--success); }
+.diff .del { background: var(--danger-soft); color: var(--danger); }
+.diff .hunk { color: var(--info); }
+.pad { padding: 0 8px 8px; }
