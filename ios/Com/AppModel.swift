@@ -1505,6 +1505,28 @@ extension AppModel {
         })])
         datasets["/personal/memory"] = .object(["items": fixture["memories"], "categories": .array([.string("工作"), .string("兴趣"), .string("关于我")])])
         datasets["/sessions"] = .object(["sessions": fixture["sessions"]])
+        // 「运行」面夹具：四种状态各一条 + 一个没开的来源；session-1 带一份假 git 改动。
+        let fleetNow = Date().timeIntervalSince1970
+        datasets["/remote/fleet"] = .object([
+            "items": .array([
+                .object(["id": .string("session:session-1"), "kind": .string("session"), "title": .string("整理内容计划"), "goal": .string("选题和素材已归纳"), "agent": .string("codex"), "state": .string("needs_you"), "waiting_reason": .string("等你批准删除 3 个旧素材"), "last_activity_at": .number(fleetNow - 300), "host": .string("mini"), "session_id": .string("session-1"), "case_id": .string("")]),
+                .object(["id": .string("case:task_demo_failed"), "kind": .string("case"), "title": .string("同步报销单"), "goal": .string("上传失败"), "agent": .string("pi"), "state": .string("failed"), "waiting_reason": .string(""), "last_activity_at": .number(fleetNow - 1800), "host": .string("mini"), "session_id": .string(""), "case_id": .string("task_demo_failed")]),
+                .object(["id": .string("session:session-2"), "kind": .string("session"), "title": .string("Com iOS 界面更新"), "goal": .string("调整聊天、今天和工作记录"), "agent": .string("pi"), "state": .string("running"), "waiting_reason": .string(""), "last_activity_at": .number(fleetNow - 20), "host": .string("mini"), "session_id": .string("session-2"), "case_id": .string("")]),
+                .object(["id": .string("session:session-3"), "kind": .string("session"), "title": .string("回顾本周进展"), "goal": .string("已完成工作记录整理"), "agent": .string("claude"), "state": .string("done"), "waiting_reason": .string(""), "last_activity_at": .number(fleetNow - 7200), "host": .string("mini"), "session_id": .string("session-3"), "case_id": .string("")]),
+            ]),
+            "sources": .array([
+                .object(["name": .string("sessions"), "ok": .bool(true), "detail": .string(""), "error": .string("")]),
+                .object(["name": .string("cases"), "ok": .bool(true), "detail": .string(""), "error": .string("")]),
+                .object(["name": .string("rex"), "ok": .bool(true), "detail": .string(""), "error": .string("")]),
+                .object(["name": .string("herdr"), "ok": .bool(false), "detail": .string("no herdr server"), "error": .string("server_not_running")]),
+            ]),
+        ])
+        datasets["/sessions/session%2D1/changes"] = .object([
+            "git": .bool(true), "truncated": .bool(false),
+            "files": .array([.object(["status": .string("M"), "path": .string("Sources/App.swift")]), .object(["status": .string("??"), "path": .string("notes.md")])]),
+            "stat": .string(" Sources/App.swift | 3 ++-\n 1 file changed, 2 insertions(+), 1 deletion(-)\n"),
+            "diff": .string("diff --git a/Sources/App.swift b/Sources/App.swift\nindex 111..222 100644\n--- a/Sources/App.swift\n+++ b/Sources/App.swift\n@@ -1,3 +1,4 @@\n let a = 1\n-let b = 2\n+let b = 3\n+let c = 4\n"),
+        ])
         if !chatOnly { datasets["/personal/agency"] = .object([
             "cards": .array(fixture["cards"].array.map { card in
                 var value = card; value["kind"] = .string("meeting"); value["source_label"] = .string("日历"); value["version"] = .string("preview-1")
@@ -1515,6 +1537,7 @@ extension AppModel {
                 .object(["id": .string("morning-briefing"), "at": .string("09:00"), "enabled": .bool(true)]),
                 .object(["id": .string("evening-review"), "at": .string("21:00"), "enabled": .bool(true)])])])]) }
         seedDashboardPreview(chatOnly: chatOnly)
+        seedRoutinesPreview()
         datasets["/personal/next"] = .object(["running": .bool(false), "updated_at": .number(Date().timeIntervalSince1970 - 600), "source": .string("model"),
             "week": .object(["shown": .number(6), "acted": .number(3), "dismissed": .number(1), "resolved": .number(2), "precision": .number(0.75),
                              "reasons": .object(["别人在负责": .number(1)])]),

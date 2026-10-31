@@ -1,11 +1,9 @@
 import SwiftUI
 import ComCore
 
-/// 工作 Tab 的第二面：远程控制面（Rex 状态卡 + herdr 只读树）。
+/// 工作 Tab 的第二面「运行」：手机上不开终端就能看状态、审阅改动、追问。
+/// 数据全来自 mini 后端 `/remote/fleet`（会话 + 航程 + Rex + herdr 合并，来源失败各自标明）。
 /// 不覆盖「对话」派活面；由 `WorkSurface` 切换进入。
-///
-/// - Rex：mini 后端 `/remote/rex/snapshot`（控制面，不嵌终端）
-/// - herdr：`/remote/herdr/snapshot` 只读会话树；真 PTY / HerdrKit 写输入另开
 
 enum WorkSurface: String, CaseIterable, Identifiable {
     case sessions, remote
@@ -13,7 +11,7 @@ enum WorkSurface: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .sessions: return "对话"
-        case .remote: return "终端"
+        case .remote: return "运行"
         }
     }
 }
@@ -56,301 +54,521 @@ struct WorkSurfacePicker: View {
     }
 }
 
-/// 终端面：Com / Rex / herdr 三分态诚实探测 + Rex 列表 + herdr 只读树。
+// MARK: - 运行面
+
+private func runAgentSymbol(_ hint: String) -> String {
+    switch hint {
+    case "claude": return "sparkles"
+    case "pi": return "circle.hexagongrid"
+    case "codex": return "chevron.left.forwardslash.chevron.right"
+    case "herdr": return "rectangle.split.3x1"
+    case "shell": return "terminal"
+    default: return "square.grid.2x2"
+    }
+}
+
+private func runTone(_ state: String) -> Tone {
+    switch state {
+    case "needs_you": return .warning
+    case "failed": return .danger
+    case "running": return .info
+    case "done": return .success
+    default: return .neutral
+    }
+}
+
+private func runStateLabel(_ state: String) -> String {
+    switch state {
+    case "needs_you": return "需要你"
+    case "failed": return "失败"
+    case "running": return "在跑"
+    case "done": return "做完了"
+    default: return "空闲"
+    }
+}
+
+/// 来源失败说人话；不通就直说，不假装在线。
+private func runSourceProblem(_ source: JSON) -> String {
+    let name = source["name"].string
+    let label = ["sessions": "会话", "cases": "航程", "rex": "Rex", "herdr": "herdr"][name] ?? name
+    switch source["error"].string {
+    case "server_not_running": return "herdr 没开：mini 上没有启动 herdr server。"
+    case "herdr_not_found": return "mini 上没有 herdr 命令。"
+    case "rex_not_found": return "mini 上没有 rex 命令。"
+    case "unreachable": return "\(label) 连不上：服务没在接受连接。"
+    case "timeout": return "\(label) 读取超时。"
+    default:
+        let detail = source["detail"].string
+        return detail.isEmpty ? "\(label) 没读到。" : "\(label) 没读到：\(detail)"
+    }
+}
+
+/// 运行面：状态优先列表——需要你 / 失败 / 在跑 / 做完了。
 struct WorkRemoteSurface: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var shown = false
+    @State private var items: [JSON] = []
+    @State private var sources: [JSON] = []
+    @State private var loaded = false
     @State private var loading = false
-    @State private var comOK = false
-    @State private var rex: JSON = .null
-    @State private var herdr: JSON = .null
     @State private var failNote = ""
-    @State private var actionNote = ""
+    @State private var selected: RemoteRow?
 
-    private var rexOK: Bool { rex["ok"].bool }
-    private var herdrOK: Bool { herdr["ok"].bool }
-    private var rexItems: [JSON] { rex["items"].array }
-    private var herdrItems: [JSON] { herdr["items"].array }
+    private static let sections: [(key: String, title: String)] = [
+        ("needs_you", "需要你"), ("failed", "失败"), ("running", "在跑"), ("done", "做完了"),
+    ]
 
-    private var statusLabel: String {
-        if loading { return "探测中…" }
-        if !model.isPaired { return "未配对" }
-        if !comOK { return "Com 不通" }
-        if rexOK && herdrOK { return "Com · Rex · herdr 通" }
-        if rexOK { return "Com · Rex 通 · herdr 未接" }
-        if herdrOK { return "Com · herdr 通 · Rex 未接" }
-        return "Com 通 · Rex/herdr 未接"
+    private func group(_ key: String) -> [JSON] {
+        items.filter { item in
+            let state = item["state"].string
+            return key == "done" ? (state == "done" || state == "idle") : state == key
+        }
     }
 
-    private var statusTone: Tone {
-        if loading { return .info }
-        if !model.isPaired || !comOK { return .danger }
-        if rexOK || herdrOK { return rexOK && herdrOK ? .success : .warning }
-        return .warning
+    private var hasRunning: Bool { items.contains { $0["state"].string == "running" } }
+
+    private var sourceLine: String {
+        guard !sources.isEmpty else { return "" }
+        let names = ["sessions": "会话", "cases": "航程", "rex": "Rex", "herdr": "herdr"]
+        return sources.map { s in
+            let label = names[s["name"].string] ?? s["name"].string
+            if s["ok"].bool { return "\(label) 通" }
+            switch s["error"].string {
+            case "server_not_running": return "\(label) 没开"
+            case "herdr_not_found", "rex_not_found": return "\(label) 没装"
+            default: return "\(label) 没读到"
+            }
+        }.joined(separator: " · ")
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Layout.sectionSpacing) {
                 header
-                    .modifier(EnterRise(on: shown, delay: 0, y: 16, blur: 0, animation: ComMotion.pop))
-
-                linkCard
-                    .modifier(EnterRise(on: shown, delay: 0.04, y: 12, blur: 0, animation: ComMotion.rise))
-
-                rexSection
-                    .modifier(EnterRise(on: shown, delay: 0.08, y: 12, blur: 0, animation: ComMotion.rise))
-
-                herdrSection
-                    .modifier(EnterRise(on: shown, delay: 0.12, y: 12, blur: 0, animation: ComMotion.rise))
-
                 if !failNote.isEmpty {
-                    InlineNotice(text: failNote, tone: .danger)
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        InlineNotice(text: failNote, tone: .danger)
+                        Button("重试") { Task { await refresh() } }
+                            .buttonStyle(.secondaryCompact)
+                            .accessibilityIdentifier("run-retry")
+                    }
                 }
-                if !actionNote.isEmpty {
-                    InlineNotice(text: actionNote, tone: .neutral)
+                ForEach(Array(sources.filter { !$0["ok"].bool }.enumerated()), id: \.offset) { _, source in
+                    InlineNotice(text: runSourceProblem(source), tone: .warning)
                 }
-
-                InlineNotice(text: honestyNote, tone: .neutral)
-                    .accessibilityIdentifier("work-remote-honesty")
+                ForEach(Self.sections, id: \.key) { section in
+                    let rows = group(section.key)
+                    if !rows.isEmpty { sectionView(section.key, section.title, rows) }
+                }
+                if loaded && failNote.isEmpty && items.isEmpty {
+                    Text("最近 7 天没有在跑或做完的事。")
+                        .font(TypeScale.callout)
+                        .foregroundStyle(Palette.textSecondary)
+                        .accessibilityIdentifier("run-empty")
+                }
             }
             .padding(.horizontal, Layout.margin)
             .padding(.bottom, Space.xxxl)
         }
         .scrollIndicators(.hidden)
         .accessibilityIdentifier("work-remote-surface")
-        .onAppear {
-            if reduce { shown = true }
-            else { withAnimation(ComMotion.lift) { shown = true } }
+        .refreshable { await refresh() }
+        .task {
+            await refresh()
+            // 有在跑项时每 10 秒静默刷一次；页面消失，任务取消，循环即停。
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                if Task.isCancelled { break }
+                if hasRunning { await refresh(silent: true) }
+            }
         }
-        .task { await refreshAll() }
-        .refreshable { await refreshAll() }
+        .sheet(item: $selected) { row in
+            RunDetailView(item: row.value)
+                .environment(model)
+        }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(alignment: .leading, spacing: Space.xs) {
             HStack(alignment: .firstTextBaseline) {
-                Text("远程终端")
-                    .font(TypeScale.title)
+                Text("运行").font(TypeScale.title)
                 Spacer(minLength: 0)
-                StatusPill(text: statusLabel, tone: statusTone)
+                if loading { ProgressView().controlSize(.small) }
             }
-            Text(headerLead)
-                .font(TypeScale.callout)
-                .foregroundStyle(Palette.textSecondary)
-                .lineSpacing(3)
-                .accessibilityIdentifier("work-remote-opening")
-        }
-    }
-
-    private var headerLead: String {
-        if loading { return "正在问 Com 后端、Rex 和 herdr——通了才说通，不通直说。" }
-        if !model.isPaired { return "还没配对 Mac mini，远程面动不了。" }
-        if !comOK { return "Com 后端没通。修好配对或 mini 上的 sessions 再刷。" }
-        if rexOK && herdrOK { return "Rex 控制面和 herdr 会话树都读到了。真 PTY 输入还没开——不会假装能打字进窗格。" }
-        if rexOK { return "Rex 通了。herdr 没接上（多半没开 herdr server）——不假装已连。" }
-        if herdrOK { return "herdr 通了。Rex 快照没读到——检查 mini 上 rex server / 隧道。" }
-        return "Com 通了，Rex 和 herdr 都还没接。不会假装远程已连上。"
-    }
-
-    private var honestyNote: String {
-        "控制面走 Com 后端调 rex/herdr CLI；手机不嵌闭源 Rex GUI。写命令只允许白名单模板（换行 / 中断 / clear）。"
-    }
-
-    private var linkCard: some View {
-        GroupSection("链路") {
-            GroupedCard {
-                HStack(spacing: Space.md) {
-                    Button {
-                        guard !loading else { return }
-                        Task { await refreshAll() }
-                    } label: {
-                        Label(loading ? "刷新中…" : "刷新状态", systemImage: loading ? "hourglass" : "arrow.clockwise")
-                    }
-                    .buttonStyle(.primaryCompact)
-                    .disabled(loading)
-                    .accessibilityIdentifier("work-remote-connect")
-
-                    Button {
-                        guard !model.waitingOpening else { return }
-                        model.openWaitingInbox()
-                    } label: {
-                        Label(model.waitingOpening ? "打开中…" : "等你",
-                              systemImage: model.waitingOpening ? "hourglass" : "hand.raised")
-                    }
-                    .buttonStyle(.secondaryCompact)
-                    .disabled(model.waitingOpening)
-                    .accessibilityIdentifier("work-remote-waiting")
-                    Spacer(minLength: 0)
-                }
-                .rowPadding()
+            if !sourceLine.isEmpty {
+                Text(sourceLine)
+                    .font(TypeScale.footnote)
+                    .foregroundStyle(Palette.textSecondary)
+                    .accessibilityIdentifier("run-sources")
             }
         }
     }
 
-    private var rexSection: some View {
-        GroupSection("Rex · 控制面") {
-            if !rexOK {
-                GroupedCard {
-                    Text(rex["detail"].string.isEmpty ? "Rex 未接通" : rex["detail"].string)
-                        .font(TypeScale.footnote)
-                        .foregroundStyle(Palette.textSecondary)
-                        .rowPadding()
-                }
-            } else if rexItems.isEmpty {
-                GroupedCard {
-                    Text("Rex 通了，但没有 session / 窗格。")
-                        .font(TypeScale.footnote)
-                        .foregroundStyle(Palette.textSecondary)
-                        .rowPadding()
-                }
-            } else {
-                GroupedCard {
-                    ForEach(Array(rexItems.prefix(24).enumerated()), id: \.offset) { _, item in
-                        rexRow(item)
-                    }
-                }
-            }
-        }
-    }
-
-    private func rexRow(_ item: JSON) -> some View {
+    private func sectionView(_ key: String, _ title: String, _ rows: [JSON]) -> some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(alignment: .top, spacing: Space.md) {
-                IconBadge(symbol: agentSymbol(item["agent_hint"].string), tone: item["focused"].bool ? .info : .neutral)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item["title"].string.isEmpty ? item["id"].string : item["title"].string)
-                        .font(TypeScale.rowTitle)
-                        .foregroundStyle(Palette.textPrimary)
-                    Text(item["detail"].string.isEmpty ? item["status"].string : item["detail"].string)
+            Text("\(title) · \(rows.count)")
+                .font(TypeScale.subheadline.weight(.semibold))
+                .foregroundStyle(Palette.textSecondary)
+                .accessibilityIdentifier("run-section-\(key)")
+            GroupedCard {
+                ForEach(rows, id: \.id) { item in
+                    Button { selected = RemoteRow(item) } label: { row(item) }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("run-row-\(item["id"].string)")
+                }
+            }
+        }
+    }
+
+    private func row(_ item: JSON) -> some View {
+        let state = item["state"].string
+        let reason = item["waiting_reason"].string
+        let when = relativeTime(item["last_activity_at"].double)
+        let sub = state == "needs_you" && !reason.isEmpty ? reason : [state == "idle" ? "空闲" : "", when].filter { !$0.isEmpty }.joined(separator: " · ")
+        return HStack(alignment: .top, spacing: Space.md) {
+            IconBadge(symbol: runAgentSymbol(item["agent"].string), tone: runTone(state))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item["title"].string.isEmpty ? item["id"].string : item["title"].string)
+                    .font(TypeScale.rowTitle)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(2)
+                if !item["goal"].string.isEmpty {
+                    Text(item["goal"].string)
                         .font(TypeScale.footnote)
-                        .foregroundStyle(Palette.textTertiary)
+                        .foregroundStyle(Palette.textSecondary)
+                        .lineLimit(1)
                 }
-                Spacer(minLength: 0)
-                StatusPill(text: item["status"].string.isEmpty ? item["kind"].string : item["status"].string,
-                           tone: item["status"].string == "error" ? .danger : .neutral)
+                if !sub.isEmpty {
+                    Text(sub)
+                        .font(TypeScale.footnote)
+                        .foregroundStyle(state == "needs_you" ? Palette.warning : Palette.textTertiary)
+                        .lineLimit(2)
+                }
             }
-            HStack(spacing: Space.sm) {
-                if !item["window_id"].string.isEmpty, !item["session_id"].string.isEmpty {
-                    Button("聚焦") {
-                        Task { await runRexAction("focus_window", args: [
-                            "session_id": .string(item["session_id"].string),
-                            "window_id": .string(item["window_id"].string),
-                        ]) }
-                    }
-                    .buttonStyle(.secondaryCompact)
-                }
-                if !item["block_id"].string.isEmpty {
-                    Button("中断 ⌃C") {
-                        Task { await runRexAction("send_template", args: [
-                            "block_id": .string(item["block_id"].string),
-                            "template": .string("interrupt"),
-                        ]) }
-                    }
-                    .buttonStyle(.secondaryCompact)
-                }
-                Button("丢给 Com") {
-                    let title = item["title"].string
-                    model.draft = model.draft.isEmpty
-                        ? "看一下 Rex 上的「\(title)」并告诉我状态"
-                        : model.draft
-                    model.tab = .chat
-                    Haptics.selection()
-                }
-                .buttonStyle(.secondaryCompact)
-            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Palette.textTertiary)
+                .padding(.top, Space.xs)
         }
         .rowPadding()
-        .accessibilityIdentifier("work-remote-rex-\(item.id)")
+        .contentShape(.rect)
     }
 
-    private var herdrSection: some View {
-        GroupSection("herdr · 只读会话树") {
-            if !herdrOK {
-                GroupedCard {
-                    Text(herdr["detail"].string.isEmpty ? "herdr 未接通（可能没开 server）" : herdr["detail"].string)
-                        .font(TypeScale.footnote)
-                        .foregroundStyle(Palette.textSecondary)
-                        .rowPadding()
+    private func refresh(silent: Bool = false) async {
+        if loading && !silent { return }
+        if !silent { loading = true }
+        defer { if !silent { loading = false } }
+        guard let data = await model.load("/remote/fleet") else {
+            let why = model.errors["/remote/fleet"]
+            failNote = (!model.isPaired && why == nil)
+                ? "还没跟 Mac mini 配对——先回 Com 对话页完成配对。"
+                : "没连上 Mac mini（\(why ?? "没有返回")）。下面如果有内容，是上次读到的，不一定是现状。"
+            loaded = true
+            return
+        }
+        failNote = ""
+        items = data["items"].array
+        sources = data["sources"].array
+        loaded = true
+    }
+}
+
+/// 一条运行项的详情：阶段与原因 → 改动 → 产物 → 操作。
+struct RunDetailView: View {
+    let item: JSON
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var changes: JSON = .null
+    @State private var changesNote = ""
+    @State private var changesLoading = false
+    @State private var diffs: [String: [String]] = [:]
+    @State private var openFile: String?
+    @State private var artifacts: [JSON] = []
+    @State private var artifactsNote = ""
+    @State private var actionNote = ""
+
+    private var kind: String { item["kind"].string }
+    private var state: String { item["state"].string }
+    private var sessionID: String { item["session_id"].string }
+    private var caseID: String { item["case_id"].string }
+    private var title: String { item["title"].string.isEmpty ? item["id"].string : item["title"].string }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Layout.sectionSpacing) {
+                    stageSection
+                    if !sessionID.isEmpty { changesSection }
+                    if !caseID.isEmpty { artifactsSection }
+                    actionsSection
                 }
-            } else if herdrItems.isEmpty {
-                GroupedCard {
-                    Text("herdr 通了，快照里没有 tab/pane。")
-                        .font(TypeScale.footnote)
-                        .foregroundStyle(Palette.textSecondary)
-                        .rowPadding()
+                .padding(.horizontal, Layout.margin)
+                .padding(.bottom, Space.xxxl)
+            }
+            .scrollIndicators(.hidden)
+            .background(Palette.background)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }
+        .task { await loadChanges() }
+        .task { await loadArtifacts() }
+    }
+
+    private var stageSection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
+                StatusPill(text: runStateLabel(state), tone: runTone(state))
+                if !item["agent"].string.isEmpty {
+                    Label(item["agent"].string, systemImage: runAgentSymbol(item["agent"].string))
+                        .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
                 }
+                Spacer(minLength: 0)
+            }
+            if !item["waiting_reason"].string.isEmpty {
+                Text(item["waiting_reason"].string).font(TypeScale.callout).foregroundStyle(Palette.warning)
+            }
+            if !item["goal"].string.isEmpty {
+                Text(item["goal"].string).font(TypeScale.callout).foregroundStyle(Palette.textPrimary)
+            }
+            Text([relativeTime(item["last_activity_at"].double), item["host"].string].filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+        }
+    }
+
+    // MARK: 改动
+
+    private var changesSection: some View {
+        GroupSection("改动") {
+            if changesLoading {
+                Text("正在读 git 状态…").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+            } else if !changesNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    InlineNotice(text: changesNote, tone: .danger)
+                    Button("重试") { Task { await loadChanges() } }
+                        .buttonStyle(.secondaryCompact)
+                        .accessibilityIdentifier("run-changes-retry")
+                }
+            } else if !changes["git"].bool {
+                Text(changes["reason"].string.isEmpty ? "这个目录不在 git 仓库里，看不到改动。" : changes["reason"].string + "，看不到改动。")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+            } else if changes["files"].array.isEmpty {
+                Text("工作区干净，没有未提交的改动。").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
             } else {
-                GroupedCard {
-                    ForEach(Array(herdrItems.prefix(24).enumerated()), id: \.offset) { _, item in
-                        HStack(spacing: Space.md) {
-                            IconBadge(symbol: "rectangle.split.3x1", tone: item["focused"].bool ? .info : .neutral)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item["title"].string)
-                                    .font(TypeScale.rowTitle)
-                                Text(item["detail"].string.isEmpty ? item["status"].string : item["detail"].string)
-                                    .font(TypeScale.footnote)
-                                    .foregroundStyle(Palette.textTertiary)
-                            }
-                            Spacer(minLength: 0)
-                            StatusPill(text: item["status"].string.isEmpty ? item["kind"].string : item["status"].string, tone: .neutral)
+                VStack(alignment: .leading, spacing: Space.md) {
+                    if !changes["stat"].string.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Text(changes["stat"].string.trimmingCharacters(in: .whitespacesAndNewlines))
+                                .font(TypeScale.code).foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: true, vertical: true)
                         }
-                        .rowPadding()
-                        .accessibilityIdentifier("work-remote-herdr-\(item.id)")
+                    }
+                    GroupedCard {
+                        ForEach(Array(changes["files"].array.enumerated()), id: \.offset) { _, file in
+                            fileRow(file)
+                        }
+                    }
+                    if changes["truncated"].bool {
+                        InlineNotice(text: "改动太大，只显示前 200KB，后面的被截掉了。", tone: .warning)
                     }
                 }
             }
         }
     }
 
-    private func agentSymbol(_ hint: String) -> String {
-        switch hint {
-        case "claude": return "sparkles"
-        case "pi": return "circle.hexagongrid"
-        case "codex": return "chevron.left.forwardslash.chevron.right"
-        case "herdr": return "rectangle.split.3x1"
-        case "shell": return "terminal"
-        default: return "square.grid.2x2"
+    private func fileRow(_ file: JSON) -> some View {
+        let path = file["path"].string
+        let open = openFile == path
+        return VStack(alignment: .leading, spacing: Space.sm) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { openFile = open ? nil : path }
+            } label: {
+                HStack(spacing: Space.md) {
+                    Text(file["status"].string).font(TypeScale.code).foregroundStyle(Palette.textSecondary).frame(width: 28, alignment: .leading)
+                    Text(path).font(TypeScale.code).foregroundStyle(Palette.textPrimary).lineLimit(2).multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                    Image(systemName: open ? "chevron.up" : "chevron.down").font(.footnote).foregroundStyle(Palette.textTertiary)
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("run-file-\(path)")
+            if open { diffView(diffs[Self.diffKey(path)] ?? []) }
+        }
+        .rowPadding()
+    }
+
+    private func diffView(_ lines: [String]) -> some View {
+        Group {
+            if lines.isEmpty {
+                Text("没有可显示的 diff（新文件未跟踪，或改动在被截掉的部分里）。")
+                    .font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+            } else {
+                // 按行懒排版，外面框一个最大高度的双向滚动区，长 diff 不会一次排完。
+                let width = CGFloat(min(lines.reduce(0) { max($0, $1.count) }, 300)) * 8 + 16
+                ScrollView([.horizontal, .vertical]) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                            Text(line.isEmpty ? " " : line)
+                                .font(TypeScale.code)
+                                .foregroundStyle(Self.lineColor(line))
+                                .fixedSize(horizontal: true, vertical: true)
+                                .frame(minWidth: width, alignment: .leading)
+                                .background(Self.lineBackground(line))
+                        }
+                    }
+                }
+                .frame(maxHeight: 420)
+                .background(Palette.fill, in: .rect(cornerRadius: Radius.xs, style: .continuous))
+                .accessibilityIdentifier("run-diff")
+            }
         }
     }
 
-    private func refreshAll() async {
-        guard !loading else { return }
-        loading = true
-        failNote = ""
-        defer { loading = false }
-        guard model.isPaired else {
-            comOK = false; rex = .null; herdr = .null
-            failNote = "还没跟 Mac mini 配对——先回 Com 对话页完成配对。"
+    private static func lineColor(_ line: String) -> Color {
+        if line.hasPrefix("+++") || line.hasPrefix("---") { return Palette.textSecondary }
+        if line.hasPrefix("+") { return Palette.success }
+        if line.hasPrefix("-") { return Palette.danger }
+        if line.hasPrefix("@@") { return Palette.info }
+        return Palette.textPrimary
+    }
+
+    private static func lineBackground(_ line: String) -> Color {
+        if line.hasPrefix("+++") || line.hasPrefix("---") { return .clear }
+        if line.hasPrefix("+") { return Palette.success.opacity(0.12) }
+        if line.hasPrefix("-") { return Palette.danger.opacity(0.12) }
+        return .clear
+    }
+
+    private static func diffKey(_ path: String) -> String {
+        // porcelain 改名写作 "old -> new"，diff 头里用新路径。
+        path.components(separatedBy: " -> ").last ?? path
+    }
+
+    /// 把整段 diff 按 `diff --git a/x b/x` 切成每个文件一段。
+    private static func splitDiff(_ diff: String) -> [String: [String]] {
+        var out: [String: [String]] = [:]
+        var current: String?
+        for line in diff.components(separatedBy: "\n") {
+            if line.hasPrefix("diff --git "), let r = line.range(of: " b/", options: .backwards) {
+                current = String(line[r.upperBound...])
+                out[current!] = [line]
+            } else if let key = current {
+                out[key, default: []].append(line)
+            }
+        }
+        return out
+    }
+
+    private func loadChanges() async {
+        guard !sessionID.isEmpty else { return }
+        let path = "/sessions/" + sessionID.pathEncoded + "/changes"
+        changesLoading = true
+        changesNote = ""
+        defer { changesLoading = false }
+        let data = await model.load(path)
+        // diff 可能有 200KB：只在这一页用，别留进会落盘的 datasets 缓存。
+        if !model.isUITesting { model.datasets[path] = nil }
+        guard let data else {
+            changesNote = "没读到改动（\(model.errors[path] ?? "没有返回")）。"
             return
         }
-        let health = await model.load("/health")
-        comOK = health != nil && !(health?.isNull ?? true)
-        async let rexLoad = model.load("/remote/rex/snapshot")
-        async let herdrLoad = model.load("/remote/herdr/snapshot")
-        let (r, h) = await (rexLoad, herdrLoad)
-        rex = r ?? .object(["ok": .bool(false), "detail": .string(model.errors["/remote/rex/snapshot"] ?? "Rex 快照没读到"), "items": .array([])])
-        herdr = h ?? .object(["ok": .bool(false), "detail": .string(model.errors["/remote/herdr/snapshot"] ?? "herdr 快照没读到"), "items": .array([])])
-        if !comOK {
-            failNote = model.errors["/health"] ?? "已配对，但 /health 没读到。"
+        changes = data
+        diffs = Self.splitDiff(data["diff"].string)
+    }
+
+    // MARK: 产物
+
+    private var artifactsSection: some View {
+        GroupSection("产物") {
+            if !artifactsNote.isEmpty {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    InlineNotice(text: artifactsNote, tone: .danger)
+                    Button("重试") { Task { await loadArtifacts() } }
+                        .buttonStyle(.secondaryCompact)
+                        .accessibilityIdentifier("run-artifacts-retry")
+                }
+            } else if artifacts.isEmpty {
+                Text("还没有产物。").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+            } else {
+                ArtifactList(artifacts: artifacts, chips: true)
+            }
         }
-        Haptics.selection()
+    }
+
+    private func loadArtifacts() async {
+        guard !caseID.isEmpty else { return }
+        artifactsNote = ""
+        let path = "/personal/cases/" + caseID.pathEncoded
+        guard let data = await model.load(path) else {
+            artifactsNote = "没读到产物（\(model.errors[path] ?? "没有返回")）。"
+            return
+        }
+        artifacts = data["artifacts"].array.filter { !$0["path"].string.isEmpty }
+    }
+
+    // MARK: 操作
+
+    private var actionsSection: some View {
+        GroupSection("操作") {
+            VStack(alignment: .leading, spacing: Space.md) {
+                HStack(spacing: Space.sm) {
+                    if kind == "session", !sessionID.isEmpty {
+                        Button("打开原会话") {
+                            // 工作页可能停在「运行」面，先切回「对话」面再打开会话。
+                            UserDefaults.standard.set(WorkSurface.sessions.rawValue, forKey: "work.surface")
+                            dismiss()
+                            model.selectedSession = .object(["id": .string(sessionID), "agent": item["agent"].string.isEmpty ? .string("pi") : item["agent"]])
+                        }
+                        .buttonStyle(.primaryCompact)
+                        .accessibilityIdentifier("run-open-session")
+                    }
+                    if kind == "case", !caseID.isEmpty {
+                        Button("打开航程") {
+                            dismiss()
+                            let id = caseID
+                            Task { try? await Task.sleep(for: .milliseconds(350)); model.presentedCase = id }
+                        }
+                        .buttonStyle(.primaryCompact)
+                        .accessibilityIdentifier("run-open-case")
+                    }
+                    if kind == "rex" {
+                        let rex = item["rex"]
+                        if !rex["block_id"].string.isEmpty {
+                            Button("中断 ⌃C") {
+                                Task { await runRexAction("send_template", args: ["block_id": .string(rex["block_id"].string), "template": .string("interrupt")]) }
+                            }
+                            .buttonStyle(.secondaryCompact)
+                            .accessibilityIdentifier("run-rex-interrupt")
+                        }
+                        if !rex["window_id"].string.isEmpty, !rex["session_id"].string.isEmpty {
+                            Button("聚焦") {
+                                Task { await runRexAction("focus_window", args: ["session_id": .string(rex["session_id"].string), "window_id": .string(rex["window_id"].string)]) }
+                            }
+                            .buttonStyle(.secondaryCompact)
+                        }
+                    }
+                    Button("追问") {
+                        let text = "接着问「\(title)」（\(runStateLabel(state))）："
+                        model.draft = model.draft.isEmpty ? text : model.draft
+                        model.tab = .chat
+                        Haptics.selection()
+                        dismiss()
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .accessibilityIdentifier("run-follow-up")
+                    Spacer(minLength: 0)
+                }
+                if !actionNote.isEmpty { InlineNotice(text: actionNote, tone: .neutral) }
+            }
+        }
     }
 
     private func runRexAction(_ name: String, args: [String: JSON]) async {
         actionNote = ""
         do {
-            let result = try await model.mutate("/remote/rex/action", fields: [
-                "action": .string(name),
-                "args": .object(args),
-            ])
-            if result["ok"].bool {
-                actionNote = "已执行 \(name)。"
-                await refreshAll()
-            } else {
-                actionNote = result["detail"].string.isEmpty ? "动作没成功。" : result["detail"].string
-            }
+            let result = try await model.mutate("/remote/rex/action", fields: ["action": .string(name), "args": .object(args)])
+            actionNote = result["ok"].bool ? "已执行 \(name)。" : (result["detail"].string.isEmpty ? "动作没成功。" : result["detail"].string)
         } catch {
             actionNote = error.localizedDescription
         }

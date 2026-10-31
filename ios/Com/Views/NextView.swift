@@ -292,6 +292,7 @@ struct NextView: View {
                 }
             }
             if let finance = model.datasets["/personal/finance"], finance["available"].bool { GroupSection("账本") { LedgerNote(finance: finance) } }
+            RoutinesSection()
             footer
         }
         .animation(reduce ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: model.nextItems.map(\.id))

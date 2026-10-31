@@ -167,6 +167,30 @@ final class ComUITests: XCTestCase {
 
     @MainActor private func openAllNext(_ app: XCUIApplication) { app.buttons["tab-下一步"].tap() }
 
+    @MainActor func testRoutinesSection() throws {
+        let app = app()
+        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
+        openAllNext(app)
+        let expand = app.buttons["routines-expand"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5))
+        XCTAssertTrue(expand.label.contains("已排程 · 6 项"))
+        XCTAssertFalse(app.switches["routines-pause-all"].exists, "默认折叠")
+        expand.tap()
+        let pauseAll = app.switches["routines-pause-all"]
+        XCTAssertTrue(pauseAll.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["只读"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["上次失败：模型超时"].exists)
+        let morning = app.switches["routine-toggle-proactive:morning-briefing"]
+        XCTAssertTrue(morning.exists)
+        XCTAssertEqual(morning.value as? String, "1")
+        morning.tap()
+        XCTAssertEqual(morning.value as? String, "0")
+        pauseAll.tap()
+        expand.tap()
+        XCTAssertTrue(app.buttons["routines-expand"].label.contains("全部暂停中"))
+        capture("routines", app: app)
+    }
+
     @MainActor func testRichReplyAndConnectionActions() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-rich-reply", "-appearance", "light"]
@@ -228,6 +252,30 @@ final class ComUITests: XCTestCase {
         input.typeText("Hello Com")
         XCTAssertTrue(app.buttons["发送消息"].isHittable)
         capture("04-keyboard", app: app)
+    }
+    /// 「运行」面：四组状态、来源状态行（herdr 没开直说）、详情里的改动与 diff。
+    @MainActor func testRunSurfaceStates() throws {
+        let app = app()
+        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
+        app.buttons["tab-工作"].tap()
+        let picker = app.buttons["work-surface-remote"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        picker.tap()
+        for state in ["needs_you", "failed", "running", "done"] {
+            XCTAssertTrue(app.staticTexts["run-section-\(state)"].waitForExistence(timeout: 5), state)
+        }
+        let sources = app.staticTexts["run-sources"]
+        XCTAssertTrue(sources.exists)
+        XCTAssertTrue(sources.label.contains("herdr 没开"))
+        capture("run-surface", app: app)
+        let row = app.buttons["run-row-session:session-1"]
+        XCTAssertTrue(row.exists)
+        row.tap()
+        XCTAssertTrue(app.buttons["run-file-Sources/App.swift"].waitForExistence(timeout: 5))
+        app.buttons["run-file-Sources/App.swift"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["run-diff"].firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["run-follow-up"].exists)
+        capture("run-detail", app: app)
     }
     @MainActor func testFiltersAndDetails() throws {
         let app = app()

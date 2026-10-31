@@ -2352,6 +2352,32 @@ async def remote_herdr_snapshot():
     return await asyncio.to_thread(herdr_bridge.snapshot)
 
 
+@app.get("/remote/fleet")
+async def remote_fleet():
+    """「运行」面：工作会话 + 航程 + Rex + herdr 合一，来源失败各自写进 sources。"""
+    import fleet
+
+    async def sess():
+        return await sessions(after=time.time() - fleet.WEEK)
+
+    return await fleet.build({
+        "sessions": (sess, fleet.from_sessions),
+        "cases": (lambda: cases.list(), fleet.from_cases),
+        "rex": (rex_bridge.snapshot, fleet.from_rex),
+        "herdr": (herdr_bridge.snapshot, fleet.from_herdr),
+    })
+
+
+@app.get("/sessions/{sid}/changes")
+async def session_changes(sid: str):
+    import fleet
+
+    s = history.get(sid)
+    if not s:
+        raise HTTPException(404, "会话不存在")
+    return await asyncio.to_thread(fleet.changes, s.get("cwd") or "")
+
+
 @app.post("/personal/news/{ident}")
 async def personal_news_feedback(ident: str, request: Request):
     action = (await request.json()).get("action")
@@ -2899,3 +2925,29 @@ async def conversation_summary_refresh():
 @app.get("/personal/nudges")
 async def nudges_status():
     return await asyncio.to_thread(nudges.status)
+
+
+from routines import NotControllable, Routines, UnknownRoutine
+from conversation import HermesClient as _RoutinesHermes
+
+routines = Routines(STATE, proactive, hermes=_RoutinesHermes(STATE), next_steps_path=STATE / "next-steps.sqlite")
+
+
+@app.get("/personal/routines")
+async def routines_list():
+    return await routines.list()
+
+
+@app.post("/personal/routines/{ident}")
+async def routines_act(ident: str, request: Request):
+    data = await request.json()
+    try:
+        return await routines.act(ident, data.get("action"))
+    except NotControllable:
+        raise HTTPException(409, "这一项只读，没有暂停入口")
+    except UnknownRoutine:
+        raise HTTPException(404, "没有这一项")
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    except RuntimeError:
+        raise HTTPException(502, "Hermes 暂时连不上")
