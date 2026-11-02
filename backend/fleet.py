@@ -43,6 +43,9 @@ HERDR_STATE = {
     "running": "running",
     "blocked": "needs_you",
     "waiting": "needs_you",
+    "needs_input": "needs_you",
+    "idle": "idle",
+    "unknown": "idle",
     "done": "done",
     "error": "failed",
     "failed": "failed",
@@ -122,11 +125,19 @@ def from_herdr(snap) -> list[dict]:
     for i in (snap or {}).get("items", []):
         status = i.get("status", "unknown")
         state = HERDR_STATE.get(status, "idle")
+        machine = str(i.get("machine") or "local")
+        raw = str(i.get("raw_id") or i.get("id") or "")
+        title = i.get("title") or raw
+        if i.get("stale"):
+            title = f"{title}（过期）"
         out.append(_item(
-            id="herdr:" + str(i.get("id", "")), kind="herdr", title=i.get("title") or str(i.get("id", "")),
+            id=f"herdr:{machine}:{raw}", kind="herdr", title=title,
             goal=i.get("detail", ""), agent="herdr", state=state,
             waiting_reason="herdr 里的 agent 在等输入" if state == "needs_you" else "",
-            last_activity_at=snap.get("at", 0),
+            last_activity_at=snap.get("at", 0) or i.get("at", 0),
+            host=machine,
+            herdr={"machine": machine, "tab_id": raw, "pane_id": raw if i.get("kind") == "pane" else "",
+                    "is_agent": bool(i.get("is_agent")), "stale": bool(i.get("stale"))},
         ))
     return out
 

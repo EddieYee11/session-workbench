@@ -486,6 +486,10 @@ class TaskStore:
         with self.db() as db:
             for row in db.execute('SELECT * FROM outbox WHERE delivered=0').fetchall():
                 task=json.loads(db.execute('SELECT data FROM tasks WHERE id=?',(row['task_id'],)).fetchone()[0])
+                # Router batch：子任务不出各自回执，等 batch_fold 合并
+                if task.get('batch_suppress_receipt') or task.get('batch_id') or (task.get('authorization') or {}).get('batch_id'):
+                    db.execute('UPDATE outbox SET delivered=1 WHERE task_id=?', (row['task_id'],))
+                    continue
                 receipt_id=row['task_id']+(':'+str(task.get('run_id')) if task.get('result_round',0)>1 else '')
                 linked=getattr(conversation,'task_receipt_for_message',None)
                 parent=None
@@ -651,42 +655,62 @@ class TaskController:
         await self.start_queued()
 
     async def start_queued(self):
-        """Dispatch separately from the main conversation, at most one new job per tick."""
+        """Dispatch separately from the main conversation, at most one new job per tick.
+
+        Router batch 子任务：不与普通任务抢 waiting/unknown 名额；同 batch 内不同 agent 可并行（最多 3）。
+        Batch 第一版忽略 depends_on（验收 passed 几乎全库过不了）。
+        """
         tasks = self.store.list()
         active = [t for t in tasks if t['status'] in ('running','waiting','unknown','dispatching','cancel_requested') and
                   not (t['status']=='unknown' and t.get('execution_active') is False)]
-        if len(active) >= 2:
+        # 普通并发只数非 batch；batch 有独立额度
+        normal_active = [t for t in active if not t.get('batch_id')]
+        if len(normal_active) >= 2:
             for task in tasks:
-                if task['status']=='queued':self.queue_blocked(task,'并发已满，等待现有任务结束或核实状态',[item['id'] for item in active])
-            return
+                if task['status']=='queued' and not task.get('batch_id'):
+                    self.queue_blocked(task,'并发已满，等待现有任务结束或核实状态',[item['id'] for item in normal_active])
+            # 仍可继续尝试启动 batch 子任务
         for task in tasks:
             if task['status'] != 'queued':
                 continue
             if business_read_task(task) and not task.get('execution_scope'):
                 task,_=self.store.change(task['id'],'scope:'+task['id'],'execution.scope',
                                         '真实用户要求为业务查询；仍使用最高操作权限',execution_scope='business-query')
-            dependencies=[next((t for t in tasks if t['id']==ident),None) for ident in task.get('depends_on') or []]
-            blocked=[t for t in dependencies if not t or t['status']!='execution_finished' or
-                     t.get('verification_status')!='passed' or
-                     (t.get('workspace_copy') and (not t.get('run_id') or t.get('merged_run_id')!=t.get('run_id')))]
-            if blocked:
-                if task.get('dependency_status')!='blocked':
-                    self.store.change(task['id'],'dependency-blocked:'+task['id'],'dependency.waiting',
-                                      '前置任务需执行结束、验收通过；写入副本还需合入。',
-                                      dependency_status='blocked',block_reason='等待前置任务验收及合入')
-                continue
-            if task['agent']=='claude' and any(t['agent']=='claude' for t in active):
-                self.queue_blocked(task,'Claude 并发上限为一项',[item['id'] for item in active if item['agent']=='claude'])
-                continue
-            # Context isolation is not file isolation. Readers may run together; writers serialize.
-            entity=approved_transaction(task)
-            writers=([t for t in active if approved_transaction(t)==entity] if entity else
-                     [t for t in active if (Path(t['cwd']).is_relative_to(Path(task['cwd'])) or
-                      Path(task['cwd']).is_relative_to(Path(t['cwd']))) and
-                      (not inspection_task(t) or t['status']=='unknown')])
-            if writers and not inspection_task(task):
-                self.queue_blocked(task,'同目录任务仍在执行或状态待核实，暂不启动可能写入的任务',[item['id'] for item in writers])
-                continue
+            batch_id = task.get('batch_id') or (task.get('authorization') or {}).get('batch_id')
+            if batch_id:
+                batch_active = [t for t in active if (t.get('batch_id') or (t.get('authorization') or {}).get('batch_id')) == batch_id]
+                if len(batch_active) >= 3:
+                    self.queue_blocked(task,'本批次并行已满',[item['id'] for item in batch_active])
+                    continue
+                if task['agent']=='claude' and any(t['agent']=='claude' for t in batch_active):
+                    self.queue_blocked(task,'Claude 并发上限为一项',[item['id'] for item in batch_active if item['agent']=='claude'])
+                    continue
+                # batch：跳过 depends_on 与同目录 writer 串行（异目录已在规划时保证）
+            else:
+                if len(normal_active) >= 2:
+                    continue
+                dependencies=[next((t for t in tasks if t['id']==ident),None) for ident in task.get('depends_on') or []]
+                blocked=[t for t in dependencies if not t or t['status']!='execution_finished' or
+                         t.get('verification_status')!='passed' or
+                         (t.get('workspace_copy') and (not t.get('run_id') or t.get('merged_run_id')!=t.get('run_id')))]
+                if blocked:
+                    if task.get('dependency_status')!='blocked':
+                        self.store.change(task['id'],'dependency-blocked:'+task['id'],'dependency.waiting',
+                                          '前置任务需执行结束、验收通过；写入副本还需合入。',
+                                          dependency_status='blocked',block_reason='等待前置任务验收及合入')
+                    continue
+                if task['agent']=='claude' and any(t['agent']=='claude' for t in normal_active):
+                    self.queue_blocked(task,'Claude 并发上限为一项',[item['id'] for item in normal_active if item['agent']=='claude'])
+                    continue
+                # Context isolation is not file isolation. Readers may run together; writers serialize.
+                entity=approved_transaction(task)
+                writers=([t for t in normal_active if approved_transaction(t)==entity] if entity else
+                         [t for t in normal_active if (Path(t['cwd']).is_relative_to(Path(task['cwd'])) or
+                          Path(task['cwd']).is_relative_to(Path(t['cwd']))) and
+                          (not inspection_task(t) or t['status']=='unknown')])
+                if writers and not inspection_task(task):
+                    self.queue_blocked(task,'同目录任务仍在执行或状态待核实，暂不启动可能写入的任务',[item['id'] for item in writers])
+                    continue
             preflight=getattr(self.runtime,'preflight_task',None)
             if preflight:
                 try:
@@ -742,6 +766,12 @@ class TaskController:
                     for command in inputs:
                         self.store.transition_input(command['request_id'], ('sending',), 'unknown',
                                                     '初始任务送达待核实；不会重发',event_suffix=suffix)
+            # 普通任务每 tick 只派一个；同 batch 可继续派下一个子任务
+            if batch_id:
+                tasks = self.store.list()
+                active = [t for t in tasks if t['status'] in ('running','waiting','unknown','dispatching','cancel_requested') and
+                          not (t['status']=='unknown' and t.get('execution_active') is False)]
+                continue
             return
 
     def queue_blocked(self,task,reason,blocked_by):

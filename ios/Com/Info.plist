@@ -74,5 +74,12 @@
 	<string>$(AppIdentifierPrefix)work.eddie.com.widget-status</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>连接你自己机器上的 herdr，在 Com 里打开全屏终端。</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

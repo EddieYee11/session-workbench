@@ -7,11 +7,14 @@ import ComCore
 @main struct ComApp: App {
     @UIApplicationDelegateAdaptor(ComPushDelegate.self) private var pushDelegate
     @State private var model = AppModel()
+    @State private var herdr = HerdrSessionStore()
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
-            RootView().environment(model)
-                .task { ComShortcuts.updateAppShortcutParameters(); ComNotifications.install(); ComLiveActivity.shared.start(model); await model.start(); if model.isPaired && !model.isUITesting { await ComNotifications.requestIfNeeded() } }
+            RootView()
+                .environment(model)
+                .environment(herdr)
+                .task { ComShortcuts.updateAppShortcutParameters(); ComNotifications.install(); ComLiveActivity.shared.start(model); await model.start(); if model.isPaired && !model.isUITesting { await ComNotifications.requestIfNeeded(); await herdr.registerDeviceKey(model: model) } }
                 .onChange(of: scenePhase) { _, phase in
                     // 灵动岛常驻（轨道 r3-memory）：要在 setActive(false) 断开连接之前，把这一刻的状态推上去。
                     ComLiveActivity.shared.scene(phase)

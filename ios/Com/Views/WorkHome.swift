@@ -21,6 +21,8 @@ struct WorkView: View {
         )
     }
     private var onRemote: Bool { surface.wrappedValue == .remote }
+    private var onTerminal: Bool { surface.wrappedValue == .terminal }
+    private var hideComposer: Bool { onRemote || onTerminal }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -50,7 +52,12 @@ struct WorkView: View {
             }
             WorkSurfacePicker(surface: surface)
             ZStack {
-                if onRemote {
+                if onTerminal {
+                    HerdrTerminalSurface()
+                        .transition(reduce ? .opacity : .asymmetric(
+                            insertion: .modifier(active: BlurShift(y: 10, blur: 5, opacity: 0), identity: BlurShift()),
+                            removal: .opacity))
+                } else if onRemote {
                     WorkRemoteSurface()
                         .transition(reduce ? .opacity : .asymmetric(
                             insertion: .modifier(active: BlurShift(y: 10, blur: 5, opacity: 0), identity: BlurShift()),
@@ -62,18 +69,18 @@ struct WorkView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .animation(reduce ? .easeOut(duration: 0.2) : ComMotion.crossfade, value: onRemote)
+            .animation(reduce ? .easeOut(duration: 0.2) : ComMotion.crossfade, value: surface.wrappedValue)
         }
         // 动效库 20-build-checklist：标题模糊上浮（y+26→0、blur 10→0、power3.out）/ 整块模糊上浮离场（y−30、blur 8）。
         .animation(reduce ? .easeOut(duration: 0.2) : ReplyMotion.rise, value: work.generation)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !onRemote { WorkComposer() }
+            if !hideComposer { WorkComposer() }
         }
         // 轨道 r2-memory：当前 Agent 让页面顶部轻轻染上它的品牌浅底，换人时 0.5s 渐变过去。
         .background {
             ZStack(alignment: .top) {
                 Palette.background
-                if !onRemote {
+                if !hideComposer {
                     LinearGradient(colors: [agentBrand(agent)?.wash ?? .clear, Palette.background.opacity(0)], startPoint: .top, endPoint: .center)
                         .opacity(0.9)
                 }

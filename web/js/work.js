@@ -579,7 +579,12 @@ function fleetDetailView(id) {
           ${it.goal && it.goal !== it.title ? html`<p class="sub">${it.goal}</p>` : ''}
           ${it.waiting_reason ? html`<p class="lined">${it.waiting_reason}</p>` : ''}
           <small class="muted">${[agentName(it.agent), hostName(it.host), it.last_activity_at > 0 ? relativeTime(it.last_activity_at) : ''].filter(Boolean).join(' · ')}</small>
-          ${it.case_id ? html`<div class="row actions"><button class="btn secondary compact" data-act="case-open" data-id="${it.case_id}">看航程</button></div>` : ''}</div>
+          ${it.case_id ? html`<div class="row actions"><button class="btn secondary compact" data-act="case-open" data-id="${it.case_id}">看航程</button></div>` : ''}
+          ${it.kind === 'herdr' && it.herdr ? html`<div class="row actions">
+            <button class="btn secondary compact" data-act="herdr-action" data-machine="${it.herdr.machine || it.host}" data-action="focus_tab" data-tab="${it.herdr.tab_id}">聚焦</button>
+            ${it.herdr.is_agent ? html`<button class="btn secondary compact" data-act="herdr-action" data-machine="${it.herdr.machine || it.host}" data-action="send_template" data-tab="${it.herdr.tab_id}" data-template="interrupt" data-agent="1">中断</button>` : ''}
+          </div>` : ''}
+          </div>
         <section class="group"><div class="group-head"><h3>代码改动</h3></div>${changes}</section></div>`;
     },
     mounted: () => {
@@ -597,6 +602,16 @@ function fleetDetailView(id) {
 act('fleet-open', (b) => { const it = FLEET.items.find((x) => x.id === b.dataset.id); if (it && it.session_id) delete FLEET.detail[it.session_id]; openSheet(fleetDetailView(b.dataset.id)); });
 act('fleet-refresh', () => fleetLoad());
 act('fleet-file', (b) => { const k = b.dataset.sid + '|' + b.dataset.path; FLEET.openFiles.has(k) ? FLEET.openFiles.delete(k) : FLEET.openFiles.add(k); changed('fleet-detail'); });
+act('herdr-action', async (b) => {
+  const machine = b.dataset.machine || 'mini';
+  const action = b.dataset.action;
+  const args = { tab_id: b.dataset.tab || '' };
+  if (action === 'send_template') { args.template = b.dataset.template || 'interrupt'; args.is_agent = b.dataset.agent === '1'; }
+  try {
+    const r = await api('/remote/herdr/action', { method: 'POST', body: { action, machine, args, request_id: 'web-herdr-' + Date.now(), confirmed: action === 'agent_prompt' } });
+    toast(r.ok ? (machine === 'mini' ? '已执行' : '已入队等 ' + machine) : (r.detail || '失败'));
+  } catch (e) { toast(e.message || 'herdr 动作失败'); }
+});
 
 // ─── 动作 ───
 act('work-surface', (b) => {

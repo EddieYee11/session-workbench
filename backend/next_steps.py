@@ -186,6 +186,13 @@ class NextSteps:
             db.execute('ALTER TABLE runs ADD COLUMN brief TEXT')
         return db
 
+    def is_muted(self, title):
+        """Eddie 点过「不用」的同一句或同话题，口径与建议去重一致。"""
+        with self.db() as db:
+            dismissed = [json.loads(r['data']) for r in db.execute("SELECT data FROM items WHERE state='dismissed'")]
+        titles = [d.get('title', '') for d in dismissed if d.get('dismiss_reason') != 'others']
+        return any(_near(title, t) for t in titles) or bool(_cjk_runs(title) & muted_topics(titles))
+
     # ---------- 收集 ----------
 
     async def digest(self, force=False):
@@ -757,9 +764,12 @@ class NextSteps:
                     d['history'] = (d.get('history') or [])[-5:] + [{'at': now, 'text': close['reason'], 'phase': 'done', 'refs': [e['ref'] for e in close['evidence']]}]
                     db.execute("UPDATE items SET state='resolved', data=?, updated_at=? WHERE id=?", (json.dumps(d, ensure_ascii=False), now, ident))
             # 上一轮还开着、这一轮没再提的：先留着（模型偶尔漏一条），连着三轮没提才收起，不删。
+            # Mandate「已备好」(phase=ready / mandate_id) 固定态：不参与 missed→stale。
             for row in db.execute("SELECT id, data FROM items WHERE state='open'").fetchall():
                 if row['id'] not in ids:
                     d = json.loads(row['data'])
+                    if d.get('phase') == 'ready' or d.get('mandate_id') or d.get('kind') == 'mandate_ready':
+                        continue
                     d['missed'] = d.get('missed', 0) + 1
                     # 这一轮提了、但已进待办或已处理而被拦下的：直接收起，不给宽限
                     state = 'stale' if d['missed'] >= 3 or row['id'] in proposed else 'open'
@@ -777,9 +787,11 @@ class NextSteps:
                 if shown >= 4 and item['urgency'] != 'now':
                     item['urgency'], item['score'] = 'week', max(10, item['score'] - 20)
                 db.execute('INSERT OR REPLACE INTO items VALUES (?,?,?,?,?)', (item['id'], json.dumps({**item, 'source': source}, ensure_ascii=False), 'open', created, now))
-            # 列表最多 10 条：超出时先收起连着没被提到、分数最低的
+            # 列表最多 10 条：超出时先收起连着没被提到、分数最低的（已备好不计入挤出）
             rows = [(r['id'], json.loads(r['data'])) for r in db.execute("SELECT id, data FROM items WHERE state='open'")]
-            for ident, _ in sorted(((i, d) for i, d in rows if d.get('missed')), key=lambda x: x[1].get('score', 0))[:max(0, len(rows) - 10)]:
+            compressible = [(i, d) for i, d in rows if d.get('missed') and d.get('phase') != 'ready' and not d.get('mandate_id')]
+            ready_n = sum(1 for _, d in rows if d.get('phase') == 'ready' or d.get('mandate_id'))
+            for ident, _ in sorted(compressible, key=lambda x: x[1].get('score', 0))[:max(0, len(rows) - ready_n - 10)]:
                 db.execute("UPDATE items SET state='stale', updated_at=? WHERE id=?", (now, ident))
             db.execute('INSERT INTO runs(at,source,count,error,headline,brief) VALUES (?,?,?,?,?,?)', (now, source, len(fresh), error, headline, json.dumps(list(brief), ensure_ascii=False)))
 
@@ -843,6 +855,52 @@ class NextSteps:
                 e['detail'] = _detail(subject, row['source'], row.get('source_updated_at') or row.get('changed_at'), facts.get('snippet'),
                                       sender=facts.get('from', ''), link=facts.get('link', ''))
 
+    def ingest_mandate(self, payload):
+        """写入/替换 Mandate「已备好」卡。按 matter_id 去重；草稿不可信、纯文本。"""
+        matter_id = payload.get('matter_id') or ''
+        if not matter_id:
+            raise ValueError('mandate 需要 matter_id')
+        ident = 'mandate:' + matter_id
+        now = self.clock()
+        draft = re.sub(r'```com-widget[\s\S]*?```|\[\[选项:[^\]]*\]\]', '', str(payload.get('draft') or ''), flags=re.I).strip()[:2000]
+        action = None
+        if payload.get('action_type') == 'reply_mail':
+            action = {'type': 'reply_mail', 'subject': str(payload.get('subject') or '')[:200], 'draft': draft, 'untrusted': True}
+        elif payload.get('action_type') == 'discuss':
+            action = {'type': 'discuss', 'draft': draft, 'untrusted': True}
+        item = {
+            'id': ident,
+            'title': str(payload.get('title') or '已备好')[:40],
+            'why': str(payload.get('why') or '')[:120],
+            'prompt': '',  # 禁止把草稿当交办 prompt；升级走 mandate rebuild
+            'urgency': 'today',
+            'score': 85,
+            'phase': 'ready',
+            'kind': 'mandate_ready',
+            'mandate_id': payload.get('mandate_id') or '',
+            'matter_id': matter_id,
+            'eval_id': payload.get('eval_id') or '',
+            'untrusted': True,
+            'evidence': [{'ref': f"matter:{matter_id}", 'matter_id': matter_id, 'kind': 'mail',
+                          'detail': {'title': str(payload.get('title') or '')[:120], 'source': payload.get('source') or '',
+                                     'summary': draft[:200], 'untrusted': True}}],
+            'action': action,
+            'history': [{'at': now, 'text': 'Mandate 已备好（不可信草稿）', 'phase': 'ready', 'refs': []}],
+            'source': 'mandate',
+        }
+        with self.db() as db:
+            # 同 matter 旧卡（含旧 id）收起
+            for row in db.execute("SELECT id, data FROM items WHERE state='open'").fetchall():
+                d = json.loads(row['data'])
+                if d.get('matter_id') == matter_id or row['id'] == ident:
+                    if row['id'] != ident:
+                        db.execute("UPDATE items SET state='stale', updated_at=? WHERE id=?", (now, row['id']))
+            old = db.execute('SELECT created_at FROM items WHERE id=?', (ident,)).fetchone()
+            created = old['created_at'] if old else now
+            db.execute('INSERT OR REPLACE INTO items VALUES (?,?,?,?,?)',
+                       (ident, json.dumps(item, ensure_ascii=False), 'open', created, now))
+        return item
+
     def act(self, ident, action, **extra):
         """discuss/delegate=交给 Com（建航程），todo=已加到待办（extra: todo 路径与日期），snooze=稍后再说（明天回来）。"""
         if action not in ('discuss', 'delegate', 'dismiss', 'done', 'todo', 'snooze', 'drafted'):
@@ -852,6 +910,9 @@ class NextSteps:
             if not row:
                 raise ValueError('这条建议已经不在了，下拉刷新一下')
             item = json.loads(row['data'])
+            # Mandate 卡禁止用卡片 prompt/draft 直接 delegate；须走 /personal/mandates/{id}/act
+            if action in ('discuss', 'delegate') and (item.get('mandate_id') or item.get('kind') == 'mandate_ready'):
+                raise ValueError('已备好卡片请用 Mandate 升级接口交办，避免把不可信草稿当全权限任务')
             state = {'discuss': 'acted', 'delegate': 'acted', 'dismiss': 'dismissed', 'done': 'done', 'todo': 'todo', 'snooze': 'snoozed', 'drafted': 'open'}[action]
             if action == 'dismiss' and extra.get('reason') in REASONS:
                 # 「已经办了」= 他线下办掉了：算做完（建议是对的），不算打扰

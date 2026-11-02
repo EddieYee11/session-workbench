@@ -14,9 +14,62 @@ PUSHED={'sms':3*3600,'plaud':3*3600}
 QUIET=('weather','phone_reminders','sms','plaud','context')
 WEATHER={0:'晴',1:'大致晴',2:'多云',3:'阴',45:'雾',48:'雾凇',51:'小毛毛雨',53:'毛毛雨',55:'大毛毛雨',61:'小雨',63:'中雨',65:'大雨',66:'冻雨',67:'强冻雨',
          71:'小雪',73:'中雪',75:'大雪',77:'雪粒',80:'阵雨',81:'强阵雨',82:'暴雨',85:'阵雪',86:'强阵雪',95:'雷阵雨',96:'雷阵雨伴冰雹',99:'强雷阵雨伴冰雹'}
+
+def _decode_part(data, charset='utf-8'):
+    import base64
+    if not data:
+        return ''
+    try:
+        raw = base64.urlsafe_b64decode(data + '===')
+    except Exception:
+        return ''
+    for enc in (charset, 'utf-8', 'gb18030', 'latin-1'):
+        try:
+            return raw.decode(enc or 'utf-8')
+        except Exception:
+            continue
+    return raw.decode('utf-8', errors='replace')
+
+def _gmail_text(payload):
+    """从 Gmail full payload 抽出纯文本。"""
+    if not isinstance(payload, dict):
+        return ''
+    mime = (payload.get('mimeType') or '').lower()
+    body = payload.get('body') or {}
+    if mime == 'text/plain' and body.get('data'):
+        return _decode_part(body.get('data'), (payload.get('headers') and None) or 'utf-8')
+    parts = payload.get('parts') or []
+    texts = []
+    for part in parts:
+        mime = (part.get('mimeType') or '').lower()
+        if mime == 'text/plain':
+            texts.append(_decode_part((part.get('body') or {}).get('data')))
+        elif mime.startswith('multipart/'):
+            texts.append(_gmail_text(part))
+    if texts:
+        return '\n'.join(t for t in texts if t)
+    if body.get('data'):
+        return _decode_part(body.get('data'))
+    return ''
+
+def _email_text(msg):
+    if msg.is_multipart():
+        chunks = []
+        for part in msg.walk():
+            if part.get_content_type() == 'text/plain' and 'attachment' not in str(part.get('Content-Disposition', '')).lower():
+                try:
+                    chunks.append(part.get_payload(decode=True).decode(part.get_content_charset() or 'utf-8', errors='replace'))
+                except Exception:
+                    pass
+        return '\n'.join(chunks)
+    try:
+        return msg.get_payload(decode=True).decode(msg.get_content_charset() or 'utf-8', errors='replace')
+    except Exception:
+        return str(msg.get_payload() or '')
+
 class PersonalHub:
     def __init__(self,state,home=None):
-        self.state=Path(state);self.home=Path(home or Path.home());self.path=self.state/'personal-hub.sqlite';self.lock=asyncio.Lock()
+        self.state=Path(state);self.home=Path(home or Path.home());self.path=self.state/'personal-hub.sqlite';self.lock=asyncio.Lock();self.on_matter=None
         with self.db() as d:
             d.executescript('''CREATE TABLE IF NOT EXISTS sources(name TEXT PRIMARY KEY,data TEXT);CREATE TABLE IF NOT EXISTS matters(id TEXT PRIMARY KEY,source TEXT,source_id TEXT,data TEXT);CREATE TABLE IF NOT EXISTS feedback(id TEXT PRIMARY KEY,data TEXT);CREATE TABLE IF NOT EXISTS briefings(day TEXT PRIMARY KEY,data TEXT);CREATE TABLE IF NOT EXISTS connector_config(name TEXT PRIMARY KEY,data TEXT);''')
             d.execute('CREATE TABLE IF NOT EXISTS source_seen(source TEXT,identity TEXT,PRIMARY KEY(source,identity))')
@@ -52,6 +105,9 @@ class PersonalHub:
             row=dict(id=ident,source=source,source_id=source_id,title=title,facts=facts,source_updated_at=source_time,
                      updated_at=time.time(),changed_at=old.get('changed_at',time.time()) if old.get('content_hash')==content_hash else time.time(),content_hash=content_hash,**extra)
             d.execute('INSERT OR REPLACE INTO matters VALUES(?,?,?,?)',(ident,source,source_id,json.dumps(row,ensure_ascii=False)))
+        if self.on_matter and old.get('content_hash')!=content_hash:
+            try:self.on_matter(row)
+            except Exception:pass  # 事件账本出错不能影响同步
         return row
     def matters(self):
         with self.db() as d:
@@ -108,6 +164,48 @@ class PersonalHub:
         return data
     async def gws(self,service,*path,params):
         return await self.command(['gws',service,*path,'--params',json.dumps(params)])
+
+    async def fetch_message_body(self, source, source_id, message_id=''):
+        """按需取邮件正文（Mandate 用）。同步仍只存 metadata；失败返回 None。"""
+        if source == 'gmail':
+            mid = message_id
+            if not mid:
+                with self.db() as d:
+                    row = d.execute('SELECT data FROM matters WHERE source=? AND source_id=?', (source, source_id)).fetchone()
+                if row:
+                    facts = json.loads(row[0]).get('facts') or {}
+                    mid = facts.get('message_id') or ''
+            if not mid:
+                return None
+            m = await self.gws('gmail', 'users', 'messages', 'get', params={'userId': 'me', 'id': mid, 'format': 'full'})
+            heads = {h['name'].lower(): h['value'] for h in m.get('payload', {}).get('headers', [])}
+            return {'from': heads.get('from', ''), 'snippet': m.get('snippet', ''), 'body': _gmail_text(m.get('payload') or {})[:12000]}
+        if source == 'work_mail':
+            return await asyncio.to_thread(self._fetch_work_mail_body, source_id)
+        return None
+
+    def _fetch_work_mail_body(self, source_id):
+        with self.db() as d:
+            row = d.execute('SELECT data FROM matters WHERE source=? AND source_id=?', ('work_mail', source_id)).fetchone()
+        if not row:
+            return None
+        data = json.loads(row[0])
+        facts = data.get('facts') or {}
+        uid = facts.get('uid') or ''
+        if not uid:
+            return {'from': facts.get('from', ''), 'snippet': data.get('title', ''), 'body': data.get('title', '')}
+        cfg = self.config('work_mail')
+        if not cfg or cfg.get('protocol') == 'ews':
+            return {'from': facts.get('from', ''), 'snippet': data.get('title', ''), 'body': data.get('title', '')}
+        with imaplib.IMAP4_SSL(cfg['host'], int(cfg.get('port', 993)), timeout=20) as client:
+            client.login(cfg['username'], cfg['password'])
+            client.select('INBOX', readonly=True)
+            typ, raw = client.uid('fetch', uid.encode() if isinstance(uid, str) else uid, '(BODY.PEEK[])')
+            if typ != 'OK':
+                return None
+            msg = email.message_from_bytes(next(r[1] for r in raw if isinstance(r, tuple)))
+            return {'from': msg.get('From', ''), 'snippet': str(make_header(decode_header(msg.get('Subject', '')))), 'body': _email_text(msg)[:12000]}
+
     def seen(self,source,ident):
         with self.db() as d:return bool(d.execute('SELECT 1 FROM source_seen WHERE source=? AND identity=?',(source,ident)).fetchone())
     def mark_seen(self,source,ident):
@@ -123,7 +221,7 @@ class PersonalHub:
                 for item in data.get('messages',[]):
                     count+=1
                     if self.seen(name,item['id']):continue
-                    m=await self.gws('gmail','users','messages','get',params={'userId':'me','id':item['id'],'format':'metadata','metadataHeaders':['Subject','From','Date']})
+                    m=await self.gws('gmail','users','messages','get',params={'userId':'me','id':item['id'],'format':'metadata'})  # gws 带 metadataHeaders 数组时返回 0 个邮件头
                     heads={h['name'].lower():h['value'] for h in m.get('payload',{}).get('headers',[])}
                     self.matter(name,m.get('threadId',m['id']),heads.get('subject','邮件'),{'from':heads.get('from',''),'snippet':m.get('snippet',''),'message_id':m['id']},source_updated_at=int(m.get('internalDate',0))/1000,link='https://mail.google.com/mail/u/0/#all/'+m.get('threadId',m['id']),deadline=None)
                     self.mark_seen(name,item['id']);updated+=1

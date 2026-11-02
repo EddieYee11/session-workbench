@@ -15,13 +15,19 @@ settings:
     TARGETED_DEVICE_FAMILY: "1"
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "2026102901"
+    CURRENT_PROJECT_VERSION: "2026110101"
     COM_ENTITLEMENTS_FILE: Com/Com.entitlements
     COM_APNS_ENVIRONMENT: ""
 packages:
   Textual:
     url: https://github.com/gonzalezreal/textual
     exactVersion: 0.5.0
+  RemoteAgentKit:
+    path: ../../../../projects/moshi-ios/app
+  # 和 Heeler 同一个审过的版本；xcframework 由 SwiftPM 校验 checksum。
+  GhosttyTerminal:
+    url: https://github.com/Lakr233/libghostty-spm.git
+    revision: "7e45d27160f9b34aca9ca5c9820e9207482f9f04"
 targets:
   ComCore:
     type: framework
@@ -42,6 +48,9 @@ targets:
     dependencies:
       - target: ComCore
       - package: Textual
+      - package: RemoteAgentKit
+        product: HerdrKit
+      - package: GhosttyTerminal
       - target: ComShare
         embed: true
       - target: ComControls
@@ -55,6 +64,8 @@ targets:
       INFOPLIST_FILE: Com/Info.plist
       CODE_SIGN_ENTITLEMENTS: $(COM_ENTITLEMENTS_FILE)
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      # Citadel/NIO + HerdrKit SSH PTY bridge
+      OTHER_LDFLAGS: $(inherited) -ObjC
   ComShare:
     type: app-extension
     platform: iOS

@@ -42,6 +42,7 @@
 		5564A84F0ECF1BF1349DA17C /* WorkRemote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76F90F01951A00327CE50779 /* WorkRemote.swift */; };
 		584B57748C2AE16E429F03BF /* HealthReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0027E45C459F7817D2DB0E71 /* HealthReader.swift */; };
 		5912403BA9899A2535561DCB /* RoutinesSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8262DC4C623257399BA068E /* RoutinesSection.swift */; };
+		59319067BD49C1C1BFE12961 /* HerdrMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CD2BF2D3BC729DDE88674CD /* HerdrMachines.swift */; };
 		5997035B70F8DE666CA4AE90 /* ProjectBoardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D94119968D27D2EE60CC408A /* ProjectBoardViews.swift */; };
 		5F9AEFF032055BE5F3AB61AB /* ChatCollectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716C62E053AEF102618FD3F1 /* ChatCollectionView.swift */; };
 		61A3DAB80E57D7B5422B65CD /* R3MemoryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D81B9C4B49965AF15748239 /* R3MemoryUITests.swift */; };
@@ -74,7 +75,11 @@
 		9CA3236D5A68D05EB8FBDBDC /* ComControls.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 27ADF1E9E7135D8158DED532 /* ComControls.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A0997E60BD5611353997F043 /* OpenComVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EAB4EF8FD18CCF187B6EB33 /* OpenComVoice.swift */; };
 		A15210E390BDC59740352461 /* ComCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B77E8C2C95C01B5561165726 /* ComCore.framework */; };
+		A2090BAB4E297DED5F205C2C /* HerdrKit in Frameworks */ = {isa = PBXBuildFile; productRef = 50FC572D27D420D4BAF4D675 /* HerdrKit */; };
+		A38BF18365BDA9F7D21D2C42 /* HerdrPTYController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02736D2FC65FE8549448BA93 /* HerdrPTYController.swift */; };
+		A4A59D1D6877F9C94A1BCA00 /* HerdrLiveUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A525465140D0A6ABF68B6785 /* HerdrLiveUITests.swift */; };
 		A794E59B406CC0C906F947EE /* WorkProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67F32D8CB2C10FA35A3E69B9 /* WorkProcess.swift */; };
+		A80B0E4C1DCD2FCC20D004A1 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = B6D4047A0F0FCB37264FD9E1 /* GhosttyTerminal */; };
 		AD9ED6D493EC9106142F621F /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B567AF2CA7D46CD6A550BC /* AppModel.swift */; };
 		AE3A6D2C4E9E6E44453D6E86 /* JSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EFCCAD308858CF265BDBBA3 /* JSON.swift */; };
 		AEF6253A68D0521BF15C1A4C /* ContextIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0159734FE4B55C3176025D58 /* ContextIntent.swift */; };
@@ -89,6 +94,7 @@
 		BE405BDC17E7E5129F20214A /* ReplyText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 712B229F2ABFC63A9878E594 /* ReplyText.swift */; };
 		C01575DCFA2F77923CDEC9BD /* MoonBootPrint.swift in Sources */ = {isa = PBXBuildFile; fileRef = A53A299B201C54AC30EE395D /* MoonBootPrint.swift */; };
 		C2C8DE5BA8B9C3E71328768F /* StatusWidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = E74B5D0C44841D1A97FAEB1A /* StatusWidgetSnapshot.swift */; };
+		D69AE87D9CEDAFF04261D01B /* HerdrTerminalSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50AFECE8C39C7896085F6422 /* HerdrTerminalSurface.swift */; };
 		D865B386A77B1905C4107CE6 /* SSE.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC742E28CD20224B25A3B2D9 /* SSE.swift */; };
 		D9623439C0FED165B166AB23 /* ChatTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97904BD5D703965F324E2615 /* ChatTimeline.swift */; };
 		DA5179BA2198F7DF13D14553 /* ReceiptStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 839D3C5B1C60FECB9B8AFC96 /* ReceiptStrip.swift */; };
@@ -103,6 +109,7 @@
 		F59B15EB117C605B46FD434E /* ChatPageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4520FAB9761DDF12FE7C32E4 /* ChatPageTests.swift */; };
 		F6124F716675565C147CEAF5 /* SuggestionChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19D032CDD8DE390325852D00 /* SuggestionChips.swift */; };
 		F70B9107D189B920B3B016E8 /* StatusWidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = E74B5D0C44841D1A97FAEB1A /* StatusWidgetSnapshot.swift */; };
+		F7827A6CE6FBFCC2C1FDEFAE /* HerdrSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B37DDEE3352E5DAC1042FF47 /* HerdrSessionStore.swift */; };
 		FB6D04D23D6E1155B9411313 /* ComUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD70FB106536EB61E8647C65 /* ComUITests.swift */; };
 		FB77AF03F30D80A6F5CF5ACB /* ComShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 32B17AC38263805E1E207D27 /* ComShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		FBECC2E1BCDBD3AB6AB71968 /* ReplyHTMLWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF236C007C9345B94C21547A /* ReplyHTMLWidget.swift */; };
@@ -187,6 +194,7 @@
 /* Begin PBXFileReference section */
 		0027E45C459F7817D2DB0E71 /* HealthReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthReader.swift; sourceTree = "<group>"; };
 		0159734FE4B55C3176025D58 /* ContextIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextIntent.swift; sourceTree = "<group>"; };
+		02736D2FC65FE8549448BA93 /* HerdrPTYController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrPTYController.swift; sourceTree = "<group>"; };
 		071E80750B7F5BF6407472D3 /* AgentStageModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageModel.swift; sourceTree = "<group>"; };
 		0B64C35A7DDCFD5C71C2FB4D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		0C64DC3DF802E376DBAD715B /* AgentStageState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageState.swift; sourceTree = "<group>"; };
@@ -211,7 +219,9 @@
 		3EEE75E129E211B8C33023E1 /* AppModel+Chat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+Chat.swift"; sourceTree = "<group>"; };
 		4520FAB9761DDF12FE7C32E4 /* ChatPageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPageTests.swift; sourceTree = "<group>"; };
 		48418D83FEB7029E45E291AC /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
+		4E834087F87BBA7540BF3E71 /* app */ = {isa = PBXFileReference; lastKnownFileType = folder; name = app; path = "../../../../projects/moshi-ios/app"; sourceTree = SOURCE_ROOT; };
 		4EAB4EF8FD18CCF187B6EB33 /* OpenComVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenComVoice.swift; sourceTree = "<group>"; };
+		50AFECE8C39C7896085F6422 /* HerdrTerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrTerminalSurface.swift; sourceTree = "<group>"; };
 		5253385C436B81C36BEB3308 /* ComStatusWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComStatusWidget.swift; sourceTree = "<group>"; };
 		59E94D049852C4A54CFFA21D /* Chrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Chrome.swift; sourceTree = "<group>"; };
 		5A8649038D882EDBC4307C24 /* ComVoiceControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComVoiceControl.swift; sourceTree = "<group>"; };
@@ -229,6 +239,7 @@
 		720969E4936924E5A5F28BEE /* ReplyWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyWidgets.swift; sourceTree = "<group>"; };
 		7558CEC3E0DC8802B9E006C9 /* AgencyModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgencyModel.swift; sourceTree = "<group>"; };
 		76F90F01951A00327CE50779 /* WorkRemote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkRemote.swift; sourceTree = "<group>"; };
+		7CD2BF2D3BC729DDE88674CD /* HerdrMachines.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrMachines.swift; sourceTree = "<group>"; };
 		809B0769F81E1FE18DA79147 /* WorkSessionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkSessionModel.swift; sourceTree = "<group>"; };
 		831A14BE8E8D3B0D93746FE7 /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		839D3C5B1C60FECB9B8AFC96 /* ReceiptStrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReceiptStrip.swift; sourceTree = "<group>"; };
@@ -249,12 +260,14 @@
 		9EFCCAD308858CF265BDBBA3 /* JSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSON.swift; sourceTree = "<group>"; };
 		9FC842A5EB15D97730233C15 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		A221C7D39A2E646665ADB4D3 /* AppModel+Pages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppModel+Pages.swift"; sourceTree = "<group>"; };
+		A525465140D0A6ABF68B6785 /* HerdrLiveUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrLiveUITests.swift; sourceTree = "<group>"; };
 		A53A299B201C54AC30EE395D /* MoonBootPrint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoonBootPrint.swift; sourceTree = "<group>"; };
 		A7C38523D20F2630C04628B5 /* ComControls.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ComControls.entitlements; sourceTree = "<group>"; };
 		A8262DC4C623257399BA068E /* RoutinesSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutinesSection.swift; sourceTree = "<group>"; };
 		ABC19D47D6245D85B1C1DC84 /* ChatMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMotion.swift; sourceTree = "<group>"; };
 		B07F3FA8D95114BE71FD5942 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B0F26F4E559C0A95B77B21E7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B37DDEE3352E5DAC1042FF47 /* HerdrSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdrSessionStore.swift; sourceTree = "<group>"; };
 		B4092C5F7FCA611875623CF5 /* DashboardPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardPreview.swift; sourceTree = "<group>"; };
 		B77E8C2C95C01B5561165726 /* ComCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ComCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BBA4697B21D25BCF148F3737 /* WorkChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkChat.swift; sourceTree = "<group>"; };
@@ -286,7 +299,7 @@
 		FDDB7C77B7EAB250E94DEFC6 /* ComUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ComUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FEE32CA35186E717D66E3076 /* AgentStageMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStageMachineTests.swift; sourceTree = "<group>"; };
 		FF236C007C9345B94C21547A /* ReplyHTMLWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyHTMLWidget.swift; sourceTree = "<group>"; };
-		"TEMP_674310FD-C61B-4389-8020-3DD55334B878" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		"TEMP_6A515F86-7EDC-43C6-B39E-11CBF2C86FCA" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -304,6 +317,8 @@
 			files = (
 				EE9DECDB9C4E077B6D747A64 /* ComCore.framework in Frameworks */,
 				013BB7C747D5BEB55DCBA267 /* Textual in Frameworks */,
+				A2090BAB4E297DED5F205C2C /* HerdrKit in Frameworks */,
+				A80B0E4C1DCD2FCC20D004A1 /* GhosttyTerminal in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -316,6 +331,7 @@
 				BDB0E4E240E052437A5B4C82 /* Com */,
 				9958DC3EF79C79DA3ECEE3A3 /* ComControls */,
 				555BACB1D53CB82CB0B9A7AA /* ComShare */,
+				A96BBCCC72FFE001684B6801 /* Packages */,
 				7B2223986E5E745399B4C3C3 /* Shared */,
 				AB0309C636838722D5FCEE82 /* Tests */,
 				B87CB4A831212B1D779D50FD /* VoiceIntents */,
@@ -418,6 +434,17 @@
 			path = ComShare;
 			sourceTree = "<group>";
 		};
+		6983A07174F95A2A1A884618 /* Herdr */ = {
+			isa = PBXGroup;
+			children = (
+				7CD2BF2D3BC729DDE88674CD /* HerdrMachines.swift */,
+				02736D2FC65FE8549448BA93 /* HerdrPTYController.swift */,
+				B37DDEE3352E5DAC1042FF47 /* HerdrSessionStore.swift */,
+				50AFECE8C39C7896085F6422 /* HerdrTerminalSurface.swift */,
+			);
+			path = Herdr;
+			sourceTree = "<group>";
+		};
 		7B2223986E5E745399B4C3C3 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
@@ -445,11 +472,20 @@
 			isa = PBXGroup;
 			children = (
 				CD70FB106536EB61E8647C65 /* ComUITests.swift */,
+				A525465140D0A6ABF68B6785 /* HerdrLiveUITests.swift */,
 				1D81B9C4B49965AF15748239 /* R3MemoryUITests.swift */,
 				5D8B50FEF5F0D2C65EC07A31 /* R3PagesUITests.swift */,
 				18350676E1D034258AB3C4DA /* R3WorkUITests.swift */,
 			);
 			path = UI;
+			sourceTree = "<group>";
+		};
+		A96BBCCC72FFE001684B6801 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				4E834087F87BBA7540BF3E71 /* app */,
+			);
+			name = Packages;
 			sourceTree = "<group>";
 		};
 		AB0309C636838722D5FCEE82 /* Tests */ = {
@@ -501,6 +537,7 @@
 				B0F26F4E559C0A95B77B21E7 /* Info.plist */,
 				809B0769F81E1FE18DA79147 /* WorkSessionModel.swift */,
 				AF2737972E74E34D1B4EAC43 /* Core */,
+				6983A07174F95A2A1A884618 /* Herdr */,
 				35895FE2C1C6EFBCC822018D /* Platform */,
 				0519398FB6AD488E7A8195C0 /* Resources */,
 				2C1754A67B737995F34BD30D /* Views */,
@@ -521,10 +558,10 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		"TEMP_01491585-ADC8-4CA5-A94C-6A797FCC07E6" /* ios */ = {
+		"TEMP_7E184149-C70B-4BE2-8B8C-C4862DF8DB12" /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_674310FD-C61B-4389-8020-3DD55334B878" /* Config.xcconfig */,
+				"TEMP_6A515F86-7EDC-43C6-B39E-11CBF2C86FCA" /* Config.xcconfig */,
 			);
 			path = ios;
 			sourceTree = "<group>";
@@ -589,6 +626,8 @@
 			name = Com;
 			packageProductDependencies = (
 				46D9B1636C148AFFB2DABDE9 /* Textual */,
+				50FC572D27D420D4BAF4D675 /* HerdrKit */,
+				B6D4047A0F0FCB37264FD9E1 /* GhosttyTerminal */,
 			);
 			productName = Com;
 			productReference = 61A365C115402C51199EB618 /* Com.app */;
@@ -687,7 +726,9 @@
 			mainGroup = 045E880BA8A1807993E501D9;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				7DF301243E0B1321E88B5DAD /* XCRemoteSwiftPackageReference "libghostty-spm" */,
 				DE48A3D093144FBF8B848436 /* XCRemoteSwiftPackageReference "textual" */,
+				893DFF705374B62D0638F90D /* XCLocalSwiftPackageReference "../../../../projects/moshi-ios/app" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C516EDD7D372FFF0F24D83D6 /* Products */;
@@ -759,6 +800,10 @@
 				6A5ECA4917F7642A60F7A85C /* FlowCards.swift in Sources */,
 				584B57748C2AE16E429F03BF /* HealthReader.swift in Sources */,
 				6636BF9B53F4FBD674C380D7 /* HealthView.swift in Sources */,
+				59319067BD49C1C1BFE12961 /* HerdrMachines.swift in Sources */,
+				A38BF18365BDA9F7D21D2C42 /* HerdrPTYController.swift in Sources */,
+				F7827A6CE6FBFCC2C1FDEFAE /* HerdrSessionStore.swift in Sources */,
+				D69AE87D9CEDAFF04261D01B /* HerdrTerminalSurface.swift in Sources */,
 				2A6CAE5286BFAF90CE79EF9D /* HotBoardView.swift in Sources */,
 				25DB74E3349899C47006B762 /* LiveActivity.swift in Sources */,
 				EEBADA6156CA0B18C89ABFF5 /* MemoryView.swift in Sources */,
@@ -802,6 +847,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FB6D04D23D6E1155B9411313 /* ComUITests.swift in Sources */,
+				A4A59D1D6877F9C94A1BCA00 /* HerdrLiveUITests.swift in Sources */,
 				61A3DAB80E57D7B5422B65CD /* R3MemoryUITests.swift in Sources */,
 				03D3BA73CB992F0E21B32712 /* R3PagesUITests.swift in Sources */,
 				4C32FBFCDB67B55838E00AF0 /* R3WorkUITests.swift in Sources */,
@@ -899,6 +945,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = "$(inherited) -ObjC";
 				PRODUCT_BUNDLE_IDENTIFIER = work.eddie.com;
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
@@ -927,7 +974,7 @@
 		};
 		3090500630AD48E73BFDF9C7 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_674310FD-C61B-4389-8020-3DD55334B878" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_6A515F86-7EDC-43C6-B39E-11CBF2C86FCA" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -963,7 +1010,7 @@
 				COM_APNS_ENVIRONMENT = "";
 				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2026102901;
+				CURRENT_PROJECT_VERSION = 2026110101;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -1071,7 +1118,7 @@
 		};
 		77A0C5116CC8A0F0C01DCC13 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_674310FD-C61B-4389-8020-3DD55334B878" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_6A515F86-7EDC-43C6-B39E-11CBF2C86FCA" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -1107,7 +1154,7 @@
 				COM_APNS_ENVIRONMENT = "";
 				COM_ENTITLEMENTS_FILE = Com/Com.entitlements;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2026102901;
+				CURRENT_PROJECT_VERSION = 2026110101;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -1234,6 +1281,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = "$(inherited) -ObjC";
 				PRODUCT_BUNDLE_IDENTIFIER = work.eddie.com;
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
@@ -1311,7 +1359,22 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		893DFF705374B62D0638F90D /* XCLocalSwiftPackageReference "../../../../projects/moshi-ios/app" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../../../../projects/moshi-ios/app";
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
+		7DF301243E0B1321E88B5DAD /* XCRemoteSwiftPackageReference "libghostty-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Lakr233/libghostty-spm.git";
+			requirement = {
+				kind = revision;
+				revision = 7e45d27160f9b34aca9ca5c9820e9207482f9f04;
+			};
+		};
 		DE48A3D093144FBF8B848436 /* XCRemoteSwiftPackageReference "textual" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/gonzalezreal/textual";
@@ -1327,6 +1390,15 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DE48A3D093144FBF8B848436 /* XCRemoteSwiftPackageReference "textual" */;
 			productName = Textual;
+		};
+		50FC572D27D420D4BAF4D675 /* HerdrKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HerdrKit;
+		};
+		B6D4047A0F0FCB37264FD9E1 /* GhosttyTerminal */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7DF301243E0B1321E88B5DAD /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			productName = GhosttyTerminal;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -6,12 +6,13 @@ import ComCore
 /// 不覆盖「对话」派活面；由 `WorkSurface` 切换进入。
 
 enum WorkSurface: String, CaseIterable, Identifiable {
-    case sessions, remote
+    case sessions, remote, terminal
     var id: String { rawValue }
     var title: String {
         switch self {
         case .sessions: return "对话"
         case .remote: return "运行"
+        case .terminal: return "终端"
         }
     }
 }
@@ -548,6 +549,32 @@ struct RunDetailView: View {
                             .buttonStyle(.secondaryCompact)
                         }
                     }
+                    if kind == "herdr" {
+                        let h = item["herdr"]
+                        let machine = h["machine"].string.isEmpty ? item["host"].string : h["machine"].string
+                        let tab = h["tab_id"].string
+                        if !tab.isEmpty, !machine.isEmpty {
+                            Button("聚焦") {
+                                Task { await runHerdrAction("focus_tab", machine: machine, args: ["tab_id": .string(tab)], confirmed: false) }
+                            }
+                            .buttonStyle(.secondaryCompact)
+                            .accessibilityIdentifier("run-herdr-focus")
+                            if h["is_agent"].bool {
+                                Button("中断 ⌃C") {
+                                    Task {
+                                        await runHerdrAction(
+                                            "send_template",
+                                            machine: machine,
+                                            args: ["tab_id": .string(tab), "pane_id": .string(h["pane_id"].string), "template": .string("interrupt"), "is_agent": .bool(true)],
+                                            confirmed: false
+                                        )
+                                    }
+                                }
+                                .buttonStyle(.secondaryCompact)
+                                .accessibilityIdentifier("run-herdr-interrupt")
+                            }
+                        }
+                    }
                     Button("追问") {
                         let text = "接着问「\(title)」（\(runStateLabel(state))）："
                         model.draft = model.draft.isEmpty ? text : model.draft
@@ -569,6 +596,30 @@ struct RunDetailView: View {
         do {
             let result = try await model.mutate("/remote/rex/action", fields: ["action": .string(name), "args": .object(args)])
             actionNote = result["ok"].bool ? "已执行 \(name)。" : (result["detail"].string.isEmpty ? "动作没成功。" : result["detail"].string)
+        } catch {
+            actionNote = error.localizedDescription
+        }
+    }
+
+    private func runHerdrAction(_ name: String, machine: String, args: [String: JSON], confirmed: Bool) async {
+        actionNote = ""
+        let requestId = "ios-herdr-\(UUID().uuidString)"
+        do {
+            var fields: [String: JSON] = [
+                "action": .string(name),
+                "machine": .string(machine),
+                "args": .object(args),
+                "request_id": .string(requestId),
+            ]
+            if confirmed { fields["confirmed"] = .bool(true) }
+            let result = try await model.mutate("/remote/herdr/action", fields: fields)
+            if result["ok"].bool {
+                actionNote = result["applied"]["ok"].bool == false
+                    ? (result["applied"]["detail"].string.isEmpty ? "已入队，本机执行失败。" : result["applied"]["detail"].string)
+                    : (machine == "mini" ? "已执行 \(name)。" : "已入队，等 \(machine) 拉取执行。")
+            } else {
+                actionNote = result["detail"].string.isEmpty ? "动作没成功（可能写开关关着）。" : result["detail"].string
+            }
         } catch {
             actionNote = error.localizedDescription
         }

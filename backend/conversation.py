@@ -1067,6 +1067,16 @@ class PersonalConversation:
         if row["status"] == "queued":
             if await self._fast_bookkeeping(row, mid):
                 return True
+            # Router batch：记账之后、Hermes 之前；命中则只回受理，不跑自由回合
+            router = getattr(self, "router_plan", None)
+            if router and not self._is_supplement(row, mid):
+                try:
+                    batch = await router.maybe_dispatch_async(dict(row))
+                except Exception:
+                    batch = None
+                if batch:
+                    self._finish(mid, "completed", output=batch.get("ack") or "已分别派给并行处理。")
+                    return True
             try:
                 client.key()
                 session_id = await self._ensure_session()

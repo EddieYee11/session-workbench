@@ -173,6 +173,27 @@ next_steps = NextSteps(
 )
 from runsheet import INSTRUCTIONS as RUNSHEET_INSTRUCTIONS
 from runsheet import RunSheets
+from triggers import Triggers
+from evals import Evals
+from mandate_executor import MandateExecutor
+from superagent_flags import SuperagentFlags
+from router_plan import RouterPlan
+from batch_fold import BatchFold
+
+triggers = Triggers(STATE)
+personal_hub.on_matter = triggers.record
+superagent_flags = SuperagentFlags(STATE)
+mandates = MandateExecutor(STATE, triggers, hub=personal_hub, next_steps=next_steps, flags=superagent_flags)
+router_plan = RouterPlan(STATE, task_store, conversation, flags=superagent_flags, workspace=HOME / "AI_Work_System")
+conversation.router_plan = router_plan
+batch_fold = BatchFold(router_plan, task_store, conversation)
+
+
+async def _mandate_on_accept(eval_row, batch):
+    await mandates.handle_eval(eval_row, batch)
+
+
+evals = Evals(triggers, muted=next_steps.is_muted, on_accept=_mandate_on_accept)
 
 
 async def runsheet_model(payload):
@@ -191,7 +212,7 @@ from herdr_bridge import HerdrBridge
 from rex_bridge import RexBridge
 
 rex_bridge = RexBridge(STATE)
-herdr_bridge = HerdrBridge(STATE)
+herdr_bridge = HerdrBridge(STATE, flags=superagent_flags)
 
 
 def wechat_candidates():
@@ -325,6 +346,7 @@ async def lifespan(app):
                 async with runtime.action_lock:
                     await task_controller.poll()
                 conversation.sync_task_cards(task_store.list())
+                batch_fold.tick()
             await asyncio.sleep(1)
 
     ledger_loop = asyncio.create_task(task_loop())
@@ -388,6 +410,16 @@ async def lifespan(app):
             await asyncio.sleep(60)
 
     hub_task = asyncio.create_task(hub_loop())
+
+    async def eval_loop():
+        await asyncio.sleep(45)
+        while True:
+            with contextlib.suppress(Exception):
+                await evals.run_once()
+                await mandates.process_pending_accepts()
+            await asyncio.sleep(60)
+
+    eval_task = asyncio.create_task(eval_loop())
     agent_task = asyncio.create_task(agent_track_loop())  # 轨道 agent：滚动摘要 + 主动提醒，定义见文件末尾
     asyncio.get_running_loop().run_in_executor(None, conversation.backfill_artifacts)  # 10-25：近两周回复里的产出路径补挂卡片
     quick_voice.start()
@@ -418,6 +450,9 @@ async def lifespan(app):
     hub_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await hub_task
+    eval_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await eval_task
     agent_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await agent_task
@@ -2275,6 +2310,54 @@ async def personal_next_refresh():
     return {"status": "started"}
 
 
+# 11-01 事件判断：抽查 Trigger/Eval；Mandate 开关见 superagent-flags.json
+@app.get("/personal/triggers")
+async def personal_triggers(limit: int = 50, outcome: str = "", source: str = "", days: int = 7):
+    return {"items": await asyncio.to_thread(triggers.items, max(1, min(limit, 200)), outcome, source),
+            "stats": await asyncio.to_thread(triggers.stats, max(1, min(days, 90))),
+            "flags": superagent_flags.load()}
+
+
+@app.get("/personal/mandates/{ident}")
+async def personal_mandate_get(ident: str):
+    try:
+        row = await asyncio.to_thread(mandates.get, ident)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {k: row[k] for k in row if k != "error" or row[k]}
+
+
+@app.post("/personal/mandates/{ident}/act")
+async def personal_mandate_act(ident: str, request: Request):
+    """copy = 只复制；delegate = 按原始事件重组 prompt 再建航程（不用不可信草稿当 prompt）。"""
+    data = await request.json()
+    action = data.get("action")
+    try:
+        row = await asyncio.to_thread(mandates.get, ident)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if action == "copy":
+        return {"status": "completed", "action": "copy", "draft": row["draft"], "untrusted": True}
+    if action in ("delegate", "discuss"):
+        rebuilt = await asyncio.to_thread(mandates.rebuild_delegate_prompt, ident)
+        result = await cases.delegate(
+            "mandate",
+            ident,
+            rebuilt["title"],
+            rebuilt["prompt"],
+            _case_request_id(data),
+            [],
+        )
+        with contextlib.suppress(ValueError):
+            next_steps.act("mandate:" + row["matter_id"], "delegate", case_id=result.get("task_id", ""))
+        return {"status": "completed", "id": ident, "action": "delegate", "untrusted_draft_unused": True, **result}
+    if action in ("dismiss", "done"):
+        with contextlib.suppress(ValueError):
+            next_steps.act("mandate:" + row["matter_id"], action, reason=data.get("reason"))
+        return {"status": "completed", "id": ident, "action": action}
+    raise HTTPException(400, "不支持的操作")
+
+
 # 10-25 活动日志：它替你做过的写操作；结果不确定的可以确认「做成了 / 没做成 / 不对」
 @app.get("/personal/activity")
 async def personal_activity(limit: int = 60, since: int = 0):
@@ -2348,8 +2431,65 @@ async def remote_rex_action(request: Request):
 
 @app.get("/remote/herdr/snapshot")
 async def remote_herdr_snapshot():
-    """herdr 只读会话树。server_not_running 时 ok=false，不假装已连。"""
-    return await asyncio.to_thread(herdr_bridge.snapshot)
+    """本机 + 已推送远程机的 herdr 树；远程用缓存，不阻塞等 MBP。"""
+    return await asyncio.to_thread(herdr_bridge.snapshot_all)
+
+
+@app.post("/remote/herdr/device-key")
+async def remote_herdr_device_key(request: Request):
+    """手机登记内嵌终端的 SSH 公钥并取机器清单。只落库，写进 authorized_keys 由 install_device_keys.py 人工执行。"""
+    data = await request.json()
+    public_key = str(data.get("public_key") or "") if isinstance(data, dict) else ""
+    result = await asyncio.to_thread(herdr_bridge.register_device_key, public_key)
+    if not result.get("ok"):
+        raise HTTPException(422, result.get("detail") or "公钥无效")
+    return result
+
+
+@app.post("/remote/herdr/ingest")
+async def remote_herdr_ingest(request: Request):
+    """MBP 推送本机 herdr snapshot（Bearer 与 App 相同）。"""
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(422, "需要 JSON 对象")
+    machine = str(data.get("machine") or "mbp")
+    snap = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else data
+    return await asyncio.to_thread(herdr_bridge.ingest, machine, snap)
+
+
+@app.get("/remote/herdr/actions/pending")
+async def remote_herdr_actions_pending(machine: str = "mbp", limit: int = 10):
+    return {"items": await asyncio.to_thread(herdr_bridge.pending_actions, machine, limit)}
+
+
+@app.post("/remote/herdr/actions/{ident}/ack")
+async def remote_herdr_action_ack(ident: str, request: Request):
+    data = await request.json()
+    return await asyncio.to_thread(herdr_bridge.ack_action, ident, bool(data.get("ok")), str(data.get("error") or ""))
+
+
+@app.post("/remote/herdr/action")
+async def remote_herdr_action(request: Request):
+    """手机端写操作：入队；本机可立即执行，远程等 MBP pull。不对 Hermes 工具暴露。"""
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(422, "需要 JSON 对象")
+    machine = str(data.get("machine") or herdr_bridge.config()["local_machine"])
+    action = str(data.get("action") or "")
+    args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    request_id = str(data.get("request_id") or "")
+    # 二次确认标记：客户端须带 confirmed=true
+    if action == "agent_prompt" and not data.get("confirmed"):
+        raise HTTPException(422, "agent_prompt 需要 confirmed=true")
+    queued = await asyncio.to_thread(herdr_bridge.enqueue_action, machine, action, args, request_id)
+    if not queued.get("ok"):
+        code = 403 if queued.get("error") in ("herdr_write_off", "action_not_allowed", "not_agent_pane") else 422
+        raise HTTPException(code, queued.get("detail") or queued.get("error") or "拒绝")
+    if machine == herdr_bridge.config()["local_machine"] and not queued.get("idempotent"):
+        result = await asyncio.to_thread(herdr_bridge.apply_local_action, action, args)
+        await asyncio.to_thread(herdr_bridge.ack_action, queued["id"], bool(result.get("ok")), result.get("detail") or result.get("error") or "")
+        return {**queued, "applied": result}
+    return queued
 
 
 @app.get("/remote/fleet")
@@ -2364,7 +2504,7 @@ async def remote_fleet():
         "sessions": (sess, fleet.from_sessions),
         "cases": (lambda: cases.list(), fleet.from_cases),
         "rex": (rex_bridge.snapshot, fleet.from_rex),
-        "herdr": (herdr_bridge.snapshot, fleet.from_herdr),
+        "herdr": (herdr_bridge.snapshot_all, fleet.from_herdr),
     })
 
 
@@ -2598,6 +2738,12 @@ async def personal_case_resolve(ident: str):
 
 async def delegate_next(ident, request_id):
     item = next_steps.get(ident)
+    if item.get("mandate_id") or item.get("kind") == "mandate_ready":
+        # 已备好：强制走 Mandate 重组，禁止把卡片 draft/prompt 灌进全权限 Pi
+        rebuilt = await asyncio.to_thread(mandates.rebuild_delegate_prompt, item["mandate_id"])
+        result = await cases.delegate("mandate", item["mandate_id"], rebuilt["title"], rebuilt["prompt"], request_id, [])
+        next_steps.act(ident, "delegate", case_id=result.get("task_id", ""))
+        return {"status": "completed", "id": ident, "action": "delegate", "untrusted_draft_unused": True, **result}
     labels = [e.get("label", "") for e in item.get("evidence", [])]
     result = await cases.delegate("next", ident, item["title"], item["prompt"], request_id, labels, todo_path=(item.get("in_todo") or {}).get("path", ""))
     next_steps.act(ident, "delegate", case_id=result.get("task_id", ""))
