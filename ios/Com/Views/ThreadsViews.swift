@@ -282,6 +282,7 @@ struct WaitingSheet: View {
                     if reduce { shown = true }
                     else { withAnimation(ComMotion.rise) { shown = true } }
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("next-waiting-section")
         } else {
             NavigationStack {
@@ -349,27 +350,27 @@ struct WaitingSheet: View {
                         .foregroundStyle(Palette.textSecondary)
                         .contentTransition(.opacity)
                         .enterRise(on: shown, delay: 0.01, y: 10, blur: 4) }
-                    if !handoffNote.isEmpty {
-                        // 划卡/批准失败别用成功勾；人话开口可再试。
-                        let failed = handoffNote.contains("没成") || handoffNote.contains("还可以") || handoffNote.contains("没接进") || handoffNote.contains("卡还在")
-                        if failed {
-                            InlineNotice(text: handoffNote, tone: .danger)
-                                .accessibilityIdentifier("waiting-handoff-fail")
-                        } else {
-                            Label(handoffNote, systemImage: "checkmark.circle")
-                                .font(TypeScale.footnote.weight(.medium))
-                                .foregroundStyle(Palette.accentText)
-                                .accessibilityIdentifier("waiting-handoff-note")
-                        }
+                }
+                if !handoffNote.isEmpty {
+                    // 划卡/批准失败别用成功勾；人话开口可再试。
+                    let failed = handoffNote.contains("没成") || handoffNote.contains("还可以") || handoffNote.contains("没接进") || handoffNote.contains("卡还在")
+                    if failed {
+                        InlineNotice(text: handoffNote, tone: .danger)
+                            .accessibilityIdentifier("waiting-handoff-fail")
+                    } else {
+                        Label(handoffNote, systemImage: "checkmark.circle")
+                            .font(TypeScale.footnote.weight(.medium))
+                            .foregroundStyle(Palette.accentText)
+                            .accessibilityIdentifier("waiting-handoff-note")
                     }
-                    if !draftFailNote.isEmpty {
-                        InlineNotice(text: draftFailNote, tone: .danger)
-                            .accessibilityIdentifier("waiting-draft-fail")
-                    }
-                    if !todoFailNote.isEmpty {
-                        InlineNotice(text: todoFailNote, tone: .danger)
-                            .accessibilityIdentifier("waiting-todo-fail")
-                    }
+                }
+                if !draftFailNote.isEmpty {
+                    InlineNotice(text: draftFailNote, tone: .danger)
+                        .accessibilityIdentifier("waiting-draft-fail")
+                }
+                if !todoFailNote.isEmpty {
+                    InlineNotice(text: todoFailNote, tone: .danger)
+                        .accessibilityIdentifier("waiting-todo-fail")
                 }
                 if !decisions.isEmpty {
                     GroupSection("要你拍板 · \(decisions.count)") {
@@ -383,8 +384,18 @@ struct WaitingSheet: View {
                     .enterRise(on: shown, delay: 0.04, y: 14, blur: 6)
                     .animation(ComMotion.reduced(reduce, ComMotion.settle), value: decisions.map(\.id))
                 }
+                section("核对没过", kind: "audit") { item in
+                    AuditCard(item: item) { note in
+                        handoffNote = note
+                        withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { _ = hidden.insert(item.id) }
+                    }
+                }
+                .enterRise(on: shown, delay: 0.06, y: 14, blur: 6)
                 section("航程停下来等你", kind: "case") { item in
-                    row(item, symbol: "rectangle.stack", tone: .warning) { model.openThreadNode(.object(["kind": .string("case"), "id": item["case_id"]])) }
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        row(item, symbol: "rectangle.stack", tone: .warning) { model.openThreadNode(.object(["kind": .string("case"), "id": item["case_id"]])) }
+                        TicketLines(ticket: item["ticket"], showsBasis: false).padding(.leading, 44)
+                    }
                 }
                 .enterRise(on: shown, delay: 0.08, y: 14, blur: 6)
                 section("微信在等你回", kind: "wechat") { item in
@@ -482,6 +493,7 @@ struct WaitingSheet: View {
                         }
                 }
                 .enterRise(on: shown, delay: 0.16, y: 12, blur: 5)
+                concludedSection
     }
     private func pullWaiting(force: Bool) async {
         // 入口 openWaitingInbox 可能已在拉——等它结束，避免叠刷；再根据 errors 开口。
@@ -526,6 +538,20 @@ struct WaitingSheet: View {
             }
         }
     }
+    @ViewBuilder private var concludedSection: some View {
+        let rows = model.waitingData["concluded"].array
+        if !rows.isEmpty {
+            GroupSection("刚拍板的") {
+                GroupedCard {
+                    ForEach(rows.map(RemoteRow.init)) { r in
+                        ListRow(symbol: "checkmark.circle", tone: .success, title: r.value["title"].string, titleLines: 1, subtitle: r.value["text"].string, subtitleLines: 2) {}
+                            .rowPadding()
+                    }
+                }
+            }
+            .accessibilityIdentifier("waiting-concluded")
+        }
+    }
     private func row(_ item: JSON, symbol: String, tone: Tone, open: @escaping () -> Void) -> some View {
         Button(action: open) {
             ListRow(symbol: symbol, tone: tone, title: item["title"].string, titleLines: 1, subtitle: item["why"].string, subtitleLines: 2) {}
@@ -536,12 +562,112 @@ struct WaitingSheet: View {
     }
 }
 
+/// 独立核对没通过的任务：一键发回补做，或者按现状算过。后端 POST /personal/tasks/{id}/audit。
+private struct AuditCard: View {
+    @Environment(AppModel.self) private var model
+    let item: JSON
+    let done: (String) -> Void
+    @State private var busy = false
+    @State private var failNote = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Text(item["title"].string).font(TypeScale.headline).foregroundStyle(Palette.textPrimary).lineLimit(2)
+            TicketLines(ticket: item["ticket"])
+            if !failNote.isEmpty { InlineNotice(text: failNote, tone: .danger) }
+            HStack(spacing: Space.sm) {
+                Button(busy ? "提交中…" : "让它补做") { send("rework", note: "已发回补做，补完会再核对一次") }
+                    .buttonStyle(.secondaryCompact)
+                    .accessibilityIdentifier("audit-rework")
+                Button("就这样吧") { send("accept", note: "已按现状算过") }
+                    .buttonStyle(.quiet)
+                    .accessibilityIdentifier("audit-accept")
+            }
+            .disabled(busy)
+        }
+    }
+    private func send(_ action: String, note: String) {
+        guard !busy else { return }
+        busy = true
+        failNote = ""
+        Task {
+            let ok = await model.action("/personal/tasks/" + item["task_id"].string.pathEncoded + "/audit", fields: ["action": .string(action)], refresh: .doing)
+            busy = false
+            if ok {
+                done(note)
+                _ = await model.load("/personal/waiting")
+            } else {
+                failNote = "没提交成，卡还在，可以再试。"
+            }
+        }
+    }
+}
+
+/// 决定账本：定过的事和定了不做的事，点撤销后立刻不再生效。
+struct DecisionsSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    private let path = "/personal/decisions"
+    @State private var revoking: String?
+    @State private var failNote = ""
+    private var rows: [JSON] { model.datasets[path]?["items"].array ?? [] }
+    var body: some View {
+        NavigationStack {
+            ScrollPage(spacing: Layout.sectionSpacing) {
+                if !failNote.isEmpty { InlineNotice(text: failNote, tone: .danger) }
+                group("定了的事", kind: "decided")
+                group("定了不做的事", kind: "declined")
+                if rows.isEmpty {
+                    EmptyState(title: "还没有记下的决定", description: "你在对话里拍板、驳回审批或划掉建议后，会记在这里。", symbol: "checkmark.seal")
+                }
+            }
+            .navigationTitle("定过的事").navigationBarTitleDisplayMode(.large)
+            .toolbarBackground(Palette.background, for: .navigationBar)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
+            .task { _ = await model.load(path) }
+        }
+    }
+    @ViewBuilder private func group(_ title: String, kind: String) -> some View {
+        let items = rows.filter { $0["kind"].string == kind }
+        if !items.isEmpty {
+            GroupSection(title + " · \(items.count)") {
+                GroupedCard {
+                    ForEach(items.map(RemoteRow.init)) { r in
+                        HStack(alignment: .top, spacing: Space.sm) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(r.value["topic"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textPrimary)
+                                if !r.value["rule"].string.isEmpty { Text(r.value["rule"].string).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary) }
+                                Text("「" + r.value["quote"].string + "」 " + relativeTime(r.value["decided_at"].double)).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                            }
+                            Spacer(minLength: 0)
+                            Button(revoking == r.value["id"].string ? "撤销中…" : "撤销") { revoke(r.value["id"].string) }
+                                .buttonStyle(.quiet)
+                                .disabled(revoking != nil)
+                        }
+                        .rowPadding()
+                    }
+                }
+            }
+        }
+    }
+    private func revoke(_ id: String) {
+        revoking = id
+        failNote = ""
+        Task {
+            let ok = await model.action(path + "/" + id.pathEncoded + "/revoke", refresh: .doing)
+            revoking = nil
+            if ok { _ = await model.load(path) } else { failNote = "没撤销成，这条还在生效，可以再试。" }
+        }
+    }
+}
+
 #if DEBUG
 extension AppModel {
     /// `--ui-cases` 附带：等你收件箱和线索条的验收数据。
     func seedThreadsPreview() {
-        datasets["/personal/waiting"] = .object(["count": .number(3), "items": .array([
-            .object(["id": .string("case:task_demo_wait"), "kind": .string("case"), "title": .string("清理旧素材草稿"), "why": .string("等你批准：删掉 3 份已过期的旧草稿？"), "case_id": .string("task_demo_wait")]),
+        datasets["/personal/waiting"] = .object(["count": .number(4), "concluded": .array([
+            .object(["id": .string("proposal:demo"), "title": .string("清理旧素材"), "text": .string("你没有批准，这件事不执行"), "at": .number(Date().timeIntervalSince1970 - 600)])]), "items": .array([
+            .object(["id": .string("audit:task_demo_audit"), "kind": .string("audit"), "title": .string("核对 27 号棚拍安排"), "why": .string("回报说写了清单，文件没找到"), "task_id": .string("task_demo_audit"), "ticket": .object(["recommend": .string("把清单写到文件里"), "basis": .string("回报说写了清单，但找不到这个文件"), "on_yes": .string("把缺口发回给它，补完再核对一次"), "on_no": .string("按现状算过，这张卡结束")])]),
+            .object(["id": .string("case:task_demo_wait"), "kind": .string("case"), "title": .string("清理旧素材草稿"), "why": .string("等你批准：删掉 3 份已过期的旧草稿？"), "case_id": .string("task_demo_wait"), "ticket": .object(["recommend": .string("看它停在哪，批准或回绝"), "on_yes": .string("批准后它从停下的地方接着做"), "on_no": .string("回绝后这段航程停下")])]),
             .object(["id": .string("wechat:梦雨"), "kind": .string("wechat"), "title": .string("梦雨"), "why": .string("梦雨：周报今天能发吗？")]),
             .object(["id": .string("todo:任务/待处理/大有可攀场地对接.md"), "kind": .string("todo"), "title": .string("大有可攀场地对接"), "why": .string("过期 5 天（计划 10-13）"), "path": .string("任务/待处理/大有可攀场地对接.md")])])])
         let thread: JSON = .object(["nodes": .array([

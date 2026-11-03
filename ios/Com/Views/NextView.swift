@@ -180,6 +180,7 @@ let nextDismissReasons: [(String, String)] = [("elsewhere", "已经办了"), ("o
 
 struct NextView: View {
     @Environment(AppModel.self) private var model
+    @State private var showDecisions = false
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.dockOnSide) private var outer
     private var data: JSON { model.nextData }
@@ -213,8 +214,8 @@ struct NextView: View {
                 InlineNotice(text: model.planOpenNote, tone: .danger)
                     .accessibilityIdentifier("next-plan-open-fail")
             }
-            // 等你拍板的永远排第一：这一页是唯一的行动面，不再单独开一层。
-            if model.waitingInboxCount > 0 { WaitingSheet(embedded: true) }
+            // 等你拍板的永远排第一：这一页是唯一的行动面，不再单独开一层；刚拍完的 24h 内也留着看结论。
+            if model.waitingInboxCount > 0 || !model.waitingData["concluded"].array.isEmpty { WaitingSheet(embedded: true) }
             if let glance, !building { NextGlanceCard(item: glance) }
             let uncertain = model.activityData["uncertain"].array
             if !uncertain.isEmpty {
@@ -362,6 +363,16 @@ struct NextView: View {
                 Text("这周提了 \(week["shown"].int) 件，你用上 \(week["acted"].int) 件、划掉 \(week["dismissed"].int) 件\(precision)\(resolved)。" + (reasons.isEmpty ? "" : "划掉的理由：" + reasons + "。"))
                     .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
             }
+            ForEach(week["suggestions"].array.map(\.string), id: \.self) { text in
+                Label(text, systemImage: "bell.slash").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
+                    .accessibilityIdentifier("next-attention-suggestion")
+            }
+            Button { showDecisions = true } label: {
+                Label("定过的事", systemImage: "checkmark.seal").font(TypeScale.footnote)
+            }
+            .buttonStyle(.quiet)
+            .accessibilityIdentifier("next-open-decisions")
+            .sheet(isPresented: $showDecisions) { DecisionsSheet() }
             Button {
                 guard !model.activityOpening else { return }
                 model.openActivityFeed()
@@ -412,6 +423,9 @@ private struct NextCard: View {
                     else if item["urgency"].string == "now" { Stamp(text: "现在", tone: .warning) }
                 }
                 if !item["why"].string.isEmpty { Text(item["why"].string).font(TypeScale.subheadline).foregroundStyle(Palette.textSecondary).lineSpacing(2) }
+                if !item["ticket"]["on_yes"].string.isEmpty {
+                    Text("点了：" + item["ticket"]["on_yes"].string).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                }
                 if let last = item["history"].array.last {
                     // 10-25 事项持续追踪：最新一步进展（谁回了、改了什么），不再每小时换个说法重写
                     Label(last["text"].string + " · " + relativeTime(last["at"].double), systemImage: "arrow.turn.down.right")

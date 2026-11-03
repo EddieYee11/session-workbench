@@ -546,7 +546,7 @@ class TaskStore:
         result={**task.get('structured_result',{}),'verification_status':'passed','evidence':evidence,
                 'artifacts':artifacts or task.get('artifacts',[]),'coverage':coverage}
         evidence_key=hashlib.sha256(json.dumps(evidence,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:16]
-        return self.change(tid,'verified:'+tid+':'+str(task.get('run_id'))+':'+evidence_key,'verification.passed','验收通过，已记录真实检查证据',
+        return self.change(tid,'verified:'+tid+':'+str(task.get('run_id'))+':'+str(task.get('result_round',0))+':'+evidence_key,'verification.passed','验收通过，已记录真实检查证据',
                            verification_status='passed',structured_result=result,artifacts=result['artifacts'])[0]
 
     def recover(self):

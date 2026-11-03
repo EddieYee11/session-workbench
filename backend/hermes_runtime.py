@@ -26,6 +26,7 @@ class HermesRuntime(HermesClient):
         self.turn_instructions = None
         self.turn_source = None
         self.turn_route = None
+        self.turn_fast_model = False
         self.run_id = ''
         self.delivered, self.failed_inputs = set(), set()
         self.path = self.state / 'hermes-runs.sqlite'
@@ -71,6 +72,9 @@ class HermesRuntime(HermesClient):
             # 手机上的日常对话以快为先：一般问题用低推理，每一步工具调用前都少想一轮。
             # 只有交办编程（L3）保留网关默认推理档。
             body['model_options'] = {'reasoning': {'effort': 'low'}}
+        if self.turn_fast_model:
+            from message_router import fast_model
+            body.update(fast_model())
         if self.turn_history is not None:
             body['conversation_history'] = self.turn_history
             # Freeze the admitted working set. A retry must not acquire newer history
@@ -220,7 +224,7 @@ class HermesRuntime(HermesClient):
         self.session_id = session_id + getattr(self, 'lane_suffix', '')
         from context_builder import build
         from context_working_set import parse_input
-        from message_router import MessageRouter
+        from message_router import MessageRouter, use_fast_model
         started = time.monotonic()
         _,context=parse_input(text)
         request_id=context.get('event_id') or context.get('origin_request_id')
@@ -231,9 +235,10 @@ class HermesRuntime(HermesClient):
         route=MessageRouter(self.state).decide(request_id,working.user)
         from dataclasses import asdict
         self.turn_route=asdict(route)
+        self.turn_fast_model=use_fast_model(route.level,working.user,bool(context.get('attachments')))
         text=working.user
         metrics = {'version':3,'at':time.time(),'input_chars':len(text),**working.sizes,
-                   'automatic_memory_calls':0,'route':route.level,'tool_group':route.group,
+                   'automatic_memory_calls':0,'route':route.level,'tool_group':route.group,'model_tier':'fast' if self.turn_fast_model else 'default',
                    'assembly_ms':round((time.monotonic()-started)*1000,2)}
         try:
             async for event, payload in self.stream(text, request_id, context=context):
@@ -246,6 +251,7 @@ class HermesRuntime(HermesClient):
             self.turn_instructions = None
             self.turn_source = None
             self.turn_route = None
+            self.turn_fast_model = False
             metrics['elapsed_ms']=round((time.monotonic()-started)*1000,2)
             MessageRouter(self.state).complete(request_id,elapsed_ms=metrics['elapsed_ms'],first_text_ms=metrics.get('first_text_ms'),prompt_chars=metrics['input_chars']+metrics['instructions_chars']+metrics['history_chars'])
             with sqlite3.connect(self.path) as db:

@@ -1,4 +1,4 @@
-import asyncio,sys,time
+import asyncio,json,sys,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from next_steps import NextSteps
@@ -283,3 +283,57 @@ def test_dismiss_reasons_feed_back_and_others_do_not_mute_the_topic(tmp_path):
     engine.act(engine.snapshot()['items'][0]['id'],'dismiss',reason='elsewhere')
     week=engine.snapshot()['week']
     assert week['reasons']=={'别人在负责':2,'已经办了':1} and week['dismissed']==2 and week['acted']==1 and week['precision']==0.33
+
+
+class _WechatHub:
+    def matters(self):
+        chat={'name':'杨柳','username':'yl','is_group':False,'mention':False,'keyword':False,'priority':False,'anchor':'9','sender':'杨柳','summary':'周三下午三点来取硬盘，你能先给我吗',
+              'messages':[{'sender':'杨柳','at':NOW-600,'text':'周三下午三点来取硬盘，你能先给我吗'}]}
+        return [{'id':'w1','source':'wechat','title':'微信','facts':{'chats':[chat],'projects':[]},'source_updated_at':NOW-600,'changed_at':NOW-600,'feedback':{}}]
+
+
+def test_wechat_is_context_only_no_reply_nudge_but_calendar_suggestion_stays(tmp_path):
+    async def model(data):
+        ref=data['wechat'][0]['ref']
+        return {'items':[
+            {'title':'回杨柳微信','why':'x','refs':[ref],'prompt':'起草回复','urgency':'now','score':90},
+            {'title':'跟杨柳回个消息','why':'x','refs':[ref],'prompt':'起草回复','urgency':'now','score':90},
+            {'title':'把硬盘给杨柳','why':'周三要用','refs':[ref],'prompt':'提醒我','urgency':'today','score':80,
+             'action':{'type':'reply_wechat','draft':'好的'}},
+            {'title':'回收旧硬盘','why':'清理','refs':[ref],'prompt':'提醒我','urgency':'week','score':30},
+            {'title':'周三下午杨柳取硬盘','why':'约了三点','refs':[ref],'prompt':'加日程','urgency':'today','score':70,
+             'action':{'type':'calendar','title':'杨柳取硬盘','start':'2026-11-04 15:00','end':'2026-11-04 15:30'}}]}
+    engine=NextSteps(tmp_path,_WechatHub(),model=model,clock=lambda:NOW)
+    asyncio.run(engine.refresh(True))
+    items={i['title']:i for i in engine.snapshot()['items']}
+    assert set(items)=={'把硬盘给杨柳','回收旧硬盘','周三下午杨柳取硬盘'}
+    assert 'action' not in items['把硬盘给杨柳']
+    assert items['周三下午杨柳取硬盘']['action']['type']=='calendar'
+
+
+def test_wechat_rules_fallback_and_summary_do_not_ask_him_to_reply(tmp_path):
+    engine=NextSteps(tmp_path,_WechatHub(),model=None,clock=lambda:NOW)
+    asyncio.run(engine.refresh(True))
+    snap=engine.snapshot()
+    assert not [i for i in snap['items'] if i['title'].startswith('回')]
+    assert '在等你' not in json.dumps(snap,ensure_ascii=False)
+
+
+def test_legacy_reply_wechat_card_is_not_kept(tmp_path):
+    rounds=[]
+    async def model(data):
+        ref=data['wechat'][0]['ref'] if data['wechat'] else 'x'
+        rounds.append(1)
+        if len(rounds)==1:
+            return {'items':[{'title':'把硬盘给杨柳','why':'x','refs':[ref],'prompt':'x','urgency':'today','score':60}]}
+        return {'items':[{'keep':current} for current in [i['id'] for i in data['current']]]}
+    engine=NextSteps(tmp_path,_WechatHub(),model=model,clock=lambda:NOW)
+    asyncio.run(engine.refresh(True))
+    ident=engine.snapshot()['items'][0]['id']
+    with engine.db() as db:
+        row=json.loads(db.execute('SELECT data FROM items WHERE id=?',(ident,)).fetchone()['data'])
+        row['action']={'type':'reply_wechat','draft':'好的','to':'杨柳'}
+        db.execute('UPDATE items SET data=? WHERE id=?',(json.dumps(row,ensure_ascii=False),ident))
+    raw={'items':[{'keep':ident}]}
+    engine._refs={}
+    assert engine.clean(raw,{})==[]

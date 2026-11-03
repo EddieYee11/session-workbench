@@ -1,0 +1,17 @@
+{
+  "defaults": {"cooldown_minutes": 120, "parallel": 2, "model": ""},
+  "rules": [
+    {"name": "数据型来源只喂下一步", "when": {"sources": ["weather", "garmin", "phone_health", "accounting"]}, "then": "filter", "reason": "quiet_source"},
+    {"name": "微信只作上下文", "when": {"sources": ["wechat", "wechat_digest"]}, "then": "filter", "reason": "context_only"},
+    {"name": "Com 自己的任务不再判断", "when": {"sources": ["com_task"]}, "then": "filter", "reason": "own_task"},
+    {"name": "群发发件人", "when": {"actor": "no-?reply|newsletter|marketing|mailer-daemon"}, "then": "filter", "reason": "bulk"},
+    {"name": "带退订的群发", "when": {"text": "退订|unsubscribe"}, "then": "filter", "reason": "bulk"},
+    {"name": "邮件", "when": {"sources": ["gmail", "work_mail"]}, "then": "judge", "mandate": true},
+    {"name": "日程", "when": {"sources": ["apple_calendar", "google_calendar", "phone_calendar"]}, "then": "judge", "mandate": true},
+    {"name": "其他来源只判断", "when": {}, "then": "judge"}
+  ],
+  "conversation": {
+    "fast_model": {"model": "volcengine/deepseek-v4.1-flash", "provider": "magpie"},
+    "deep_work": "分析|方案|对比|评估|复盘|设计|架构|为什么|怎么看|调研|研究|规划|策略|排查|起草|帮我写|写一(?:篇|份|段)|最该|先处理|先做|优先|该不该|值不值|debug"
+  }
+}

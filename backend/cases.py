@@ -472,14 +472,23 @@ class Cases:
             raise ValueError('说点什么再发')
         task = next((t for t in self.store.list() if t['id'] == task_id), None)
         if task and task['status'] in ('execution_finished', 'failed') and task.get('session_id'):
-            run_id = await self.controller.runtime.input(task['session_id'], '[Eddie 在航程里补充]\n' + text + CASE_RULES, request_id)
-            if not run_id:
+            try:
+                run_id = await self.controller.runtime.input(task['session_id'], '[Eddie 在航程里补充]\n' + text + CASE_RULES, request_id)
+            except Exception:
+                if task.get('agent') != 'pi':
+                    raise
+                run_id = ''
+            if run_id:
+                self.store.change(task_id, 'reopen:' + request_id, 'input_accepted_after_finish', text,
+                                  status='running', run_id=run_id, verification_status='pending')
+                result = {'task_id': task_id, 'request_id': request_id, 'delivery': 'delivered', 'reopened': True}
+            elif task.get('agent') == 'pi':
+                await self.revive(task, '[Eddie 在航程里补充]\n' + text, request_id)
+                result = {'task_id': task_id, 'request_id': request_id, 'delivery': 'delivered', 'revived': True}
+            else:
                 raise ValueError('Pi 会话没有接住这句话，请稍后再试')
-            self.store.change(task_id, 'reopen:' + request_id, 'input_accepted_after_finish', text,
-                              status='running', run_id=run_id, verification_status='pending')
-            result = {'task_id': task_id, 'request_id': request_id, 'delivery': 'delivered', 'reopened': True}
-        elif task and task['status'] == 'unknown' and task.get('agent') == 'pi':
-            # 卡在「状态未知」的航程：执行器已经停了（超时被中止或服务重启），他说「继续」就接着往下做
+        elif task and task['status'] in ('unknown', 'execution_finished', 'failed') and task.get('agent') == 'pi':
+            # 卡在「状态未知」或重启后原会话丢失的航程：新开会话带上上下文接着做
             await self.revive(task, '[Eddie 在航程里补充]\n' + text, request_id)
             result = {'task_id': task_id, 'request_id': request_id, 'delivery': 'delivered', 'revived': True}
         else:

@@ -1165,6 +1165,9 @@ struct AcceptancePanel: View {
     private var statusText: String {
         switch data["status"].string {
         case "passed": "验收通过"
+        case "reviewed": "独立核对看过，内容符合要求"
+        case "accepted": "你看过了，按现状算过"
+        case "needs_work": "独立核对发现缺口"
         case "pending": "还在做，做完再验"
         case "failed": "验收没过"
         case "uncertain": "结果不确定，要核实"
@@ -1173,7 +1176,7 @@ struct AcceptancePanel: View {
     }
     private var statusTone: Tone {
         switch data["status"].string {
-        case "passed": .success
+        case "passed", "reviewed", "accepted": .success
         case "pending": .info
         case "failed": .danger
         default: .warning
@@ -1181,7 +1184,7 @@ struct AcceptancePanel: View {
     }
     private var statusSymbol: String {
         switch data["status"].string {
-        case "passed": "checkmark.seal.fill"
+        case "passed", "reviewed", "accepted": "checkmark.seal.fill"
         case "pending": "hourglass"
         case "failed": "xmark.octagon"
         default: "exclamationmark.triangle"

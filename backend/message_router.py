@@ -67,6 +67,22 @@ def classify(text, now=None):
     return Route('L2','general','处理中')
 
 
+# 11-02 Eddie 拍板：日常对话和查询走 flash；要深度判断、带附件、交办开发的留给网关默认模型（grok）。
+# 模型和判据在 event_rules.json 的 conversation 段；「最该先做什么」这类排优先级算判断：
+# 11-02 同题对比里 flash 把退指力板排在给人打款的劳务单前面。
+def fast_model():
+    from event_rules import rules
+    return rules.conversation().get('fast_model') or {}
+
+
+def use_fast_model(level,text,has_attachments=False):
+    from event_rules import rules
+    if has_attachments:return False
+    if level=='L1':return True
+    deep=rules.conversation().get('deep_work')
+    return level=='L2' and len(text or '')<=200 and not (deep and re.search(deep,text or '',re.I))
+
+
 class MessageRouter:
     def __init__(self,state):
         self.path=Path(state)/'message-routing.sqlite'

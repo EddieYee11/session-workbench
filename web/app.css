@@ -191,6 +191,7 @@ button.card:active { transform: scale(.985); }
 .group { margin: 22px 0 8px; }
 .group-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0 4px 10px; }
 .group-head h3 { margin: 0; font: 600 20px var(--round); }
+.ticket { display: grid; gap: 3px; margin: 6px 0; } .ticket b { color: var(--text-3); margin-right: 4px; }
 .foot { color: var(--text-3); font-size: 13px; padding: 0 4px; }
 .plain { display: block; width: 100%; text-align: left; }
 

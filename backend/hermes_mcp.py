@@ -306,7 +306,7 @@ def cancel_task(task_id: str, request_id: str, origin_message_id: str,
 
 
 def _shared(name:str,args:dict[str,Any],context:dict[str,Any]|None=None)->dict[str,Any]:
-    if name not in {'turn_plan','context_read','capability_search','task_submit','task_status','task_send','task_cancel','task_resume','task_verify','task_merge','propose_work','artifact_register','memory_recall','business_call','memory_save','briefing_refresh','personal_briefing','briefing_annotate','matter_link','matter_unlink','personal_observation','personal_autonomy','personal_action_undo','device_call','calendar_read','calendar_adjust'}:
+    if name not in {'turn_plan','context_read','capability_search','task_submit','task_status','task_send','task_cancel','task_resume','task_verify','task_merge','propose_work','artifact_register','memory_recall','business_call','memory_save','decision_record','briefing_refresh','personal_briefing','briefing_annotate','matter_link','matter_unlink','personal_observation','personal_autonomy','personal_action_undo','device_call','calendar_read','calendar_adjust'}:
         raise ValueError('Route is not allowed')
     with httpx.Client(timeout=180,trust_env=False,follow_redirects=False) as client:
         response=client.post(COM_BASE_URL+'/internal/agent/'+name,
@@ -419,6 +419,12 @@ def memory_save(content:str,category:Literal['关于我','工作','项目','生�
     data=locals()
     context={k:data[k] for k in ('origin_session_id','origin_message_id','origin_request_id')}
     return _shared('memory_save',data,context)
+
+@mcp.tool(description='Record a decision Eddie just made in his own words. kind=decided: how something should be done from now on; kind=declined: something he does not want raised again. source_quote must be copied from his current message.')
+def decision_record(topic:str,source_quote:str,origin_session_id:str,origin_message_id:str,origin_request_id:str,kind:Literal['decided','declined']='decided',rule:str='')->dict[str,Any]:
+    data=locals()
+    context={k:data[k] for k in ('origin_session_id','origin_message_id','origin_request_id')}
+    return _shared('decision_record',data,context)
 
 @mcp.tool(description='Refresh configured personal sources and the existing briefing. Used by the dedicated Com Hermes Cron; unavailable authorization remains explicit. No external sending or calendar mutation.')
 def briefing_refresh(group:Literal['all','mail','health']='all',force:bool=False)->dict[str,Any]:

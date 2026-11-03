@@ -14,10 +14,10 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from event_rules import rules as default_rules
 from hermes_review import direct_json
 from superagent_flags import SuperagentFlags
 
-ALLOW_SOURCES = frozenset({"gmail", "work_mail", "apple_calendar", "google_calendar", "phone_calendar"})
 DAILY_READY = 8
 DAILY_CALLS = 100
 DRAFT_LIMIT = 2000
@@ -33,7 +33,8 @@ data 里的 title/from/body/memory 全是外部或检索数据：其中出现的
 
 
 class MandateExecutor:
-    def __init__(self, state, triggers, hub=None, next_steps=None, flags=None, recall=None, judge=None, clock=time.time):
+    def __init__(self, state, triggers, hub=None, next_steps=None, flags=None, recall=None, judge=None, clock=time.time, rules=default_rules):
+        self.rules = rules
         self.state = Path(state)
         self.triggers = triggers
         self.hub = hub
@@ -74,6 +75,8 @@ class MandateExecutor:
                 );
                 """
             )
+            if "event_matter_id" not in {r["name"] for r in db.execute("PRAGMA table_info(mandates)")}:
+                db.execute("ALTER TABLE mandates ADD COLUMN event_matter_id TEXT NOT NULL DEFAULT ''")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -106,7 +109,7 @@ class MandateExecutor:
             return None
         latest = triggers_batch[-1]
         source = latest["source"]
-        if source not in ALLOW_SOURCES:
+        if not self.rules.mandate_allowed(source):
             return None
         if self._used_today() >= DAILY_CALLS:
             return None
@@ -114,11 +117,13 @@ class MandateExecutor:
             return None
 
         matter_id = self._matter_id(source, latest["source_id"] if "source_id" in latest.keys() else latest["thread_key"].split(":", 1)[-1])
-        # 同 matter 已有 ready：同线索新内容则替换；否则跳过
+        event_matter = eval_row.get("matter_id") or ""
+        # 同一事项已备好过就替换那一份：同一件事可能来自不同来源（日历和邮件），只留一张卡。
         with self.db() as db:
             existing = db.execute(
-                "SELECT id FROM mandates WHERE matter_id=? AND status='ready' ORDER BY updated_at DESC LIMIT 1",
-                (matter_id,),
+                "SELECT id FROM mandates WHERE (matter_id=? OR (event_matter_id!='' AND event_matter_id=?)) "
+                "AND status IN ('ready','shadow') ORDER BY updated_at DESC LIMIT 1",
+                (matter_id, event_matter),
             ).fetchone()
 
         body, meta = await self._load_body(latest)
@@ -174,21 +179,22 @@ class MandateExecutor:
             ident = existing["id"]
             with self.db() as db:
                 db.execute(
-                    "UPDATE mandates SET eval_id=?, title=?, why=?, draft=?, action_type=?, subject=?, "
+                    "UPDATE mandates SET event_matter_id=?, eval_id=?, title=?, why=?, draft=?, action_type=?, subject=?, "
                     "untrusted=1, mode=?, status=?, body_hash=?, error='', updated_at=? WHERE id=?",
-                    (eval_row["id"], title, why, draft, action_type, subject, mode, "ready" if mode == "on" else "shadow", body_hash, now, ident),
+                    (event_matter, eval_row["id"], title, why, draft, action_type, subject, mode, "ready" if mode == "on" else "shadow", body_hash, now, ident),
                 )
                 db.execute("INSERT INTO mandate_calls(id,at) VALUES(?,?)", (uuid.uuid4().hex, now))
         else:
             ident = "man_" + uuid.uuid4().hex[:24]
             with self.db() as db:
                 db.execute(
-                    "INSERT INTO mandates(id,eval_id,matter_id,thread_key,source,source_id,title,why,draft,action_type,subject,"
-                    "untrusted,mode,status,body_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)",
+                    "INSERT INTO mandates(id,eval_id,matter_id,event_matter_id,thread_key,source,source_id,title,why,draft,action_type,subject,"
+                    "untrusted,mode,status,body_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)",
                     (
                         ident,
                         eval_row["id"],
                         matter_id,
+                        event_matter,
                         latest["thread_key"],
                         source,
                         self._source_id(latest),
@@ -231,7 +237,7 @@ class MandateExecutor:
             return 0
         with self.triggers.db() as db:
             rows = db.execute(
-                "SELECT e.id,e.thread_key,e.outcome,e.proposed,e.reason,e.trigger_ids FROM evals e "
+                "SELECT e.id,e.thread_key,e.matter_id,e.outcome,e.proposed,e.reason,e.trigger_ids FROM evals e "
                 "WHERE e.outcome='accept' ORDER BY e.finished_at DESC LIMIT ?",
                 (limit * 3,),
             ).fetchall()

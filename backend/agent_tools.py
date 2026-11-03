@@ -123,6 +123,13 @@ class AgentTools:
             if args.get("kind") == "history":
                 return read_history(self.path.parent, args.get("query", ""), args.get("reference", ""), args.get("limit", 5), args.get("offset", 0), args.get("before", ""))
             raise ValueError("Unknown context kind")
+        if name == "decision_record":
+            row = source(self.conversation, context)
+            from decisions import is_explicit_quote
+
+            if not is_explicit_quote(args.get("source_quote"), row["raw_text"]):
+                raise ValueError("决定必须引用 Eddie 这条消息里的原话")
+            return self.decisions.add(args.get("kind", "decided"), args.get("topic"), args["source_quote"], "chat", row["id"] + ":" + str(args.get("topic"))[:40], rule=args.get("rule", ""))
         if name == "memory_save":
             row = source(self.conversation, context)
             quote = args.get("source_quote", "")

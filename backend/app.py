@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import sys
 import os
 import pty
 import secrets
@@ -174,7 +175,12 @@ next_steps = NextSteps(
 from runsheet import INSTRUCTIONS as RUNSHEET_INSTRUCTIONS
 from runsheet import RunSheets
 from triggers import Triggers
+from decisions import Decisions, goal_ticket, proposal_ticket, seed_from_next_steps
+from decisions import ticket as card_ticket
+from business_tools import BusinessTools
 from evals import Evals
+from task_audit import TaskAudit, rework_message, ticket_for
+from worker_queue import WorkerQueue
 from mandate_executor import MandateExecutor
 from superagent_flags import SuperagentFlags
 from router_plan import RouterPlan
@@ -193,7 +199,10 @@ async def _mandate_on_accept(eval_row, batch):
     await mandates.handle_eval(eval_row, batch)
 
 
-evals = Evals(triggers, muted=next_steps.is_muted, on_accept=_mandate_on_accept)
+decision_ledger = Decisions(STATE)
+next_steps.decisions = decision_ledger
+evals = Evals(triggers, muted=next_steps.is_muted, on_accept=_mandate_on_accept, decisions=decision_ledger)
+worker_queue = WorkerQueue(STATE)
 
 
 async def runsheet_model(payload):
@@ -413,10 +422,18 @@ async def lifespan(app):
 
     async def eval_loop():
         await asyncio.sleep(45)
+        with contextlib.suppress(Exception):
+            with next_steps.db() as db:
+                dismissed = [tuple(r) for r in db.execute("SELECT id,data,updated_at FROM items WHERE state='dismissed'")]
+            await asyncio.to_thread(seed_from_next_steps, decision_ledger, dismissed)
         while True:
             with contextlib.suppress(Exception):
                 await evals.run_once()
                 await mandates.process_pending_accepts()
+            try:
+                await task_audit.run_once()
+            except Exception as error:
+                print("task_audit failed:", type(error).__name__, str(error)[:300], file=sys.stderr, flush=True)
             await asyncio.sleep(60)
 
     eval_task = asyncio.create_task(eval_loop())
@@ -860,6 +877,7 @@ async def personal_work_proposals(limit: int = 20):
     items = work_proposals.list(limit)
     for item in items:
         item["parent_message_id"] = item["origin_message_id"]
+        item["ticket"] = proposal_ticket(item)
         task_store.ensure(item)
     return {"items": items}
 
@@ -938,6 +956,7 @@ async def approve_personal_work(proposal_id: str, request: Request):
             )
             for command in initial_inputs:
                 task_store.transition_input(command["request_id"], ("sending",), "delivered")
+            decision_ledger.conclude("proposal:" + proposal_id, proposal.get("title", "审批卡"), "你批准了，已开始执行")
             return work_proposals.mark_accepted(proposal_id, request_id, sid)
         except Exception as exc:
             task_store.change(
@@ -963,12 +982,16 @@ async def reject_personal_work(proposal_id: str):
     proposal = work_proposals.reject(proposal_id)
     task_store.ensure(proposal)
     task_store.change(proposal_id, "rejected:" + proposal_id, "rejected", status="rejected")
+    title = proposal.get("title") or "审批卡"
+    decision_ledger.add("declined", title, "驳回审批卡：" + title, "work_proposal", proposal_id)
+    decision_ledger.conclude("proposal:" + proposal_id, title, "你没有批准，这件事不执行")
     return proposal
 
 
 @app.get("/personal/goal-proposals")
 async def personal_goal_proposals(limit: int = 10):
-    return {"items": goal_proposals.list(limit)}
+    items = goal_proposals.list(limit)
+    return {"items": [{**item, "ticket": goal_ticket(item)} for item in items]}
 
 
 @app.post("/personal/goal-proposals/{proposal_id}/decide")
@@ -990,6 +1013,7 @@ async def decide_personal_goals(proposal_id: str, request: Request):
                 decision["request_id"],
                 apply_decision(goal_proposals.get(proposal_id), decision),
             )
+            decision_ledger.conclude("goal:" + proposal_id, "目标提案", f"写入 {len(approved)} 条，放弃 {len(rejected)} 条")
         return decision
 
 
@@ -999,7 +1023,8 @@ async def personal_tasks():
         task_store.ensure(proposal)
     items = []
     for task in task_store.list():
-        item = {**task, "acceptance_passed": accepted(task)}
+        # 独立核对收过口的不再按「待验收」进拍板清单；没过的走「等你」里的核对卡，不重复出现。
+        item = {**task, "acceptance_passed": accepted(task) or task.get("verification_status") in ("reviewed", "accepted", "needs_work") or bool(task.get("audit") and task.get("verification_status") == "uncertain")}
         request_id = task.get("origin_request_id", "")
         sid = task.get("session_id", "")
         if sid and request_id.startswith("work:"):
@@ -2662,6 +2687,23 @@ cases = Cases(
 )
 conversation.task_artifacts = cases.artifacts_for
 agent_tools.cases = cases
+agent_tools.decisions = decision_ledger
+
+
+def _audit_skip(task):
+    # 航程还停着等他批准的，不算做完。
+    with cases.db() as db:
+        row = db.execute("SELECT data FROM cases WHERE task_id=?", (task["id"],)).fetchone()
+    return bool(row and json.loads(row[0]).get("waiting"))
+
+
+def _audit_paths(task):
+    with cases.db() as db:
+        row = db.execute("SELECT data FROM cases WHERE task_id=?", (task["id"],)).fetchone()
+    return (json.loads(row[0]).get("artifacts") or []) if row else []
+
+
+task_audit = TaskAudit(task_store, STATE, HOME / "AI_Work_System", effects=STATE / "tool-effects.sqlite", business=BusinessTools(STATE), skip=_audit_skip, extra_paths=_audit_paths)
 cases.artifact_access = artifact_access
 tomorrow_plan = TomorrowPlan(STATE, next_steps, today_view, cases, conversation)
 from threads import Threads
@@ -2921,7 +2963,6 @@ async def personal_thread(key: str):
     return await asyncio.to_thread(run)
 
 
-WECHAT_SELF = {"我", "高杰", "野望", "野哥", "小野", "Eddie"}
 WAITING_ACK = STATE / "waiting-ack.json"
 
 
@@ -2933,8 +2974,7 @@ def waiting_ack(ident, at):
 
 
 def waiting_items():
-    """统一「等你」（审批卡在 App 里另有数据，由客户端并进来）：等你批准的航程、过期待办、微信里有人在等回话。"""
-    import re
+    """统一「等你」（审批卡在 App 里另有数据，由客户端并进来）：等你批准的航程、过期待办。微信只进下一步的上下文，不催回复（11-02）。"""
     from datetime import timedelta
 
     from waiting_inbox import drop_acked, load_acks
@@ -2953,20 +2993,6 @@ def waiting_items():
                     "why": "等你批准：" + ((c.get("waiting") or {}).get("question") or "它停下来了"),
                     "at": c["updated_at"],
                     "case_id": c["id"],
-                }
-            )
-    for chat in (today_view.wechat_digest(start, start + timedelta(days=1)) or {}).get("chats", []):
-        last = (chat.get("messages") or [{}])[-1]
-        if re.search(r"bot|机器人|助手|通知|提醒", chat["name"], re.I):  # 自己的提醒机器人（如 微信ClawBot / 果到雷达）不算有人在等
-            continue
-        if (not chat["is_group"] or chat["mention"]) and last.get("sender") and last["sender"] not in WECHAT_SELF:
-            items.append(
-                {
-                    "id": "wechat:" + chat["name"],
-                    "kind": "wechat",
-                    "title": chat["name"] + ("（群里 @你）" if chat["is_group"] else ""),
-                    "why": last["sender"] + "：" + str(last.get("text") or "")[:60],
-                    "at": last.get("at") or chat["at"],
                 }
             )
     for t in today_view.todo_index():
@@ -2992,7 +3018,24 @@ def waiting_items():
                     "url": _obsidian_url(t["path"]),
                 }
             )
-    rank = {"case": 0, "wechat": 1, "todo": 2}
+    for task in task_audit.waiting():
+        items.append(
+            {
+                "id": "audit:" + task["id"],
+                "kind": "audit",
+                "title": task["title"],
+                "why": (task.get("audit") or {}).get("reason", "核对没通过")[:120],
+                "at": (task.get("audit") or {}).get("at", 0),
+                "task_id": task["id"],
+                "ticket": ticket_for(task),
+            }
+        )
+    for item in items:
+        if item["kind"] == "case":
+            item["ticket"] = card_ticket("看它停在哪，批准或回绝", item["why"], "批准后它从停下的地方接着做", "回绝后这段航程停下")
+        elif item["kind"] == "todo":
+            item["ticket"] = card_ticket("还要做就改期，不做就标完成", item["why"], "按你选的更新行动台")
+    rank = {"audit": 0, "case": 0, "wechat": 1, "todo": 2}
     items = drop_acked(items, load_acks(WAITING_ACK))
     items.sort(key=lambda i: (rank[i["kind"]], -i["at"]))
     return items
@@ -3001,7 +3044,101 @@ def waiting_items():
 @app.get("/personal/waiting")
 async def personal_waiting():
     items = await asyncio.to_thread(waiting_items)
-    return {"items": items, "count": len(items)}
+    return {"items": items, "count": len(items), "concluded": decision_ledger.conclusions()}
+
+
+# 11-02 决定账本、核对、打扰统计、MBP 接单 --------------------------------------------------
+@app.get("/personal/decisions")
+async def personal_decisions(kind: str = ""):
+    return {"items": await asyncio.to_thread(decision_ledger.items, kind)}
+
+
+@app.post("/personal/decisions")
+async def personal_decision_add(request: Request):
+    data = await request.json()
+    try:
+        return decision_ledger.add(data.get("kind", "decided"), data.get("topic"), data.get("quote"), "app", data.get("source_ref", ""), rule=data.get("rule", ""), at=data.get("at"))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/personal/decisions/{ident}/revoke")
+async def personal_decision_revoke(ident: str):
+    try:
+        return decision_ledger.revoke(ident)
+    except KeyError:
+        raise HTTPException(404, "这条决定不存在或已撤销") from None
+
+
+@app.post("/personal/tasks/{task_id}/audit")
+async def personal_task_audit(task_id: str, request: Request):
+    """核对卡上的两个按钮：rework 把缺口发回给任务，accept 按现状算过。"""
+    data = await request.json()
+    task = next((t for t in task_audit.waiting() if t["id"] == task_id), None)
+    if not task:
+        raise HTTPException(404, "这张核对卡已经处理过了")
+    audit = task.get("audit") or {}
+    if data.get("action") == "rework":
+        text = rework_message(task)
+        req_id = data.get("request_id") or f"audit-rework:{task_id}:{audit.get('rounds', 0)}:{time.time_ns()}"
+        try:
+            result = await cases.send(task_id, text, req_id)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        decision_ledger.conclude("audit:" + task_id, task["title"], "已发回补做，补完会再核对一次")
+        return result
+    if data.get("action") == "accept":
+        task_store.change(task_id, f"audit-accepted:{task_id}:{audit.get('rounds', 0)}:{time.time_ns()}", "audit.accepted", "Eddie 看过核对结果，按现状算过",
+                          verification_status="accepted", audit={**audit, "settled": True})
+        decision_ledger.conclude("audit:" + task_id, task["title"], "你看过了，按现状算过")
+        return {"ok": True}
+    raise HTTPException(400, "只能是 rework 或 accept")
+
+
+@app.get("/personal/attention")
+async def personal_attention(days: int = 7):
+    from attention import report
+
+    return await asyncio.to_thread(report, next_steps, triggers, max(1, min(days, 90)))
+
+
+@app.get("/workers/{machine}/claim")
+async def worker_claim(machine: str, wait: int = 50):
+    try:
+        return {"job": await worker_queue.claim(machine, wait)}
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/workers/{machine}/jobs/{ident}/result")
+async def worker_result(machine: str, ident: str, request: Request):
+    data = await request.json()
+    try:
+        return worker_queue.finish(ident, machine, bool(data.get("ok")), data.get("result"))
+    except KeyError:
+        raise HTTPException(404, "这个活不在等结果") from None
+
+
+@app.post("/workers/{machine}/jobs")
+async def worker_create(machine: str, request: Request):
+    data = await request.json()
+    try:
+        return worker_queue.create(machine, data.get("kind", ""), data.get("prompt", ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.get("/workers/jobs/{ident}")
+async def worker_job(ident: str):
+    try:
+        return worker_queue.get(ident)
+    except KeyError:
+        raise HTTPException(404, "没有这个活") from None
+
+
+@app.get("/workers")
+async def worker_status():
+    return worker_queue.status()
 
 
 @app.post("/personal/waiting/ack")

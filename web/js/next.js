@@ -67,6 +67,7 @@ function nextCard(item, i) {
   return html`<div class="card ${item.urgency === 'now' ? 'hl accent' : ''} next-card rise" style="--d:${i * 50}ms" data-next="${item.id}">
     <div class="row between top"><h3>${item.title}</h3>${item.phase === 'waiting' ? stamp('等对方', 'info') : item.phase === 'progress' ? stamp('进展中', 'accent') : item.urgency === 'now' ? stamp('现在', 'warning') : ''}</div>
     ${item.why ? html`<p class="sub">${item.why}</p>` : ''}
+    ${item.ticket?.on_yes ? html`<small class="muted">点了：${item.ticket.on_yes}</small>` : ''}
     ${(item.history || []).length ? (() => { const h = item.history[item.history.length - 1]; return html`<small class="muted row">${icon('right')}${h.text} · ${relativeTime(h.at)}</small>`; })() : ''}
     ${(item.evidence || []).length ? pocket(item) : ''}
     ${nextActions(item)}</div>`;
@@ -74,10 +75,13 @@ function nextCard(item, i) {
 
 // ─── 等你（放在页面最上面）与已排程 ───
 function waitingBlock() {
-  const n = waitingCount(); if (!n) return '';
+  const n = waitingCount();
+  const concluded = waitingData().concluded || [];
+  if (!n && !concluded.length) return '';
   const rows = [...flowItems.filter((i) => !i.stale), ...(waitingData().items || [])].slice(0, 3);
-  return section(`等你 · ${n}`, html`<div class="card list">${rows.map((i) => html`<button class="list-row" data-act="waiting-open"><span class="badge warning">${icon('hand')}</span><span><b>${i.title}</b>${i.why ? html`<small>${i.why}</small>` : ''}</span>${icon('right', 'chev')}</button>`)}
-    ${n > rows.length ? html`<button class="list-row" data-act="waiting-open"><span><b>还有 ${n - rows.length} 件，去看全部</b></span>${icon('right', 'chev')}</button>` : ''}</div>`);
+  return html`${n ? section(`等你 · ${n}`, html`<div class="card list">${rows.map((i) => html`<button class="list-row" data-act="waiting-open"><span class="badge warning">${icon('hand')}</span><span><b>${i.title}</b>${i.why ? html`<small>${i.why}</small>` : ''}</span>${icon('right', 'chev')}</button>`)}
+    ${n > rows.length ? html`<button class="list-row" data-act="waiting-open"><span><b>还有 ${n - rows.length} 件，去看全部</b></span>${icon('right', 'chev')}</button>` : ''}</div>`) : ''}
+    ${concluded.length ? section('刚拍板的', html`<div class="card list">${concluded.slice(0, 3).map((c) => html`<button class="list-row" data-act="waiting-open"><span class="badge success">${icon('checkCircle')}</span><span><b>${c.title}</b><small>${c.text}</small></span></button>`)}</div>`) : ''}`;
 }
 let routinesOpen = false;
 const routineBusy = new Set();
@@ -140,6 +144,7 @@ export function renderNext(root) {
     ${groups.map(([t, rows]) => section(t === '现在' ? '现在 · 先办' : t, html`${rows.map((r) => nextCard(r, n++))}`))}
     ${fin && fin.available ? section('账本', ledgerNote(fin)) : ''}
     ${week.shown > 0 ? html`<p class="foot">这周提了 ${week.shown} 件，你用上 ${week.acted || 0} 件、划掉 ${week.dismissed || 0} 件${week.precision != null ? '，准确率 ' + Math.round(week.precision * 100) + '%' : ''}${week.resolved > 0 ? '；群里已经办完、我自动收起 ' + week.resolved + ' 件' : ''}。${Object.keys(week.reasons || {}).length ? '划掉的理由：' + Object.entries(week.reasons).sort((a, b) => b[1] - a[1]).map(([k, n]) => k + ' ' + n).join(' · ') + '。' : ''}</p>` : ''}
+    ${(week.suggestions || []).map((t) => html`<p class="foot">${t}</p>`)}
     ${routinesBlock()}
     <button class="btn quiet" data-act="open-activity">${icon('checklist')}看它替你做过的事</button>
   </div>`.s;

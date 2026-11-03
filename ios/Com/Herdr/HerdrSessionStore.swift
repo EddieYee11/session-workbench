@@ -139,7 +139,10 @@ final class HerdrSessionStore {
         self.client = client
         phase = .connected
         snapshot = try? await client.snapshot()
-        guard current == generation else { return }
+        guard current == generation else {
+            await client.stop()
+            return
+        }
         let events = await client.events()
         try? await client.subscribe(["workspace.updated", "tab.focused", "pane.focused", "pane.updated", "pane.created", "pane.closed"].map {
             .object(["type": .string($0)])

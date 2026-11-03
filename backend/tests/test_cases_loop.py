@@ -323,6 +323,15 @@ def test_eddie_saying_continue_revives_unknown_case(tmp_path):
     assert any(t['text'] == '继续' for t in cases.detail(tid)['timeline'])
 
 
+def test_finished_case_reopens_via_revive_when_worker_restarted(tmp_path):
+    store, cases, tid = stuck_case(tmp_path)
+    store.finish(tid, 'execution_finished', '第一轮结论')
+    result = asyncio.run(cases.send(tid, '补上回读证据', 'req-rework-after-restart'))
+    task = next(t for t in store.list() if t['id'] == tid)
+    assert result['revived'] and task['status'] == 'running' and task['session_id'] == 'pi:new'
+    assert task['verification_status'] == 'pending'
+
+
 def test_failed_with_no_result_is_rescued_too(tmp_path):
     """服务重启后账本把中断的一轮收成 failed（没有结果正文）：同样接着跑，而不是停在失败。"""
     store, cases, tid = stuck_case(tmp_path)

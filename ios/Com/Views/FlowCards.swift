@@ -344,6 +344,31 @@ func sourceSymbol(_ source: String) -> String {
 }
 
 /// 一件等你决定的事：来源行 → 标题/摘要 → 草稿 → 操作。左划归档/划掉，右划直接做，长按聊。
+/// 票拟：建议怎么办、凭什么、点了会发生什么。后端 decisions.ticket。
+struct TicketLines: View {
+    let ticket: JSON
+    /// 卡片已经把依据写在正文时不再重复。
+    var showsBasis = true
+    var body: some View {
+        if !ticket["recommend"].string.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                line("建议", ticket["recommend"].string)
+                if showsBasis { line("依据", ticket["basis"].string) }
+                line("同意", ticket["on_yes"].string)
+                line("不同意", ticket["on_no"].string)
+            }
+        }
+    }
+    @ViewBuilder private func line(_ label: String, _ text: String) -> some View {
+        if !text.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                Text(label).font(TypeScale.footnote.weight(.semibold)).foregroundStyle(Palette.textTertiary)
+                Text(text).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
 struct PendingNote: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -375,6 +400,7 @@ struct PendingNote: View {
                 }.buttonStyle(.plain)
                 if !item.draft.isEmpty { LinedText(text: item.draft) }
                 if item.kind == .proposal { ApprovalScopeView(action: item.value["actual_action"]).font(TypeScale.footnote) }
+                TicketLines(ticket: item.value["ticket"], showsBasis: item.detail != item.value["ticket"]["basis"].string)
                 actions
             }
             .padding(Space.lg)
@@ -592,6 +618,7 @@ struct ProposalDetail: View {
                     Text("要你决定").font(TypeScale.section)
                     RichText(text: proposal["prompt"].string)
                     ApprovalScopeView(action: proposal["actual_action"])
+                    TicketLines(ticket: proposal["ticket"])
                     if proposal["expires_at"].double > 0 {
                         Text("请在 " + clockTime(proposal["expires_at"].double) + " 前确认；过期不会执行。").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
                     }

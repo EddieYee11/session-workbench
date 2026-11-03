@@ -15,10 +15,10 @@ NO_TOOLS='\n只做本轮数据判断，不调用工具，不派发任务，不�
 def _json_object(text):
  return json.loads(text[text.index('{'):text.rindex('}')+1])
 
-async def direct_json(instructions,data,timeout):
+async def direct_json(instructions,data,timeout,model=None):
  """Raises when Magpie is unavailable, so the caller can fall back."""
  provider=json.loads(MODELS.read_text())['providers']['magpie']
- body={'model':DIRECT_MODEL,'temperature':0.3,'max_tokens':8000,'thinking':{'type':'disabled'},'response_format':{'type':'json_object'},
+ body={'model':model or DIRECT_MODEL,'temperature':0.3,'max_tokens':8000,'thinking':{'type':'disabled'},'response_format':{'type':'json_object'},
        'messages':[{'role':'system','content':instructions+NO_TOOLS+'只输出一个 JSON 对象。'},{'role':'user','content':json.dumps(data,ensure_ascii=False)}]}
  async with httpx.AsyncClient(timeout=timeout,trust_env=False) as client:
   r=await client.post(provider['baseUrl'].rstrip('/')+'/chat/completions',json=body,headers={'Authorization':'Bearer '+provider.get('apiKey','')})

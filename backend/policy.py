@@ -104,9 +104,9 @@ def bookkeeping_intent(text, *, expense_entry=False):
     if not external or bookkeeping_query(external) or BOOK_BLOCK.search(classified) or re.search(r'(?:为什么|为何).{0,30}(?:记账|记录|花费)',external):return False
     explicit=bool(BOOK_VERB.search(external))
     amounts=_money_matches(external)
-    # 「记一下咖啡18」口语常省略「元/块」；已有金额匹配时仍算明确记账意图。
+    # 「记一下咖啡18」口语常省略「元/块」；仅当动词是「记一下/记下」且有金额匹配时算明确记账意图（排除「记录会议3」）。
     if explicit and not re.search(r'记(?:个|一下|一笔|一条)?账|记一笔|记录(?:这笔|一笔)',external):
-        explicit=bool(MONEY.search(external) or COINS.search(external) or re.search(r'[¥￥]',external) or EXPENSE_FACT.search(external) or amounts)
+        explicit=bool(MONEY.search(external) or COINS.search(external) or re.search(r'[¥￥]',external) or EXPENSE_FACT.search(external) or (amounts and re.search(r'记一下|记下',external)))
     if explicit and re.search(r'我(?:想|希望)|希望',external) and not amounts:return False
     fact=bool(EXPENSE_FACT.search(external) and amounts and not re.search(r'我(?:想|希望)|最近想|希望|将会|要花|要买|想买|想花|预计|预算',external))
     if not explicit and re.search(r'我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)',external):return False
@@ -131,7 +131,7 @@ def bookkeeping_details(text,amount, *, expense_entry=False):
         return False,'金额不在真实用户消息中，先补齐金额'
     purpose=external
     for start,end,_ in reversed(matches):purpose=purpose[:start]+' '+purpose[end:]
-    purpose=re.sub(r'(?:今天|昨天|前天|刚才|刚刚|现在|早上|中午|晚上|这笔|一笔|一次|帮我|给我|替我|麻烦|我要|我想|我需要|能不能|请|我|你|一下|记个账|记账|记一下|记一笔|记一条|记下|记录|花费|花了|消费|支出|付了|支付|付款|到账|收入|收了|金额|人民币|费用|元|块钱|块|毛|角|分|继续|接着做|按上面那个|恢复执行)', '',purpose)
+    purpose=re.sub(r'(?:今天|昨天|前天|刚才|刚刚|现在|早上|中午|晚上|这笔|一笔|一次|帮我|给我|替我|麻烦|我要|我想|我需要|能不能|请|我|你|一下|记个账|记账|记一下|记一笔|记一条|记下|记录|花费|花了|花的|消费|支出|付了|支付|付款|到账|收入|收了|金额|人民币|费用|元|块钱|块|毛|角|分|继续|接着做|按上面那个|恢复执行)', '',purpose)
     if not re.search(r'[\u4e00-\u9fffA-Za-z]',purpose):return False,'缺少记账用途，先补齐事项'
     return True,''
 

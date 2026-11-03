@@ -5,6 +5,7 @@ import SwiftUI
 struct HerdrTerminalSurface: View {
     @Environment(AppModel.self) private var model
     @Environment(HerdrSessionStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
     @State private var presented: HerdrTerminalTarget?
 
     var body: some View {
@@ -28,6 +29,11 @@ struct HerdrTerminalSurface: View {
         .refreshable { await store.connect() }
         .task {
             if store.phase == .idle { await store.prepare(model: model) }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, store.phase == .connected {
+                Task { await store.refresh() }
+            }
         }
         .fullScreenCover(item: $presented) { target in
             if let endpoint = store.endpoint {

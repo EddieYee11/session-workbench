@@ -10,7 +10,7 @@ from message_router import classify
 
 
 def test_fuzzy_text_only_becomes_candidate():
-    for text in ('午饭花的21。', 'Apple 礼品卡 145.65', '卖了旧书得三十八'):
+    for text in ('午饭 21。', 'Apple 礼品卡 145.65', '卖了旧书得三十八'):
         plan = parse_candidate(text)
         assert plan and plan['amount'] > 0, text
         assert plan['category'] and plan['account'], text
@@ -43,7 +43,7 @@ def test_confirm_route_outputs_card_without_ledger_call(tmp_path, monkeypatch):
     import business_tools
     monkeypatch.setattr(business_tools, 'BusinessTools', FakeTools)
     chat = PersonalConversation(tmp_path)
-    mid = chat.submit('candidate-confirm-001', '午饭花的21。')['message_id']
+    mid = chat.submit('candidate-confirm-001', '午饭 21。')['message_id']
     asyncio.run(chat.process_one())
     assistant = [m for m in chat.snapshot()['messages'] if m['role'] == 'assistant'][-1]
     assert not calls

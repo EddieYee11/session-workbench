@@ -26,8 +26,9 @@ INSTRUCTIONS = (
     '4. prompt 200 字以内，是交给你自己去办时的完整要求（例如先起草回复给他确认），不要承诺已经做了。\n'
     '5. urgency 只能是 now、today、week；score 0 到 100，越该先做越高。\n'
     '6. 跳过广告、验证码、自动通知和已经结束的日程；同一件事只写一条；recent_handled 是他已经做完、交给你办或划掉的事，换个说法也不要再提；dismissed 是他明确点过「不用」的事，同一件事（换说法、换依据、换阶段都算，比如报名→预赛→决赛）永远不要再提。\n'
-    '7. wechat 是微信聊天摘要：mention 为真表示群里有人 @他，group 为假是私聊，sender 是最后发话的人，summary 是那条消息。有人在等回话就属于 now 或 today。\n'
-    '   微信里有大量工作内容，不要只看 @他 的消息：别人之间在商量、需要他拍板或补材料的事，同样要提。群里一句话常是对前文的回应，要结合 recent（按时间排的对话）读懂。\n'
+    '7. wechat 是微信聊天摘要，只当上下文用：mention 为真表示群里有人 @他，group 为假是私聊，sender 是最后发话的人，summary 是那条消息。不要提醒他回微信，不要写「回某人」「答复某人」这类建议，也不要替他起草微信回复。\n'
+    '   微信里有大量工作内容，不要只看 @他 的消息：群里一句话常是对前文的回应，要结合 recent（按时间排的对话）读懂，整理出这件事谁负责、要做什么、卡在哪、什么时候要。他本人要动手或拍板的事才写成下一步，title 写事情本身（例如「把硬盘给杨柳」「定展车进场时间」）。\n'
+    '   聊天里出现明确日期和时间、他要参加或负责、calendar 里还没有的安排，写成日程建议并带 calendar action；时间不明确的不要加。\n'
     '8. health 是 Garmin 手表的身体数据（身体电量 0-100、睡眠、HRV、训练准备度、压力）；为空就不提身体，不要猜。状态差时可以建议少排事、早点睡，引用 health:today。\n'
     '9. headline 是今日简报的标题句，40 字以内，一眼看懂今天的基调（例如「睡得够，下午两个会，先把报价发了」）。口语、不客套，像熟人跟他说话。\n'
     '   brief 是展开后的 3 到 5 条要点，每条 {"text":"60 字以内","refs":[...]}，按这个顺序挑有内容的写：身体（有 health 才写，带具体数字并和 week_avg 比）、日程松紧和空档、最要紧的一两件事、资讯。\n'
@@ -43,12 +44,13 @@ INSTRUCTIONS = (
     '    还成立、没新进展 → {"keep":"id"}；有新进展（对方回了、有人接手、时间改了）→ {"keep":"id","phase":"progress 或 waiting","update":"30 字内说新进展","refs":[新依据]}；\n'
     '    已经办完（群里有人说搞定 / 已发 / 已安排，或他本人已经回了）→ {"close":"id","reason":"30 字内说凭什么算办完","refs":[能证明的依据]}，close 必须引用依据。已经过时的就不返回；只有出现新事情才新增。整张列表要稳定，别每小时大换血。\n'
     '16. recent_headlines 是最近几轮的简报标题。同一件事已经当过两次主句、又没有新变化，就换成今天别的重点，别一整天反复念同一件事。\n'
-    '17. 新建议尽量带 action，让他点一下就能办：回微信 {"type":"reply_wechat","draft":"替他写好的回复"}（依据里必须有那条微信）；回邮件 {"type":"reply_mail","subject":"Re: …","draft":"…"}（依据里必须有那封邮件）；'
+    '17. 新建议尽量带 action，让他点一下就能办：回邮件 {"type":"reply_mail","subject":"Re: …","draft":"…"}（依据里必须有那封邮件）；'
     '记账 {"type":"bookkeep","amount":38.5,"note":"午饭"}；加日程 {"type":"calendar","title":"","start":"YYYY-MM-DD HH:MM","end":"YYYY-MM-DD HH:MM"}。'
     '草稿用他的口吻：简短、口语、直接，120 字内，不寒暄、不署名；拿不准的事实留空让他填（写成「【时间】」），不要编。没有合适的动作就不写 action。\n'
     '18. dismissed 每条括号里是他划掉的理由：「别人在负责」= 这类执行细节有人在推，除非群里 @他 或要他拍板，同项目同类的事别再提；「已经办了」= 他线下办掉了，同类事先看群里有没有说办完；「不重要」「不是我的事」= 同类的少提。\n'
+    '19. decisions 是他本人定过的事（带原话）：和它相关的建议按它的口径来，不要再把已经定了的事拿来问他。\n'
     '只返回 JSON：{"headline":"","focus":[],"brief":[{"text":"","refs":[""]}],"items":[{"keep":""},{"keep":"","phase":"waiting","update":"","refs":[""]},{"close":"","reason":"","refs":[""]},'
-    '{"title":"","why":"","refs":[""],"prompt":"","urgency":"today","score":60,"action":{"type":"reply_wechat","draft":""}}]}'
+    '{"title":"","why":"","refs":[""],"prompt":"","urgency":"today","score":60,"action":{"type":"calendar","title":"","start":"","end":""}}]}'
 )
 
 
@@ -57,6 +59,14 @@ REASONS = {'elsewhere': '已经办了', 'others': '别人在负责', 'unimportan
 HANDLED = "'dismissed','acted','done','todo','resolved'"
 CARRY = ('id', 'title', 'why', 'prompt', 'urgency', 'score', 'evidence', 'phase', 'history', 'action')
 STAMP = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
+REPLY_TITLE = re.compile(r'^(?:回复|答复)|^回(?!收|家|顾|款|访|滚|填|传|去|来|到|北京)|^(?:给|跟).{1,12}回(?:复|个|一下|话|消息)|回(?:复)?(?:微信|消息)')
+
+
+def _wechat_reply_nudge(title, kinds, action=None):
+    """11-02 Eddie：微信只当上下文，不提醒回复。依据全是微信的「回某人」不进列表，旧的回微信卡也不再保留。"""
+    if (action or {}).get('type') == 'reply_wechat':
+        return True
+    return bool(kinds) and all(kind == 'wechat' for kind in kinds) and bool(REPLY_TITLE.search(title or ''))
 
 
 def _key(title):
@@ -356,6 +366,8 @@ class NextSteps:
         with self.db() as db:
             week = now - 7 * 86400
             data['recent_handled'] = [json.loads(r['data'])['title'] for r in db.execute(f"SELECT data FROM items WHERE state IN ({HANDLED}) AND updated_at>? ORDER BY updated_at DESC LIMIT 30", (week,))]
+            ledger = getattr(self, 'decisions', None)
+            data['decisions'] = [{'topic': r['topic'], 'rule': r['rule'], 'quote': r['quote']} for r in ledger.items('decided', 30)] if ledger else []
             data['dismissed'] = [d['title'] + (f"（{REASONS[d['dismiss_reason']]}）" if d.get('dismiss_reason') in REASONS else '')
                                  for r in db.execute("SELECT data FROM items WHERE state='dismissed' ORDER BY updated_at DESC LIMIT 60") for d in [json.loads(r['data'])]]
             # 10-21：上一轮还开着的建议交给模型「保留或撤下」，别每小时整批重写（7 天 546 条里 471 条下一轮就被换掉）。
@@ -445,10 +457,6 @@ class NextSteps:
         """模型不可用时的确定性建议：近 24 小时日程、微信里点名的、项目下一步、近一天的工作邮件。"""
         items = []
         now = datetime.fromtimestamp(self.clock(), TZ)
-        for chat in [c for c in data['wechat'] if c['mention'] or not c['group']][:2]:
-            items.append({'title': _text('回「' + chat['chat'] + '」', 30), 'why': _text(f"{chat['sender']} 说：{chat['summary']}", 80), 'refs': [chat['ref']],
-                          'prompt': f"微信「{chat['chat']}」里 {chat['sender']} 说：{chat['summary']}。判断要不要回，要回就起草一版给我确认。",
-                          'urgency': 'now' if chat['mention'] else 'today', 'score': 75 if chat['mention'] else 55})
         for event in data['calendar'][:4]:
             start = datetime.strptime(f"{now.year}-{event['start']}", '%Y-%m-%d %H:%M').replace(tzinfo=TZ)
             hours = (start - now).total_seconds() / 3600
@@ -495,6 +503,8 @@ class NextSteps:
             if not isinstance(item, dict):
                 continue
             kept = current.get(item.get('keep'))
+            if kept and _wechat_reply_nudge(kept.get('title'), [e.get('kind') for e in kept.get('evidence', [])], kept.get('action')):
+                continue
             if kept and kept['id'] not in seen:
                 # 保留：原条原样留下（标题、依据、交办要求都不变），只记它又出现了一轮；有新进展就记进 history
                 seen.add(kept['id'])
@@ -503,6 +513,8 @@ class NextSteps:
             title, why, prompt = _text(item.get('title'), 30), _text(item.get('why'), 160), _text(item.get('prompt'), 400)
             cited = [r for r in item.get('refs', []) if isinstance(r, str) and r in refs][:5]
             if not title or not cited or not prompt:
+                continue
+            if _wechat_reply_nudge(title, [refs[r]['kind'] for r in cited]):
                 continue
             # 10-25：模型没写 keep、却换了个说法重写同一件事（依据完全相同）：留原条，不让列表每小时大换血。
             mine = {_sig(r, refs[r]) for r in cited}
@@ -569,10 +581,6 @@ class NextSteps:
         if not isinstance(raw, dict):
             return None
         kind = raw.get('type')
-        if kind == 'reply_wechat':
-            chat = next((refs[r] for r in cited if refs[r]['kind'] == 'wechat'), None)
-            draft = _text(raw.get('draft'), 300)
-            return {'type': kind, 'draft': draft, 'to': chat['detail'].get('title', '')} if chat and draft else None
         if kind == 'reply_mail':
             mail = next((refs[r] for r in cited if refs[r]['kind'] == 'mail'), None)
             draft = _text(raw.get('draft'), 600)
@@ -652,9 +660,6 @@ class NextSteps:
         today = datetime.fromtimestamp(self.clock(), TZ).strftime('%m-%d')
         events = [e for e in data['calendar'] if e['start'].startswith(today)]
         parts.append(f"今天 {len(events)} 个日程" if events else '今天没有日程')
-        waiting = [c for c in data['wechat'] if c['mention'] or not c['group']]
-        if waiting:
-            parts.append(f"微信里 {waiting[0]['sender'] or waiting[0]['chat']} 在等你")
         return '，'.join(parts) + '。'
 
     def clean_brief(self, raw, refs):
@@ -749,10 +754,13 @@ class NextSteps:
             no_titles = [d.get('title', '') for _, d in dismissed if d.get('dismiss_reason') != 'others']
             muted = muted_topics(no_titles)
 
+            ledger = getattr(self, 'decisions', None)
+
             def repeat(item):
                 sigs = {_sig(e['ref'], e) for e in item['evidence']}
                 return (item['id'] in blocked or ('' not in sigs and sigs <= settled)
-                        or any(_near(item['title'], t) for t in no_titles) or bool(_cjk_runs(item['title']) & muted))
+                        or any(_near(item['title'], t) for t in no_titles) or bool(_cjk_runs(item['title']) & muted)
+                        or bool(ledger and ledger.declines(item['title'])))
             fresh = [i for i in items if not repeat(i)]
             ids = {i['id'] for i in fresh}
             # 10-25：模型判定办完的（有依据）→ resolved，算办完、不再提。
@@ -813,6 +821,9 @@ class NextSteps:
         self.backfill(items)
         order = {'now': 0, 'today': 1, 'week': 2}
         items.sort(key=lambda i: (order.get(i['urgency'], 1), -i['score']))
+        from decisions import next_step_ticket
+        for item in items:
+            item['ticket'] = next_step_ticket(item)
         muted = self.news.dismissed() if self.news else set()
         brief = [p for p in json.loads((last['brief'] or '[]') if last else '[]') if p.get('news_id') not in muted]
         for point in brief:
@@ -821,7 +832,11 @@ class NextSteps:
                 point['runsheet'] = {'name': sheet['name'], 'path': str(self.runsheets.workspace / sheet['path']), 'generated_at': sheet['generated_at']}
         return {'brief': brief, 'items': items, 'running': self.running, 'progress': self.progress, 'updated_at': last['at'] if last else 0,
                 'source': last['source'] if last else '', 'error': last['error'] if last else '', 'headline': (last['headline'] or '') if last else '',
-                'week': self.week_report(stats, reasons)}
+                'week': {**self.week_report(stats, reasons), 'suggestions': self.attention_suggestions()}}
+
+    def attention_suggestions(self):
+        from attention import by_kind, next_step_rows, suggestions
+        return [s['text'] for s in suggestions(by_kind(next_step_rows(self, self.clock() - 7 * 86400)))]
 
     @staticmethod
     def week_report(stats, reasons):
@@ -932,6 +947,9 @@ class NextSteps:
                 if extra.get(key):
                     item[key] = extra[key]
             db.execute('UPDATE items SET state=?, data=?, updated_at=? WHERE id=?', (state, json.dumps(item, ensure_ascii=False), self.clock(), ident))
+        # 「别人在负责」不算他不要这件事；「已经办了」前面已转成 done。
+        if state == 'dismissed' and item.get('dismiss_reason') != 'others' and getattr(self, 'decisions', None):
+            self.decisions.add('declined', item.get('title', ''), '划掉下一步：' + item.get('title', ''), 'next_step', ident)
         return item
 
     def get(self, ident):

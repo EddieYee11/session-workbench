@@ -151,3 +151,37 @@ def test_voice_double_send_books_once_and_odd_amounts_ask_first(tmp_path,monkeyp
     route=classify('午餐消费二六零。')
     assert route.args['action']=='confirm' and route.args['plan']['suspect']==26
     assert classify('午饭花费 26 元').args['action']=='add' and classify('充话费50').args['plan']['category']=='通讯话费'
+
+
+def test_daily_turns_use_fast_model_and_deep_work_stays_on_default(tmp_path,monkeypatch):
+    import httpx
+    from message_router import fast_model
+    FAST_MODEL=fast_model()
+    posted=[]
+    class Response:
+        status_code=200
+        def json(self):return {'run_id':'run_fixture'}
+    class HTTP:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*_):pass
+        async def post(self,*_,**kwargs):posted.append(kwargs['json']);return Response()
+    monkeypatch.setattr(httpx,'AsyncClient',lambda **_:HTTP())
+    async def run(text,rid,**extra):
+        client=HermesRuntime(tmp_path);client.create_session=AsyncMock();client.key=lambda:'fixture'
+        client.request=AsyncMock(return_value={'status':'completed','output':'好'})
+        async def events(_):yield 'run.completed',{'status':'completed','output':'好'}
+        client._events=events
+        wrapped=MARKER+json.dumps({'origin_request_id':rid,'origin_message_id':'m'+rid,**extra})+'\n用户消息：\n'+text
+        assert [x async for x in client.stream_chat('main',wrapped)]
+        assert client.turn_fast_model is False
+    asyncio.run(run('老马的劳务单到哪一步了','r-query'))
+    asyncio.run(run('嗯。','r-short'))
+    asyncio.run(run('帮我分析一下这个方案的风险','r-deep'))
+    asyncio.run(run('修改后端代码并部署','r-code'))
+    asyncio.run(run('看下这张图','r-file',attachments=[{'id':'a1'}]))
+    assert posted[0]['model']==FAST_MODEL['model'] and posted[0]['provider']==FAST_MODEL['provider']
+    assert posted[1]['model']==FAST_MODEL['model']
+    assert all('model' not in body and 'provider' not in body for body in posted[2:])
+    with sqlite3.connect(tmp_path/'hermes-runs.sqlite') as db:
+        tiers=dict((r,json.loads(d)['model_tier']) for r,d in db.execute('SELECT request_id,data FROM context_metrics'))
+    assert tiers['r-query']=='fast' and tiers['r-deep']=='default'

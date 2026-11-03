@@ -231,18 +231,22 @@ function waitingView() {
         ? html`<p class="wait-intro">先看这件：「${tip}」——一卡一个动作，办完再说下一件。</p>`
         : html`<p class="wait-intro">我先把要你点头的放最上面——一卡看一件。</p>`;
       const note = noteOf('waiting') || noteOf('agency');
-      const firstKind = decisions.length ? 'decision' : cards.length ? 'agency' : of('case').length ? 'case' : of('wechat').length ? 'wechat' : of('todo').length ? 'todo' : '';
+      const ticketLines = (t) => !t || !t.recommend ? '' : html`<div class="ticket">${[['建议', t.recommend], ['依据', t.basis], ['同意', t.on_yes], ['不同意', t.on_no]].filter(([, v]) => v).map(([k, v]) => html`<small class="muted"><b>${k}</b> ${v}</small>`)}</div>`;
+      const concluded = waitingData().concluded || [];
+      const firstKind = decisions.length ? 'decision' : cards.length ? 'agency' : of('audit').length ? 'audit' : of('case').length ? 'case' : of('wechat').length ? 'wechat' : of('todo').length ? 'todo' : '';
       const row = (i, ic, tone, actAttr, hi) => html`<button class="list-row ${hi ? 'wait-first' : ''}" ${raw(actAttr)}><span class="badge ${tone}">${icon(ic)}</span><span><b>${i.title}</b><small>${i.why}</small></span>${icon('right', 'chev')}</button>`;
       return html`${note ? html`<div class="notice warning inline-note">${icon('warning')}<span>${note}</span></div>` : ''}
         ${!total ? empty('眼下没有要你拍板的', '审批、航程停顿、微信待回、过期待办会汇到这里。有事我会先整理好再找你。', 'checkCircle') : intro}
         ${decisions.length ? section(`要你拍板 · ${decisions.length}`, html`<div class="stack">${decisions.map((d, i) => html`<div class="${firstKind === 'decision' && i === 0 ? 'wait-first' : ''}">${pendingNoteHTML(d)}</div>`)}</div>`) : ''}
         ${cards.length ? section(`要跟进的事 · ${cards.length}`, html`<div class="stack">${cards.map((c, i) => agencyCardHTML(c, firstKind === 'agency' && i === 0))}</div>`) : ''}
+        ${of('audit').length ? section(`核对没过 · ${of('audit').length}`, html`<div class="stack">${of('audit').map((i, n) => html`<div class="card ${firstKind === 'audit' && n === 0 ? 'wait-first' : ''}"><h3>${i.title}</h3>${ticketLines(i.ticket)}<div class="row actions"><button class="btn secondary compact" data-act="audit-act" data-a="rework" data-id="${i.task_id}">让它补做</button><button class="btn quiet" data-act="audit-act" data-a="accept" data-id="${i.task_id}">就这样吧</button></div></div>`)}</div>`) : ''}
         ${of('case').length ? section(`航程停下来等你 · ${of('case').length}`, html`<div class="card list">${of('case').map((i, n) => row(i, 'layers', 'warning', `data-act="case-open" data-id="${i.case_id}"`, firstKind === 'case' && n === 0))}</div>`) : ''}
         ${of('wechat').length ? section(`微信在等你回 · ${of('wechat').length}`, html`<div class="card list">${of('wechat').map((i, n) => html`<div class="wx-wait ${firstKind === 'wechat' && n === 0 ? 'wait-first' : ''}" data-wid="${i.id}"><div class="row"><span class="badge info">${icon('message')}</span><span class="grow"><b>${i.title}</b><small>${i.why}</small></span></div>
             <div class="row actions"><button class="btn secondary compact" data-act="wx-draft" data-title="${i.title}" data-why="${i.why}">让 Com 起草回复</button><button class="btn quiet" data-act="wx-done" data-id="${i.id}" data-at="${i.at || 0}">已经回了</button></div></div>`)}</div>`) : ''}
         ${of('todo').length ? section(`过期的待办 · ${of('todo').length}`, html`<div class="card list">${of('todo').map((i, n) => html`<div class="todo-wait ${firstKind === 'todo' && n === 0 ? 'wait-first' : ''}" data-path="${i.path}"><span class="badge warning">${icon('checklist')}</span><span class="grow"><b>${i.title}</b><small>${i.why}</small></span>
             <button class="btn quiet compact" data-act="waiting-todo" data-a="postpone" data-path="${i.path}">改到明天</button><button class="btn quiet compact" data-act="waiting-todo" data-a="done" data-path="${i.path}">完成</button>
-            <button class="btn secondary compact" data-act="todo-delegate" data-path="${i.path}">交给我办</button></div>`)}</div>`) : ''}`;
+            <button class="btn secondary compact" data-act="todo-delegate" data-path="${i.path}">交给我办</button></div>`)}</div>`) : ''}
+        ${concluded.length ? section('刚拍板的', html`<div class="card list">${concluded.map((c) => html`<div class="list-row"><span class="badge success">${icon('checkCircle')}</span><span><b>${c.title}</b><small>${c.text}</small></span></div>`)}</div>`) : ''}`;
     },
     mounted: async () => {
       setNote('waiting', '');
@@ -302,6 +306,17 @@ act('wx-draft', async (b) => {
   if (!wasDelivered(entry && entry.id)) { b.disabled = false; setNote('waiting', '草稿没送进对话，卡还在——再说一次。'); return; }
   setNote('waiting', ''); closeSheets(); setTab('chat');
 });
+act('audit-act', async (b) => {
+  b.disabled = true;
+  try {
+    await mutate('/personal/tasks/' + encodeURIComponent(b.dataset.id) + '/audit', { action: b.dataset.a });
+    await afterWrite(['/personal/waiting', '/personal/tasks'], { noteKey: 'waiting', failNote: '已提交，但列表没刷齐，可再拉开等你。' });
+  } catch (e) {
+    b.disabled = false;
+    setNote('waiting', '没提交成，卡还在，可以再试：' + (e.message || e));
+  }
+});
+
 act('wx-done', async (b) => {
   const id = b.dataset.id, at = Number(b.dataset.at || 0);
   const card = b.closest('.wx-wait');

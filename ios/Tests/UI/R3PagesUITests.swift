@@ -182,6 +182,32 @@ final class R3PagesUITests: XCTestCase {
         capture("case-acceptance", app: app)
     }
 
+    /// 11-02 票拟：核对卡三行说清楚、两个按钮、拍过的留结论；定过的事可打开。
+    @MainActor func testWaitingTicketAuditAndDecisions() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-cases", "-appearance", "light"]
+        app.launchEnvironment["COM_PREVIEW_TAB"] = "下一步"
+        app.launchEnvironment["COM_PREVIEW_SHEET"] = "waiting"
+        app.launch()
+        // 嵌在下一步里时外层 next-waiting-section 的标识会盖住子控件，按文字找。
+        let rework = app.buttons["让它补做"]
+        XCTAssertTrue(rework.waitForExistence(timeout: 15), "核对卡有让它补做")
+        XCTAssertTrue(app.buttons["就这样吧"].exists)
+        XCTAssertTrue(app.staticTexts["把清单写到文件里"].exists, "票拟写明建议")
+        pause(0.8)
+        capture("waiting-ticket", app: app)
+        let concluded = app.staticTexts["你没有批准，这件事不执行"]
+        for _ in 0..<6 where !(concluded.exists && concluded.isHittable) { app.swipeUp(velocity: 500); pause(0.5) }
+        XCTAssertTrue(concluded.exists, "刚拍板的留下结论")
+        capture("waiting-concluded", app: app)
+        let open = app.buttons["next-open-decisions"]
+        for _ in 0..<8 where !(open.exists && open.isHittable) { app.swipeUp(velocity: 500); pause(0.5) }
+        XCTAssertTrue(open.isHittable)
+        open.tap()
+        XCTAssertTrue(app.navigationBars["定过的事"].waitForExistence(timeout: 5))
+        capture("decisions-sheet", app: app)
+    }
+
     /// 顶栏的她：每个 tab 一套造型，切 tab 时跳一下换装。录屏抽帧看；这里每页落定后截一张顶栏。
     @MainActor func testCharacterOutfitPerTab() throws {
         let app = launch()

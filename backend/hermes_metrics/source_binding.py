@@ -6,7 +6,7 @@ from pathlib import Path
 
 SOURCE_TOOLS = {
     'create_task', 'task_submit', 'artifact_register', 'task_send', 'task_cancel',
-    'task_resume', 'task_verify', 'task_merge', 'business_operation', 'memory_save',
+    'task_resume', 'task_verify', 'task_merge', 'business_operation', 'memory_save', 'decision_record',
     'update_task_constraints', 'calendar_adjust', 'device_call', 'cancel_task', 'propose_work',
 }
 KEYS = ('origin_session_id', 'origin_message_id', 'origin_request_id')
