@@ -112,7 +112,6 @@ struct ChatEmptyPresence: View {
                     sign: model.stripSign,
                     animated: model.active,
                     quiet: false,
-                    hop: nil,
                     outfit: .chat
                 )
                 .frame(width: StripFigure.bodyWidth + 6, height: StripFigure.size.height, alignment: .leading)

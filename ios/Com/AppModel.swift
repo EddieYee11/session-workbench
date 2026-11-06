@@ -19,12 +19,27 @@ enum SectionTab: String, CaseIterable, Identifiable {
 }
 
 @MainActor @Observable final class AppModel {
-    var tab: SectionTab = .chat { didSet { if tab != .chat { rightTab = tab } } }
+    var tab: SectionTab = .chat {
+        didSet {
+            if tab != .chat { rightTab = tab }
+            if !isChatBriefVisible { resetBriefImmediate() }
+        }
+    }
     /// 展开的折叠屏（宽屏）双栏：左栏常驻 Com 主对话，右栏显示这一页；任何「跳到某页」仍然只写 tab。
-    var rightTab: SectionTab = .next  // 10-25：展开后右栏先给下一步（用得最多）
-    var splitView = false
+    var rightTab: SectionTab = .next {  // 10-25：展开后右栏先给下一步（用得最多）
+        didSet {
+            if !isChatBriefVisible { resetBriefImmediate() }
+        }
+    }
+    var splitView = false {
+        didSet {
+            if !isChatBriefVisible { resetBriefImmediate() }
+        }
+    }
     /// 这一页此刻在屏幕上：单栏时是当前 tab，双栏时是左栏的聊天和右栏的 rightTab。
     func isShown(_ page: SectionTab) -> Bool { splitView ? (page == .chat || page == rightTab) : tab == page }
+    /// 回来简报挂载的左栏/主聊天当前是否在视图树中。
+    var isChatBriefVisible: Bool { splitView ? !(rightTab == .next && boardFocus) : tab == .chat }
     var base = UserDefaults.standard.string(forKey: "base") ?? "https://pi.eddiegao.work:8443/sessions"
     var isPaired = false
     var conversation = ConversationState()
@@ -56,9 +71,15 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var showShareInbox = false
     var showQuickVoice = false
     var showMenu = false
-    var stageExpanded = false
-    /// 下拉工作台的展开进度（0 收起 … 1 展开，拖动时跟手，可略超 1）。
-    var stageProgress: CGFloat = 0
+    /// 回来简报卡：展开态与跟手进度（0 收起 … 1 展开，拖动可略超 1）。
+    var briefExpanded = false
+    var briefProgress: CGFloat = 0
+    /// 收起简报后是否保留 12 秒胶囊停靠（发消息/点芯片跳转时置 false）。
+    var briefDockAfterClose = true
+    /// 当前简报文案（自动出现与顶栏手动下拉共用）。
+    var chatBrief = ChatBrief()
+    /// 跟手拖动用的卡片高度（ChatBriefOverlay 测量后写回，顶栏下拉默认 180）。
+    var briefDragHeight: CGFloat = 180
     /// 等 Eddie 决定的事，按 datasets 变化重算一次，页面直接读，不每帧重算。
     var flowItems: [PendingItem] = []
     var showMemory = false
@@ -71,6 +92,25 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var workSidebarDrag: CGFloat = 0
     /// 侧栏在不在视图树里：开着、拖着、收起动画没走完都在；收完才拿掉（关着的侧栏不留在无障碍树里）。
     var workSidebarMounted = false
+    /// 看板专注：双栏时隐藏左栏聊天，下一步页拿满宽。
+    var boardFocus = UserDefaults.standard.bool(forKey: "board.focus") {
+        didSet {
+            UserDefaults.standard.set(boardFocus, forKey: "board.focus")
+            if !isChatBriefVisible { resetBriefImmediate() }
+        }
+    }
+    var boardDragFreeze = false {
+        didSet {
+            if !boardDragFreeze { flushDeferredBoardDatasets() }
+        }
+    }
+    var deferredBoardDatasets: [String: JSON] = [:]
+    var boardMoveNotes: [String: String] = [:]
+    /// 看板当前分组（持久化原值）。放成存储属性，胶囊切换才会被 @Observable 追踪到；读写见 BoardModel.boardColumn。
+    var boardColumnRaw: String = UserDefaults.standard.string(forKey: "board.column") ?? ""
+    var boardPendingIDs: Set<String> = []
+    var boardInFlightIDs: Set<String> = []
+    var boardRecentlyDoneIDs: Set<String> = []
     /// 工作页里正打开的那段对话（r3-work：原地聊天，不再弹 WorkDetailView）。
     let work = WorkSessionModel()
     var selectedConnector: JSON?
@@ -190,7 +230,12 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
             // 今天页记住的展开状态每次验收都从默认开始；要先展开表盘 / 时间线的用例带 --ui-today-dial / --ui-today-timeline。
             let args = ProcessInfo.processInfo.arguments, defaults = UserDefaults.standard
-            ["today.brief.open", "today.now.open", "today.deck", "health.done", "health.span", "work.surface"].forEach(defaults.removeObject(forKey:))
+            ["today.brief.open", "today.now.open", "today.deck", "health.done", "health.span", "work.surface", "board.focus", "board.column"].forEach(defaults.removeObject(forKey:))
+            BoardColumn.allCases.forEach { defaults.removeObject(forKey: "board.anchor." + $0.rawValue) }
+            boardFocus = false
+            boardColumnRaw = ""
+            defaults.set(WorkSurface.sessions.rawValue, forKey: "work.surface")
+            if args.contains("--ui-chat-brief") { defaults.removeObject(forKey: "chat.brief.seenAt") }
             if args.contains("--ui-today-dial") { defaults.set("dial", forKey: "today.now.open") }
             if args.contains("--ui-today-timeline") { defaults.set("timeline", forKey: "today.deck") }
             // 双栏验收：--ui-tab=下一步 / 今天 / 健康 / 工作，启动就停在那一页（折叠屏右栏逐页截图用）。
@@ -218,6 +263,21 @@ enum SectionTab: String, CaseIterable, Identifiable {
                         if kind == "delivered" { self.stage.receive("agent.push", .object(["message_id": .string("stage-demo-delivery"), "preview": .string("资料整理好了，点开查看。")])) }
                         try? await Task.sleep(for: .seconds(kind == "delivered" ? 3 : 2))
                         self.stage.tick()
+                    }
+                }
+            }
+            if args.contains("--ui-chat-brief") && !args.contains("--ui-chat-brief-collapse") {
+                Task { [weak self] in
+                    for _ in 0..<40 {
+                        try? await Task.sleep(for: .milliseconds(200))
+                        guard let self else { return }
+                        guard self.isChatBriefVisible, self.briefProgress < 0.2 else {
+                            if self.briefProgress > 0.5 { return }
+                            continue
+                        }
+                        self.chatBrief = ChatBrief.build(self, since: Date().timeIntervalSince1970 - 3 * 3600)
+                        self.openBrief()
+                        return
                     }
                 }
             }
@@ -368,7 +428,14 @@ enum SectionTab: String, CaseIterable, Identifiable {
         do {
             let data = try await api.request(path)
             let changed = path.hasPrefix("/personal/conversation") || datasets[path] != data
-            if changed && !path.hasPrefix("/personal/conversation") { datasets[path] = data; if AppModel.flowPaths.contains(path) { recomputeFlow() } }
+            if changed && !path.hasPrefix("/personal/conversation") {
+                if boardDragFreeze && (path == Self.boardPath || path == "/personal/next") {
+                    deferredBoardDatasets[path] = data
+                } else {
+                    datasets[path] = data
+                    if AppModel.flowPaths.contains(path) { recomputeFlow() }
+                }
+            }
             // 流式断线提示不因 HTTP 拉齐清掉：拉齐成功 ≠ SSE 已恢复。
             if let existing = errors[path] {
                 let keepStream = path.hasPrefix("/personal/conversation") && isStreamDisconnectNote(existing)
@@ -522,8 +589,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
             }
         }
     }
-    func openWaitingInbox(closeStage: Bool = false) {
-        if closeStage { self.closeStage() }
+    func openWaitingInbox() {
+        if briefExpanded || briefProgress > 0 { closeBrief(dockAfter: false) }
         showCases = false
         presentedCase = nil
         showActivity = false
@@ -546,8 +613,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
     }
     /// 打开动态（航程+写操作）：立刻 loadFeed，避免菜单里「有航程停顿」点进去却是旧列表。
-    func openActivityFeed(closeStage: Bool = false) {
-        if closeStage { self.closeStage() }
+    func openActivityFeed() {
+        if briefExpanded || briefProgress > 0 { closeBrief(dockAfter: false) }
         showActivity = true
         beginActivityFeedLoad()
     }
@@ -702,8 +769,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
     }
     /// 打开连接器：立刻拉 sources，信源断了点进去应是现况。
-    func openConnectors(closeStage: Bool = false) {
-        if closeStage { self.closeStage() }
+    func openConnectors() {
+        if briefExpanded || briefProgress > 0 { closeBrief(dockAfter: false) }
         showConnectors = true
         connectorsOpenNote = ""
         guard menuOpening.insert("connectors").inserted else { return }
@@ -1166,6 +1233,12 @@ enum SectionTab: String, CaseIterable, Identifiable {
             throw APIError(status: 409, detail: "此会话还有送达待核实的请求，请先在发送记录查询回执")
         }
         let entry = PendingMessage(text: text, path: path, extra: fields)
+        #if DEBUG
+        if isUITesting {
+            pending.append(entry)
+            return entry
+        }
+        #endif
         pending.append(entry)
         do { try SecureVault.save(pending, name: "outbox") }
         catch { pending.removeAll { $0.id == entry.id }; throw error }
@@ -1423,6 +1496,11 @@ enum SectionTab: String, CaseIterable, Identifiable {
     static func selection() { UISelectionFeedbackGenerator().selectionChanged() }
     static func success() { UINotificationFeedbackGenerator().notificationOccurred(.success) }
     static func sent() { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
+    static func error() { UINotificationFeedbackGenerator().notificationOccurred(.error) }
+    static func prepareDrag() { UIImpactFeedbackGenerator(style: .medium).prepare() }
+    static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium, intensity: CGFloat = 1) {
+        UIImpactFeedbackGenerator(style: style).impactOccurred(intensity: intensity)
+    }
 }
 
 #if DEBUG
@@ -1594,6 +1672,9 @@ extension AppModel {
         default: break
         }
         seedPagesPreview()  // 轨道 pages：今天时间线与依据详情的验收数据
+        #if DEBUG
+        seedBoardPreview()
+        #endif
         if ProcessInfo.processInfo.arguments.contains("--ui-r3-work") { seedR3WorkPreview() }  // r3-work：工作页原地聊天
         if ProcessInfo.processInfo.arguments.contains("--ui-cases") { seedCasesPreview() }  // 10-17：航程 / 明天建议 / 对话 todo 清单验收
         for path in datasets.keys { fetchedAt[path] = Date() }
@@ -1608,6 +1689,7 @@ extension AppModel {
     func seedR3WorkPreview() {
         // 每次启动从同一个起点验收：派给 Codex、看 Mac mini 的全部对话。
         for key in ["work.lastAgent", "work.host", "work.agent"] { UserDefaults.standard.removeObject(forKey: key) }
+        work.newChat()
         let now = Date().timeIntervalSince1970
         func message(_ id: String, _ role: String, _ text: String, title: String = "", at: Double) -> JSON {
             .object(["id": .string(id), "role": .string(role), "title": .string(title), "text": .string(text), "time": .number(at)])

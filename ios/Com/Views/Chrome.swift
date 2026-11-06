@@ -2,29 +2,29 @@ import SwiftUI
 import ComCore
 
 // App chrome shared by the four tabs: 顶栏（她 + 标题 + 两侧玻璃按钮）、浮动 Dock、聊天页里的迷你 Dock、
-// 点她弹出的菜单（系统 popover，箭头对准她）、按住她往下拉出来的工作台（跟手、玻璃）。
-// r3-work：顶栏从「每个 tab 一份」改成 RootView 最上层一份，切页时她不重建、不挪位，标题文字交叉淡入。
+// 点她弹出的菜单（系统 popover，箭头对准她）、按住她往下拉打开「回来简报」（跟手，与聊天顶部的简报卡同一套状态）。
 
 // MARK: - 顶栏
 
 /// 全 App 只有这一条顶栏。她固定站在正中偏右一点：左边挂标题和她的状态（说话时那一行换成手绘气泡），
 /// 右边是她手里的东西（牌子、盖章台、纸飞机）。两侧玻璃按钮随页面换：工作页像 ChatGPT——左上侧栏、右上新对话；
-/// 其他页只有右上一颗。往下拉出工作台时，中间这组淡出、「Com 的工作台」淡入，右上按钮变成收起。
+/// 其他页只有右上一颗。简报展开时右上按钮变成收起。
 struct ComTopBar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
     @AppStorage("work.lastAgent") private var lastAgent = "codex"
     @State private var dragStart: CGFloat?
+    @GestureState private var dragging = false
     /// 双栏时左栏的顶栏固定是 Com 主对话，不跟着右栏换页。
     var pinned: SectionTab? = nil
     private var tab: SectionTab { pinned ?? model.tab }
-    /// 她在顶栏里缩小的比例：Duo 外屏只有约 466×678pt，顶栏要把高度让给内容。拉开工作台时回到原尺寸。
+    /// 她在顶栏里缩小的比例：Duo 外屏只有约 466×678pt，顶栏要把高度让给内容。
     static let restScale: CGFloat = 0.72
     static var figureWidth: CGFloat { StripFigure.bodyWidth * restScale }
     /// 她靠左，标题跟在她右边，右侧留给这一页的一个动作。
     static func figureX(hasLeadingButton: Bool) -> CGFloat { Space.lg + (hasLeadingButton ? 44 + Space.xs : 0) }
     private var motion: Animation { ComMotion.reduced(reduce, ComMotion.settle) }
-    private var stage: CGFloat { min(1, max(0, model.stageProgress)) }
+    private var brief: CGFloat { min(1, max(0, model.briefProgress)) }
     /// 标题：工作页是「派给谁」（点开换人 / 会话菜单），其他页是页名。
     private var head: String {
         switch tab {
@@ -39,32 +39,22 @@ struct ComTopBar: View {
             let x = Self.figureX(hasLeadingButton: tab == .work)
             let titleLeading = x + Self.figureWidth + Space.sm
             let titleWidth = max(56, width - titleLeading - Space.lg - 44)
-            // 往下拉时标题先走（拉到 0.2 就没了）：她要往左下跳，不能从字上面穿过去。
-            let center = Double(1 - min(1, stage * 5))
             ZStack(alignment: .topLeading) {
-                stageTitle
-                    .padding(.leading, Space.lg).frame(height: Layout.topBar)
-                    .opacity(Double(max(0, (stage - 0.4) / 0.6)))
-                    .accessibilityHidden(!model.stageExpanded)
                 titleBlock
                     .frame(width: titleWidth, height: Layout.topBar, alignment: .leading)
                     .overlay { titleTarget }
                     .padding(.leading, titleLeading)
-                    .opacity(center).allowsHitTesting(stage < 0.05)
-                // 她不跟着淡出：往下拉时她自己跳到桌前（StripFigure.Hop），收起时原路跳回来。
-                figure(hop: hop(width: width, x: x))
-                    .scaleEffect(stage > 0.001 ? 1 : Self.restScale, anchor: .topLeading)
+                figure()
+                    .scaleEffect(Self.restScale, anchor: .topLeading)
                     .padding(.leading, x).padding(.top, Self.figureTop)
-                    .allowsHitTesting(stage < 0.05)
                 HStack(spacing: 0) {
                     if tab == .work {
                         GlassIconButton(symbol: "sidebar.left", label: "历史对话") { model.openWorkSidebar(reduce: reduce) }
                             .accessibilityIdentifier("work-sidebar")
-                            .opacity(Double(1 - min(1, stage * 2))).allowsHitTesting(stage < 0.05)
                             .transition(reduce ? .opacity : .opacity.combined(with: .scale(scale: 0.7)))
                     }
                     Spacer(minLength: 0)
-                    TopBarTrailing(tab: tab, closing: model.stageExpanded || stage > 0.5)
+                    TopBarTrailing(tab: tab, closing: model.briefExpanded || brief > 0.5)
                 }
                 .padding(.horizontal, Space.lg)
                 .frame(width: width, height: Layout.topBar)
@@ -74,17 +64,21 @@ struct ComTopBar: View {
         .background {
             // 实色顶栏：ultraThinMaterial 叠在滚动列表上会每帧重模糊，上滑掉帧。
             Palette.background.opacity(0.94)
-                .opacity(Double(1 - min(1, stage * 2)))
                 .ignoresSafeArea(edges: .top)
         }
         // 她和气泡会探出顶栏一点：往下补一段渐隐，滚上来的字不会和人物叠在一起。
         .overlay(alignment: .bottom) {
             LinearGradient(colors: [Palette.background.opacity(0.85), Palette.background.opacity(0)], startPoint: .top, endPoint: .bottom)
                 .frame(height: 18).offset(y: 18).allowsHitTesting(false)
-                .opacity(Double(1 - min(1, stage * 2)))
         }
         .contentShape(Rectangle())
-        .simultaneousGesture(stageDrag)
+        .simultaneousGesture(briefDrag)
+        .onChange(of: dragging) { _, now in
+            guard !now, let start = dragStart else { return }
+            dragStart = nil
+            let delta = (model.briefProgress - start) * max(120, model.briefDragHeight)
+            model.settleBriefFromTopBar(start: start, translation: delta, predictedEnd: delta)
+        }
         .animation(motion, value: tab)
     }
 
@@ -137,67 +131,62 @@ struct ComTopBar: View {
         }
     }
 
-    /// 往下拉工作台时她的路线：从顶栏的位置跳到桌前（桌子的位置跟着工作台展开时的缩放走）。一直传，进度 0 就是待在顶栏。
-    private func hop(width: CGFloat, x: CGFloat) -> StripFigure.Hop {
-        let top = Self.figureTop
-        return StripFigure.Hop(progress: min(1, max(0, model.stageProgress)), start: CGPoint(x: x, y: top + 6), width: width, frameOrigin: CGPoint(x: x, y: top))
-    }
-
     /// 她本人（只有她接触摸；右边的道具不接）。菜单从她头顶弹出，箭头对准她。
-    private func figure(hop: StripFigure.Hop) -> some View {
+    private func figure() -> some View {
         @Bindable var model = model
         return Button { Haptics.selection(); model.showMenu.toggle() } label: {
-            StripFigure(state: model.stripState, sign: "", showsProps: stage > 0.001, animated: model.active && !AmbientMotionPolicy.scrollQuiet, quiet: !model.workBubble.isEmpty, hop: hop, outfit: tab.outfit)
+            StripFigure(state: model.stripState, sign: "", showsProps: false, animated: model.active && !AmbientMotionPolicy.scrollQuiet, quiet: !model.workBubble.isEmpty, outfit: tab.outfit)
                 .frame(width: StripFigure.bodyWidth + 6, height: StripFigure.size.height, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("agent-stage-pull-zone")
         .accessibilityLabel(head + "，" + (model.workBubble.isEmpty ? model.stripCaption : model.workBubble) + "，点开菜单")
-        .accessibilityAction(named: "展开工作舞台") { model.openStage() }
+        .accessibilityAction(named: "展开回来简报") {
+            model.ensureChatVisibleForBrief()
+            model.prepareManualChatBrief()
+            DispatchQueue.main.async { model.openBrief() }
+        }
         .popover(isPresented: $model.showMenu, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
             MenuContent().presentationCompactAdaptation(.popover)
         }
     }
 
-    private var stageTitle: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Com 的工作台").font(TypeScale.headline)
-            Text(model.stripCaption).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).lineLimit(1)
-        }
-    }
-
-    /// 按住她往下拉：舞台跟着手指长出来；展开后在顶栏往上推收回。松手按位置和速度决定开合。
-    private var stageDrag: some Gesture {
+    /// 按住她往下拉：简报跟着手指长出来；展开后在顶栏往上推收回。松手按位置和速度决定开合。
+    private var briefDrag: some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
+            .updating($dragging) { _, state, _ in state = true }
             .onChanged { value in
                 let dy = value.translation.height
-                if model.stageExpanded {
-                    if dragStart == nil { guard dy < 0 else { return }; dragStart = model.stageProgress }
-                    model.dragStage(to: (dragStart ?? 1) + dy / StagePanel.revealHeight)
+                if model.briefExpanded {
+                    if dragStart == nil { guard dy < 0 else { return }; dragStart = model.briefProgress }
+                    model.dragBrief(to: (dragStart ?? 1) + dy / max(120, model.briefDragHeight))
                 } else {
-                    guard dy > 0, dy > abs(value.translation.width) * 0.8 else { return }
-                    model.showMenu = false
-                    model.dragStage(to: dy / StagePanel.revealHeight)
+                    if dragStart == nil {
+                        guard dy > 0, dy > abs(value.translation.width) * 0.8 else { return }
+                        dragStart = 0
+                        model.showMenu = false
+                        model.ensureChatVisibleForBrief()
+                        model.prepareManualChatBrief()
+                    }
+                    model.dragBrief(to: (dragStart ?? 0) + dy / max(120, model.briefDragHeight))
                 }
             }
             .onEnded { value in
-                // 松手的弹簧放到下一轮：和最后一次跟手更新（不带动画）挤在同一帧时，弹簧会被吞掉、直接跳到终点。
-                if model.stageExpanded {
-                    guard dragStart != nil else { return }
-                    dragStart = nil
-                    let predicted = 1 + value.predictedEndTranslation.height / StagePanel.revealHeight
-                    DispatchQueue.main.async { model.settleStage(predicted: predicted) }
-                } else {
-                    guard model.stageProgress > 0 else { return }
-                    let predicted = value.predictedEndTranslation.height / StagePanel.revealHeight
-                    DispatchQueue.main.async { model.settleStage(predicted: predicted) }
+                guard let start = dragStart else { return }
+                dragStart = nil
+                DispatchQueue.main.async {
+                    model.settleBriefFromTopBar(
+                        start: start,
+                        translation: value.translation.height,
+                        predictedEnd: value.predictedEndTranslation.height
+                    )
                 }
             }
     }
 }
 
-/// 顶栏右上那颗玻璃按钮：图标随页换（符号替换动画），拉开工作台时变成收起。玻璃本身不换，切页不闪。
+/// 顶栏右上那颗玻璃按钮：图标随页换（符号替换动画），简报展开时变成收起。玻璃本身不换，切页不闪。
 struct TopBarTrailing: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -224,7 +213,7 @@ struct TopBarTrailing: View {
     }
     private struct BarItem { let symbol: String; let label: String; let id: String; var disabled = false; let action: () -> Void }
     private func trailingItem(closing: Bool) -> BarItem {
-        if closing { return BarItem(symbol: "chevron.up", label: "收起工作舞台", id: "agent-stage-close") { model.closeStage() } }
+        if closing { return BarItem(symbol: "chevron.up", label: "收起回来简报", id: "agent-stage-close") { model.closeBrief() } }
         switch tab {
         case .health:
             let running = model.healthInsight["running"].bool || localBusy
@@ -391,6 +380,7 @@ private struct MenuContent: View {
         Button {
             guard !busy else { return }
             model.showMenu = false
+            if model.briefExpanded || model.briefProgress > 0 { model.closeBrief(dockAfter: false) }
             action()
         } label: {
             HStack(spacing: Space.md) {
@@ -604,151 +594,5 @@ private struct ShineOnce: ViewModifier {
                 phase = 0
                 withAnimation(.easeInOut(duration: 0.7).delay(0.22)) { phase = 1 }
             }
-    }
-}
-
-// MARK: - 下拉工作台：从顶栏像水珠一样拉下来
-
-/// 舞台面板常驻在根视图上层（r3-work：在顶栏下面一层）：高度 = 顶栏 + 进度 × 展开部分。进度跟手指走，松手弹到开或合。
-/// 顶栏那一截只铺玻璃：标题「Com 的工作台」和收起按钮由顶栏自己换上去，她不再画第二份。
-struct StagePanel: View {
-    /// 展开部分的高度：场景 200 + 状态行 48 + 把手 28。
-    nonisolated static let revealHeight: CGFloat = 276
-    /// 展开到 progress 时桌前她的原点和缩放（顶栏坐标）：场景随进度从 0.9 倍长到 1 倍（锚在上沿正中），她要落在同一张桌子前。
-    nonisolated static func deskFigure(width: CGFloat, progress: CGFloat) -> (origin: CGPoint, scale: CGFloat) {
-        let k = 0.9 + 0.1 * min(1, max(0, progress))
-        let local = StageScene.figureOrigin(width: width)
-        return (CGPoint(x: width / 2 + (local.origin.x - width / 2) * k, y: Layout.topBar + local.origin.y * k), local.scale * k)
-    }
-    @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var dragStart: CGFloat?
-    private var progress: CGFloat { model.stageProgress }
-    var body: some View {
-        GeometryReader { geometry in
-            let top = geometry.safeAreaInsets.top
-            let shape = UnevenRoundedRectangle(bottomLeadingRadius: 30 * min(1, progress * 2 + 0.3), bottomTrailingRadius: 30 * min(1, progress * 2 + 0.3), style: .continuous)
-            ZStack(alignment: .top) {
-                Color.black.opacity(0.18 * Double(min(1, progress)))
-                    .ignoresSafeArea()
-                    .allowsHitTesting(model.stageExpanded)
-                    .onTapGesture { model.closeStage() }
-                    .accessibilityIdentifier("agent-stage-outside")
-                    .accessibilityHidden(!model.stageExpanded)
-                VStack(spacing: 0) {
-                    Color.clear.frame(height: Layout.topBar)
-                    ZStack(alignment: .top) {
-                        // 收起时不挂 StageScene：否则 opacity=0 仍在跑 TimelineView+Canvas，白烧帧预算。
-                        if progress > 0.04 {
-                            VStack(spacing: 0) {
-                                StageScene(state: model.stripState, sign: model.stripSign, sourceBroken: !model.brokenSources.isEmpty, machineLit: model.stripMachine, drawsFigure: false)
-                                    .frame(height: 200)
-                                stats.frame(height: 48)
-                                Capsule().fill(Palette.separator).frame(width: 40, height: 5).frame(height: 28).accessibilityHidden(true)
-                            }
-                            .scaleEffect(0.9 + 0.1 * min(1, progress), anchor: .top)
-                            .opacity(Double(min(1, max(0, (progress - 0.1) / 0.6))))
-                        }
-                    }
-                    .frame(height: Self.revealHeight * max(0, progress), alignment: .top)
-                    .clipped()
-                }
-                .padding(.top, top)
-                .frame(maxWidth: .infinity)
-                .background { shape.fill(Palette.background.opacity(0.55)) }
-                // 收起时不做 Liquid Glass：系统玻璃合成在 opacity=0 时仍耗 GPU。
-                .modifier(StageGlass(progress: progress, shape: shape))
-                .shadow(color: .black.opacity(0.18 * Double(min(1, progress))), radius: progress > 0.04 ? 24 : 0, y: 12)
-                .contentShape(Rectangle())
-                .gesture(panelDrag)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier(model.stageExpanded ? "agent-stage-panel" : "agent-stage-panel-collapsed")
-                .accessibilityHidden(!model.stageExpanded)
-            }
-            .ignoresSafeArea(edges: .top)
-        }
-        // 原来是 progress > 0 就整块出现（第一帧整片玻璃硬切进来）；现在随进度淡入，和顶栏自己的底色交叉过去。
-        .opacity(Double(min(1, progress * 4)))
-        .allowsHitTesting(model.stageExpanded)
-    }
-    /// 展开后的一行实情：下一步 / 在跑 / 信源，各自能跳过去。
-    private var stats: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(spacing: Space.sm) {
-                chip(
-                    model.waitingOpening ? "打开中…" : "等你 \(model.waitingInboxCount)",
-                    symbol: model.waitingOpening ? "hourglass" : "hand.raised",
-                    tone: model.waitingOpening ? .neutral : (model.waitingInboxCount > 0 ? .warning : .neutral),
-                    disabled: model.waitingOpening
-                ) {
-                    guard !model.waitingOpening else { return }
-                    model.openWaitingInbox(closeStage: true)
-                }
-                chip("下一步 \(model.nextUrgentCount)", symbol: "shoeprints.fill", tone: model.nextUrgentCount > 0 ? .warning : .neutral) { model.closeStage(); model.tab = .next }
-                chip("在跑 \(model.runningTasks.count)", symbol: "play.circle", tone: model.runningTasks.isEmpty ? .neutral : .info) { model.closeStage(); model.tab = .doing }
-                chip(
-                    model.connectorsOpening ? "打开中…" : (model.brokenSources.isEmpty ? "信源正常" : "信源断了 \(model.brokenSources.count)"),
-                    symbol: model.connectorsOpening ? "hourglass" : (model.brokenSources.isEmpty ? "checkmark.circle" : "exclamationmark.triangle"),
-                    tone: model.connectorsOpening ? .neutral : (model.brokenSources.isEmpty ? .success : .danger),
-                    disabled: model.connectorsOpening
-                ) {
-                    guard !model.connectorsOpening else { return }
-                    model.openConnectors(closeStage: true)
-                }
-                if model.stripState == .done, !model.stage.deliveryID.isEmpty {
-                    chip("看回复", symbol: "text.bubble", tone: .accent) {
-                        // 先对准消息再收舞台；对不上就留着可再点，别假关。
-                        let id = model.stage.deliveryID
-                        Task {
-                            if await model.locateMessage(id) {
-                                model.closeStage()
-                            }
-                            // 失败：locateNote 在舞台开口，可再点「看回复」。
-                        }
-                    }.accessibilityIdentifier("agent-stage-delivery")
-                }
-            }
-            if !model.locateNote.isEmpty {
-                InlineNotice(text: model.locateNote, tone: .danger)
-                    .accessibilityIdentifier("stage-locate-fail")
-            }
-        }.padding(.horizontal, Space.lg)
-    }
-    private func chip(_ text: String, symbol: String, tone: Tone, disabled: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) { Image(systemName: symbol).font(.system(size: 12, weight: .semibold)); Text(text).font(TypeScale.footnote.weight(.medium)).lineLimit(1) }
-                .foregroundStyle(tone == .neutral ? Palette.textPrimary : tone.color)
-                .padding(.horizontal, Space.md).frame(height: 32)
-                .background(tone.soft, in: .capsule)
-                .opacity(disabled ? 0.72 : 1)
-        }.buttonStyle(.plain).disabled(disabled)
-    }
-    /// 展开后，在面板上往上推：跟手收回；松手按位置和速度决定。
-    private var panelDrag: some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .global)
-            .onChanged { value in
-                guard model.stageExpanded else { return }
-                if dragStart == nil { dragStart = model.stageProgress }
-                model.dragStage(to: (dragStart ?? 1) + value.translation.height / Self.revealHeight)
-            }
-            .onEnded { value in
-                guard model.stageExpanded else { return }
-                dragStart = nil
-                let predicted = 1 + value.predictedEndTranslation.height / Self.revealHeight
-                DispatchQueue.main.async { model.settleStage(predicted: predicted) }  // r3-work：松手弹簧单独一帧起，不被最后一次跟手吞掉
-            }
-    }
-}
-
-/// 只在舞台真正展开时挂 glassEffect，收起不合成。
-private struct StageGlass: ViewModifier {
-    let progress: CGFloat
-    let shape: UnevenRoundedRectangle
-    func body(content: Content) -> some View {
-        if progress > 0.04 {
-            content.glassEffect(.regular, in: shape)
-        } else {
-            content
-        }
     }
 }

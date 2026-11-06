@@ -181,215 +181,227 @@ let nextDismissReasons: [(String, String)] = [("elsewhere", "已经办了"), ("o
 struct NextView: View {
     @Environment(AppModel.self) private var model
     @State private var showDecisions = false
+    @State private var showMore = false
+    @State private var alertsOpen = false
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.dockOnSide) private var outer
     private var data: JSON { model.nextData }
-    /// 只有他自己点了「重新整理」才亮构建卡。后台每小时那轮不打断他在看的内容，也不把页面换成「正在整理」。
     private var building: Bool { model.nextUserRefresh && data["running"].bool }
-    /// 10-25 Duo 合上（外屏竖拿，Dock 在右）：最要紧的那件放大成速览卡，下面的列表不再重复它。
-    private var glance: JSON? { outer && !model.splitView ? model.nextItems.first : nil }  // 双栏右栏也贴边，但不是外屏
-    private var groups: [(String, [JSON])] {
-        [("现在", "now"), ("今天", "today"), ("这周", "week")].compactMap { title, key in
-            let rows = model.nextItems.filter { $0["urgency"].string == key && $0.id != glance?.id }
-            return rows.isEmpty ? nil : (title, rows)
-        }
+    private var glance: JSON? {
+        guard outer && !model.splitView else { return nil }
+        if let card = model.boardCards[.doing]?.first { return card }
+        return model.boardCards[.todo]?.first
     }
+    private var hasAlerts: Bool {
+        model.waitingInboxCount > 0 || !model.activityData["uncertain"].array.isEmpty || !model.brokenSources.isEmpty
+            || !model.activityOpenNote.isEmpty || !model.planOpenNote.isEmpty
+    }
+
     var body: some View {
-        ScreenScaffold(title: "下一步") {
-            header
-            if !model.activityOpening, !model.activityOpenNote.isEmpty {
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    InlineNotice(text: model.activityOpenNote, tone: .danger)
-                    Button(model.activityOpening ? "打开中…" : "打开动态") {
-                        guard !model.activityOpening else { return }
-                        model.openActivityFeed()
-                    }
-                    .buttonStyle(.secondaryCompact)
-                    .disabled(model.activityOpening)
-                    .accessibilityIdentifier("next-activity-open")
-                }
-                .accessibilityIdentifier("next-activity-open-fail")
-            }
-            if !model.planOpening, !model.planOpenNote.isEmpty {
-                InlineNotice(text: model.planOpenNote, tone: .danger)
-                    .accessibilityIdentifier("next-plan-open-fail")
-            }
-            // 等你拍板的永远排第一：这一页是唯一的行动面，不再单独开一层；刚拍完的 24h 内也留着看结论。
-            if model.waitingInboxCount > 0 || !model.waitingData["concluded"].array.isEmpty { WaitingSheet(embedded: true) }
-            if let glance, !building { NextGlanceCard(item: glance) }
-            let uncertain = model.activityData["uncertain"].array
-            if !uncertain.isEmpty {
-                GroupSection("结果待核对") { ForEach(uncertain.map(RemoteRow.init)) { UncertainCard(entry: $0.value) } }
-            }
-            VoyageBanner()
-            TomorrowPlanCard()
-            let broken = model.brokenSources
-            if !broken.isEmpty {
-                ForEach(broken.map { RemoteRow(.object(["id": $0["name"], "source": $0])) }) { row in SourceBrokenNote(source: row.value["source"]) }
-            }
-            if building {
-                NextBuildingCard(progress: data["progress"])
-                    .transition(reduce ? .opacity : .blurLift)
-            } else if model.nextItems.isEmpty {
-                VStack(alignment: .leading, spacing: Space.md) {
-                    EmptyState(title: "这会儿我没什么要推的",
-                               description: "邮件、日程、项目和账本我都在扫。有一件值得你动手的，我会整理成一张卡——一卡一个主动作。有等你拍板的会优先拦你。",
-                               symbol: "sparkles")
-                    HStack(spacing: Space.sm) {
-                        Button {
-                            Haptics.selection()
-                            model.tab = .chat
-                        } label: {
-                            Label("跟我说一声", systemImage: "bubble.left")
-                                .font(TypeScale.subheadline.weight(.medium))
-                                .foregroundStyle(Palette.textPrimary)
-                                .padding(.horizontal, Space.lg).frame(height: 40)
-                                .background(Palette.surface, in: .capsule)
-                                .overlay(Capsule().strokeBorder(Palette.separator, lineWidth: 0.5))
+        GeometryReader { _ in
+            VStack(alignment: .leading, spacing: Space.md) {
+                header
+                if hasAlerts {
+                    NextAlertStrip(open: $alertsOpen, brokenSources: model.brokenSources) {
+                        if !model.activityOpening, !model.activityOpenNote.isEmpty {
+                            InlineNotice(text: model.activityOpenNote, tone: .danger)
                         }
-                        .buttonStyle(SoftPressStyle())
-                        .accessibilityIdentifier("next-empty-chat")
-                        if model.waitingInboxCount > 0 {
-                            Button {
-                                guard !model.waitingOpening else { return }
-                                Haptics.selection()
-                                model.openWaitingInbox()
-                            } label: {
-                                let tip = ChatAttentionHint.topWaitingTitle(model)
-                                Label(
-                                    model.waitingOpening ? "打开中…" : (tip.map { "先拍板：\($0)" } ?? "等你 \(model.waitingInboxCount)"),
-                                    systemImage: model.waitingOpening ? "hourglass" : "hand.raised.fill"
-                                )
-                                    .font(TypeScale.subheadline.weight(.medium))
-                                    .foregroundStyle(Palette.warning)
-                                    .lineLimit(1)
-                                    .padding(.horizontal, Space.lg).frame(height: 40)
-                                    .background(Palette.warning.opacity(0.12), in: .capsule)
+                        if !model.planOpening, !model.planOpenNote.isEmpty {
+                            InlineNotice(text: model.planOpenNote, tone: .danger)
+                        }
+                        if model.waitingInboxCount > 0 { WaitingSheet(embedded: true) }
+                        let uncertain = model.activityData["uncertain"].array
+                        if !uncertain.isEmpty {
+                            GroupSection("结果待核对") { ForEach(uncertain.map(RemoteRow.init)) { UncertainCard(entry: $0.value) } }
+                        }
+                        let broken = model.brokenSources
+                        if !broken.isEmpty {
+                            ForEach(broken.map { RemoteRow(.object(["id": $0["name"], "source": $0])) }) { row in
+                                SourceBrokenNote(source: row.value["source"])
                             }
-                            .buttonStyle(SoftPressStyle())
-                            .disabled(model.waitingOpening)
-                            .attentionBreath(active: !reduce && !model.waitingOpening)
-                            .accessibilityIdentifier("next-empty-waiting")
                         }
                     }
-                    .padding(.horizontal, Space.xs)
                 }
-            } else {
-                // 有卡时与空态对比：明确「现在」优先、一卡一主动作，避免看起来像普通列表。
-                Text("下面按缓急排。每张卡一个主动作——先点那颗，其它收进「更多」。")
-                    .font(TypeScale.footnote)
-                    .foregroundStyle(Palette.textTertiary)
-                    .padding(.horizontal, Space.xs)
-                    .accessibilityIdentifier("next-has-cards-guide")
-            }
-            ForEach(groups, id: \.0) { title, rows in
-                GroupSection(title == "现在" ? "现在 · 先办" : title) {
-                    ForEach(Array(rows.map(RemoteRow.init).enumerated()), id: \.element.id) { index, row in
-                        // 新建议错峰模糊上浮进来（每张晚 50ms），和构建卡同一套语法
-                        NextCard(item: row.value)
-                            .transition(reduce ? .opacity : .asymmetric(insertion: AnyTransition.blurLift.animation(.spring(response: 0.42, dampingFraction: 0.86).delay(Double(index) * 0.05)),
-                                                                      removal: .scale(scale: 0.96).combined(with: .opacity)))
-                    }
+                if let glance, !building { NextGlanceCard(item: boardGlanceItem(glance)) }
+                VoyageBanner()
+                if building {
+                    NextBuildingCard(progress: data["progress"])
+                        .padding(.horizontal, Layout.margin)
+                } else {
+                    BoardKanbanView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            if let finance = model.datasets["/personal/finance"], finance["available"].bool { GroupSection("账本") { LedgerNote(finance: finance) } }
-            RoutinesSection()
-            footer
         }
-        .animation(reduce ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: model.nextItems.map(\.id))
-        .animation(reduce ? nil : .spring(response: 0.42, dampingFraction: 0.86), value: building)
-        // 下拉只重新读取。旋转时的回弹也可能触发下拉，不能因此跑一轮大模型整理；重新整理走右上角按钮。
+        .padding(.top, Space.md)
+        .background(Palette.background)
+        .navigationTitle("下一步")
+        .toolbar(.hidden, for: .navigationBar)
         .refreshable {
             await model.refresh(.next)
-            // 待核对一路失败也开口；别只 silently 丢 activity。
+            await model.refreshBoard()
             if await model.load("/personal/activity") == nil {
                 let err = model.errors["/personal/activity"] ?? ""
                 let had = !(model.activityData["uncertain"].array).isEmpty
                 model.activityOpenNote = err.isEmpty
-                    ? (had ? "待核对没刷上——下面仍可能是上一版。可再下拉。不会假装已是最新。" : "待核对没拉齐——可再下拉。不会假装已是最新。")
-                    : "待核对没刷上：" + err + "——可再下拉。不会假装已是最新。"
-            } else {
-                model.activityOpenNote = ""
-            }
+                    ? (had ? "待核对没刷上——下面仍可能是上一版。可再下拉。" : "待核对没拉齐——可再下拉。")
+                    : "待核对没刷上：" + err + "——可再下拉。"
+            } else { model.activityOpenNote = "" }
         }
-        // 进页拉齐：卡片 + 待核对 + 等你 + 航程 + 明天计划；别只刷 activity。
         .task {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { _ = await model.load("/personal/next") }
+                group.addTask { _ = await model.refreshBoard() }
                 group.addTask { _ = await model.load("/personal/activity") }
                 group.addTask { _ = await model.load("/personal/waiting") }
                 group.addTask { _ = await model.load("/personal/cases") }
                 group.addTask { _ = await model.load("/personal/plan") }
             }
         }
+        .sheet(isPresented: $showMore) { NextMoreSheet(showDecisions: $showDecisions) }
     }
+
+    private func boardGlanceItem(_ card: JSON) -> JSON {
+        if card["kind"].string == "next", !card["next"].isNull { return card["next"] }
+        return card
+    }
+
     private var header: some View {
         HStack(alignment: .center, spacing: Space.md) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(headerLead)
                     .font(TypeScale.subheadline)
                     .foregroundStyle(Palette.textSecondary)
-                    .contentTransition(.opacity)
-                    .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: headerLead)
                 if data["updated_at"].double > 0 {
-                    Text("上次整理 " + relativeTime(data["updated_at"].double) + (data["source"].string == "rule" ? " · 模型没接上，先按规则排" : ""))
+                    Text("上次整理 " + relativeTime(data["updated_at"].double))
                         .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
                 }
             }
             Spacer(minLength: 0)
+            if model.splitView {
+                Button {
+                    model.boardFocus.toggle()
+                    Haptics.selection()
+                } label: {
+                    Image(systemName: model.boardFocus ? "rectangle.split.3x1" : "sidebar.left")
+                        .font(.system(size: 17, weight: .medium))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(model.boardFocus ? "显示聊天栏" : "看板专注")
+                .accessibilityIdentifier("board-focus-toggle")
+            }
+            Button { showMore = true } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 17, weight: .medium))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("更多")
+            .accessibilityIdentifier("next-more-menu")
         }
+        .padding(.horizontal, Layout.margin)
     }
-    /// Hark：有「现在」就点名那一件；空态与有卡口吻对照，避免只像列表页眉。
     private var headerLead: String {
         if building { return "正在重新整理…" }
-        if model.nextItems.isEmpty {
-            return "眼下干净——有值得动手的我会推卡上来"
-        }
-        if let tip = ChatAttentionHint.topNextTitle(model) {
-            let nowCount = model.nextUrgentCount
-            if nowCount > 1 { return "先办这一件：\(tip)（现在还有 \(nowCount - 1)）" }
-            if nowCount == 1 { return "先办这一件：\(tip)" }
-            return "我想你先看：\(tip)"
-        }
-        return "我从邮件、日程、项目和账本里挑的"
-    }
-    @ViewBuilder private var footer: some View {
-        let week = data["week"]
-        VStack(alignment: .leading, spacing: Space.sm) {
-            if week["shown"].int > 0 {
-                let precision = week["precision"].isNull ? "" : "，准确率 \(Int((week["precision"].double * 100).rounded()))%"
-                let resolved = week["resolved"].int > 0 ? "；群里已经办完、我自动收起 \(week["resolved"].int) 件" : ""
-                let reasons = week["reasons"].object.sorted { $0.value.int > $1.value.int }.map { "\($0.key) \($0.value.int)" }.joined(separator: " · ")
-                Text("这周提了 \(week["shown"].int) 件，你用上 \(week["acted"].int) 件、划掉 \(week["dismissed"].int) 件\(precision)\(resolved)。" + (reasons.isEmpty ? "" : "划掉的理由：" + reasons + "。"))
-                    .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
-            }
-            ForEach(week["suggestions"].array.map(\.string), id: \.self) { text in
-                Label(text, systemImage: "bell.slash").font(TypeScale.footnote).foregroundStyle(Palette.textSecondary)
-                    .accessibilityIdentifier("next-attention-suggestion")
-            }
-            Button { showDecisions = true } label: {
-                Label("定过的事", systemImage: "checkmark.seal").font(TypeScale.footnote)
-            }
-            .buttonStyle(.quiet)
-            .accessibilityIdentifier("next-open-decisions")
-            .sheet(isPresented: $showDecisions) { DecisionsSheet() }
-            Button {
-                guard !model.activityOpening else { return }
-                model.openActivityFeed()
-            } label: {
-                Label(model.activityOpening ? "打开中…" : "看它替你做过的事",
-                      systemImage: model.activityOpening ? "hourglass" : "list.bullet.rectangle")
-                    .font(TypeScale.footnote)
-            }
-            .buttonStyle(.quiet)
-            .disabled(model.activityOpening)
-            .accessibilityIdentifier("next-open-activity")
-        }
-        .padding(.horizontal, Space.xs)
+        let cards = model.boardCards
+        let n = cards.values.reduce(0) { $0 + $1.count }
+        if n == 0 { return "眼下干净——有值得动手的我会推卡上来" }
+        let now = (cards[.suggest] ?? []).filter { $0["urgency"].string == "now" || $0["next"]["urgency"].string == "now" }.count
+        return now > 0 ? "\(n) 件，其中 \(now) 件现在就该办" : "\(n) 件，都不赶"
     }
 }
 
-/// 一条建议：做什么 → 凭什么 → 依据（可展开）→ 交给 Com / 已经做了 / 不用。
+private struct NextAlertStrip<Content: View>: View {
+    @Binding var open: Bool
+    var brokenSources: [JSON] = []
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
+                Button { withAnimation(ComMotion.settle) { open.toggle() } } label: {
+                    Label(open ? "收起提醒" : "展开提醒", systemImage: open ? "chevron.up" : "chevron.down")
+                        .font(TypeScale.footnote)
+                }
+                .buttonStyle(.quiet)
+                .accessibilityIdentifier("next-alert-toggle")
+                if !open {
+                    ForEach(brokenSources.map { RemoteRow(.object(["id": $0["name"], "source": $0])) }) { row in
+                        let src = row.value["source"]
+                        let name = src["name"].string
+                        let label = src["label"].string.isEmpty ? name : src["label"].string
+                        Button { withAnimation(ComMotion.settle) { open = true } } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("\(label) 连接断了")
+                                    .font(TypeScale.caption.weight(.medium))
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(Palette.warning)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Palette.warning.opacity(0.12), in: .capsule)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("source-broken-" + name)
+                    }
+                }
+            }
+            if open {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        content()
+                    }
+                }
+                .frame(maxHeight: 200)
+            }
+        }
+        .padding(.horizontal, Layout.margin)
+        .accessibilityIdentifier("next-alert-strip")
+    }
+}
+
+private struct NextMoreSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @Binding var showDecisions: Bool
+    private var data: JSON { model.nextData }
+    var body: some View {
+        NavigationStack {
+            ScrollPage {
+                if let finance = model.datasets["/personal/finance"], finance["available"].bool {
+                    GroupSection("账本") { LedgerNote(finance: finance) }
+                }
+                RoutinesSection()
+                let week = data["week"]
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    if week["shown"].int > 0 {
+                        Text("这周提了 \(week["shown"].int) 件，你用上 \(week["acted"].int) 件、划掉 \(week["dismissed"].int) 件。")
+                            .font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+                    }
+                    Button { showDecisions = true; dismiss() } label: {
+                        Label("定过的事", systemImage: "checkmark.seal")
+                    }
+                    .buttonStyle(.quiet)
+                    .accessibilityIdentifier("next-open-decisions")
+                    Button {
+                        dismiss()
+                        model.openActivityFeed()
+                    } label: {
+                        Label("看它替你做过的事", systemImage: "list.bullet.rectangle")
+                    }
+                    .buttonStyle(.quiet)
+                    .accessibilityIdentifier("next-open-activity")
+                }
+            }
+            .navigationTitle("更多")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+            .sheet(isPresented: $showDecisions) { DecisionsSheet() }
+        }
+    }
+}
+
+/// 一条建议（详情 sheet 仍复用部分逻辑；列表已改为看板瘦卡）。
 private struct NextCard: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -490,14 +502,6 @@ private struct NextCard: View {
                 }
             }
         }
-        .offset(x: offset)
-        .gesture(DragGesture(minimumDistance: 24).onChanged { value in
-            guard abs(value.translation.width) > abs(value.translation.height) * 1.4 else { return }
-            offset = max(-110, min(0, value.translation.width * 0.6))
-        }.onEnded { value in
-            withAnimation(reduce ? nil : .spring(response: 0.3, dampingFraction: 0.85)) { offset = 0 }
-            if value.translation.width < -80 { askReason = true }
-        })
         .confirmationDialog("为什么不用？我按理由调整以后提什么", isPresented: $askReason, titleVisibility: .visible) {
             ForEach(nextDismissReasons, id: \.0) { key, label in Button(label) { dismiss(key) } }
             Button("只是划掉") { act("dismiss") }
@@ -755,7 +759,7 @@ private func evidenceKindName(_ kind: String) -> String {
 /// r3 录屏抽帧查到的闪屏根因：① 开合不在动画事务里，卡片高度和按钮瞬间跳、袋子还在半路，互相压住；
 /// ② 原来的飞行模糊用 if/else 包住纸片，开合时纸片身份翻转，新旧两份交叉淡入淡出成重影；
 /// ③ 系统 zoom 转场：源纸片落回时底边一道黑线（摆正抽出后仍在），推近途中详情按小尺寸排版、文字两份叠着重排。所以改成普通 sheet。
-private struct EvidencePocket: View {
+struct EvidencePocket: View {
     let evidence: [JSON]
     let itemID: String
     let itemTitle: String
@@ -782,7 +786,8 @@ private struct EvidencePocket: View {
         GeometryReader { geo in
             let count = CGFloat(slips.count)
             let width = min(158, max(108, (geo.size.width - 16) / count + (count > 1 ? 22 : 0)))
-            let step = count > 1 ? (geo.size.width - 16 - width) / (count - 1) : 0
+            // 间距封顶：宽屏（内屏 / 横屏）上别把纸片拉到两头，扇形就该是紧凑的一把。
+            let step = count > 1 ? min(width * 0.62, (geo.size.width - 16 - width) / (count - 1)) : 0
             ZStack(alignment: .bottomLeading) {
                 ZStack(alignment: .bottomLeading) {
                     ForEach(slips, id: \.offset) { index, row in
@@ -1215,7 +1220,7 @@ func nextActionTitle(_ action: JSON) -> String {
 }
 
 /// 回复草稿：替他写好的那段话，先露三行，点开看全文。记账 / 日程只显示参数。
-private struct NextActionDraft: View {
+struct NextActionDraft: View {
     let action: JSON
     @State private var expanded = false
     var body: some View {

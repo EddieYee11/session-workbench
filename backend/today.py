@@ -14,7 +14,7 @@
 `计划结束` 三行；日程同步只新建来源待办、或更新它的 `计划结束` 与 Com 写的来源备注行；
 两者都是临时文件 + replace 原子写，正文和其他字段不动，不挪文件（Obsidian 的 auto-move 插件按状态归位）。
 """
-import json, os, re, stat, threading, time
+import hashlib, json, os, re, stat, threading, time
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -104,11 +104,61 @@ def _value(line):
     return line.partition(':')[2].strip().strip('"').strip("'")
 
 
+def task_state(path, f, vault):
+    """有 frontmatter「状态」以字段为准；没有则按所在目录推断（已完成目录 → 已完成，其余 → 待处理）。
+    文件已在 `任务/已完成/` 但 frontmatter 仍是默认「待处理」（auto-move 只挪文件）时按目录视为已完成。"""
+    in_done = False
+    if vault:
+        try:
+            rel = path.resolve().relative_to(vault.resolve())
+            in_done = len(rel.parts) >= 2 and rel.parts[0] == '任务' and rel.parts[1] == '已完成'
+        except ValueError:
+            pass
+    if '状态' in f:
+        state = f['状态']
+        if state == '待处理' and in_done:
+            return '已完成'
+        return state
+    if in_done:
+        return '已完成'
+    return '待处理'
+
+
 def _ending(line, fallback='\n'):
     return line[len(line.rstrip('\r\n')):] or fallback
 
 
 DONE_FIELDS = ('状态', '完成时间')
+STATE_FIELDS = DONE_FIELDS
+TASK_ROOTS = ('任务', '任务/待处理', '任务/已完成')
+TODO_STATES = frozenset(('待处理', '进行中', '已完成', '已取消'))
+_LISTING = {}  # 目录 → (mtime_ns, 排好序的 .md 列表)
+
+
+def _list_md(folder):
+    """mini 上 iCloud 目录 scandir 一次要 5 秒多（11-03 实测，看板一次请求扫 6 次 = 32 秒），stat 目录却是 0 秒：
+    目录 mtime 没变就复用上次的文件列表（文件内容照常现读）。刚改过 2 秒内的目录不缓存，免得同一秒里新建的文件被漏掉。
+    TCC 审批卡住时 scandir 等 5 秒后报 EINTR（glob 会把它吞成空列表）：这里出错就沿用上次的列表，也不写缓存。"""
+    try:
+        mtime = folder.stat().st_mtime_ns
+    except OSError:
+        return []
+    hit = _LISTING.get(folder)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        with os.scandir(folder) as it:
+            paths = sorted(Path(e.path) for e in it if e.name.endswith('.md'))
+    except OSError:
+        return hit[1] if hit else []
+    if time.time_ns() - mtime > 2_000_000_000:
+        _LISTING[folder] = (mtime, paths)
+    return paths
+
+
+def com_id_derive(rel):
+    """旧文件没有 com_id 时，用 vault 相对路径派生稳定 id。"""
+    return 'com_' + hashlib.sha256(str(rel).encode()).hexdigest()[:16]
 
 
 class Today:
@@ -128,6 +178,15 @@ class Today:
             except Exception as exc:  # 一个来源坏了不拖累其余来源
                 out['errors'][name] = str(exc)[:200]
         return out
+
+    def calendar(self, start_date='', days=14):
+        """日历页：任意区间（从 start_date 起 days 天，Asia/Shanghai）的日程，一次取齐。"""
+        try:
+            day = datetime.strptime(str(start_date or ''), '%Y-%m-%d').replace(tzinfo=TZ)
+        except ValueError:
+            day = datetime.fromtimestamp(self.clock(), TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        days = max(1, min(62, int(days)))
+        return {'start': day.date().isoformat(), 'days': days, 'events': self.events(day, day + timedelta(days=days))}
 
     def events(self, start, end):
         if not self.hub:
@@ -232,7 +291,7 @@ class Today:
         if not folder.is_dir():
             return []
         today, rows = start.date(), []
-        for path in sorted(folder.glob('*.md')):
+        for path in _list_md(folder):
             if path.stem.startswith(('00-', 'zz')):
                 continue
             f = _front(path)
@@ -254,15 +313,72 @@ class Today:
 
     def _pending_file(self, rel):
         """快照里的 path（相对 vault）→ 真实文件。只认 `任务/待处理/` 下直接放着的 .md，防路径穿越和软链接出界。"""
+        return self._task_file(rel, pending_only=True)
+
+    def _task_file(self, rel=None, com_id=None, pending_only=False):
+        """按相对路径或 com_id 找行动台任务 md（`任务/`、`待处理/`、`已完成/` 三处，不挪目录）。"""
         if not self.vault:
             raise ValueError('行动台没接上')
+        if com_id:
+            for root in TASK_ROOTS:
+                folder = self.vault / root
+                if not folder.is_dir():
+                    continue
+                for path in _list_md(folder):
+                    if path.stem.startswith(('00-', 'zz')):
+                        continue
+                    f = _front(path)
+                    cid = f.get('com_id') or com_id_derive(str(path.relative_to(self.vault)))
+                    if cid == com_id:
+                        return path
+            raise ValueError('找不到这条待办')
         if not isinstance(rel, str) or not rel.strip() or '\x00' in rel:
             raise ValueError('待办路径无效')
-        folder = (self.vault / '任务' / '待处理').resolve()
+        allowed = [(self.vault / '任务' / '待处理').resolve()] if pending_only else [(self.vault / r).resolve() for r in TASK_ROOTS]
         path = (self.vault / rel).resolve()
-        if path.parent != folder or path.suffix != '.md' or path.stem.startswith(('00-', 'zz')):
-            raise ValueError('只能改行动台「待处理」里的待办')
+        if path.suffix != '.md' or path.stem.startswith(('00-', 'zz')) or path.parent not in allowed:
+            raise ValueError('只能改行动台「待处理」里的待办' if pending_only else '待办路径无效')
         return path
+
+    def _iter_task_files(self):
+        if not self.vault:
+            return
+        seen = set()
+        for root in TASK_ROOTS:
+            folder = self.vault / root
+            if not folder.is_dir():
+                continue
+            for path in _list_md(folder):
+                if path.stem.startswith(('00-', 'zz')):
+                    continue
+                key = path.resolve()
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield path
+
+    def ensure_com_id(self, path):
+        """第一次被看板写入时把 com_id 补进 frontmatter。"""
+        rel = str(path.relative_to(self.vault))
+        f = _front(path)
+        if f.get('com_id'):
+            return f['com_id']
+        cid = com_id_derive(rel)
+        stamp = path.stat().st_mtime_ns
+        lines, end = _head(path.read_bytes().decode('utf-8'))
+        index = _field(lines, end, 'com_id')
+        newline = _ending(lines[0])
+        out = list(lines)
+        text = 'com_id: ' + cid
+        if index is None:
+            out.insert(end, text + newline)
+        else:
+            out[index] = text + _ending(lines[index], newline)
+        self._write(path, ''.join(out), stamp)
+        return cid
+
+    def resolve_com_id(self, com_id):
+        return self._task_file(com_id=com_id)
 
     def _write(self, path, text, stamp):
         """原子写：同目录临时文件（点开头，Obsidian 不认）写完再 replace；写之前文件被别处改过就放弃。"""
@@ -277,13 +393,13 @@ class Today:
             if tmp.exists():
                 tmp.unlink()
 
-    def todo_done(self, rel):
+    def todo_done(self, rel, *, from_board=False):
         """打勾：`状态` 改成 已完成、写 `完成时间: YYYY-MM-DD`，其余一字不动。
         返回 undo：两行原样（没有这一行就是 None），撤销时照它恢复。已经是已完成就什么都不改（幂等）。"""
         with self._lock:
-            path = self._pending_file(rel)
+            path = self._task_file(rel) if from_board else self._pending_file(rel)
             if not path.is_file():
-                raise ValueError('这条待办已经不在待处理里了，请刷新')
+                raise ValueError('这条待办已经不在待处理里了，请刷新' if not from_board else '找不到这条待办')
             stamp = path.stat().st_mtime_ns
             lines, end = _head(path.read_bytes().decode('utf-8'))
             state, when = _field(lines, end, '状态'), _field(lines, end, '完成时间')
@@ -299,9 +415,46 @@ class Today:
                     extra.append(text + newline)
                 else:
                     out[index] = text + _ending(lines[index], newline)
+            if from_board and _field(lines, end, 'com_id') is None:
+                extra.append('com_id: ' + com_id_derive(str(path.relative_to(self.vault))) + newline)
             out[end:end] = extra  # 原来没有的字段补在属性头末尾，撤销时整行删掉就回到原样
             self._write(path, ''.join(out), stamp)
-            return {'status': 'completed', 'path': rel, 'changed': True, 'undo': undo, 'completed_at': day}
+            relative = str(path.relative_to(self.vault.resolve()))
+            return {'status': 'completed', 'path': relative, 'changed': True, 'undo': undo, 'completed_at': day}
+
+    def todo_set_state(self, rel, state, expect_mtime_ns=None, *, com_id=None):
+        """看板拖拽：只改 `状态`、`完成时间` 两行，不挪文件；expect_mtime_ns 与 rev 一致才写。"""
+        if state not in TODO_STATES:
+            raise ValueError('状态无效')
+        with self._lock:
+            path = self._task_file(com_id=com_id) if com_id else self._task_file(rel)
+            if not path.is_file():
+                raise ValueError('找不到这条待办')
+            stamp = path.stat().st_mtime_ns
+            if expect_mtime_ns is not None and int(expect_mtime_ns) != stamp:
+                raise ValueError('这条待办刚被别处改过，请刷新再试')
+            lines, end = _head(path.read_bytes().decode('utf-8'))
+            state_i, when_i = _field(lines, end, '状态'), _field(lines, end, '完成时间')
+            com_i = _field(lines, end, 'com_id')
+            rel_path = str(path.relative_to(self.vault))
+            cur = _value(lines[state_i]) if state_i is not None else '待处理'
+            day = datetime.fromtimestamp(self.clock(), TZ).date().isoformat()
+            if cur == state and (state != '已完成' or (when_i is not None and _value(lines[when_i])[:10] == day)):
+                return {'path': rel_path, 'changed': False, 'rev': str(stamp)}
+            newline = _ending(lines[0])
+            out, extra = list(lines), []
+            when_text = '完成时间: ' + day if state == '已完成' else '完成时间:'
+            for index, text in ((state_i, '状态: ' + state), (when_i, when_text)):
+                if index is None:
+                    extra.append(text + newline)
+                else:
+                    out[index] = text + _ending(lines[index], newline)
+            if com_i is None:
+                extra.append('com_id: ' + com_id_derive(rel_path) + newline)
+            out[end:end] = extra
+            self._write(path, ''.join(out), stamp)
+            new_stamp = path.stat().st_mtime_ns
+            return {'path': str(path.relative_to(self.vault)), 'changed': True, 'rev': str(new_stamp), 'completed_at': day if state == '已完成' else ''}
 
     def todo_undo(self, rel, undo):
         """撤销打勾：两行精确恢复成打勾前的原文，原来没有的就删掉。
@@ -372,27 +525,63 @@ class Today:
     # ---- 下一步 → 待办（2026-10-17 航程与闭环） ----------------------------------------------
 
     def todo_index(self):
-        """`任务/待处理/` 里还没做的待办：名字、计划结束、来源建议 id 和依据签名（由「加到待办」写入），给下一步去重。"""
-        folder = self.vault / '任务' / '待处理' if self.vault else None
-        if not folder or not folder.is_dir():
+        """行动台去重索引：待处理、进行中，以及近 7 天已完成的待办。"""
+        if not self.vault:
             return []
+        cutoff = datetime.fromtimestamp(self.clock(), TZ).date() - timedelta(days=7)
         rows = []
-        for path in folder.glob('*.md'):
-            if path.stem.startswith(('00-', 'zz')):
-                continue
+        for path in self._iter_task_files():
             f = _front(path)
-            if f.get('flow') != '任务' or f.get('状态', '待处理') != '待处理':
+            if f.get('flow') != '任务':
                 continue
-            rows.append({'name': path.stem, 'due': f.get('计划结束', ''), 'path': str(path.relative_to(self.vault)),
+            state = task_state(path, f, self.vault)
+            if state in ('待处理', '进行中'):
+                pass
+            elif state == '已完成':
+                done_day = _day(f.get('完成时间'))
+                if not done_day or done_day < cutoff:
+                    continue
+            else:
+                continue
+            rel = str(path.relative_to(self.vault))
+            rows.append({'name': path.stem, 'due': f.get('计划结束', ''), 'path': rel, 'state': state,
+                         'com_id': f.get('com_id') or com_id_derive(rel),
                          'next_id': f.get('com_next_id', ''), 'sigs': [s for s in f.get('com_sigs', '').split(',') if s],
                          'event_id': f.get(EVENT_FIELD, '')})
         return rows
 
-    def todo_create(self, title, day, next_step='', note='', body='', next_id='', sigs=(), event_id='', progress=''):
+    def todo_board_rows(self):
+        """看板 md 列：按 frontmatter `状态` 读三处目录，跳过已取消。"""
+        if not self.vault:
+            return []
+        now = datetime.fromtimestamp(self.clock(), TZ)
+        done_cutoff = now.date() - timedelta(days=2)
+        rows = []
+        for path in self._iter_task_files():
+            f = _front(path)
+            if f.get('flow') != '任务':
+                continue
+            state = task_state(path, f, self.vault)
+            if state == '已取消':
+                continue
+            rel = str(path.relative_to(self.vault))
+            cid = f.get('com_id') or com_id_derive(rel)
+            due = _day(f.get('计划结束'))
+            completed = _day(f.get('完成时间'))
+            if state == '已完成' and completed and completed < done_cutoff:
+                continue
+            rows.append({'path': rel, 'name': path.stem, 'front': f, 'state': state, 'com_id': cid,
+                         'mtime_ns': path.stat().st_mtime_ns, 'due': due, 'completed': completed,
+                         'updated_at': path.stat().st_mtime})
+        return rows
+
+    def todo_create(self, title, day, next_step='', note='', body='', next_id='', sigs=(), event_id='', progress='', state='待处理'):
         """新建一条行动台待办（frontmatter 与手建的一致，另记 com_next_id / com_sigs / com_event_id 供去重）。同名已存在就不覆盖，返回已有那条。
-        event_id：由日程同步来的待办记来源日程 id；progress：换掉「## 进展」里那句来源说明。"""
+        event_id：由日程同步来的待办记来源日程 id；progress：换掉「## 进展」里那句来源说明；state：待处理或进行中。"""
         if not self.vault:
             raise ValueError('行动台没接上')
+        if state not in ('待处理', '进行中'):
+            raise ValueError('状态无效')
         target = _day(day)
         if not target:
             raise ValueError('日期无效')
@@ -404,11 +593,15 @@ class Today:
         path = folder / (name + '.md')
         rel = str(path.relative_to(self.vault))
         if path.exists():
-            return {'status': 'exists', 'path': rel, 'name': name, 'due': _front(path).get('计划结束', '')}
+            existing = _front(path)
+            return {'status': 'exists', 'path': rel, 'name': name, 'due': existing.get('计划结束', ''),
+                    'com_id': existing.get('com_id') or com_id_derive(rel)}
         one = lambda v: re.sub(r'\s+', ' ', str(v or '')).strip()[:200]
         today = datetime.fromtimestamp(self.clock(), TZ).date().isoformat()
-        text = ('---\nflow: 任务\n状态: 待处理\n关联项目:\n计划开始:\n计划结束: ' + target.isoformat() + '\n完成时间:\n'
+        cid = com_id_derive(rel)
+        text = ('---\nflow: 任务\n状态: ' + state + '\n关联项目:\n计划开始:\n计划结束: ' + target.isoformat() + '\n完成时间:\n'
                 + '下一步: ' + yaml_value(one(next_step)) + '\n备注: ' + yaml_value(one(note)) + '\ncreated: ' + today + '\n'
+                + 'com_id: ' + cid + '\n'
                 + ('com_next_id: ' + one(next_id) + '\n' if next_id else '')
                 + ('com_sigs: ' + ','.join(s.replace(',', ' ') for s in sigs if s) + '\n' if sigs else '')
                 + (EVENT_FIELD + ': ' + one(event_id) + '\n' if event_id else '')
@@ -420,11 +613,13 @@ class Today:
                 tmp.write_bytes(text.encode('utf-8'))
                 os.link(tmp, path)  # 目标已存在就失败，绝不覆盖 Obsidian 里刚建的同名文件
             except FileExistsError:
-                return {'status': 'exists', 'path': rel, 'name': name, 'due': _front(path).get('计划结束', '')}
+                existing = _front(path)
+                return {'status': 'exists', 'path': rel, 'name': name, 'due': existing.get('计划结束', ''),
+                        'com_id': existing.get('com_id') or com_id_derive(rel)}
             finally:
                 if tmp.exists():
                     tmp.unlink()
-        return {'status': 'created', 'path': rel, 'name': name, 'due': target.isoformat()}
+        return {'status': 'created', 'path': rel, 'name': name, 'due': target.isoformat(), 'com_id': cid}
 
     # ---- 日程 → 当天待办（设定：日程上的事情就是当天的待办） ------------------------------------------
 

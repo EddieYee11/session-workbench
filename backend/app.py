@@ -2606,6 +2606,11 @@ async def personal_today():
     return await asyncio.to_thread(today_view.snapshot)  # 读 hub 库和 iCloud vault，放线程里不卡事件循环
 
 
+@app.get("/personal/calendar")
+async def personal_calendar(start: str = "", days: int = 14):
+    return await asyncio.to_thread(today_view.calendar, start, days)
+
+
 # 快捷指令推来的此刻状态（到公司 / 到家 / 开了专注）：只给「下一步」当上下文。
 @app.post("/personal/context")
 async def personal_context(request: Request):
@@ -2712,6 +2717,28 @@ threads = Threads(STATE)
 cases.threads = threads
 agency.calendar_todos = calendar_todos  # 晨报那一步先把当天日程落成待办
 
+from board import BoardBadRequest, BoardConflict, BoardTimeout, PersonalBoard
+
+personal_board = PersonalBoard(STATE, today_view, next_steps, cases, clock=time.time)
+
+
+@app.get("/personal/board")
+async def personal_board_get():
+    return await asyncio.to_thread(personal_board.snapshot)
+
+
+@app.post("/personal/board/move")
+async def personal_board_move(request: Request):
+    data = await request.json()
+    try:
+        return await personal_board.move(data, next_to_todo=next_to_todo, threads=threads)
+    except BoardConflict:
+        raise HTTPException(409, detail="这张卡刚被改过，已重新拉取")
+    except BoardTimeout:
+        raise HTTPException(503, detail="行动台读写超时，卡还在原处")
+    except BoardBadRequest as exc:
+        raise HTTPException(400, detail=str(exc) or "非法移动")
+
 
 @app.post("/personal/today/sync-reminders")
 async def personal_today_sync_reminders():
@@ -2792,8 +2819,8 @@ async def delegate_next(ident, request_id):
     return {"status": "completed", "id": ident, "action": "delegate", **result}
 
 
-async def next_to_todo(ident, day, remind_at=None):
-    """下一步 → 行动台待办（可选提醒）。day 默认明天；remind_at = 'YYYY-MM-DD HH:MM'。"""
+async def next_to_todo(ident, day, remind_at=None, state='待处理'):
+    """下一步 → 行动台待办（可选提醒）。day 默认明天；remind_at = 'YYYY-MM-DD HH:MM'；state 待处理或进行中。"""
     from datetime import timedelta
 
     from next_steps import _sig
@@ -2811,7 +2838,17 @@ async def next_to_todo(ident, day, remind_at=None):
         item.get("prompt", ""),
         ident,
         sigs,
+        "",
+        "",
+        state,
     )
+    if made.get("status") == "exists":
+        from today import _front
+
+        file_path = today_view.vault / made["path"]
+        front = await asyncio.to_thread(_front, file_path)
+        if front.get("状态") == "已取消":
+            await asyncio.to_thread(today_view.todo_set_state, made["path"], state)
     reminder = None
     if remind_at:
         from business_tools import BusinessTools

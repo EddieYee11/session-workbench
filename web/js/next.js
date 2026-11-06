@@ -1,15 +1,32 @@
-// 「下一步」：它把邮件、日程、项目、任务和账本收拢成几件现在值得做的事（iOS NextView.swift）。
-import { S, $, html, raw, nextData, nextItems, brokenSources, sourceName, relativeTime, clockTime, nextAction, refreshNext, onChange, D, yuan, agentName, hostName, agencyCards, tasks, noteOf, api, patchData, load, toast, flowItems } from './core.js';
+// 「下一步」：三列看板（建议待办 / 待办 / 已完成）与拖拽流转持久化（对照 iOS NextView / BoardKanbanView）。
+import {
+  S, $, $$, html, raw, nextData, nextItems, brokenSources, sourceName,
+  relativeTime, clockTime, nextAction, refreshNext, onChange, D, yuan,
+  agentName, hostName, agencyCards, tasks, noteOf, api, patchData, load,
+  toast, flowItems
+} from './core.js';
 import { icon, act, stamp, empty, section, pushSheet, openSheet } from './ui.js';
 import { voyageBanner, planCard, nextActions, waitingData, waitingCount } from './cases.js';
 
-const EV_ICON = { mail: 'envelope', event: 'calendar', project: 'desktop', task: 'checklist', finance: 'card', goal: 'scope', wechat: 'message', health: 'heart', todo: 'checklist', inbox: 'tray', reminder: 'bell', sms: 'message', plaud: 'waveform', weather: 'cloud' };
-const EV_NAME = { mail: '邮件', event: '日程', project: '项目', task: '任务', finance: '账本', goal: '目标', wechat: '微信', health: '身体', todo: '行动台', inbox: '速记', reminder: '提醒事项', sms: '短信', plaud: '录音纪要', weather: '天气' };
+const EV_ICON = {
+  mail: 'envelope', event: 'calendar', project: 'desktop', task: 'checklist',
+  finance: 'card', goal: 'scope', wechat: 'message', health: 'heart',
+  todo: 'checklist', inbox: 'tray', reminder: 'bell', sms: 'message',
+  plaud: 'waveform', weather: 'cloud'
+};
+const EV_NAME = {
+  mail: '邮件', event: '日程', project: '项目', task: '任务', finance: '账本',
+  goal: '目标', wechat: '微信', health: '身体', todo: '行动台', inbox: '速记',
+  reminder: '提醒事项', sms: '短信', plaud: '录音纪要', weather: '天气'
+};
 const evName = (k) => EV_NAME[k] || '资料';
 function evWhen(e) {
   const d = e.detail || {}, at = d.at || 0;
   if (!(at > 0)) return '';
-  if (e.kind === 'event') { const t = new Date(at * 1000); return `${t.getMonth() + 1}月${t.getDate()}日 ${clockTime(at)}${d.end > at ? '–' + clockTime(d.end) : ''}`; }
+  if (e.kind === 'event') {
+    const t = new Date(at * 1000);
+    return `${t.getMonth() + 1}月${t.getDate()}日 ${clockTime(at)}${d.end > at ? '–' + clockTime(d.end) : ''}`;
+  }
   return relativeTime(at);
 }
 const evSource = (e) => (e.detail && e.detail.source_label) || (e.label || '').split(' · ')[0] || evName(e.kind);
@@ -21,6 +38,7 @@ export function sourceBrokenNote(s) {
     <h3>我读不到 ${name} 了${s.status === 'needs_connection' ? '，授权已过期。重新授权前，我看不到新的内容。' : '。重新连接前，我看不到新的内容。'}</h3>
     <button class="btn primary" data-act="open-connector" data-name="${s.name}">重新授权 ${name}</button></div>`;
 }
+
 export function ledgerNote(fin) {
   const money = (fin.currencies || [])[0] || {};
   const top = (money.categories || [])[0];
@@ -63,15 +81,6 @@ function pocket(item) {
       <i class="arrow">${icon('arrowUp')}</i></button>
   </div>`;
 }
-function nextCard(item, i) {
-  return html`<div class="card ${item.urgency === 'now' ? 'hl accent' : ''} next-card rise" style="--d:${i * 50}ms" data-next="${item.id}">
-    <div class="row between top"><h3>${item.title}</h3>${item.phase === 'waiting' ? stamp('等对方', 'info') : item.phase === 'progress' ? stamp('进展中', 'accent') : item.urgency === 'now' ? stamp('现在', 'warning') : ''}</div>
-    ${item.why ? html`<p class="sub">${item.why}</p>` : ''}
-    ${item.ticket?.on_yes ? html`<small class="muted">点了：${item.ticket.on_yes}</small>` : ''}
-    ${(item.history || []).length ? (() => { const h = item.history[item.history.length - 1]; return html`<small class="muted row">${icon('right')}${h.text} · ${relativeTime(h.at)}</small>`; })() : ''}
-    ${(item.evidence || []).length ? pocket(item) : ''}
-    ${nextActions(item)}</div>`;
-}
 
 // ─── 等你（放在页面最上面）与已排程 ───
 function waitingBlock() {
@@ -83,6 +92,7 @@ function waitingBlock() {
     ${n > rows.length ? html`<button class="list-row" data-act="waiting-open"><span><b>还有 ${n - rows.length} 件，去看全部</b></span>${icon('right', 'chev')}</button>` : ''}</div>`) : ''}
     ${concluded.length ? section('刚拍板的', html`<div class="card list">${concluded.slice(0, 3).map((c) => html`<button class="list-row" data-act="waiting-open"><span class="badge success">${icon('checkCircle')}</span><span><b>${c.title}</b><small>${c.text}</small></span></button>`)}</div>`) : ''}`;
 }
+
 let routinesOpen = false;
 const routineBusy = new Set();
 const whenText = (sec) => { if (!(sec > 0)) return ''; const t = new Date(sec * 1000); return `${t.getMonth() + 1}月${t.getDate()}日 ${clockTime(sec)}`; };
@@ -120,59 +130,585 @@ act('routine-toggle', async (b) => {
   } finally { routineBusy.delete(id); renderRoutines(); }
 });
 
+// ─── 看板核心状态与流转逻辑（PersonalBoard / Drag & Drop） ───
+let loadingBoard = false;
+let activeMobileTab = 'suggest'; // 'suggest' | 'todo' | 'done'
+
+export const BOARD_COLUMNS = [
+  { key: 'suggest', title: '建议待办', iconName: 'sparkles', desc: '模型与信源归纳的下一步', emptyText: '暂时没有新建议' },
+  { key: 'todo', title: '待办', iconName: 'checklist', desc: '行动台与正在做的事', emptyText: '现在没有待办事项' },
+  { key: 'done', title: '已完成', iconName: 'checkCircle', desc: '近期已办结与归档', emptyText: '近期还没有完成事项' },
+];
+
+export async function ensureBoardData() {
+  if (D('/personal/board') || loadingBoard) return;
+  loadingBoard = true;
+  try {
+    await load('/personal/board');
+  } finally {
+    loadingBoard = false;
+  }
+}
+
+/**
+ * 跨列流转：调用 POST /personal/board/move，支持乐观更新与 409/400 失败回滚。
+ */
+export async function boardMoveCard(cardId, targetCol, rev) {
+  let board = D('/personal/board');
+  if (!board) {
+    await load('/personal/board');
+    board = D('/personal/board');
+    if (!board) return;
+  }
+
+  // 定位卡片当前所在物理列
+  let currentCard = null;
+  let sourceCol = null;
+  const cols = board.columns || {};
+  for (const colKey of ['suggest', 'todo', 'doing', 'done']) {
+    const list = cols[colKey] || [];
+    const found = list.find((c) => c.id === cardId);
+    if (found) {
+      currentCard = found;
+      sourceCol = colKey;
+      break;
+    }
+  }
+  if (!currentCard) return;
+
+  // 映射 UI 列到底层目标（UI 待办组合并了 doing 和 todo）
+  const uiSourceCol = sourceCol === 'doing' ? 'todo' : sourceCol;
+  if (uiSourceCol === targetCol && targetCol !== 'doing') {
+    return; // 同列无须移动
+  }
+
+  const cardRev = rev || currentCard.rev || '';
+  const snapshot = JSON.parse(JSON.stringify(board));
+
+  // 1. 本地乐观更新（UI 立即响应）
+  if (cols[sourceCol]) {
+    cols[sourceCol] = cols[sourceCol].filter((c) => c.id !== cardId);
+  }
+  const movedCard = JSON.parse(JSON.stringify(currentCard));
+  movedCard.column = targetCol;
+  if (!cols[targetCol]) cols[targetCol] = [];
+  cols[targetCol].unshift(movedCard);
+
+  S.data['/personal/board'] = board;
+  const root = document.querySelector('#page-next');
+  if (root) renderNext(root);
+
+  // 2. 发送 POST /personal/board/move
+  const reqBody = {
+    request_id: 'op-' + Date.now(),
+    card: cardId,
+    to: targetCol,
+    rev: cardRev,
+  };
+
+  try {
+    const res = await api('/personal/board/move', { body: reqBody });
+    if (res && res.card) {
+      patchData('/personal/board', (b) => {
+        const cList = b.columns?.[targetCol] || [];
+        b.columns[targetCol] = [res.card, ...cList.filter((c) => c.id !== cardId && c.id !== res.card.id)];
+        if (res.version) b.version = res.version;
+        return b;
+      });
+    }
+    // 后台刷齐数据库与 Markdown 状态
+    await load('/personal/board');
+    const r = document.querySelector('#page-next');
+    if (r) renderNext(r);
+  } catch (err) {
+    // 3. 失败回滚至快照并给予直观提示
+    S.data['/personal/board'] = snapshot;
+    const r = document.querySelector('#page-next');
+    if (r) renderNext(r);
+
+    if (err.status === 409) {
+      toast('卡片版本已失效（已被其他端流转），已自动拉取最新状态');
+      await load('/personal/board');
+      const r2 = document.querySelector('#page-next');
+      if (r2) renderNext(r2);
+    } else if (err.status === 400) {
+      toast('移动失败：' + (err.message || '非法移动'));
+    } else {
+      toast('操作未确认：' + (err.message || '网络连接异常'));
+    }
+  }
+}
+
+function renderKanbanCard(card, columnKey, isDoing) {
+  const isDone = columnKey === 'done';
+  const isUrgent = !isDone && (card.urgency === 'now');
+  const whyText = (card.next && card.next.why) || (card.todo && card.todo.next_step) || '';
+  const sources = card.sources || [];
+
+  return html`<div class="kanban-card ${isDoing ? 'is-doing' : ''} ${isUrgent ? 'is-urgent' : ''} ${isDone ? 'is-done' : ''} rise"
+       draggable="true"
+       data-card-id="${card.id}"
+       data-col="${columnKey}"
+       data-rev="${card.rev || ''}">
+    <div class="card-head row between top">
+      <div class="card-title-row">
+        ${isDone ? html`<span class="badge success">${icon('checkCircle')}</span>` : ''}
+        ${isDoing ? html`<span class="badge danger doing-badge">${icon('bolt')} ● 正在做</span>` : ''}
+        <h4 class="card-title">${card.title}</h4>
+      </div>
+      <div class="card-stamps">
+        ${!isDone && card.phase === 'waiting' ? stamp('等对方', 'info') : ''}
+        ${!isDone && card.phase === 'progress' && !isDoing ? stamp('进展中', 'accent') : ''}
+        ${!isDone && isUrgent ? stamp('现在', 'warning') : ''}
+        ${card.overdue ? stamp('逾期', 'danger') : ''}
+      </div>
+    </div>
+    ${whyText ? html`<p class="card-why clamp2">${whyText}</p>` : ''}
+    ${card.progress ? html`<div class="card-prog row small muted">${icon('right')}${card.progress}</div>` : ''}
+    ${card.due ? html`<div class="card-due small muted">${icon('calendar')} 计划结束：${card.due}</div>` : ''}
+    ${isDone && card.completed_at > 0 ? html`<div class="card-done-time small muted">${icon('checkCircle')} 完成于 ${relativeTime(card.completed_at)}</div>` : ''}
+    ${sources.length ? html`<div class="card-meta-row">${sources.slice(0, 3).map((k) => html`<span class="source-icon" title="${evName(k)}">${icon(EV_ICON[k] || 'doc')}</span>`)}<small class="muted">${sources.map(evName).join(' · ')}</small></div>` : ''}
+    <div class="card-actions">
+      <div class="card-quick-moves">
+        ${columnKey === 'suggest' ? html`
+          <button class="btn secondary compact" data-act="board-quick-move" data-id="${card.id}" data-to="todo" title="流转到待办">${icon('checklist')} 待办</button>
+          <button class="btn quiet compact" data-act="board-quick-move" data-id="${card.id}" data-to="done" title="直接标记为已完成">${icon('checkCircle')}</button>
+        ` : columnKey === 'todo' ? html`
+          ${isDoing
+            ? html`<button class="btn quiet compact doing-toggle active" data-act="board-toggle-doing" data-id="${card.id}" title="取消正在做">${icon('bolt')} 正在做</button>`
+            : html`<button class="btn quiet compact doing-toggle" data-act="board-toggle-doing" data-id="${card.id}" title="设为正在做">${icon('bolt')}</button>`}
+          <button class="btn secondary compact" data-act="board-quick-move" data-id="${card.id}" data-to="done" title="标记为完成">${icon('checkCircle')} 完成</button>
+          <button class="btn quiet compact" data-act="board-quick-move" data-id="${card.id}" data-to="suggest" title="退回建议待办">${icon('left')} 退回建议</button>
+        ` : html`
+          <button class="btn quiet compact" data-act="board-quick-move" data-id="${card.id}" data-to="todo" title="撤回至待办">${icon('left')} 回待办</button>
+          <button class="btn quiet compact" data-act="board-quick-move" data-id="${card.id}" data-to="suggest" title="流转回建议待办">${icon('sparkles')} 回建议</button>
+        `}
+      </div>
+      <button class="btn quiet small" data-act="board-card-detail" data-id="${card.id}">${icon('doc')} 详情</button>
+    </div>
+  </div>`;
+}
+
+let draggedCardInfo = null;
+let activePlaceholder = null;
+
+function getPlaceholder() {
+  if (!activePlaceholder) {
+    activePlaceholder = document.createElement('div');
+    activePlaceholder.className = 'drag-placeholder';
+    activePlaceholder.innerHTML = '<span>松开放置到此处</span>';
+  }
+  return activePlaceholder;
+}
+
+function getDragAfterElement(container, y) {
+  const draggableElements = [...container.querySelectorAll('.kanban-card:not(.dragging)')];
+  return draggableElements.reduce((closest, child) => {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if (offset < 0 && offset > closest.offset) {
+      return { offset: offset, element: child };
+    } else {
+      return closest;
+    }
+  }, { offset: Number.NEGATIVE_INFINITY }).element;
+}
+
+function bindKanbanDragEvents(container) {
+  if (!container || container._kanbanDnDBound) return;
+  container._kanbanDnDBound = true;
+
+  container.addEventListener('dragstart', (e) => {
+    const cardEl = e.target.closest('.kanban-card');
+    if (!cardEl) return;
+    const cardId = cardEl.dataset.cardId;
+    const col = cardEl.dataset.col;
+    const rev = cardEl.dataset.rev;
+    draggedCardInfo = { cardId, fromCol: col, rev };
+    e.dataTransfer.setData('text/plain', cardId);
+    e.dataTransfer.setData('application/json', JSON.stringify(draggedCardInfo));
+    e.dataTransfer.effectAllowed = 'move';
+    requestAnimationFrame(() => {
+      cardEl.classList.add('dragging');
+    });
+  });
+
+  container.addEventListener('dragend', (e) => {
+    const cardEl = e.target.closest('.kanban-card');
+    if (cardEl) cardEl.classList.remove('dragging');
+    container.querySelectorAll('.kanban-card.dragging').forEach((el) => el.classList.remove('dragging'));
+    container.querySelectorAll('.kanban-col.drop-target').forEach((el) => el.classList.remove('drop-target'));
+    if (activePlaceholder && activePlaceholder.parentNode) {
+      activePlaceholder.remove();
+    }
+    draggedCardInfo = null;
+  });
+
+  container.addEventListener('dragover', (e) => {
+    const colEl = e.target.closest('.kanban-col');
+    if (!colEl) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+
+    container.querySelectorAll('.kanban-col.drop-target').forEach((el) => {
+      if (el !== colEl) el.classList.remove('drop-target');
+    });
+    colEl.classList.add('drop-target');
+
+    const cardsContainer = colEl.querySelector('.kanban-col-cards');
+    if (cardsContainer) {
+      const placeholder = getPlaceholder();
+      const afterElement = getDragAfterElement(cardsContainer, e.clientY);
+      if (afterElement == null) {
+        cardsContainer.appendChild(placeholder);
+      } else {
+        cardsContainer.insertBefore(placeholder, afterElement);
+      }
+    }
+  });
+
+  container.addEventListener('dragleave', (e) => {
+    const colEl = e.target.closest('.kanban-col');
+    if (!colEl) return;
+    if (!colEl.contains(e.relatedTarget)) {
+      colEl.classList.remove('drop-target');
+      if (activePlaceholder && activePlaceholder.parentNode === colEl.querySelector('.kanban-col-cards')) {
+        activePlaceholder.remove();
+      }
+    }
+  });
+
+  container.addEventListener('drop', (e) => {
+    const colEl = e.target.closest('.kanban-col');
+    if (!colEl) return;
+    e.preventDefault();
+
+    colEl.classList.remove('drop-target');
+    if (activePlaceholder && activePlaceholder.parentNode) {
+      activePlaceholder.remove();
+    }
+
+    let info = draggedCardInfo;
+    if (!info) {
+      try {
+        const rawJson = e.dataTransfer.getData('application/json');
+        if (rawJson) info = JSON.parse(rawJson);
+      } catch {
+        const id = e.dataTransfer.getData('text/plain');
+        if (id) info = { cardId: id };
+      }
+    }
+
+    if (!info || !info.cardId) return;
+    const targetCol = colEl.dataset.col;
+    boardMoveCard(info.cardId, targetCol, info.rev);
+  });
+
+  // 触控设备移动支持（Touch Drag & Drop）
+  let touchStartCard = null;
+  let touchGhost = null;
+  let touchOffsetX = 0;
+  let touchOffsetY = 0;
+  let currentTouchTargetCol = null;
+  let touchTimer = 0;
+
+  container.addEventListener('touchstart', (e) => {
+    const cardEl = e.target.closest('.kanban-card');
+    if (!cardEl || e.target.closest('button') || e.target.closest('details')) return;
+    const touch = e.touches[0];
+    const rect = cardEl.getBoundingClientRect();
+    touchOffsetX = touch.clientX - rect.left;
+    touchOffsetY = touch.clientY - rect.top;
+
+    touchTimer = setTimeout(() => {
+      touchStartCard = cardEl;
+      cardEl.classList.add('dragging');
+      touchGhost = cardEl.cloneNode(true);
+      touchGhost.className = 'kanban-card drag-ghost';
+      touchGhost.style.left = `${touch.clientX - touchOffsetX}px`;
+      touchGhost.style.top = `${touch.clientY - touchOffsetY}px`;
+      touchGhost.style.width = `${rect.width}px`;
+      document.body.appendChild(touchGhost);
+    }, 280);
+  }, { passive: true });
+
+  container.addEventListener('touchmove', (e) => {
+    if (!touchStartCard || !touchGhost) {
+      clearTimeout(touchTimer);
+      return;
+    }
+    const touch = e.touches[0];
+    touchGhost.style.left = `${touch.clientX - touchOffsetX}px`;
+    touchGhost.style.top = `${touch.clientY - touchOffsetY}px`;
+
+    const elemBelow = document.elementFromPoint(touch.clientX, touch.clientY);
+    const colEl = elemBelow ? elemBelow.closest('.kanban-col') : null;
+
+    container.querySelectorAll('.kanban-col.drop-target').forEach((el) => {
+      if (el !== colEl) el.classList.remove('drop-target');
+    });
+
+    if (colEl) {
+      colEl.classList.add('drop-target');
+      currentTouchTargetCol = colEl;
+      const cardsContainer = colEl.querySelector('.kanban-col-cards');
+      if (cardsContainer) {
+        const placeholder = getPlaceholder();
+        const afterElement = getDragAfterElement(cardsContainer, touch.clientY);
+        if (afterElement == null) {
+          cardsContainer.appendChild(placeholder);
+        } else {
+          cardsContainer.insertBefore(placeholder, afterElement);
+        }
+      }
+    }
+  }, { passive: true });
+
+  const endTouch = () => {
+    clearTimeout(touchTimer);
+    if (touchStartCard) {
+      touchStartCard.classList.remove('dragging');
+      if (currentTouchTargetCol) {
+        currentTouchTargetCol.classList.remove('drop-target');
+        const targetCol = currentTouchTargetCol.dataset.col;
+        const cardId = touchStartCard.dataset.cardId;
+        const rev = touchStartCard.dataset.rev;
+        boardMoveCard(cardId, targetCol, rev);
+      }
+    }
+    if (activePlaceholder && activePlaceholder.parentNode) {
+      activePlaceholder.remove();
+    }
+    if (touchGhost) {
+      touchGhost.remove();
+      touchGhost = null;
+    }
+    touchStartCard = null;
+    currentTouchTargetCol = null;
+  };
+
+  container.addEventListener('touchend', endTouch);
+  container.addEventListener('touchcancel', endTouch);
+}
+
+// ─── 主渲染入口（renderNext） ───
 export function renderNext(root) {
+  ensureBoardData();
+
   const data = nextData();
-  const items = nextItems();
-  const groups = [['现在', 'now'], ['今天', 'today'], ['这周', 'week']].map(([t, k]) => [t, items.filter((i) => i.urgency === k)]).filter(([, r]) => r.length);
+  const board = D('/personal/board');
+  const cols = (board && board.columns) || {};
+
+  const suggestCards = cols.suggest || [];
+  const doingCards = cols.doing || [];
+  const normalTodoCards = cols.todo || [];
+  const todoCards = [...doingCards, ...normalTodoCards];
+  const doneCards = cols.done || [];
+
   const fin = D('/personal/finance');
-  const week = data.week || {};
-  const open = new Set([...root.querySelectorAll('.pocket.open')].map((p) => p.dataset.pocket));
-  const head = items[0];
   const note = noteOf('next');
-  let n = 0;
+  const totalCards = suggestCards.length + todoCards.length + doneCards.length;
+
+  const headerTitle = S.nextRefreshing
+    ? '正在重新整理…'
+    : doingCards.length
+    ? `正在做：${doingCards[0].title}`
+    : suggestCards.length
+    ? `建议优先：${suggestCards[0].title}`
+    : '看板就绪';
+
   root.innerHTML = html`<div class="page">
-    <div class="page-head rise"><div class="row between"><p class="sub">${S.nextRefreshing ? '正在重新整理…' : head ? `先办这一件：${head.title}` : '没什么要推的'}</p></div>
-      ${data.updated_at > 0 ? html`<small class="muted">上次整理 ${relativeTime(data.updated_at)}${data.source === 'rule' ? ' · 模型没接上，先按规则排' : ''}</small>` : ''}
-      ${S.errors['/personal/next'] ? html`<small class="danger-text">${S.errors['/personal/next']}</small>` : ''}
-      ${note ? html`<div class="notice warning inline-note">${icon('warning')}<span>${note}</span></div>` : ''}</div>
+    <div class="page-head rise">
+      <div class="row between">
+        <p class="sub">${headerTitle}</p>
+        <button class="btn quiet compact" data-act="board-refresh" title="重新从信源与模型整理">${icon('sparkles')} 重新整理</button>
+      </div>
+      ${board && board.updated_at > 0 ? html`<small class="muted">看板快照 ${relativeTime(board.updated_at)}${board.snoozed ? ` · 已推迟 ${board.snoozed} 件` : ''}</small>` : ''}
+      ${S.errors['/personal/board'] ? html`<small class="danger-text">看板同步异常：${S.errors['/personal/board']}</small>` : ''}
+      ${note ? html`<div class="notice warning inline-note">${icon('warning')}<span>${note}</span></div>` : ''}
+    </div>
+
     ${waitingBlock()}
     ${voyageBanner()}
     ${planCard()}
     ${brokenSources().map(sourceBrokenNote)}
-    ${S.nextRefreshing ? buildingCard(data.progress) : !items.length && D('/personal/next') ? empty('没什么要推的', '我每小时会自己再看一遍；有新邮件、新日程或项目有进展，会整理成下一步放在这里。', 'sparkles') : ''}
-    ${!D('/personal/next') && !S.errors['/personal/next'] ? html`<div class="skeleton"></div><div class="skeleton"></div>` : ''}
-    ${groups.map(([t, rows]) => section(t === '现在' ? '现在 · 先办' : t, html`${rows.map((r) => nextCard(r, n++))}`))}
+    ${S.nextRefreshing ? buildingCard(data.progress) : ''}
+
+    <!-- 移动端分列标签 -->
+    <div class="kanban-mobile-tabs">
+      <button class="tab-btn ${activeMobileTab === 'suggest' ? 'active' : ''}" data-act="kanban-switch-tab" data-tab="suggest">${icon('sparkles')} 建议待办 (${suggestCards.length})</button>
+      <button class="tab-btn ${activeMobileTab === 'todo' ? 'active' : ''}" data-act="kanban-switch-tab" data-tab="todo">${icon('checklist')} 待办 (${todoCards.length})</button>
+      <button class="tab-btn ${activeMobileTab === 'done' ? 'active' : ''}" data-act="kanban-switch-tab" data-tab="done">${icon('checkCircle')} 已完成 (${doneCards.length})</button>
+    </div>
+
+    <!-- 3列看板主容器 -->
+    <div class="kanban-board" data-active-tab="${activeMobileTab}">
+      <!-- 1. 建议待办 (suggest) -->
+      <div class="kanban-col" data-col="suggest">
+        <div class="kanban-col-head">
+          <div class="kanban-col-title">${icon('sparkles')}<span>建议待办</span></div>
+          <span class="kanban-col-count">${suggestCards.length}</span>
+        </div>
+        <div class="kanban-col-desc">模型与信源归纳的下一步</div>
+        <div class="kanban-col-cards">
+          ${!board && !S.errors['/personal/board']
+            ? html`<div class="kanban-skeleton-card"></div><div class="kanban-skeleton-card"></div>`
+            : suggestCards.length
+            ? suggestCards.map((c) => renderKanbanCard(c, 'suggest', false))
+            : html`<div class="kanban-empty">暂时没有新建议</div>`}
+        </div>
+      </div>
+
+      <!-- 2. 待办 (todo，含正在做) -->
+      <div class="kanban-col" data-col="todo">
+        <div class="kanban-col-head">
+          <div class="kanban-col-title">${icon('checklist')}<span>待办</span></div>
+          <span class="kanban-col-count">${todoCards.length}</span>
+        </div>
+        <div class="kanban-col-desc">行动台与正在做的事</div>
+        <div class="kanban-col-cards">
+          ${!board && !S.errors['/personal/board']
+            ? html`<div class="kanban-skeleton-card"></div>`
+            : todoCards.length
+            ? todoCards.map((c) => renderKanbanCard(c, 'todo', doingCards.some((dc) => dc.id === c.id)))
+            : html`<div class="kanban-empty">现在没有待办事项</div>`}
+        </div>
+      </div>
+
+      <!-- 3. 已完成 (done) -->
+      <div class="kanban-col" data-col="done">
+        <div class="kanban-col-head">
+          <div class="kanban-col-title">${icon('checkCircle')}<span>已完成</span></div>
+          <span class="kanban-col-count">${doneCards.length}</span>
+        </div>
+        <div class="kanban-col-desc">近期已办结与归档</div>
+        <div class="kanban-col-cards">
+          ${!board && !S.errors['/personal/board']
+            ? html`<div class="kanban-skeleton-card"></div>`
+            : doneCards.length
+            ? doneCards.map((c) => renderKanbanCard(c, 'done', false))
+            : html`<div class="kanban-empty">近期还没有完成事项</div>`}
+        </div>
+      </div>
+    </div>
+
     ${fin && fin.available ? section('账本', ledgerNote(fin)) : ''}
-    ${week.shown > 0 ? html`<p class="foot">这周提了 ${week.shown} 件，你用上 ${week.acted || 0} 件、划掉 ${week.dismissed || 0} 件${week.precision != null ? '，准确率 ' + Math.round(week.precision * 100) + '%' : ''}${week.resolved > 0 ? '；群里已经办完、我自动收起 ' + week.resolved + ' 件' : ''}。${Object.keys(week.reasons || {}).length ? '划掉的理由：' + Object.entries(week.reasons).sort((a, b) => b[1] - a[1]).map(([k, n]) => k + ' ' + n).join(' · ') + '。' : ''}</p>` : ''}
-    ${(week.suggestions || []).map((t) => html`<p class="foot">${t}</p>`)}
     ${routinesBlock()}
     <button class="btn quiet" data-act="open-activity">${icon('checklist')}看它替你做过的事</button>
   </div>`.s;
-  for (const id of open) root.querySelector(`.pocket[data-pocket="${CSS.escape(id)}"]`)?.classList.add('open', 'instant');
-}
-setInterval(() => { for (const el of document.querySelectorAll('[data-since-build]')) el.textContent = `已 ${Math.floor(Date.now() / 1000 - Number(el.dataset.sinceBuild))} 秒`; }, 1000);
 
-act('next-do', async (b) => {
-  const item = nextItems().find((i) => i.id === b.dataset.id); if (!item) return;
-  const card = b.closest('.next-card');
-  card?.querySelectorAll('button').forEach((x) => (x.disabled = true));
-  if (b.dataset.a !== 'discuss') card?.classList.add('leaving');
-  const ok = await nextAction(item, b.dataset.a, b.dataset.reason);
-  if (!ok && b.dataset.a !== 'discuss') {
-    card?.classList.remove('leaving');
-    card?.querySelectorAll('button').forEach((x) => (x.disabled = false));
+  bindKanbanDragEvents(root);
+}
+
+// ─── 动作事件处理（Action Router） ───
+act('kanban-switch-tab', (b) => {
+  activeMobileTab = b.dataset.tab || 'suggest';
+  const root = document.querySelector('#page-next');
+  if (root) renderNext(root);
+  const targetCol = root?.querySelector(`.kanban-col[data-col="${activeMobileTab}"]`);
+  targetCol?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+});
+
+act('board-quick-move', async (b) => {
+  const cardId = b.dataset.id;
+  const targetCol = b.dataset.to;
+  const cardEl = b.closest('.kanban-card');
+  const rev = cardEl ? cardEl.dataset.rev : '';
+  await boardMoveCard(cardId, targetCol, rev);
+});
+
+act('board-toggle-doing', async (b) => {
+  const cardId = b.dataset.id;
+  const cardEl = b.closest('.kanban-card');
+  const rev = cardEl ? cardEl.dataset.rev : '';
+  const isDoing = cardEl && cardEl.classList.contains('is-doing');
+  const targetCol = isDoing ? 'todo' : 'doing';
+  await boardMoveCard(cardId, targetCol, rev);
+});
+
+act('board-refresh', async () => {
+  S.nextRefreshing = true;
+  const r = document.querySelector('#page-next');
+  if (r) renderNext(r);
+  try {
+    await mutate('/personal/next/refresh');
+    await load('/personal/board');
+  } catch (e) {
+    toast('刷新失败：' + e.message);
+  } finally {
+    S.nextRefreshing = false;
+    const r2 = document.querySelector('#page-next');
+    if (r2) renderNext(r2);
   }
 });
-act('pocket-toggle', (b) => { const p = b.closest('.pocket'); p.classList.remove('instant'); p.classList.toggle('open'); });
-act('next-refresh', () => refreshNext());
+
+act('board-card-detail', (b) => {
+  const cardId = b.dataset.id;
+  const board = D('/personal/board') || {};
+  let card = null;
+  for (const list of Object.values(board.columns || {})) {
+    const found = (list || []).find((c) => c.id === cardId);
+    if (found) { card = found; break; }
+  }
+  if (!card) return;
+  openSheet(cardDetailView(card));
+});
+
+function cardDetailView(card) {
+  return {
+    title: '事项详情',
+    render: () => {
+      const why = (card.next && card.next.why) || (card.todo && card.todo.next_step) || '';
+      const evidence = (card.next && card.next.evidence) || [];
+      const sources = card.sources || [];
+      return html`<div class="paper-detail land">
+        <div class="row">
+          ${card.column === 'doing' ? stamp('● 正在做', 'danger') : card.column === 'done' ? stamp('已完成', 'success') : stamp(card.column === 'todo' ? '待办' : '建议', 'accent')}
+          ${card.urgency === 'now' ? stamp('现在办', 'warning') : ''}
+          <span class="grow"></span>
+          <small class="muted">${card.id}</small>
+        </div>
+        <h2><mark>${card.title}</mark></h2>
+        ${why ? html`<div class="card inset rise" style="--d:100ms"><small class="label">背景与说明</small><p class="lined">${why}</p></div>` : ''}
+        ${card.due ? html`<div class="kv tight"><span>计划结束</span><b>${card.due}</b></div>` : ''}
+        ${card.completed_at > 0 ? html`<div class="kv tight"><span>完成时间</span><b>${relativeTime(card.completed_at)}</b></div>` : ''}
+        ${card.todo && card.todo.project ? html`<div class="kv tight"><span>关联项目</span><b>${card.todo.project}</b></div>` : ''}
+        ${card.todo && card.todo.url ? html`<div class="pad"><a class="btn secondary compact" href="${card.todo.url}">在 Obsidian 打开</a></div>` : ''}
+        ${evidence.length ? section(`依据 (${evidence.length} 份)`, html`<div class="list">
+          ${evidence.map((e, idx) => html`<button class="list-row" data-act="evidence-open" data-item="${card.id}" data-idx="${idx}">
+            <span class="badge neutral">${icon(EV_ICON[e.kind] || 'doc')}</span>
+            <span><b>${evTitle(e)}</b><small>${evSource(e)} · ${evWhen(e)}</small></span>
+            ${icon('right', 'chev')}</button>`)}
+        </div>`) : sources.length ? html`<p class="muted small">来源：${sources.map(evName).join(' · ')}</p>` : ''}
+        <div class="row pad wrap">
+          <button class="btn secondary compact" data-act="board-quick-move" data-id="${card.id}" data-to="suggest">移到建议</button>
+          <button class="btn secondary compact" data-act="board-quick-move" data-id="${card.id}" data-to="todo">移到待办</button>
+          <button class="btn secondary compact" data-act="board-toggle-doing" data-id="${card.id}">切换正在做</button>
+          <button class="btn primary compact" data-act="board-quick-move" data-id="${card.id}" data-to="done">标记为完成</button>
+        </div>
+      </div>`;
+    }
+  };
+}
 
 // ─── 依据详情（EvidenceDetail） ───
 act('evidence-open', (b) => {
-  const item = nextItems().find((i) => i.id === b.dataset.item); if (!item) return;
+  const itemId = b.dataset.item;
+  const board = D('/personal/board') || {};
+  let item = null;
+  for (const list of Object.values(board.columns || {})) {
+    const found = (list || []).find((c) => c.id === itemId || c.id === 'next:' + itemId);
+    if (found) { item = found.next || found; break; }
+  }
+  if (!item) {
+    item = nextItems().find((i) => i.id === itemId);
+  }
+  if (!item || !item.evidence) return;
   const e = item.evidence[Number(b.dataset.idx)];
   b.classList.add('lifted');
   setTimeout(() => { b.classList.remove('lifted'); openSheet(evidenceView(e, item.title)); }, 200);
 });
+
 export function evidenceView(e, itemTitle) {
   return {
     title: '依据',
@@ -201,6 +737,7 @@ export function evidenceView(e, itemTitle) {
     },
   };
 }
+
 export function matterFromEvidence(id, e) {
   const card = agencyCards().find((c) => c.id === id);
   if (card) return card;
@@ -208,5 +745,12 @@ export function matterFromEvidence(id, e) {
   for (const [k, n] of [['sender', e.kind === 'wechat' ? '谁说的' : '发件人'], ['group', '聊天'], ['location', '地点'], ['calendar', '日历'], ['summary', '摘要']]) if (d[k]) facts[n] = d[k];
   return { id, title: d.title || e.label, what: d.summary, source: d.source, facts };
 }
-onChange(() => {});
+
+onChange((keys) => {
+  if (S.tab === 'next' && (keys.has('/personal/board') || keys.has('/personal/next') || keys.has('*'))) {
+    const el = document.querySelector('#page-next');
+    if (el) renderNext(el);
+  }
+});
+
 export { pushSheet };

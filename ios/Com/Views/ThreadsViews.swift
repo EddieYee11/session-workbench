@@ -398,6 +398,8 @@ struct WaitingSheet: View {
                     }
                 }
                 .enterRise(on: shown, delay: 0.08, y: 14, blur: 6)
+                // 11-03：嵌在「下一步」里只留要拍板 / 核对 / 航程；微信待回（11-02 不提醒回）、过期待办（下一步有清理卡）、刚拍板的结论只在独立「等你」页看。
+                if !embedded {
                 section("微信在等你回", kind: "wechat") { item in
                     VStack(alignment: .leading, spacing: Space.sm) {
                         row(item, symbol: "bubble.left.and.bubble.right", tone: .info) {}
@@ -494,6 +496,7 @@ struct WaitingSheet: View {
                 }
                 .enterRise(on: shown, delay: 0.16, y: 12, blur: 5)
                 concludedSection
+                }
     }
     private func pullWaiting(force: Bool) async {
         // 入口 openWaitingInbox 可能已在拉——等它结束，避免叠刷；再根据 errors 开口。

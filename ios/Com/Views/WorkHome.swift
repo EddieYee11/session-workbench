@@ -20,9 +20,8 @@ struct WorkView: View {
             set: { surfaceRaw = $0.rawValue }
         )
     }
-    private var onRemote: Bool { surface.wrappedValue == .remote }
     private var onTerminal: Bool { surface.wrappedValue == .terminal }
-    private var hideComposer: Bool { onRemote || onTerminal }
+    private var hideComposer: Bool { onTerminal }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,11 +53,6 @@ struct WorkView: View {
             ZStack {
                 if onTerminal {
                     HerdrTerminalSurface()
-                        .transition(reduce ? .opacity : .asymmetric(
-                            insertion: .modifier(active: BlurShift(y: 10, blur: 5, opacity: 0), identity: BlurShift()),
-                            removal: .opacity))
-                } else if onRemote {
-                    WorkRemoteSurface()
                         .transition(reduce ? .opacity : .asymmetric(
                             insertion: .modifier(active: BlurShift(y: 10, blur: 5, opacity: 0), identity: BlurShift()),
                             removal: .opacity))
@@ -104,17 +98,20 @@ struct WorkView: View {
         }
         .onChange(of: work.outgoing.last?.requestID) { _, id in fly(id) }
         .task(id: work.pollKey) {
-            guard !onRemote, work.mode != .home else { return }
+            guard !onTerminal, work.mode != .home else { return }
             await work.refresh(model)
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
                 guard !Task.isCancelled else { return }
-                if model.active && model.isShown(.work) && !onRemote { await work.refresh(model) }
+                if model.active && model.isShown(.work) && !onTerminal { await work.refresh(model) }
             }
         }
-        .task(id: agent) { guard !onRemote else { return }; await work.loadModels(for: agent, model) }
+        .task(id: agent) { guard !onTerminal else { return }; await work.loadModels(for: agent, model) }
         // 进页拉齐侧栏：与 refresh(.work) 同路，失败 workOpenNote，别假装历史已齐。
-        .task { await model.refresh(.work) }
+        .task {
+            if let raw = ProcessInfo.processInfo.environment["COM_PREVIEW_SURFACE"] { surfaceRaw = raw }
+            await model.refresh(.work)
+        }
     }
 
     private func fly(_ id: String?) {

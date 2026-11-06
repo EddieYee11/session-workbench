@@ -372,7 +372,7 @@ private struct TodayHeader: View {
     }
 }
 
-/// 本周七天（周一起），今天高亮。只是看一眼今天落在这周哪天，后端只给今天的数据，所以其它天不能点。
+/// 本周七天（周一起），今天高亮。点哪天就从那天打开日历页。
 private struct WeekStrip: View {
     let now: Double
     private static var calendar: Calendar { var c = Calendar(identifier: .gregorian); c.firstWeekday = 2; return c }
@@ -387,6 +387,7 @@ private struct WeekStrip: View {
         HStack(spacing: 0) {
             ForEach(days, id: \.self) { day in
                 let on = cal.isDate(day, inSameDayAs: today)
+                NavigationLink { CalendarView(startDay: day) } label: {
                 VStack(spacing: Space.sm) {
                     Text(day.formatted(.dateTime.weekday(.abbreviated).locale(Locale(identifier: "zh_CN"))))
                         .font(TypeScale.caption).foregroundStyle(on ? Palette.textPrimary : Palette.textTertiary)
@@ -399,9 +400,13 @@ private struct WeekStrip: View {
                 .padding(.vertical, Space.sm)
                 .frame(maxWidth: .infinity)
                 .background { if on { RoundedRectangle(cornerRadius: Radius.md, style: .continuous).fill(Palette.surface) } }
+                .contentShape(Rectangle())
+                }
+                .buttonStyle(SoftPressStyle())
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel((on ? "今天 " : "") + day.formatted(.dateTime.month().day().weekday(.wide).locale(Locale(identifier: "zh_CN"))))
                 .accessibilityAddTraits(on ? .isSelected : [])
+                .accessibilityIdentifier("today-week-\(cal.component(.day, from: day))")
             }
         }
         .accessibilityIdentifier("today-week")

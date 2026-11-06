@@ -107,6 +107,18 @@ def _near(a, b):
     return best >= max(4, 0.6 * len(short))
 
 
+def _sigs(item):
+    return {_sig(e['ref'], e) for e in item.get('evidence', [])} - {''}
+
+
+def _dup(title, sigs, other):
+    """11-03 同一件事：标题几乎同一句，或依据大半重合（模型换个说法、多引一份依据都算）。"""
+    if _near(title, other.get('title', '')):
+        return True
+    theirs = _sigs(other)
+    return bool(sigs and theirs) and len(sigs & theirs) / len(sigs | theirs) >= 0.6
+
+
 def _text(value, limit):
     return str(value or '').strip()[:limit]
 
@@ -516,15 +528,18 @@ class NextSteps:
                 continue
             if _wechat_reply_nudge(title, [refs[r]['kind'] for r in cited]):
                 continue
-            # 10-25：模型没写 keep、却换了个说法重写同一件事（依据完全相同）：留原条，不让列表每小时大换血。
-            mine = {_sig(r, refs[r]) for r in cited}
-            same = None if '' in mine else next((c for c in current.values() if c['id'] not in seen
-                                                  and {_sig(e['ref'], e) for e in c.get('evidence', [])} == mine), None)
+            # 10-25：模型没写 keep、却换了个说法重写同一件事：留原条，不让列表每小时大换血。
+            # 11-03：依据大半重合或标题近似就算同一件；这一轮已经出过的同一件（模型 keep 了原条又新写一条）直接丢。
+            # 同一轮并列写出、依据相同的不同事（一条微信拆出送东西 / 约时间）照留；只挡和保留原条撞题的。
+            mine = {_sig(r, refs[r]) for r in cited} - {''}
+            if any(_near(title, o['title']) or (o.get('kept') and _dup(title, mine, o)) for o in out):
+                continue
+            key = _key(title)
+            same = None if key in current else next((c for c in current.values() if c['id'] not in seen and _dup(title, mine, c)), None)
             if same:
                 seen.add(same['id'])
                 out.append(self.carry(same, {}, refs))
                 continue
-            key = _key(title)
             if key in seen:
                 continue
             seen.add(key)
@@ -710,16 +725,17 @@ class NextSteps:
             out.append(self.point(f"{n['title']}（{n['site']}）", [n['ref']], refs))
         return out
 
-    def todo_match(self, items):
+    def todo_match(self, items, board=False):
         """对照行动台去重（2026-10-17）：由「加到待办」生成的（com_next_id / 依据签名）直接不再提；
-        依据就是某条待办、或标题和待办同名的，保留但标上 in_todo，App 显示「已在待办 · 日期」。"""
+        依据就是某条待办、或标题和待办同名的，保留但标上 in_todo，App 显示「已在待办 · 日期」。
+        board=True 时命中项直接丢弃（看板建议列不显示）。"""
         if not self.vault:
-            return items
+            return items if board else items
         from today import Today
         try:
             index = Today(vault=self.vault, clock=self.clock).todo_index()
         except Exception:
-            return items
+            return [] if board else items
         norm = lambda s: re.sub(r'[\s，。、：:·\-—「」“”"\'（）()]+', '', str(s)).lower()
         by_id = {r['next_id']: r for r in index if r['next_id']}
         sigs = {s: r for r in index for s in r['sigs']}
@@ -728,11 +744,16 @@ class NextSteps:
         for item in items:
             mine = {_sig(e['ref'], e) for e in item['evidence']} - {''}
             if item['id'] in by_id or (mine and all(s in sigs for s in mine)):
-                continue
+                if board:
+                    continue
+                else:
+                    continue
             title = norm(item['title'])
             hit = next((names[norm(e['ref'][5:])] for e in item['evidence'] if e['ref'].startswith('todo:') and norm(e['ref'][5:]) in names), None)
             hit = hit or next((r for n, r in names.items() if n in title or (len(title) >= 4 and title in n)), None)
             if hit:
+                if board:
+                    continue
                 item = {**item, 'in_todo': {'name': hit['name'], 'due': hit['due'], 'path': hit['path']}}
             out.append(item)
         return out
@@ -755,11 +776,14 @@ class NextSteps:
             muted = muted_topics(no_titles)
 
             ledger = getattr(self, 'decisions', None)
+            # 11-03 Eddie：点了「已经做了」/交办/加待办，一会儿又换个说法冒出来。7 天内处理过的，近似句、依据大半重合都不再出（「别人在负责」仍只挡同一条）。
+            past = [d for r in handled for d in [json.loads(r['data'])] if d.get('dismiss_reason') != 'others']
 
             def repeat(item):
                 sigs = {_sig(e['ref'], e) for e in item['evidence']}
                 return (item['id'] in blocked or ('' not in sigs and sigs <= settled)
                         or any(_near(item['title'], t) for t in no_titles) or bool(_cjk_runs(item['title']) & muted)
+                        or any(_dup(item['title'], sigs - {''}, d) for d in past if d.get('id') != item['id'])
                         or bool(ledger and ledger.declines(item['title'])))
             fresh = [i for i in items if not repeat(i)]
             ids = {i['id'] for i in fresh}
@@ -795,6 +819,24 @@ class NextSteps:
                 if shown >= 4 and item['urgency'] != 'now':
                     item['urgency'], item['score'] = 'week', max(10, item['score'] - 20)
                 db.execute('INSERT OR REPLACE INTO items VALUES (?,?,?,?,?)', (item['id'], json.dumps({**item, 'source': source}, ensure_ascii=False), 'open', created, now))
+            # 11-03：开着的卡两两再并一次（历史遗留的重复、本轮新出的和旧卡撞题）：留有动作的、再留早的，紧急度取更急的。
+            order = {'now': 0, 'today': 1, 'week': 2}
+            rows = sorted(((r['id'], json.loads(r['data']), r['created_at']) for r in db.execute("SELECT id, data, created_at FROM items WHERE state='open'")),
+                          key=lambda x: (not x[1].get('action'), x[2]))
+            keep = []
+            for ident, d, created in rows:
+                if d.get('phase') == 'ready' or d.get('mandate_id'):
+                    continue
+                # 同一轮建的是模型有意拆开的几件事，不并；跨轮的才是换说法重写
+                host = next((k for k in keep if abs(k[2] - created) > 60 and _dup(d.get('title', ''), _sigs(d), k[1])), None)
+                if not host:
+                    keep.append((ident, d, created))
+                    continue
+                if order.get(d.get('urgency'), 1) < order.get(host[1].get('urgency'), 1):
+                    host[1]['urgency'] = d['urgency']
+                    db.execute("UPDATE items SET data=? WHERE id=?", (json.dumps(host[1], ensure_ascii=False), host[0]))
+                d['merged_into'] = host[0]
+                db.execute("UPDATE items SET state='stale', data=?, updated_at=? WHERE id=?", (json.dumps(d, ensure_ascii=False), now, ident))
             # 列表最多 10 条：超出时先收起连着没被提到、分数最低的（已备好不计入挤出）
             rows = [(r['id'], json.loads(r['data'])) for r in db.execute("SELECT id, data FROM items WHERE state='open'")]
             compressible = [(i, d) for i, d in rows if d.get('missed') and d.get('phase') != 'ready' and not d.get('mandate_id')]

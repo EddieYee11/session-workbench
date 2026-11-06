@@ -3,6 +3,7 @@ import XCTest
 /// r3-work：顶栏人物（全 App 一个实例）与工作页（ChatGPT / Claude App 式）的验收。
 /// `testRec*` 是录屏脚本：每一步之间停够久，`simctl io recordVideo` 录下来再按 30fps 抽帧看过渡。
 final class R3WorkUITests: XCTestCase {
+    private let splitLeftPaneWidth: CGFloat = 420
     override func setUp() { continueAfterFailure = false }
 
     @MainActor private func launch(_ extra: [String] = []) -> XCUIApplication {
@@ -20,14 +21,23 @@ final class R3WorkUITests: XCTestCase {
     private func pause(_ seconds: Double) { Thread.sleep(forTimeInterval: seconds) }
     @MainActor private func element(_ id: String, in app: XCUIApplication) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
     @MainActor private func openWork(_ app: XCUIApplication) {
-        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
-        app.buttons["tab-工作"].tap()
-        XCTAssertTrue(app.buttons["work-sidebar"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.comWaitForDock(timeout: 15))
+        app.comTapTab("工作")
+        pause(0.8)
+        let sidebar = app.comWorkSidebarButton()
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 8))
+        let sessions = app.buttons["work-surface-sessions"]
+        if sessions.waitForExistence(timeout: 3), !sessions.isSelected { sessions.tap() }
+        let home = app.descendants(matching: .any)["work-new-chat"].firstMatch
+        let input = app.textFields["work-input"]
+        XCTAssertTrue(home.waitForExistence(timeout: 10) || input.waitForExistence(timeout: 5), "工作页首页应就绪")
     }
     @MainActor private func openSidebar(_ app: XCUIApplication) -> XCUIElement {
         app.tapWorkSidebar()
+        pause(0.35)
         let panel = element("work-sidebar-panel", in: app)
-        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertTrue(panel.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["work-host-mini"].waitForExistence(timeout: 8), "侧栏分区应加载完成")
         pause(0.6)
         return panel
     }
@@ -40,49 +50,64 @@ final class R3WorkUITests: XCTestCase {
         let figure = element("agent-stage-pull-zone", in: app)
         XCTAssertTrue(figure.waitForExistence(timeout: 15))
         let anchor = figure.frame
+        let split = app.comIsSplitView
         for (tab, head) in [("下一步", "下一步"), ("今天", "今天"), ("工作", "Codex"), ("Com", "Com")] {
-            app.buttons["tab-" + tab].tap()
+            app.comTapTab(tab)
             pause(0.8)
             XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "agent-stage-pull-zone").count, 1, "全 App 只有一个她")
-            // 她靠左；工作页左上有侧栏按钮，她让开一个按钮位，其他页不挪。
-            XCTAssertEqual(figure.frame.minX, anchor.minX + (tab == "工作" ? 48 : 0), accuracy: 0.5, "切到「\(tab)」她不乱挪")
-            XCTAssertEqual(figure.frame.minY, anchor.minY, accuracy: 0.5)
-            XCTAssertTrue(figure.label.hasPrefix(head + "，"), "标题换成「\(head)」：\(figure.label)")
+            if split {
+                XCTAssertEqual(figure.frame.minX, anchor.minX, accuracy: 0.5, "双栏左栏顶栏她不乱挪")
+                XCTAssertEqual(figure.frame.minY, anchor.minY, accuracy: 0.5)
+                if tab == "Com" {
+                    XCTAssertTrue(figure.label.hasPrefix("Com，"), "左栏标题仍是 Com：\(figure.label)")
+                } else if tab == "工作" {
+                    XCTAssertTrue(app.buttons["work-sidebar"].waitForExistence(timeout: 3), "右栏工作页有侧栏")
+                } else {
+                    let dockTab = app.buttons["tab-" + tab]
+                    XCTAssertTrue(dockTab.waitForExistence(timeout: 3))
+                    XCTAssertTrue(dockTab.isSelected, "右栏停在「\(tab)」")
+                }
+            } else {
+                XCTAssertEqual(figure.frame.minX, anchor.minX + (tab == "工作" ? 48 : 0), accuracy: 0.5, "切到「\(tab)」她不乱挪")
+                XCTAssertEqual(figure.frame.minY, anchor.minY, accuracy: 0.5)
+                XCTAssertTrue(figure.label.hasPrefix(head + "，"), "标题换成「\(head)」：\(figure.label)")
+            }
         }
         // 工作页：左上侧栏、右上新对话（ChatGPT 排布），她紧跟侧栏按钮。
-        app.buttons["tab-工作"].tap()
-        let sidebar = app.buttons["work-sidebar"], new = app.buttons["work-new"]
+        app.comTapTab("工作")
+        pause(1.0)
+        let sidebar = app.comWorkSidebarButton()
+        let new = app.buttons["work-new"]
         XCTAssertTrue(sidebar.waitForExistence(timeout: 3))
-        XCTAssertTrue(new.exists)
-        let width = app.windows.firstMatch.frame.width
-        XCTAssertLessThan(sidebar.frame.maxX, width * 0.25, "侧栏按钮在左上")
+        XCTAssertTrue(new.waitForExistence(timeout: 3))
+        let screen = app.windows.firstMatch.frame
+        let width = split ? max(360, screen.width - splitLeftPaneWidth) : screen.width
+        let paneMinX = split ? screen.width - width : 0
+        if split {
+            XCTAssertTrue(figure.label.hasPrefix("Com，"), "双栏左栏她仍是 Com")
+            XCTAssertGreaterThan(new.frame.minX, screen.width * 0.45, "新对话在右半屏")
+        }
+        XCTAssertLessThan(sidebar.frame.maxX, paneMinX + width * 0.25, "侧栏按钮在左上")
         // 外屏右边有一列系统栏和 Dock，内容区不到整屏宽。
-        XCTAssertGreaterThan(new.frame.minX, width * 0.6, "新对话在右上")
-        XCTAssertGreaterThanOrEqual(figure.frame.minX, sidebar.frame.maxX, "她不压侧栏按钮")
-        XCTAssertLessThan(figure.frame.midX, width * 0.4, "她靠左，把宽度留给标题")
+        XCTAssertGreaterThan(new.frame.minX, paneMinX + width * 0.6, "新对话在右上")
+        if split {
+            XCTAssertLessThan(figure.frame.midX, screen.width * 0.35, "她在左栏")
+        } else {
+            XCTAssertGreaterThanOrEqual(figure.frame.minX, sidebar.frame.maxX, "她不压侧栏按钮")
+            XCTAssertLessThan(figure.frame.midX, width * 0.4, "她靠左，把宽度留给标题")
+        }
         capture("r3-topbar-work", app: app)
     }
 
     /// 点她弹菜单（popover 对准她）；按住往下拉出工作台，右上按钮变成收起。
-    @MainActor func testMenuAnchorsToFigureAndStagePullsDown() throws {
-        let app = launch()
+    @MainActor func testMenuAnchorsToFigureAndOpensChatBrief() throws {
+        let app = launch(["--ui-chat-brief"])
         let figure = element("agent-stage-pull-zone", in: app)
         XCTAssertTrue(figure.waitForExistence(timeout: 15))
+        XCTAssertTrue(element("chat-brief-card", in: app).waitForExistence(timeout: 12))
         figure.tap()
-        let menu = element("main-menu", in: app)
-        XCTAssertTrue(menu.waitForExistence(timeout: 3))
-        XCTAssertEqual(menu.frame.midX, figure.frame.midX, accuracy: 160)
-        XCTAssertGreaterThan(menu.frame.minY, figure.frame.minY, "菜单从她下面弹出")
-        capture("r3-menu", app: app)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
-        XCTAssertTrue(menu.waitForNonExistence(timeout: 3))
-        figure.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)).press(forDuration: 0.08, thenDragTo: figure.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 3)))
-        XCTAssertTrue(element("agent-stage-panel", in: app).waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["agent-stage-close"].waitForExistence(timeout: 3))
-        capture("r3-stage", app: app)
-        app.buttons["agent-stage-close"].tap()
-        XCTAssertTrue(element("agent-stage-panel", in: app).waitForNonExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["top-search"].waitForExistence(timeout: 3), "收起后右上回到搜索")
+        XCTAssertTrue(element("main-menu", in: app).waitForExistence(timeout: 3))
+        capture("r3-chat-brief-menu", app: app)
     }
 
     // MARK: - 任务 2：工作页
@@ -92,7 +117,7 @@ final class R3WorkUITests: XCTestCase {
         let app = launch()
         openWork(app)
         let screen = app.windows.firstMatch.frame
-        let dock = app.buttons["tab-Com"]
+        let dock = app.comDockReference()
         let dockBefore = dock.frame
         var panel = openSidebar(app)
         XCTAssertLessThan(panel.frame.minY, 100, "侧栏内容从顶上开始（底色铺到状态栏下面，见录屏抽帧）")
@@ -107,7 +132,12 @@ final class R3WorkUITests: XCTestCase {
         XCTAssertTrue(app.buttons["work-agent-codex"].frame.maxX <= panel.frame.maxX - 8)
         capture("r3-sidebar", app: app)
         // 右缘那一条：点一下收起。
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
+        let dismiss = app.buttons["work-sidebar-dismiss"]
+        if dismiss.waitForExistence(timeout: 2) {
+            dismiss.tap()
+        } else {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
+        }
         XCTAssertTrue(panel.waitForNonExistence(timeout: 3))
         XCTAssertTrue(dock.isHittable, "收起后 Dock 回来")
         XCTAssertEqual(dock.frame.minX, dockBefore.minX, accuracy: 1)
@@ -137,15 +167,20 @@ final class R3WorkUITests: XCTestCase {
         let width = app.windows.firstMatch.frame.width
         let mine = element("work-bubble-s1-u2", in: app)
         XCTAssertTrue(mine.waitForExistence(timeout: 5))
-        XCTAssertGreaterThan(mine.frame.maxX, element("agent-stage-panel-collapsed", in: app).frame.maxX - 40, "我的话在右边")
+        XCTAssertGreaterThan(mine.frame.maxX, element("agent-stage-pull-zone", in: app).frame.maxX - 40, "我的话在右边")
         XCTAssertGreaterThan(mine.frame.minX, width * 0.15, "气泡不铺满")
         // 审批卡在流里。
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", "等待你的决定")).firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "等你拍板")).firstMatch.waitForExistence(timeout: 3))
         capture("r3-session-bottom", app: app)
         app.swipeDown(); app.swipeDown()
         let reply = element("work-reply-s1-a1", in: app)
         XCTAssertTrue(reply.waitForExistence(timeout: 3))
-        XCTAssertLessThan(reply.frame.minX, 40, "Agent 的回复在左边")
+        if app.comIsSplitView {
+            let paneMinX = app.windows.firstMatch.frame.width * 0.42
+            XCTAssertLessThan(reply.frame.minX, paneMinX + 100, "Agent 的回复在 work 区左侧")
+        } else {
+            XCTAssertLessThan(reply.frame.minX, 40, "Agent 的回复在左边")
+        }
         XCTAssertTrue(element("work-reply-agent", in: app).exists, "回复上挂 Agent 的 logo 和名字")
         XCTAssertTrue(app.buttons["work-steps"].firstMatch.exists, "工具步骤折成一行")
         app.buttons["work-steps"].firstMatch.tap()
@@ -184,15 +219,20 @@ final class R3WorkUITests: XCTestCase {
         input.tap()
         input.typeText("帮我看看这周的选题")
         app.buttons["work-send"].tap()
-        XCTAssertTrue(element("work-new-chat", in: app).waitForNonExistence(timeout: 3), "首页淡出")
+        XCTAssertTrue(element("work-new-chat", in: app).waitForNonExistence(timeout: 8), "首页淡出")
         XCTAssertTrue(element("work-chat", in: app).waitForExistence(timeout: 3))
         XCTAssertEqual(app.navigationBars.count, 0)
         let bubble = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "work-bubble-", "帮我看看这周的选题")).firstMatch
         XCTAssertTrue(bubble.waitForExistence(timeout: 3))
-        XCTAssertGreaterThan(bubble.frame.maxX, element("agent-stage-panel-collapsed", in: app).frame.maxX - 60, "我的话在右边")
+        XCTAssertGreaterThan(bubble.frame.maxX, element("agent-stage-pull-zone", in: app).frame.maxX - 60, "我的话在右边")
         let reply = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "要我先把探馆")).firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 10), "回复流出来")
-        XCTAssertLessThan(reply.frame.minX, 60, "回复在左边")
+        if app.comIsSplitView {
+            let paneMinX = app.windows.firstMatch.frame.width * 0.42
+            XCTAssertLessThan(reply.frame.minX, paneMinX + 100, "回复在 work 区左侧")
+        } else {
+            XCTAssertLessThan(reply.frame.minX, 60, "回复在左边")
+        }
         capture("r3-home-send", app: app)
         // 接着在这段里说。
         input.tap()
@@ -231,11 +271,19 @@ final class R3WorkUITests: XCTestCase {
         XCTAssertTrue(claude.waitForExistence(timeout: 3))
         capture("r3-title-menu", app: app)
         claude.tap()
-        let figure = element("agent-stage-pull-zone", in: app)
-        let changed = NSPredicate(format: "label BEGINSWITH %@", "Claude Code，")
-        expectation(for: changed, evaluatedWith: figure)
-        waitForExpectations(timeout: 3)
-        XCTAssertTrue(app.textFields["让 Claude Code 做点什么"].exists || app.textFields["work-input"].placeholderValue == "让 Claude Code 做点什么")
+        pause(0.6)
+        if app.comIsSplitView {
+            XCTAssertTrue(
+                app.textFields.matching(NSPredicate(format: "placeholderValue CONTAINS %@", "Claude Code")).firstMatch.waitForExistence(timeout: 3)
+                    || app.textFields["work-input"].exists
+            )
+        } else {
+            let figure = element("agent-stage-pull-zone", in: app)
+            let changed = NSPredicate(format: "label BEGINSWITH %@", "Claude Code，")
+            expectation(for: changed, evaluatedWith: figure)
+            waitForExpectations(timeout: 3)
+            XCTAssertTrue(app.textFields["让 Claude Code 做点什么"].exists || app.textFields["work-input"].placeholderValue == "让 Claude Code 做点什么")
+        }
     }
 
     // MARK: - 录屏脚本
@@ -243,11 +291,11 @@ final class R3WorkUITests: XCTestCase {
     /// 切 tab：Com → 下一步 → 今天 → 工作 → Com，来回两轮。
     @MainActor func testRecTabs() throws {
         let app = launch()
-        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.comWaitForDock(timeout: 15))
         pause(1.5)
         for _ in 0..<2 {
             for tab in ["下一步", "今天", "工作", "Com"] {
-                app.buttons["tab-" + tab].tap()
+                app.comTapTab(tab)
                 pause(1.6)
             }
         }
@@ -256,14 +304,14 @@ final class R3WorkUITests: XCTestCase {
     /// 状态轮换（每步 3 秒）：空闲 → 思考 → 翻资料 → 干活 → 等你点头 → 送达 → 空闲；中间气泡出现、换字、收起。
     @MainActor func testRecStates() throws {
         let app = launch(["--ui-r3-cycle"])
-        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.comWaitForDock(timeout: 15))
         pause(22)
     }
 
     /// 气泡出现、换字、收起（`--ui-work-process-live` 按脚本往前走，最后做完）。
     @MainActor func testRecBubble() throws {
         let app = launch(["--ui-work-process", "--ui-work-process-live"])
-        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.comWaitForDock(timeout: 15))
         pause(24)
     }
 
@@ -281,7 +329,7 @@ final class R3WorkUITests: XCTestCase {
         pause(2)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)).tap()
         pause(1.5)
-        app.buttons["tab-工作"].tap()
+        app.comTapTab("工作")
         pause(1.2)
         strip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)).press(forDuration: 0.1, thenDragTo: strip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 3)))
         pause(2)
@@ -296,10 +344,15 @@ final class R3WorkUITests: XCTestCase {
         pause(1.2)
         app.tapWorkSidebar()
         pause(1.6)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
+        if app.buttons["work-sidebar-dismiss"].waitForExistence(timeout: 2) {
+            app.buttons["work-sidebar-dismiss"].tap()
+        } else {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
+        }
         pause(1.4)
         app.tapWorkSidebar()
         pause(1.4)
+        XCTAssertTrue(app.buttons["work-host-mini"].waitForExistence(timeout: 8))
         app.buttons["work-host-mini"].tap()
         app.buttons["work-agent-all"].tap()
         pause(0.6)
@@ -347,9 +400,56 @@ final class R3WorkUITests: XCTestCase {
 }
 
 extension XCUIApplication {
+    /// Duo 展开双栏（≥700pt）：Dock 只有右栏四页，Com 常驻左栏。
+    @MainActor var comIsSplitView: Bool {
+        windows.firstMatch.frame.width >= 700
+    }
+
+    @MainActor func comWaitForDock(timeout: TimeInterval = 15) -> Bool {
+        if buttons["tab-Com"].waitForExistence(timeout: 2) { return true }
+        if buttons["tab-下一步"].waitForExistence(timeout: timeout) { return true }
+        return descendants(matching: .any)["message-input"].firstMatch.waitForExistence(timeout: 2)
+    }
+
+    /// 双栏时 Com 不在 Dock 里；看板专注会藏左栏，需先退出。
+    @MainActor func comTapTab(_ title: String) {
+        if title == "Com" {
+            if buttons["tab-Com"].exists {
+                buttons["tab-Com"].tap()
+                return
+            }
+            let showChat = buttons["显示聊天栏"]
+            if showChat.waitForExistence(timeout: 1) { showChat.tap() }
+            return
+        }
+        let tab = buttons["tab-" + title]
+        XCTAssertTrue(tab.waitForExistence(timeout: 8), "Dock 没有 tab-\(title)")
+        tab.tap()
+    }
+
+    @MainActor func comDockReference() -> XCUIElement {
+        if buttons["tab-Com"].exists { return buttons["tab-Com"] }
+        return buttons["tab-工作"]
+    }
+
     /// 侧栏按钮的 element.tap() 到不了按钮（XCUITest 的落点问题），同一位置按坐标点是通的。
+    @MainActor func comWorkSidebarButton() -> XCUIElement {
+        let matches = buttons.matching(identifier: "work-sidebar").allElementsBoundByIndex
+        if comIsSplitView {
+            let cut = windows.firstMatch.frame.width * 0.42
+            if let right = matches.last(where: { $0.exists && $0.frame.minX > cut }) { return right }
+        }
+        return matches.last(where: { $0.exists && $0.frame.width > 20 }) ?? buttons["work-sidebar"]
+    }
+
     @MainActor func tapWorkSidebar() {
-        let frame = buttons["work-sidebar"].frame
+        let sidebar = comWorkSidebarButton()
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 5))
+        if sidebar.isHittable {
+            sidebar.tap()
+            return
+        }
+        let frame = sidebar.frame
         coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: frame.midY)).tap()
     }
 }

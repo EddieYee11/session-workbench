@@ -63,10 +63,12 @@ def valid_result(row, bank, allowed):
             return None
     except OSError:
         return None
-    score = (row.get('scores') or {}).get('reranker')
-    if score is not None and score < 0.03:
+    scores = row.get('scores') or {}
+    score = scores.get('reranker')
+    sem = scores.get('semantic') or 0
+    if score is not None and score < 0.03 and sem < 0.58:
         return None
-    return {'text': row['text'], 'source': relative, 'sha256': sha, 'bank': bank, 'relevance': score or 0}
+    return {'text': row['text'], 'source': relative, 'sha256': sha, 'bank': bank, 'relevance': max(score or 0, sem if sem >= 0.58 else 0)}
 
 def status():
     manifest_path = STATE / 'manifest.json'
@@ -229,7 +231,7 @@ async def recall_on_demand(query, banks=None):
     fallback_task=asyncio.create_task(asyncio.to_thread(_markdown_matches,terms,banks or list(ROUTES)))
     semantic_state='ok'
     try:
-        semantic=await asyncio.wait_for(recall(query,banks),timeout=1.5)
+        semantic=await asyncio.wait_for(recall(query,banks),timeout=4.0)
     except (TimeoutError,httpx.HTTPError):
         semantic_state='time_budget_exceeded'
         semantic={'status':'unavailable','items':[],'unavailable_banks':banks or list(ROUTES)}

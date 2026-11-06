@@ -54,3 +54,30 @@ def test_today_endpoint_is_wired_and_reports_missing_sources(tmp_path,monkeypatc
     assert r.status_code==200
     body=r.json()
     assert set(body)>={'date','events','reminders','todos','errors'} and 'reminders' in body['errors'] and body['todos']==[]
+
+
+def test_calendar_range_filters_and_clamps():
+    t=Today(Hub(),None,None,clock=lambda:NOW)
+    one=t.calendar('2026-10-10',1)
+    assert one['start']=='2026-10-10' and one['days']==1
+    assert [e['title'] for e in one['events']]==['国庆调休','周会']
+    two=t.calendar('2026-10-10',2)
+    assert [e['title'] for e in two['events']]==['国庆调休','周会','明天的会']
+    assert t.calendar('2026-10-11',3)['events'][0]['title']=='明天的会'
+    assert t.calendar('2026-10-10',0)['days']==1 and t.calendar('2026-10-10',999)['days']==62
+    assert t.calendar('',1)['start']=='2026-10-10', '空 start = 今天'
+    assert t.calendar('乱写',1)['start']=='2026-10-10'
+
+
+def test_list_md_reuses_listing_until_folder_mtime_changes(tmp_path):
+    import os, today
+    folder = tmp_path / 'list'
+    folder.mkdir()
+    (folder / 'a.md').write_text('x')
+    old = time.time() - 60
+    os.utime(folder, (old, old))
+    assert [p.name for p in today._list_md(folder)] == ['a.md']
+    (folder / 'b.md').write_text('x')  # 新建会改目录 mtime → 重扫
+    assert [p.name for p in today._list_md(folder)] == ['a.md', 'b.md']
+    os.utime(folder, (old, old))  # 人为改回旧 mtime：命中缓存，证明确实没重扫
+    assert [p.name for p in today._list_md(folder)] == ['a.md']

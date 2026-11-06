@@ -300,32 +300,83 @@ extension AppModel {
             return ""
         }
     }
-    var stripOnRight: Bool { [.ask, .send, .broken, .done].contains(stripState) }
-    var stripMachine: String { runningTasks.first?["host"].string ?? "" }
 
-    // MARK: 下拉工作台
+    // MARK: 回来简报开合
 
-    func openStage() {
+    /// 顶栏手动下拉前：按 seenAt → 近 6 小时 → 静息文案 填简报。
+    func prepareManualChatBrief() {
+        let seenAt = UserDefaults.standard.double(forKey: "chat.brief.seenAt")
+        let now = Date().timeIntervalSince1970
+        let sixH = now - 6 * 3600
+        let initialSince = (seenAt > 0 && now - seenAt < ChatBrief.awayThreshold) ? min(seenAt, sixH) : seenAt
+        var next = ChatBrief.build(self, since: initialSince)
+        if !next.hasNews && !next.quietFallback {
+            next = ChatBrief.build(self, since: sixH)
+        }
+        if !next.hasNews && !next.quietFallback {
+            next.quietFallback = true
+            next.away = min(next.away, 6 * 3600)
+        }
+        chatBrief = next
+    }
+
+    /// 从非聊天视图（或看板专注态）拉简报时，先把主聊天视图露出来承载 `ChatBriefOverlay`。
+    func ensureChatVisibleForBrief() {
+        if splitView {
+            if rightTab == .next && boardFocus { boardFocus = false }
+        } else if tab != .chat {
+            tab = .chat
+        }
+    }
+
+    /// 简报宿主不在视图树时立即清理残留状态，不跑关合弹簧。
+    func resetBriefImmediate() {
+        guard briefExpanded || briefProgress > 0 else { return }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "chat.brief.seenAt")
+        briefDockAfterClose = false
+        briefExpanded = false
+        briefProgress = 0
+    }
+
+    func openBrief() {
         showMenu = false
+        ensureChatVisibleForBrief()
+        briefDockAfterClose = true
+        briefExpanded = true
         let reduce = UIAccessibility.isReduceMotionEnabled
-        withAnimation(ComMotion.reduced(reduce, ComMotion.rise)) { stageProgress = 1; stageExpanded = true }
+        if reduce { briefProgress = 1 }
+        else { withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { briefProgress = 1 } }
     }
-    func closeStage() {
+    func closeBrief(dockAfter: Bool = true) {
+        briefDockAfterClose = dockAfter
+        briefExpanded = false
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "chat.brief.seenAt")
         let reduce = UIAccessibility.isReduceMotionEnabled
-        withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { stageProgress = 0; stageExpanded = false }
+        if reduce { briefProgress = 0 }
+        else { withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { briefProgress = 0 } }
     }
-    /// 拖动中：跟手，拉过头有橡皮筋阻尼。
-    func dragStage(to raw: CGFloat) {
+    /// 拖动中：跟手，拉过头有橡皮筋阻尼（与简报把手同一套）。
+    func dragBrief(to raw: CGFloat) {
         let clamped: CGFloat
         if raw < 0 { clamped = 0 }
         else if raw > 1 { clamped = 1 + (raw - 1) * 0.25 }
         else { clamped = raw }
         var transaction = Transaction(); transaction.disablesAnimations = true
-        withTransaction(transaction) { stageProgress = clamped }
+        withTransaction(transaction) { briefProgress = clamped }
     }
-    /// 松手：按预测落点决定开合。
-    func settleStage(predicted: CGFloat) {
-        if predicted > 0.3 { openStage() } else { closeStage() }
+    private var briefDragDivisor: CGFloat { max(120, briefDragHeight) }
+    /// 顶栏玩偶松手：方向敏感阈值（从折叠下拉 > 35% 展开，从展开上推 > 35% 收起 / 预测速度 180pt）。
+    func settleBriefFromTopBar(start: CGFloat, translation: CGFloat, predictedEnd: CGFloat) {
+        let now = start + translation / briefDragDivisor
+        let flickUp = predictedEnd - translation < -180
+        let flickDown = predictedEnd - translation > 180
+        let threshold: CGFloat = start >= 0.5 ? 0.65 : 0.35
+        let close = flickDown ? false : (flickUp || now < threshold)
+        if close { closeBrief(dockAfter: true) } else { openBrief() }
+    }
+    /// 简报把手/卡片松手（与 ChatBriefOverlay 内逻辑一致）。
+    func settleBriefFromHandle(start: CGFloat, translation: CGFloat, predictedEnd: CGFloat) {
+        settleBriefFromTopBar(start: start, translation: translation, predictedEnd: predictedEnd)
     }
 }
 

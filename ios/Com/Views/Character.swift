@@ -114,8 +114,6 @@ struct CharacterPainter {
     var outfit: CharacterOutfit = .none
     /// 刚换了 tab：从哪套造型换过来、进行到哪（0…1，已缓动）。
     var outfitBlend: (from: CharacterOutfit, amount: Double)?
-    /// 换装时跳不跳（减少动态效果时只交叉淡入）。
-    var hops = true
     /// 换 tab 时背靠背转一圈（10-17 二版）：theta 是绕竖轴转过的角度，转到背面（≥180°）那一刻换上新造型。
     struct Spin { var from: CharacterOutfit; var theta: Double; var velocity: Double; var lift: Double; var squash: Double }
     var spin: Spin?
@@ -153,12 +151,6 @@ struct CharacterPainter {
         let previous = blend.map { CharacterPainter(state: $0.from, t: t, moving: moving, ink: ink, paper: paper, red: red, sign: $0.fromSign, drawsProps: drawsProps, danger: danger, quiet: quiet) }
         func mix(_ from: Double?, _ to: Double) -> Double { from.map { $0 + (to - $0) * a } ?? to }
         var ctx = c
-        // 换 tab 时轻轻跳一下：抛物线 10pt，起跳时身子往前倾 4°，落地摆正（绕脚底转，脚不打滑）。
-        if hops, let o = outfitBlend, o.amount < 1 {
-            let lift = sin(.pi * o.amount)
-            ctx.translateBy(x: 60, y: 132); ctx.rotate(by: .degrees(-4 * lift)); ctx.translateBy(x: -60, y: -132)
-            ctx.translateBy(x: 0, y: -10 * lift)
-        }
         ctx.translateBy(x: 0, y: mix(previous?.bob, bob))
         fill(&ctx, "M28 132 Q32 106 60 104 Q88 106 92 132 Z", ink, stroke: 2)
         // 头：绕 (60,100) 轻轻点头 / 歪头
@@ -419,8 +411,6 @@ struct StripFigure: View {
     var animated = true
     /// 旁边有手绘气泡时不画思考点（气泡本身就是她在想的事）。
     var quiet = false
-    /// 往下拉工作台时她从顶栏跳到桌前；进度 0 = 待在顶栏。
-    var hop: Hop?
     /// 当前 tab 的造型；换了就跳一下换装（outfitDuration）。
     var outfit: CharacterOutfit = .none
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -452,21 +442,8 @@ struct StripFigure: View {
     }
     private struct Pose: Equatable { var from: StripState; var fromSign: String; var to: StripState; var toSign: String; var at: Date }
     private struct Key: Equatable { let state: StripState; let sign: String }
-    /// 跳下去的路线（坐标都是顶栏坐标，原点在顶栏左上角；线稿原点 = 120×132 角色坐标的 0,0）。桌子的位置由进度现算（StagePanel.deskFigure）。
-    struct Hop: Equatable {
-        /// 工作台展开进度：0 在顶栏，1 坐到桌前。拖的时候直接跟手指走，松手后跟着工作台的弹簧逐帧插值。
-        var progress: CGFloat
-        /// 顶栏里她的线稿原点。
-        var start: CGPoint
-        /// 顶栏宽（算桌子位置用）。
-        var width: CGFloat
-        /// StripFigure 自己在顶栏里的左上角（大画布要往回挪这么多，对齐顶栏原点）。
-        var frameOrigin: CGPoint
-        /// 画她的这块大画布：顶栏 + 工作台展开部分。
-        var canvas: CGSize { CGSize(width: width, height: Layout.topBar + StagePanel.revealHeight) }
-    }
-    init(state: StripState, sign: String = "", showsProps: Bool = true, animated: Bool = true, quiet: Bool = false, hop: Hop? = nil, outfit: CharacterOutfit = .none) {
-        self.state = state; self.sign = sign; self.showsProps = showsProps; self.animated = animated; self.quiet = quiet; self.hop = hop; self.outfit = outfit
+    init(state: StripState, sign: String = "", showsProps: Bool = true, animated: Bool = true, quiet: Bool = false, outfit: CharacterOutfit = .none) {
+        self.state = state; self.sign = sign; self.showsProps = showsProps; self.animated = animated; self.quiet = quiet; self.outfit = outfit
         _pose = State(initialValue: Pose(from: state, fromSign: sign, to: state, toSign: sign, at: .distantPast))
         _dress = State(initialValue: Dress(from: outfit, to: outfit, at: .distantPast))
     }
@@ -485,11 +462,19 @@ struct StripFigure: View {
             let curve = Self.spinCurve(elapsed), ahead = Self.spinCurve(elapsed + 1.0 / 120)
             let spin: CharacterPainter.Spin? = !reduce && worn < 1 && dress.from != dress.to
                 ? .init(from: dress.from, theta: curve.theta, velocity: (ahead.theta - curve.theta) * 120, lift: curve.lift, squash: curve.squash) : nil
-            // 换装透明度走 power2.out；跳的那条抛物线自带起落。
             let painter = CharacterPainter(state: pose.to, t: timeline.date.timeIntervalSinceReferenceDate, moving: moving, ink: Palette.ink, paper: Palette.surface, red: Palette.accent, sign: pose.toSign, drawsProps: showsProps, quiet: quiet,
-                                           outfit: dress.to, outfitBlend: reduce && worn < 1 ? (dress.from, worn) : nil, hops: false, spin: spin)
-            FigureLayer(progress: hop?.progress ?? 0, hop: hop, painter: painter, blend: blend,
-                        plane: pose.to == .send ? (blend != nil && pose.from != .send ? blend?.amount ?? 1 : 1) : nil, reduce: reduce)
+                                           outfit: dress.to, outfitBlend: reduce && worn < 1 ? (dress.from, worn) : nil, spin: spin)
+            let plane: Double? = pose.to == .send ? (blend != nil && pose.from != .send ? blend?.amount ?? 1 : 1) : nil
+            Canvas { context, _ in
+                var ctx = context
+                ctx.translateBy(x: 0, y: 6); ctx.scaleBy(x: 0.38, y: 0.38)
+                painter.figure(&ctx, blend: blend)
+                if let plane {
+                    var layer = context; layer.opacity = plane
+                    painter.plane(&layer, origin: CGPoint(x: 48, y: 22), scale: 1, reach: 60)
+                }
+            }
+            .frame(width: Self.size.width, height: Self.size.height)
         }
         .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
         .onChange(of: outfit) { _, next in
@@ -515,68 +500,6 @@ struct StripFigure: View {
     }
 }
 
-/// 她这一层：平时在顶栏的小画布里；拉工作台时换到一块大画布上，跟着进度从顶栏跳到桌前。
-/// 进度是动画值（Animatable）：松手后工作台的弹簧每一帧都插值，她不会一下闪到桌前，收起时也原路跳回来。
-nonisolated private struct FigureLayer: View, Animatable {
-    var progress: CGFloat
-    let hop: StripFigure.Hop?
-    let painter: CharacterPainter
-    let blend: CharacterPainter.PoseBlend?
-    /// 纸飞机的透明度（nil = 不画）。
-    let plane: Double?
-    let reduce: Bool
-    var animatableData: CGFloat {
-        get { progress }
-        set { progress = newValue }
-    }
-    @MainActor var body: some View {
-        if let hop, progress > 0.001 {
-            Canvas { context, _ in draw(hop, in: context) }
-                .frame(width: hop.canvas.width, height: hop.canvas.height)
-                .offset(x: -hop.frameOrigin.x, y: -hop.frameOrigin.y)
-                .allowsHitTesting(false)
-        } else {
-            Canvas { context, _ in
-                var ctx = context
-                ctx.translateBy(x: 0, y: 6); ctx.scaleBy(x: 0.38, y: 0.38)
-                painter.figure(&ctx, blend: blend)
-                if let plane {
-                    var layer = context; layer.opacity = plane
-                    painter.plane(&layer, origin: CGPoint(x: 48, y: 22), scale: 1, reach: 60)
-                }
-            }
-            .frame(width: StripFigure.size.width, height: StripFigure.size.height)
-        }
-    }
-
-    /// 从顶栏跳到桌前：位置走一段小抛物线（跳起 22pt），一路放大到桌前的尺寸，身子朝前进方向前倾——
-    /// 动效库 16-arrow-label-3d 里物件落位的走法（落定后的过冲回弹交给工作台自己的弹簧）。减少动态效果时只交叉淡入，不移动。
-    private func draw(_ hop: StripFigure.Hop, in context: GraphicsContext) {
-        let p = Double(min(1, max(0, progress)))
-        let desk = StagePanel.deskFigure(width: hop.width, progress: progress)
-        func place(_ u: Double, opacity: Double) {
-            guard opacity > 0.001 else { return }
-            let x = hop.start.x + (desk.origin.x - hop.start.x) * u
-            let y = hop.start.y + (desk.origin.y - hop.start.y) * u - (reduce ? 0 : 22 * sin(.pi * u))
-            let scale = 0.38 + (desk.scale - 0.38) * u
-            let lean = reduce ? 0 : -7 * sin(.pi * u) * (desk.origin.x < hop.start.x ? 1 : -1)
-            var ctx = context
-            ctx.opacity = opacity
-            // 绕脚底中心转：前倾时脚不打滑。
-            ctx.translateBy(x: x + 60 * scale, y: y + 132 * scale); ctx.rotate(by: .degrees(lean)); ctx.translateBy(x: -60 * scale, y: -132 * scale)
-            ctx.scaleBy(x: scale, y: scale)
-            painter.figure(&ctx, blend: blend)
-        }
-        if reduce {
-            place(0, opacity: max(0, 1 - p * 2)); place(1, opacity: max(0, p * 2 - 1))
-        } else {
-            // 她比工作台先落定一点（进度到 0.85 就坐好），smoothstep 起落都缓。
-            let t = min(1, p / 0.85)
-            place(t * t * (3 - 2 * t), opacity: 1)
-        }
-    }
-}
-
 /// 她说的话（r3-work）：挂在她左边、标题下面那一行，尾巴指向她；空字符串 = 收起。
 /// 开合走同一条路：从尾尖处旋转展开、原路收回——动效库 15-bubble-glow-logo 的气泡（从尾尖 scale 0.10→1、
 /// 旋转 −39°→0°，落定后 1.00→0.98→1.00 微回弹）；手机上角度收成 −20°，回弹交给欠阻尼弹簧一次带出来。
@@ -597,82 +520,6 @@ struct TalkBubble: View {
             .accessibilityHidden(!open)
             .accessibilityIdentifier(open ? "agent-work-bubble" : "agent-work-bubble-closed")
             .onChange(of: text, initial: true) { _, value in if !value.isEmpty { last = value } }
-    }
-}
-
-// MARK: - 下拉工作台（402×170 设计坐标）
-
-/// 她的工作台：左边信箱格，中间桌子，右边 mini / Book 两盏灯。
-struct StageScene: View {
-    let state: StripState
-    var sign = ""
-    var sourceBroken = false
-    var machineLit: String = ""
-    /// r3-work：下拉工作台里不画她——顶栏那个她自己跳下来坐到桌前（StripFigure.Hop），全 App 还是只有一个她。
-    var drawsFigure = true
-    /// 桌前她的原点和缩放（场景坐标，高 200 的场景）：和下面画桌子用的是同一套数。
-    nonisolated static func figureOrigin(width: CGFloat, height: CGFloat = 200) -> (origin: CGPoint, scale: CGFloat) {
-        let s = width / 402
-        return (CGPoint(x: 158 * s, y: height - 170 * s + 20 * s), 0.8 * s)
-    }
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    @Environment(\.scenePhase) private var scene
-    private var moving: Bool { AmbientMotionPolicy.allowsTimeline(active: scene == .active, reduceMotion: reduce) }
-    var body: some View {
-        let interval = state == .idle ? AmbientMotionPolicy.idleInterval : AmbientMotionPolicy.busyInterval
-        TimelineView(.animation(minimumInterval: interval, paused: !moving || state == .done)) { timeline in
-            Canvas { context, size in
-                let now = timeline.date.timeIntervalSinceReferenceDate
-                let s = size.width / 402
-                var ctx = context
-                ctx.translateBy(x: 0, y: size.height - 170 * s); ctx.scaleBy(x: s, y: s)
-                let ink = Palette.ink, paper = Palette.surface, red = Palette.accent
-                let painter = CharacterPainter(state: state, t: now, moving: moving, ink: ink, paper: paper, red: red, sign: sign)
-                func line(_ d: String, _ w: CGFloat, _ color: Color = ink, alpha: Double = 1) {
-                    ctx.stroke(SVGPath.path(d), with: .color(color.opacity(alpha)), style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round))
-                }
-                func fillPath(_ d: String, _ color: Color, _ w: CGFloat) { ctx.fill(SVGPath.path(d), with: .color(color)); line(d, w) }
-                line("M12 160 Q120 157 200 160 T392 159", 1.8, alpha: 0.55)
-                // 信箱格
-                line("M22 160 L22 92 L92 92 L92 160 M57 92 L57 160 M22 126 L92 126", 2.2)
-                line("M29 103 h20 v14 h-20z M29 103 l10 7 10 -7", 1.7)
-                line("M64 102 h22 v16 h-22z M64 107 h22 M69 100 v4 M81 100 v4", 1.7)
-                line("M29 136 h20 v11 h-12 l-5 4 v-4 h-3z", 1.7)
-                line("M68 135 l6 7 6 -7 M74 142 v9 M69 145 h10", 1.7)
-                if sourceBroken || state == .broken { line("M27 100 L51 121 M51 100 L27 121", 3, red) }
-                if state == .read {
-                    fillPath("M134 124 L139 115 L169 115 L174 124 Z", paper, 1.7)
-                    var page = ctx; page.translateBy(x: 134, y: 124); page.rotate(by: .degrees(moving ? keyframe([0, 0, -150, 0], [0, 0.5, 0.75, 1], dur: 1.2, t: now) : 0)); page.translateBy(x: -134, y: -124)
-                    page.fill(SVGPath.path("M134 124 L139 115 L169 115 L174 124 Z"), with: .color(paper))
-                    page.stroke(SVGPath.path("M134 124 L139 115 L169 115 L174 124 Z"), with: .color(ink), lineWidth: 1.7)
-                }
-                // 桌子
-                fillPath("M110 123 Q220 120 332 123 L332 134 Q220 131 110 134 Z", paper, 2.4)
-                line("M124 134 L122 160 M318 133 L320 160", 2.4)
-                // 角色
-                if drawsFigure { var figure = ctx; figure.translateBy(x: 158, y: 20); figure.scaleBy(x: 0.8, y: 0.8); painter.figure(&figure) }
-                if state == .send { painter.plane(&ctx, origin: CGPoint(x: 252, y: 100), scale: 1.5) }
-                if state == .done {
-                    var spark = ctx; spark.translateBy(x: 248, y: 104)
-                    let grow = moving ? even([0.2, 1.3], dur: 1.6, t: now) : 1
-                    spark.opacity = moving ? keyframe([0, 1, 0], [0, 0.3, 1], dur: 1.6, t: now) : 0.8
-                    spark.scaleBy(x: grow, y: grow)
-                    spark.stroke(SVGPath.path("M0 -6 V6 M-6 0 H6 M-4 -4 L4 4 M4 -4 L-4 4"), with: .color(ink), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
-                }
-                // 两台电脑
-                line("M346 160 L346 102 L390 102 L390 160 M352 114 L384 114", 2.2)
-                let lit = state == .send && moving ? keyframe([0, 0, 1, 1], [0, 0.8, 0.82, 1], dur: 1.8, t: now) : 0
-                for (i, x) in [358.0, 378.0].enumerated() {
-                    let on = (i == 0 && machineLit != "macbook") || (i == 1 && machineLit == "macbook")
-                    ctx.fill(Path(ellipseIn: CGRect(x: x - 4, y: 126, width: 8, height: 8)), with: .color(on && lit > 0.5 ? ink : paper))
-                    ctx.stroke(Path(ellipseIn: CGRect(x: x - 4, y: 126, width: 8, height: 8)), with: .color(ink), lineWidth: 1.8)
-                }
-                for (x, label) in [(357.0, "mini"), (380.0, "Book")] {
-                    ctx.draw(ctx.resolve(Text(label).font(.system(size: 6.5)).foregroundStyle(Palette.textTertiary)), at: CGPoint(x: x, y: 148), anchor: .center)
-                }
-            }
-        }
-        .accessibilityHidden(true)
     }
 }
 

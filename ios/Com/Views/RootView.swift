@@ -55,7 +55,7 @@ struct RootView: View {
         let barHidden = !wide && pushed.contains(model.tab)
         let rightBarHidden = pushed.contains(model.rightTab)
         return ZStack(alignment: .top) {
-            // 主内容：页面 + Dock + 工作台 + 顶栏。工作页开侧栏时整块往右推走，Dock 跟着淡出。
+            // 主内容：页面 + Dock + 顶栏。工作页开侧栏时整块往右推走，Dock 跟着淡出。
             ZStack(alignment: .top) {
                 if wide {
                     splitContent(leftWidth: leftWidth, gap: gap, rightBarHidden: rightBarHidden)
@@ -82,8 +82,6 @@ struct RootView: View {
                             .zIndex(1)
                     }
                 }
-                // 工作台在顶栏下面一层：没拉开时完全透明、不接触摸；拉开的过程跟着手指长出来。
-                StagePanel().zIndex(2)
                 // 顶栏也只有一条（r3-work）：她是全 App 唯一的实例，切页不重建、不挪位。进详情页时往左淡出让位。
                 ComTopBar(pinned: wide ? .chat : nil)
                     .frame(width: wide ? leftWidth : nil)
@@ -172,7 +170,26 @@ struct RootView: View {
     /// 展开后的双栏：左边 Com 主对话（顶栏上的她留在左栏），右边一个工作页面（自己的标题栏 + Dock）。
     private func splitContent(leftWidth: CGFloat, gap: CGFloat, rightBarHidden: Bool) -> some View {
         @Bindable var model = model
-        return HStack(spacing: 0) {
+        let hideChat = model.splitView && model.rightTab == .next && model.boardFocus
+        if hideChat {
+            return AnyView(
+                tabHost(SectionTab.workspace, selection: Binding(get: { model.rightTab }, set: { model.tab = $0 }), sideDock: true)
+                    .onChange(of: model.rightTab) { _, tab in
+                        Task { await model.refresh(tab) }; model.showMenu = false
+                        if tab != .work { model.closeWorkSidebar(reduce: reduce) }
+                    }
+                    .overlay(alignment: .top) {
+                        PaneBar(tab: model.rightTab)
+                            .opacity(rightBarHidden ? 0 : 1).allowsHitTesting(!rightBarHidden)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if !SectionTab.typing.contains(model.rightTab) || !keyboardVisible { sideDock(SectionTab.workspace) }
+                    }
+                    .environment(\.dockOnSide, true)
+            )
+        }
+        return AnyView(
+        HStack(spacing: 0) {
             NavigationStack {
                 page(.chat, dock: false)
             }
@@ -195,6 +212,7 @@ struct RootView: View {
                 }
                 .environment(\.dockOnSide, true)
         }
+        )
     }
 
     /// 竖排 Dock：放进系统右边缘那一列的底部（列在右安全区里，所以整体往右偏一个安全区宽度）。

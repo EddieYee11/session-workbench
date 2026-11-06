@@ -337,3 +337,38 @@ def test_legacy_reply_wechat_card_is_not_kept(tmp_path):
     raw={'items':[{'keep':ident}]}
     engine._refs={}
     assert engine.clean(raw,{})==[]
+
+
+def test_keep_plus_rewrite_in_same_round_shows_one_card(tmp_path):
+    # 11-03 实况：模型 keep 了「错开面试和视频号搬运」，同一轮又写「定面试和视频号搬运先后」（依据一样），列表出两张
+    async def model(data):
+        if not data['current']:
+            return {'items':[{'title':'错开周会和排期','why':'撞点','refs':['mail:m1','event:m3'],'prompt':'定顺序','urgency':'week','score':60}]}
+        return {'items':[{'keep':data['current'][0]['id']},
+                         {'title':'定下周会排期先后','why':'撞点','refs':['mail:m1','event:m3'],'prompt':'定顺序','urgency':'now','score':80}]}
+    engine=NextSteps(tmp_path,Hub(),model=model,clock=lambda:NOW)
+    run(engine); run(engine)
+    assert [i['title'] for i in engine.snapshot()['items']]==['错开周会和排期']
+
+def test_done_item_rephrased_with_extra_evidence_stays_gone(tmp_path):
+    # 11-03 实况：点了「清掉行动台过期待办」做完，一会儿「清掉过期待办」又出来
+    titles=iter(['回复王总排期邮件','回复王总排期邮件并抄送'])
+    refs=iter([['mail:m1'],['mail:m1','event:m3']])
+    async def model(data):
+        return {'items':[{'title':next(titles),'why':'x','refs':next(refs),'prompt':'x','urgency':'today','score':60}]}
+    engine=NextSteps(tmp_path,Hub(),model=model,clock=lambda:NOW)
+    run(engine)
+    engine.act(engine.snapshot()['items'][0]['id'],'done')
+    run(engine)
+    assert engine.snapshot()['items']==[]
+
+def test_existing_open_duplicates_are_merged_keeping_action_and_urgency(tmp_path):
+    engine=NextSteps(tmp_path,Hub(),model=None,clock=lambda:NOW)
+    ev=[{'ref':'mail:m1','matter_id':'m1','kind':'mail','label':'工作邮箱 · Q4'}]
+    with engine.db() as db:
+        for ident,title,urg,act,t in [('a','回复报销退回邮件','now',None,NOW-7200),('b','看报销退回原因补材料','week',{'type':'reply_mail','draft':'x','to':'','subject':'Re'},NOW-3600)]:
+            d={'id':ident,'title':title,'why':'x','prompt':'x','urgency':urg,'score':60,'evidence':ev,'phase':'new'}|({'action':act} if act else {})
+            db.execute('INSERT INTO items VALUES (?,?,?,?,?)',(ident,json.dumps(d,ensure_ascii=False),'open',t,t))
+    engine.store([],'rule','')
+    items=engine.snapshot()['items']
+    assert [(i['id'],i['urgency']) for i in items]==[('b','now')]

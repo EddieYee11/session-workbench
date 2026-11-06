@@ -26,6 +26,7 @@ struct ChatView: View {
     @State private var usedSuggestions: String?
     /// 全部中断进行中，防连点。
     @State private var interruptingAll = false
+    /// 回来简报卡的开合进度在 AppModel.briefProgress；列表跟着模糊压暗。
     @Environment(\.detailSpace) private var detailSpace
     var body: some View {
         Group {
@@ -34,6 +35,8 @@ struct ChatView: View {
             VStack(spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
             ChatCollectionView(controller: list, entries: entries)
+            // 回来简报卡（展开时把手下方一段对话虚化，见 ChatBriefCard.swift）。
+            .overlay(alignment: .top) { ChatBriefOverlay() }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in
                 // 贴底交给列表自己：跟随时键盘把列表压矮，layoutSubviews 会贴回底部。
                 if atBottom { list.scrollToLatest(animated: false) }
@@ -185,7 +188,7 @@ struct ChatView: View {
                 .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: model.interruptNote.isEmpty)
             }
             // 有对话时仍提示「等你 / 下一步」，保持 Muse 式对话重心。
-            if !displayRows.isEmpty {
+            if !displayRows.isEmpty && model.briefProgress < 0.5 {
                 ChatAttentionStrip()
             }
             // 输入区独占一整行；功能 Dock 在它下面（RootView 统一挂，打字时让位）。

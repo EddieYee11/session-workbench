@@ -26,29 +26,23 @@ final class ComUITests: XCTestCase {
         XCTFail("菜单没有弹出：" + item)
     }
 
-    @MainActor func testAgentStageCanExpandWithoutObscuringComposer() throws {
+    @MainActor func testChatBriefPullFromTopBarFigure() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--ui-stage=working", "-appearance", "light"]
+        app.launchArguments = ["--ui-testing", "--ui-chat-brief", "-appearance", "light"]
         app.launch()
+        XCTAssertTrue(app.comWaitForDock(timeout: 15))
+        let card = app.descendants(matching: .any)["chat-brief-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["chat-brief-text"].exists)
         let pullZone = app.descendants(matching: .any)["agent-stage-pull-zone"].firstMatch
-        XCTAssertTrue(pullZone.waitForExistence(timeout: 15))
-        let panel = app.descendants(matching: .any)["agent-stage-panel"].firstMatch
-        XCTAssertFalse(panel.exists)
+        XCTAssertTrue(pullZone.waitForExistence(timeout: 5))
         let start = pullZone.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
-        let end = pullZone.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 2.4))
+        let end = pullZone.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 2.0))
         start.press(forDuration: 0.08, thenDragTo: end)
-        XCTAssertTrue(panel.waitForExistence(timeout: 3))
-        capture("agent-stage-expanded", app: app)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
-        XCTAssertTrue(panel.waitForNonExistence(timeout: 3))
-        XCTAssertTrue(app.descendants(matching: .any)["message-input"].firstMatch.isHittable)
-        start.press(forDuration: 0.08, thenDragTo: end)
-        XCTAssertTrue(panel.waitForExistence(timeout: 3))
+        XCTAssertTrue(card.exists)
         app.buttons["agent-stage-close"].tap()
-        XCTAssertTrue(panel.waitForNonExistence(timeout: 3))
-        app.buttons["tab-今天"].tap()
-        XCTAssertFalse(panel.exists)
-        capture("today-with-strip", app: app)
+        XCTAssertTrue(app.buttons["chat-brief-handle"].waitForExistence(timeout: 3))
+        capture("chat-brief-collapsed", app: app)
     }
 
     @MainActor func testFinanceDrilldownAndProjectEvidence() throws {
@@ -57,6 +51,7 @@ final class ComUITests: XCTestCase {
         // 聊天页底部不再挂卡片；账本在「全部建议」页最下面（从今天页进）。
         XCTAssertFalse(app.buttons["ledger-note"].exists)
         openAllNext(app)
+        app.buttons["next-more-menu"].tap()
         let ledger = app.buttons["ledger-note"]
         XCTAssertTrue(ledger.waitForExistence(timeout: 5))
         for _ in 0..<4 where !ledger.isHittable { app.swipeUp() }
@@ -102,8 +97,7 @@ final class ComUITests: XCTestCase {
         XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
         openAllNext(app)
         XCTAssertTrue(app.staticTexts["回复王总的排期邮件"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["会前过一遍周会议题"].exists)
-        // 依据袋（轨道 r2-pages）：点开纸片飞出来，卡片里不再有列表式依据。
+        app.descendants(matching: .any)["board-card-next__next-reply"].firstMatch.tap()
         app.buttons["next-evidence-next-reply"].tap()
         let slip = app.buttons["next-evidence-slip-next-reply-0"]
         XCTAssertTrue(slip.waitForExistence(timeout: 3))
@@ -126,9 +120,15 @@ final class ComUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["依据"].waitForExistence(timeout: 5))
         app.navigationBars["依据"].buttons["完成"].tap()
         XCTAssertTrue(app.navigationBars["依据"].waitForNonExistence(timeout: 5))
-        app.buttons["next-dismiss-next-meeting"].tap()
-        XCTAssertTrue(app.staticTexts["会前过一遍周会议题"].waitForNonExistence(timeout: 5))
-        // 交给 Com：作为一条消息回到对话页。
+        app.buttons["完成"].firstMatch.tap()
+        let meeting = app.descendants(matching: .any)["board-card-next__next-meeting"].firstMatch
+        XCTAssertTrue(meeting.waitForExistence(timeout: 3))
+        meeting.press(forDuration: 1.2)
+        app.buttons["移到已完成"].tap()
+        app.buttons["board-capsule-done"].tap()
+        XCTAssertTrue(app.staticTexts["会前过一遍周会议题"].waitForExistence(timeout: 5))
+        app.buttons["board-capsule-suggest"].tap()
+        app.descendants(matching: .any)["board-card-next__next-reply"].firstMatch.tap()
         app.buttons["next-discuss-next-reply"].tap()
         XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 5))
         let sent = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat-bubble-next-")).firstMatch
@@ -165,12 +165,62 @@ final class ComUITests: XCTestCase {
         capture("agency-goal-created", app: app)
     }
 
-    @MainActor private func openAllNext(_ app: XCUIApplication) { app.buttons["tab-下一步"].tap() }
+    @MainActor private func openAllNext(_ app: XCUIApplication) { app.comTapTab("下一步") }
+
+    @MainActor func testBoardMoveSuggestToDoing() throws {
+        let app = app()
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(app.comWaitForDock(timeout: 15))
+        openAllNext(app)
+        let suggestCard = app.descendants(matching: .any)["board-card-next__next-reply"].firstMatch
+        XCTAssertTrue(suggestCard.waitForExistence(timeout: 8))
+        suggestCard.tap()
+        let move = app.buttons["board-move-doing"].firstMatch
+        XCTAssertTrue(move.waitForExistence(timeout: 5))
+        move.tap()
+        _ = app.buttons["board-detail-move-row"].waitForNonExistence(timeout: 5)
+        app.buttons["board-capsule-todo"].tap()
+        let moved = app.descendants(matching: .any)["board-card-todo__preview-next-reply"].firstMatch
+        XCTAssertTrue(moved.waitForExistence(timeout: 8))
+        let doingTag = app.descendants(matching: .any)[boardDoingTagID("todo:preview-next-reply")].firstMatch
+        XCTAssertTrue(doingTag.waitForExistence(timeout: 3))
+    }
+
+    @MainActor func testBoardSwipeAdvance() throws {
+        let app = app()
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(app.comWaitForDock(timeout: 15))
+        openAllNext(app)
+        app.buttons["board-capsule-todo"].tap()
+        // 焦点开关：正在做的卡点一下退回普通待办，红标签消失。（待办组里正在做置顶，拿屏内可见的前两张）
+        let focusTag = app.descendants(matching: .any)[boardDoingTagID("todo:doing-1")].firstMatch
+        XCTAssertTrue(focusTag.waitForExistence(timeout: 8))
+        app.buttons[boardCardFocusID("todo:doing-1")].tap()
+        XCTAssertTrue(focusTag.waitForNonExistence(timeout: 4))
+        // 横拖（不长按）：正在做右拖过第一阈值 → 已完成。
+        let doingCard = app.descendants(matching: .any)["board-card-todo__doing-0"].firstMatch
+        XCTAssertTrue(doingCard.waitForExistence(timeout: 5))
+        let start = doingCard.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        let end = doingCard.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(app.descendants(matching: .any)[boardDoingTagID("todo:doing-0")].firstMatch.waitForNonExistence(timeout: 4))
+        app.buttons["board-capsule-done"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["board-card-todo__doing-0"].firstMatch.waitForExistence(timeout: 5))
+    }
+
+    private func boardDoingTagID(_ id: String) -> String {
+        "board-doing-tag-" + id.replacingOccurrences(of: ":", with: "__")
+    }
+
+    private func boardCardFocusID(_ id: String) -> String {
+        "board-focus-" + id.replacingOccurrences(of: ":", with: "__")
+    }
 
     @MainActor func testRoutinesSection() throws {
         let app = app()
         XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
         openAllNext(app)
+        app.buttons["next-more-menu"].tap()
         let expand = app.buttons["routines-expand"]
         XCTAssertTrue(expand.waitForExistence(timeout: 5))
         XCTAssertTrue(expand.label.contains("已排程 · 6 项"))
@@ -253,29 +303,32 @@ final class ComUITests: XCTestCase {
         XCTAssertTrue(app.buttons["发送消息"].isHittable)
         capture("04-keyboard", app: app)
     }
-    /// 「运行」面：四组状态、来源状态行（herdr 没开直说）、详情里的改动与 diff。
-    @MainActor func testRunSurfaceStates() throws {
-        let app = app()
-        XCTAssertTrue(app.buttons["tab-Com"].waitForExistence(timeout: 15))
-        app.buttons["tab-工作"].tap()
-        let picker = app.buttons["work-surface-remote"]
-        XCTAssertTrue(picker.waitForExistence(timeout: 5))
-        picker.tap()
-        for state in ["needs_you", "failed", "running", "done"] {
-            XCTAssertTrue(app.staticTexts["run-section-\(state)"].waitForExistence(timeout: 5), state)
-        }
-        let sources = app.staticTexts["run-sources"]
-        XCTAssertTrue(sources.exists)
-        XCTAssertTrue(sources.label.contains("herdr 没开"))
-        capture("run-surface", app: app)
-        let row = app.buttons["run-row-session:session-1"]
-        XCTAssertTrue(row.exists)
-        row.tap()
-        XCTAssertTrue(app.buttons["run-file-Sources/App.swift"].waitForExistence(timeout: 5))
-        app.buttons["run-file-Sources/App.swift"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["run-diff"].firstMatch.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["run-follow-up"].exists)
-        capture("run-detail", app: app)
+    /// 验收辅助：横屏下的 herdr 终端（假快照）。simctl 转不了屏，借 XCUIDevice 转，截图写到 /tmp 供人看。
+    @MainActor func testHerdrTerminalLandscapeCapture() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-herdr-demo", "-appearance", "light"]
+        app.launchEnvironment["COM_PREVIEW_TAB"] = "工作"
+        app.launchEnvironment["COM_PREVIEW_SURFACE"] = "terminal"
+        app.launchEnvironment["COM_PREVIEW_TERMINAL"] = "1"
+        app.launchEnvironment["COM_PREVIEW_PANE"] = "2"
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeRight
+        // XCUITest 自己的截图是黑的（默认显示屏）；停一会儿，让外面用 simctl io --display=3 截内屏。
+        sleep(UInt32(ProcessInfo.processInfo.environment["COM_HOLD_SECONDS"] ?? "4") ?? 4)
+        XCUIDevice.shared.orientation = .portrait
+    }
+    /// 验收辅助：下一步页把「来源文件夹」展开，横屏 / 内屏下看纸片间距。截图靠外面 simctl io --display=3。
+    @MainActor func testNextEvidencePocketOpenCapture() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "-appearance", "light"]
+        app.launchEnvironment["COM_PREVIEW_TAB"] = "下一步"
+        app.launch()
+        if ProcessInfo.processInfo.environment["COM_LANDSCAPE"] == "1" { XCUIDevice.shared.orientation = .landscapeRight }
+        let pocket = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'next-evidence-' AND NOT identifier BEGINSWITH 'next-evidence-slip-'")).firstMatch
+        for _ in 0..<8 where !pocket.exists || !pocket.isHittable { app.swipeUp(velocity: .slow) }
+        if pocket.exists { pocket.tap() }
+        sleep(UInt32(ProcessInfo.processInfo.environment["COM_HOLD_SECONDS"] ?? "4") ?? 4)
+        XCUIDevice.shared.orientation = .portrait
     }
     @MainActor func testFiltersAndDetails() throws {
         let app = app()

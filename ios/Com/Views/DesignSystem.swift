@@ -177,6 +177,8 @@ enum ComMotion {
     static let crossfade = Animation.spring(response: 0.4, dampingFraction: 0.88)
     /// 卡片/行轻按压回弹。
     static let press = Animation.spring(duration: 0.18, bounce: 0.14)
+    /// 看板拖拽插入位让位。
+    static let reflow = Animation.spring(response: 0.28, dampingFraction: 0.86)
     /// 「有事找你」条等注意力提示的柔和呼吸（仅装饰，不抢焦点）。
     static let breath = Animation.easeInOut(duration: 1.6).repeatForever(autoreverses: true)
     static let stagger: Double = 0.06

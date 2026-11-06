@@ -22,7 +22,7 @@ final class HerdrSessionStore {
     private(set) var routeLabel = ""
     private(set) var publicKey = ""
 
-    private var client: HerdrClient?
+    private(set) var client: HerdrClient?
     private var eventsTask: Task<Void, Never>?
     private var generation = 0
 
@@ -109,6 +109,27 @@ final class HerdrSessionStore {
             return
         }
         phase = .failed(lastError.isEmpty ? "没有可用地址。" : "连不上 \(machine.label)。\(lastError)")
+    }
+
+    /// 验收用：`--ui-herdr-demo` 时不连任何机器，直接喂一份假快照，好在模拟器里看队列和终端布局。
+    func loadDemo() {
+        let json = """
+        {"version":"0.9.3","protocol":1,"focused_workspace_id":"w1","focused_tab_id":"t1","focused_pane_id":"p1",
+         "workspaces":[{"workspace_id":"w1","number":1,"label":"AI_Work_System","focused":true,"pane_count":4,"tab_count":4,"active_tab_id":"t1","agent_status":"blocked"}],
+         "tabs":[{"tab_id":"t1","workspace_id":"w1","number":1,"label":"Rex vs Herdr","focused":true,"pane_count":1,"agent_status":"blocked"}],
+         "panes":[
+          {"pane_id":"p1","terminal_id":"term_1","workspace_id":"w1","tab_id":"t1","focused":true,"cwd":"/Users/eddiegao/AI_Work_System","agent":"claude","agent_status":"blocked","terminal_title_stripped":"Com 终端改版"},
+          {"pane_id":"p2","terminal_id":"term_2","workspace_id":"w1","tab_id":"t1","focused":false,"cwd":"/Users/eddiegao/AI_Work_System","agent":"pi","agent_status":"working","terminal_title_stripped":"pi·herdr接口核对"},
+          {"pane_id":"p3","terminal_id":"term_3","workspace_id":"w1","tab_id":"t1","focused":false,"cwd":"/Users/eddiegao/AI_Work_System","agent":"agy","agent_status":"done","terminal_title_stripped":"agy·终端代码审查"},
+          {"pane_id":"p4","terminal_id":"term_4","workspace_id":"w1","tab_id":"t1","focused":false,"cwd":"/Users/eddiegao","agent":null,"agent_status":"unknown","terminal_title_stripped":"zsh"}],
+         "agents":[],"layouts":[]}
+        """
+        machines = [HerdrMachine(id: "mbp", label: "MBP", username: "eddiegao", addresses: []),
+                    HerdrMachine(id: "mini", label: "mini", username: "eddiegao", addresses: [])]
+        snapshot = try? JSONDecoder().decode(HerdrSnapshot.self, from: Data(json.utf8))
+        endpoint = SSHEndpoint(host: "127.0.0.1", port: 1, username: "demo", auth: .ed25519Seed(Data(count: 32)))
+        routeLabel = "演示"
+        phase = .connected
     }
 
     func forgetHostKeyAndRetry() async {

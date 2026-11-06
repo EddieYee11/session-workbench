@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 
-from today import _day, _front
+from today import _day, _front, task_state
 
 LIST_NAME = 'Com 待办'
 ACCOUNT = 'iCloud'
@@ -90,10 +90,12 @@ class RemindersSync:
         return rows
 
     def _pending(self):
-        """要同步的待办：待处理、非日程来源。标题 = 文件名，备注 = 下一步 / 备注。"""
+        """要同步的待办：待处理或进行中、非日程来源。标题 = 文件名，备注 = 下一步 / 备注。"""
         rows = []
         for row in self.today.todo_index():
             if row.get('event_id'):
+                continue
+            if row.get('state', '待处理') not in ('待处理', '进行中'):
                 continue
             front = _front(self.today.vault / row['path'])
             note = ' · '.join(x for x in (front.get('下一步', ''), front.get('备注', '')) if x)
@@ -102,8 +104,17 @@ class RemindersSync:
         return rows
 
     def _finished(self, name):
-        """待办已经进了 `任务/已完成/`（做完才会在那里；被挪去别处不算）。"""
-        return bool(self.today.vault) and (self.today.vault / '任务' / '已完成' / (name + '.md')).is_file()
+        """待办 frontmatter `状态` 已是已完成或已取消。"""
+        if not self.today or not self.today.vault:
+            return False
+        for path in self.today._iter_task_files():
+            if path.stem != name:
+                continue
+            f = _front(path)
+            if f.get('flow') != '任务':
+                continue
+            return task_state(path, f, self.today.vault) in ('已完成', '已取消')
+        return bool((self.today.vault / '任务' / '已完成' / (name + '.md')).is_file())
 
     def sync(self):
         """对账一轮。返回 {'status','created','updated','completed','skipped'}，失败只记 status，不抛。"""
