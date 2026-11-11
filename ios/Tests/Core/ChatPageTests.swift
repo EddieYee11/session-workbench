@@ -81,4 +81,63 @@ final class ChatPageTests: XCTestCase {
         }
         XCTAssertEqual(flags, [false, false, true])
     }
+
+    func testMixedLegacyZeroSeqAndNewSeqMessagesKeepChronologicalOrderAndUniqueDayIDs() {
+        let day = 86_400.0
+        let base = 1_793_980_800.0 // real timestamp
+        let mLegacyDay1: JSON = .object(["id": .string("m1"), "role": .string("user"), "text": .string("旧消息1"), "message_seq": .number(0), "created_at": .number(base)])
+        let mLegacyDay2: JSON = .object(["id": .string("m2"), "role": .string("assistant"), "text": .string("旧消息2"), "message_seq": .number(0), "created_at": .number(base + day)])
+        let mLegacyDay3Early: JSON = .object(["id": .string("m3"), "role": .string("user"), "text": .string("旧消息3"), "message_seq": .number(0), "created_at": .number(base + 2 * day)])
+        let mNewDay3Late: JSON = .object(["id": .string("m4"), "role": .string("user"), "text": .string("新消息4"), "message_seq": .number(1), "created_at": .number(base + 2 * day + 3600)])
+        let mNewDay4: JSON = .object(["id": .string("m5"), "role": .string("assistant"), "text": .string("新消息5"), "message_seq": .number(2), "created_at": .number(base + 3 * day)])
+
+        let timeline = ChatTimeline.rows(messages: [mNewDay3Late, mNewDay4, mLegacyDay1, mLegacyDay2, mLegacyDay3Early], pending: [])
+        XCTAssertEqual(timeline.map(\.id), ["m1", "m2", "m3", "m4", "m5"])
+
+        let display = ChatDisplay.rows(timeline, calendar: shanghai)
+        let displayIDs = display.map(\.id)
+        XCTAssertEqual(displayIDs.count, Set(displayIDs).count, "ChatDisplay Row IDs must be strictly unique")
+    }
+
+    func testDisplayInsertsTimeSeparatorAfterTenMinutesAndFormatsRelativeDates() {
+        let now = Date(timeIntervalSince1970: 1_794_290_000) // 2026-11-10 in Asia/Shanghai
+        let cal = shanghai
+        let todayMorning = cal.date(from: DateComponents(year: 2026, month: 11, day: 10, hour: 9, minute: 6))!
+        let todayFiveMinLater = todayMorning.addingTimeInterval(300)
+        let todayFortyMinLater = cal.date(from: DateComponents(year: 2026, month: 11, day: 10, hour: 9, minute: 46))!
+        let yesterdayNight = cal.date(from: DateComponents(year: 2026, month: 11, day: 9, hour: 21, minute: 45))!
+        let earlierThisYear = cal.date(from: DateComponents(year: 2026, month: 11, day: 8, hour: 9, minute: 0))!
+        let lastYear = cal.date(from: DateComponents(year: 2025, month: 11, day: 8, hour: 9, minute: 0))!
+
+        XCTAssertEqual(ChatDisplay.formatTime(todayFortyMinLater, now: now, calendar: cal), "9:46")
+        XCTAssertEqual(ChatDisplay.formatTime(yesterdayNight, now: now, calendar: cal), "昨天 21:45")
+        XCTAssertEqual(ChatDisplay.formatTime(earlierThisYear, now: now, calendar: cal), "11月8日 09:00")
+        XCTAssertEqual(ChatDisplay.formatTime(lastYear, now: now, calendar: cal), "2025年11月8日 09:00")
+
+        let rows = [
+            message("m1", at: todayMorning.timeIntervalSince1970),
+            message("m2", role: "user", at: todayFiveMinLater.timeIntervalSince1970),
+            message("m3", at: todayFortyMinLater.timeIntervalSince1970),
+        ]
+        let display = ChatDisplay.rows(rows, calendar: cal, now: now)
+        let times = display.compactMap { row -> String? in
+            if case .time(let label) = row.kind { return label }
+            return nil
+        }
+        XCTAssertEqual(times, ["9:46"])
+    }
+
+    func testNudgeMetadataIsNotFoldedIntoProactiveStack() {
+        func nudge(_ id: String, at: Double) -> ChatTimelineRow {
+            ChatTimelineRow(id: id, message: .object([
+                "id": .string(id), "role": .string("assistant"), "text": .string(id),
+                "request_id": .string("task-result:nudge:\(id)"),
+                "metadata": .object(["kind": .string("nudge")]),
+                "created_at": .number(at),
+            ]), pending: nil)
+        }
+        let rows = [nudge("n1", at: 1_790_000_000), nudge("n2", at: 1_790_000_100), nudge("n3", at: 1_790_000_200)]
+        let ids = ChatDisplay.rows(rows, calendar: shanghai).map(\.id).filter { !$0.hasPrefix("day:") }
+        XCTAssertEqual(ids, ["n1", "n2", "n3"])
+    }
 }

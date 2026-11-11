@@ -50,10 +50,13 @@ extension AppModel {
         tasks.filter { !$0["interactive"].bool && (["waiting", "approval_required", "unknown", "paused"].contains($0["status"].string) || ($0["status"].string == "execution_finished" && !$0["acceptance_passed"].bool)) }
     }
     var runningTasks: [JSON] { tasks.filter { ["queued", "dispatching", "running", "cancel_requested"].contains($0["status"].string) } }
-    /// 要你拍板的：派活 + 任务（不含折叠起来的旧任务）。
-    var decisionCount: Int { flowItems.filter { ($0.kind == .proposal || $0.kind == .task) && !$0.stale }.count }
-    /// 统一「等你」角标：审批/待验收 + waiting API（航程停顿、微信待回、近 3 天过期待办）。
-    var waitingInboxCount: Int { decisionCount + (waitingData["count"].int > 0 ? waitingData["count"].int : waitingData["items"].array.count) }
+    /// 要你拍板的：派活 + 任务（不含折叠起来的旧任务与已就地收起的条目）。
+    var decisionCount: Int { flowItems.filter { ($0.kind == .proposal || $0.kind == .task) && !$0.stale && !dismissedWaitingIDs.contains($0.id) }.count }
+    /// 统一「等你」角标：审批/待验收 + waiting API（航程停顿、微信待回、近 3 天过期待办），剔除已就地收起项。
+    var waitingInboxCount: Int {
+        let activeWaiting = waitingData["items"].array.filter { !dismissedWaitingIDs.contains($0.id) }
+        return decisionCount + activeWaiting.count
+    }
     var pendingCount: Int { flowItems.count }
     var pendingItems: [PendingItem] { flowItems }
     /// 一键归档的候选：超过 7 天的任务。
@@ -303,21 +306,87 @@ extension AppModel {
 
     // MARK: 回来简报开合
 
-    /// 顶栏手动下拉前：按 seenAt → 近 6 小时 → 静息文案 填简报。
+    @MainActor
+    private static var briefRefreshTask: Task<Void, Never>?
+
+    /// 顶栏手动下拉前：立即用内存现有数据构建高密度简报（零延迟上屏），并并发刷新关键接口。
     func prepareManualChatBrief() {
+        rebuildChatBrief(manual: true)
+        triggerBriefRefresh()
+    }
+
+    func rebuildChatBrief(manual: Bool = true) {
         let seenAt = UserDefaults.standard.double(forKey: "chat.brief.seenAt")
         let now = Date().timeIntervalSince1970
         let sixH = now - 6 * 3600
         let initialSince = (seenAt > 0 && now - seenAt < ChatBrief.awayThreshold) ? min(seenAt, sixH) : seenAt
-        var next = ChatBrief.build(self, since: initialSince)
-        if !next.hasNews && !next.quietFallback {
-            next = ChatBrief.build(self, since: sixH)
+        var next = ChatBrief.build(self, since: initialSince, manual: manual)
+        if !next.hasNews && !manual {
+            next = ChatBrief.build(self, since: sixH, manual: manual)
         }
-        if !next.hasNews && !next.quietFallback {
-            next.quietFallback = true
-            next.away = min(next.away, 6 * 3600)
-        }
+        next.isRefreshing = Self.briefRefreshTask != nil
         chatBrief = next
+    }
+
+    func triggerBriefRefresh() {
+        #if DEBUG
+        if isUITesting {
+            chatBrief.isRefreshing = false
+            return
+        }
+        #endif
+        Self.briefRefreshTask?.cancel()
+        chatBrief.isRefreshing = true
+        Self.briefRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.refreshBriefData()
+        }
+    }
+
+    func refreshBriefData() async {
+        #if DEBUG
+        if isUITesting {
+            chatBrief.isRefreshing = false
+            return
+        }
+        #endif
+        chatBrief.isRefreshing = true
+        let paths = [
+            "/personal/waiting",
+            "/personal/today",
+            "/personal/tasks",
+            "/personal/work/proposals?limit=20",
+            "/personal/agency",
+            "/personal/finance"
+        ]
+        let childTasks: [Task<Void, Never>] = paths.map { path in
+            Task { @MainActor [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                _ = await self.load(path)
+                guard !Task.isCancelled else { return }
+                if Self.flowPaths.contains(path) {
+                    self.recomputeFlow()
+                }
+                let seenAt = UserDefaults.standard.double(forKey: "chat.brief.seenAt")
+                let now = Date().timeIntervalSince1970
+                let sixH = now - 6 * 3600
+                let since = (seenAt > 0 && now - seenAt < ChatBrief.awayThreshold) ? min(seenAt, sixH) : seenAt
+                var updated = ChatBrief.build(self, since: since, manual: self.chatBrief.manual)
+                updated.isRefreshing = true
+                self.chatBrief = updated
+            }
+        }
+        for childTask in childTasks {
+            await childTask.value
+        }
+        Self.briefRefreshTask = nil
+        let seenAt = UserDefaults.standard.double(forKey: "chat.brief.seenAt")
+        let now = Date().timeIntervalSince1970
+        let sixH = now - 6 * 3600
+        let since = (seenAt > 0 && now - seenAt < ChatBrief.awayThreshold) ? min(seenAt, sixH) : seenAt
+        var finalBrief = ChatBrief.build(self, since: since, manual: chatBrief.manual)
+        finalBrief.isRefreshing = false
+        chatBrief = finalBrief
     }
 
     /// 从非聊天视图（或看板专注态）拉简报时，先把主聊天视图露出来承载 `ChatBriefOverlay`。
@@ -332,6 +401,8 @@ extension AppModel {
     /// 简报宿主不在视图树时立即清理残留状态，不跑关合弹簧。
     func resetBriefImmediate() {
         guard briefExpanded || briefProgress > 0 else { return }
+        Self.briefRefreshTask?.cancel()
+        Self.briefRefreshTask = nil
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "chat.brief.seenAt")
         briefDockAfterClose = false
         briefExpanded = false
@@ -341,19 +412,28 @@ extension AppModel {
     func openBrief() {
         showMenu = false
         ensureChatVisibleForBrief()
+        if chatBrief.items.isEmpty && !chatBrief.hasNews {
+            rebuildChatBrief(manual: true)
+        }
+        if Self.briefRefreshTask == nil {
+            triggerBriefRefresh()
+        }
         briefDockAfterClose = true
         briefExpanded = true
         let reduce = UIAccessibility.isReduceMotionEnabled
         if reduce { briefProgress = 1 }
-        else { withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { briefProgress = 1 } }
+        else { withAnimation(.spring(response: 0.42, dampingFraction: 0.84)) { briefProgress = 1 } }
     }
     func closeBrief(dockAfter: Bool = true) {
+        Self.briefRefreshTask?.cancel()
+        Self.briefRefreshTask = nil
+        chatBrief.isRefreshing = false
         briefDockAfterClose = dockAfter
         briefExpanded = false
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "chat.brief.seenAt")
         let reduce = UIAccessibility.isReduceMotionEnabled
         if reduce { briefProgress = 0 }
-        else { withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { briefProgress = 0 } }
+        else { withAnimation(.spring(response: 0.38, dampingFraction: 0.88)) { briefProgress = 0 } }
     }
     /// 拖动中：跟手，拉过头有橡皮筋阻尼（与简报把手同一套）。
     func dragBrief(to raw: CGFloat) {
@@ -364,13 +444,15 @@ extension AppModel {
         var transaction = Transaction(); transaction.disablesAnimations = true
         withTransaction(transaction) { briefProgress = clamped }
     }
-    private var briefDragDivisor: CGFloat { max(120, briefDragHeight) }
-    /// 顶栏玩偶松手：方向敏感阈值（从折叠下拉 > 35% 展开，从展开上推 > 35% 收起 / 预测速度 180pt）。
+    /// 单手下拉顺畅距离：竖屏即使高密度简报卡高 240–280pt，下拉约 120pt 即达 100%，下拉约 28pt 或轻甩即可展开。
+    var briefPullDistance: CGFloat { min(150, max(100, briefDragHeight * 0.6)) }
+    private var briefDragDivisor: CGFloat { briefPullDistance }
+    /// 顶栏玩偶松手：方向敏感阈值（从折叠下拉 > 22% 展开，从展开上推 > 28% 收起 / 预测速度 90pt）。
     func settleBriefFromTopBar(start: CGFloat, translation: CGFloat, predictedEnd: CGFloat) {
         let now = start + translation / briefDragDivisor
-        let flickUp = predictedEnd - translation < -180
-        let flickDown = predictedEnd - translation > 180
-        let threshold: CGFloat = start >= 0.5 ? 0.65 : 0.35
+        let flickUp = predictedEnd - translation < -90
+        let flickDown = predictedEnd - translation > 90
+        let threshold: CGFloat = start >= 0.5 ? 0.72 : 0.22
         let close = flickDown ? false : (flickUp || now < threshold)
         if close { closeBrief(dockAfter: true) } else { openBrief() }
     }

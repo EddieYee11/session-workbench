@@ -59,6 +59,16 @@ def test_real_misfires_are_never_bookkeeping():
         '我今天去了北鼎奥森，但是今天下雨，外边没有去拍摄那些照片，把这个事项的话帮我挪到周一，我周一的话需要',  # 周一 ≠ ¥1
         '对比一下国际上其他赛事，这次的成绩水平如何呢？',
         '帮我整理一下：现在的 com APP 是什么时候自己处理？什么时候调用派去处理复杂任务呢？',
+        '验收测试二：明早9点提醒我「测试提醒2」，你先准备好，我确认了再加。',
+        '明早9点提醒我买早饭15元',
+        '明天提醒我交话费50元',
+        '后天下午3点会议室2开会',
+        '下周三日程安排2',
+        '定个闹钟21:45',
+        '提醒我「测试提醒2」',
+        '9点',
+        '21:45',
+        '验收测试2',
     ):
         assert parse_candidate(text) is None, text
         assert parse(text) is None, text
@@ -76,5 +86,21 @@ def test_numbers_that_are_not_money_are_not_amounts():
 
 
 def test_real_expense_statements_still_work():
-    for text in ('午饭花的21。', 'Apple 礼品卡 145.65', '卖了旧书得三十八', '发快递花费 12.5', '充网费花费70块。', '我今天发快递花了15块钱。'):
-        assert parse(text) or parse_candidate(text), text
+    for text in (
+        '午饭30',
+        '可乐 5 块',
+        '买咖啡 ¥18',
+        '晚饭 30rmb，记账',
+        '买了可乐 5 块',
+        '付了打车费 28 元',
+        '午饭花的21。',
+        'Apple 礼品卡 145.65',
+        '卖了旧书得三十八',
+        '发快递花费 12.5',
+        '充网费花费70块。',
+        '我今天发快递花了15块钱。',
+    ):
+        plan = parse(text) or parse_candidate(text)
+        assert plan and plan['amount'] > 0, text
+        route = classify(text)
+        assert route.level == 'L0' and route.tool == 'bookkeeping', (text, route)

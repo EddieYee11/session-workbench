@@ -1,7 +1,9 @@
 """Durable Com main conversation with replaceable native transport and stable UI IDs."""
+from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 import stat
@@ -10,7 +12,7 @@ import uuid
 import contextlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 import capabilities
@@ -19,6 +21,25 @@ from message_references import canonical_reference, reference_identity, referenc
 from work_cards import accepted, linked_card, project_work
 from reply_options import split_options, strip_partial
 from reply_widgets import split_widgets, strip_partial_widget
+from send_message import (
+    ContentAddressedStore,
+    SendMessageStore,
+    SendMessageValidator,
+    build_progress_reminder,
+    build_turn_reminder,
+    install_send_message_schema,
+)
+from channels import (
+    CHANNEL_SPECS,
+    DEFAULT_CHANNEL,
+    channels_enabled,
+    is_valid_channel,
+    normalize_channel,
+    validate_channel,
+)
+from superagent_flags import SuperagentFlags
+
+logger = logging.getLogger(__name__)
 
 
 # 主对话每轮都注入任务上下文，所以只给身份、路由和短摘要；
@@ -152,12 +173,18 @@ class PersonalConversation:
         self.client = client or HermesClient(state)
         # 10-25：回复里提到的产出文件自动挂成卡片（app 注入 ArtifactAccess.link_text）
         self.artifact_linker = None
+        self.artifact_register_fn = None
         self.task_artifacts = None
         self.receipts_source = None
         self.turn_file_linker = None
         self._turn_files = {}
+        self.workspace = Path.home() / "AI_Work_System"
+        self.cas_store = ContentAddressedStore(state, self.workspace)
+        self.send_store = SendMessageStore(self.path)
         self.reactions = ReactionStore(state)
         self.wake = asyncio.Event()
+        self.mid_turn_event = asyncio.Event()
+        self._on_notify = []
         self.changed = asyncio.Condition()
         self.task: asyncio.Task | None = None
         self.background_task: asyncio.Task | None = None
@@ -166,6 +193,7 @@ class PersonalConversation:
         self.turn_lanes: dict[str, int] = {}
         self.turn_clients: dict[str, object] = {}
         self.turn_started: dict[str, float] = {}
+        self.closing_turns: set[str] = set()
         with self.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -193,14 +221,28 @@ class PersonalConversation:
                 ("new_item", "TEXT"),
                 ("artifacts", "TEXT NOT NULL DEFAULT '[]'"),
                 ("suggestions", "TEXT"),  # r2-chat：回复末尾的下一步选项（JSON 数组）
+                ("message_seq", "INTEGER NOT NULL DEFAULT 0"),
+                ("bubble_type", "TEXT NOT NULL DEFAULT 'text'"),
+                ("bubble_payload", "TEXT"),
+                ("channel", "TEXT NOT NULL DEFAULT 'personal'"),
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
             db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('revision','0')")
+            db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('message_seq','0')")
+            db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('active_channel','personal')")
+            if db.execute("SELECT 1 FROM messages WHERE message_seq <= 0 LIMIT 1").fetchone():
+                db.execute("UPDATE messages SET message_seq = rowid")
+                max_seq = int(db.execute("SELECT COALESCE(MAX(message_seq), 0) AS m FROM messages").fetchone()["m"])
+                db.execute("UPDATE meta SET value = ? WHERE key = 'message_seq'", (str(max_seq),))
+            if db.execute("SELECT 1 FROM messages WHERE channel IS NULL OR TRIM(channel) = '' LIMIT 1").fetchone():
+                db.execute("UPDATE messages SET channel = 'personal' WHERE channel IS NULL OR TRIM(channel) = ''")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel, message_seq)")
             db.execute("CREATE TABLE IF NOT EXISTS user_events(request_id TEXT PRIMARY KEY,message_id TEXT NOT NULL,state TEXT NOT NULL)")
             db.execute("CREATE INDEX IF NOT EXISTS user_events_message ON user_events(message_id)")
             db.execute("CREATE TABLE IF NOT EXISTS ledger_cards(id TEXT PRIMARY KEY,data TEXT NOT NULL,revision INTEGER NOT NULL)")
             install_schema(db)
+            install_send_message_schema(db)
         self.path.chmod(0o600)
 
     @contextmanager
@@ -218,31 +260,72 @@ class PersonalConversation:
         db.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'")
         return int(db.execute("SELECT value FROM meta WHERE key='revision'").fetchone()["value"])
 
+    @staticmethod
+    def _next_seq(db: sqlite3.Connection) -> int:
+        db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('message_seq','0')")
+        db.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='message_seq'")
+        return int(db.execute("SELECT value FROM meta WHERE key='message_seq'").fetchone()["value"])
+
     def _notify(self) -> None:
         try:
             asyncio.get_running_loop().create_task(self._notify_waiters())
         except RuntimeError:
             pass
+        if hasattr(self, "_on_notify") and self._on_notify:
+            for fn in list(self._on_notify):
+                try:
+                    fn()
+                except Exception:
+                    pass
 
     async def _notify_waiters(self) -> None:
         async with self.changed:
             self.changed.notify_all()
 
-    def task_receipt(self, task_id: str, text: str, parent_id: str | None = None):
+    def task_receipt(
+        self,
+        task_id: str,
+        text: str,
+        parent_id: str | None = None,
+        *,
+        channel: str | None = None,
+    ) -> str:
         """Idempotent outbox sink, including a crash before outbox acknowledgement."""
+        ch_on = self._channels_enabled()
         with self.db() as db:
             key = 'task-result:' + task_id
-            if db.execute('SELECT id FROM messages WHERE request_id=?', (key,)).fetchone():
-                return
+            existing = db.execute('SELECT id FROM messages WHERE request_id=?', (key,)).fetchone()
+            if existing:
+                return str(existing["id"])
             revision = self._bump(db)
             at = time.time()
-            if parent_id and not db.execute("SELECT 1 FROM messages WHERE id=? AND role='user'", (parent_id,)).fetchone():
+            parent_row = (
+                db.execute("SELECT channel FROM messages WHERE id=? AND role='user'", (parent_id,)).fetchone()
+                if parent_id
+                else None
+            )
+            if parent_id and not parent_row:
                 parent_id = None
-            db.execute("INSERT INTO messages(id,request_id,parent_id,role,text,status,phase,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                       (key, key, parent_id, 'assistant', text, 'completed', 'completed', revision, at, at))
+            if ch_on:
+                if channel is not None and str(channel).strip():
+                    eff_channel = normalize_channel(channel)
+                elif parent_row and parent_row["channel"]:
+                    eff_channel = normalize_channel(parent_row["channel"])
+                else:
+                    meta_row = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+                    eff_channel = normalize_channel(meta_row["value"] if meta_row else DEFAULT_CHANNEL)
+            else:
+                eff_channel = normalize_channel(parent_row["channel"]) if (parent_row and parent_row["channel"]) else DEFAULT_CHANNEL
+            message_seq = self._next_seq(db)
+            db.execute(
+                "INSERT INTO messages(id,request_id,parent_id,role,text,status,phase,revision,created_at,updated_at,message_seq,channel)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (key, key, parent_id, 'assistant', text, 'completed', 'completed', revision, at, at, message_seq, eff_channel),
+            )
         self._notify()
         self._link_artifacts(key, text)
         self._link_task_artifacts(key, task_id)
+        return key
 
     def backfill_artifacts(self, days: int = 14) -> int:
         """近 days 天的回复里提到了产出文件、却没挂卡片的：补挂一次（幂等）。"""
@@ -291,32 +374,125 @@ class PersonalConversation:
         except Exception:
             pass  # 登记失败不影响回复本身
 
+    def _send_message_enabled(self) -> bool:
+        return SuperagentFlags(self.path.parent).send_message_on()
+
+    def _channels_enabled(self) -> bool:
+        flags = SuperagentFlags(self.path.parent)
+        checker = getattr(flags, "channels_on", None)
+        if callable(checker):
+            return bool(checker())
+        return channels_enabled(self.path.parent)
+
+    def get_active_channel(self) -> str:
+        with self.db() as db:
+            row = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+        return normalize_channel(row["value"] if row else DEFAULT_CHANNEL)
+
+    def set_active_channel(self, channel: str) -> str:
+        target = validate_channel(channel)
+        changed = False
+        with self.db() as db:
+            old = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+            old_val = normalize_channel(old["value"] if old else DEFAULT_CHANNEL)
+            db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('active_channel',?)", (target,))
+            if old is None or old_val != target:
+                self._bump(db)
+                changed = True
+        if changed:
+            self._notify()
+        return target
+
+    def channels_info(self) -> dict[str, Any]:
+        enabled = self._channels_enabled()
+        with self.db() as db:
+            row = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+            active = normalize_channel(row["value"] if row else DEFAULT_CHANNEL)
+            stats_rows = db.execute(
+                "SELECT channel, COUNT(*) AS cnt, MAX(updated_at) AS last_ts "
+                "FROM messages GROUP BY channel"
+            ).fetchall()
+        counts: dict[str, int] = {}
+        latest: dict[str, float | None] = {}
+        for r in stats_rows:
+            cid = normalize_channel(r["channel"])
+            counts[cid] = counts.get(cid, 0) + int(r["cnt"] or 0)
+            ts = float(r["last_ts"]) if r["last_ts"] is not None else None
+            if ts is not None:
+                prev = latest.get(cid)
+                latest[cid] = ts if prev is None or ts > prev else prev
+        items: list[dict[str, Any]] = []
+        for spec in CHANNEL_SPECS:
+            items.append(
+                {
+                    "id": spec.id,
+                    "label": spec.label,
+                    "short_label": spec.short_label,
+                    "history_rows": spec.history_rows,
+                    "history_bytes": spec.history_bytes,
+                    "message_count": counts.get(spec.id, 0),
+                    "last_updated_at": latest.get(spec.id),
+                }
+            )
+        return {
+            "enabled": enabled,
+            "active": active,
+            "channels": items,
+        }
+
+    def resolve_turn_root(self, mid: str) -> str:
+        with self.db() as db:
+            row = db.execute(
+                "SELECT id, supplement_to_message_id FROM messages WHERE id=? AND role='user'",
+                (mid,),
+            ).fetchone()
+        if row and row["supplement_to_message_id"]:
+            return str(row["supplement_to_message_id"])
+        return mid
+
     def _with_receipts(self, messages: list[dict]) -> list[dict]:
-        """操作记在用户那条消息上，回执显示在它的回复下面。"""
+        """操作记在用户那条消息上，回执显示在该轮最后一条回复气泡下面。"""
         if not self.receipts_source:
             return messages
         try:
             receipts = self.receipts_source()
         except Exception:
             return messages  # 回执读不到不能影响聊天
+        last_by_parent: dict[str, str] = {}
         for message in messages:
-            if message["role"] == "assistant" and message.get("parent_id") in receipts:
-                message["receipts"] = receipts[message["parent_id"]]
+            pid = message.get("parent_id")
+            if message["role"] == "assistant" and pid in receipts:
+                last_by_parent[pid] = message["id"]
+        for message in messages:
+            pid = message.get("parent_id")
+            if message["role"] == "assistant" and pid in receipts and message["id"] == last_by_parent.get(pid):
+                message["receipts"] = receipts[pid]
         return messages
 
-    def task_receipt_for_message(self, task_id: str, text: str, parent_id: str):
-        return self.task_receipt(task_id, text, parent_id)
+    def task_receipt_for_message(self, task_id: str, text: str, parent_id: str, *, channel: str | None = None) -> str:
+        return self.task_receipt(task_id, text, parent_id, channel=channel)
 
-    def submit(self, request_id: str, text: str, reference: dict | None = None, *, new_item: dict | None = None, associated_matter: dict | None = None, attachments: list | None = None) -> dict:
+    def submit(
+        self,
+        request_id: str,
+        text: str,
+        reference: dict | None = None,
+        *,
+        new_item: dict | None = None,
+        associated_matter: dict | None = None,
+        attachments: list | None = None,
+        channel: str | None = None,
+    ) -> dict:
         text = text.strip()
         if not 10 <= len(request_id) <= 100 or not 1 <= len(text) <= 8000:
             raise ValueError("消息或请求标识无效")
         if associated_matter is not None and (not isinstance(associated_matter,dict) or not isinstance(associated_matter.get("id"),str)):
             raise ValueError("关联事项格式无效")
         identity = reference_identity(reference, "personal-main")
+        ch_on = self._channels_enabled()
         with self.db() as db:
             old = db.execute(
-                "SELECT id,text,status,reference,new_item FROM messages WHERE request_id=?", (request_id,)
+                "SELECT id,text,status,reference,new_item,message_seq,created_at,channel FROM messages WHERE request_id=?", (request_id,)
             ).fetchone()
             if old:
                 saved_attachments=db.execute("SELECT value FROM meta WHERE key=?",('attachments:'+old['id'],)).fetchone()
@@ -327,25 +503,42 @@ class PersonalConversation:
                 if saved_id != (associated_matter or {}).get('id'):
                     raise ValueError("请求标识的关联事项冲突")
                 saved_reference = json.loads(old["reference"]) if old["reference"] else None
+                old_channel = normalize_channel(old["channel"] if "channel" in old.keys() else DEFAULT_CHANNEL)
+                if ch_on and channel is not None and str(channel).strip() and normalize_channel(channel) != old_channel:
+                    raise ValueError("请求标识冲突")
                 if ((json.loads(old["new_item"]) if old["new_item"] else None) != new_item or old["text"] != text
                         or reference_identity(saved_reference, "personal-main") != identity):
                     raise ValueError("请求标识冲突")
-                return {"status": old["status"], "request_id": request_id, "message_id": old["id"]}
+                seq = int(old["message_seq"]) if ("message_seq" in old.keys() and old["message_seq"]) else 1
+                created_ts = float(old["created_at"]) if ("created_at" in old.keys() and old["created_at"]) else time.time()
+                res = {"status": old["status"], "request_id": request_id, "message_id": old["id"], "message_seq": seq, "created_at": created_ts}
+                if ch_on:
+                    res["channel"] = old_channel
+                return res
             def lookup(session: str, ident: str) -> dict | None:
                 if session == "personal-main":
                     source = db.execute("SELECT id,role,text FROM messages WHERE id=?", (ident,)).fetchone()
                     return dict(source) if source else None
                 return getattr(self, "reference_lookup", lambda _session, _id: None)(session, ident)
             saved_reference = canonical_reference(reference, lookup, "personal-main")
+            if ch_on:
+                if channel is not None and str(channel).strip():
+                    msg_channel = normalize_channel(channel)
+                else:
+                    meta_row = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+                    msg_channel = normalize_channel(meta_row["value"] if meta_row else DEFAULT_CHANNEL)
+            else:
+                msg_channel = DEFAULT_CHANNEL
             mid = uuid.uuid4().hex
             now = time.time()
             revision = self._bump(db)
+            message_seq = self._next_seq(db)
             db.execute(
-                "INSERT INTO messages(id,request_id,role,text,status,phase,revision,created_at,updated_at,reference,new_item)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO messages(id,request_id,role,text,status,phase,revision,created_at,updated_at,reference,new_item,message_seq,channel)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (mid, request_id, "user", text, "queued", "queued", revision, now, now,
                  json.dumps(saved_reference, ensure_ascii=False) if saved_reference else None,
-                 json.dumps(new_item) if new_item else None),
+                 json.dumps(new_item) if new_item else None, message_seq, msg_channel),
             )
             db.execute("UPDATE messages SET origin_agent=? WHERE id=?",(getattr(self.client,'runtime_name','hermes'),mid))
             if associated_matter is not None:
@@ -353,15 +546,20 @@ class PersonalConversation:
             if attachments:
                 db.execute("INSERT INTO meta VALUES(?,?)",('attachments:'+mid,json.dumps(attachments,ensure_ascii=False)))
             db.execute("INSERT OR IGNORE INTO user_events VALUES (?,?,'queued')",(request_id,mid))
+        self.mid_turn_event.set()
         self.wake.set()
         self._notify()
-        return {"status": "accepted", "request_id": request_id, "message_id": mid}
+        res = {"status": "accepted", "request_id": request_id, "message_id": mid, "message_seq": message_seq, "created_at": now}
+        if ch_on:
+            res["channel"] = msg_channel
+        return res
 
     def receipt(self, request_id: str) -> dict | None:
         with self.db() as db:
-            row=db.execute('SELECT id,status,run_id FROM messages WHERE request_id=?',(request_id,)).fetchone()
-        if not row:return None
-        return {'request_id':request_id,'message_id':row['id'],'status':row['status'],'run_id':row['run_id']}
+            row=db.execute('SELECT id,status,run_id,error FROM messages WHERE request_id=?',(request_id,)).fetchone()
+            if not row:return None
+            reply=db.execute("SELECT text FROM messages WHERE parent_id=? AND role='assistant' ORDER BY message_seq DESC, created_at DESC LIMIT 1",(row['id'],)).fetchone()
+        return {'request_id':request_id,'message_id':row['id'],'status':row['status'],'run_id':row['run_id'],'reply':(reply['text'] if reply else '') or '','error':row['error'] or ''}
 
     @staticmethod
     def _runs(messages: list[dict]) -> list[dict]:
@@ -380,7 +578,8 @@ class PersonalConversation:
     @staticmethod
     def _message_query(where: str = "") -> str:
         return (
-            "SELECT id,request_id,parent_id,supplement_to_message_id,role,text,status,phase,active_tool,tasks,work_card,artifacts,"
+            "SELECT id,request_id,parent_id,supplement_to_message_id,role,text,status,phase,active_tool,tasks,work_card,artifacts,message_seq,"
+            "channel,bubble_type,bubble_payload,"
             "(SELECT state FROM user_events WHERE user_events.message_id=messages.id) AS delivery_state,"
             "(SELECT value FROM meta WHERE key='attachments:' || messages.id) AS attachments,"
             "received_at,revision,created_at,updated_at,run_id,error,reaction,reference,suggestions FROM messages " + where
@@ -389,15 +588,21 @@ class PersonalConversation:
     @staticmethod
     def _project_message(row) -> dict:
         message = project_message(row)
+        keys = row.keys()
+        message["message_seq"] = int(row["message_seq"]) if ("message_seq" in keys and row["message_seq"]) else 0
+        message["channel"] = normalize_channel(row["channel"] if "channel" in keys else DEFAULT_CHANNEL)
         message["reference"] = json.loads(message["reference"]) if message["reference"] else None
         message["tasks"] = json.loads(message["tasks"]) if message["tasks"] else []
         message["artifacts"]=json.loads(message.get("artifacts") or "[]")
         message['attachments']=[{k:v for k,v in a.items() if k not in ('path','authority')} for a in json.loads(message.get('attachments') or '[]')]
+        raw_btype = row["bubble_type"] if ("bubble_type" in keys and row["bubble_type"]) else "text"
+        raw_bpayload = row["bubble_payload"] if "bubble_payload" in keys else None
+        bubble_obj = json.loads(raw_bpayload) if isinstance(raw_bpayload, str) and raw_bpayload else None
         # r2-chat：选项标记不进正文；流式中途的半截标记也不下发。
         # r2-chat 落库 suggestions 是 JSON 数组；原文字段保证 snapshot/api 一致。
         raw_suggestions = message.get("suggestions")
         suggestions = json.loads(raw_suggestions) if isinstance(raw_suggestions, str) else (raw_suggestions or [])
-        if message["role"] == "assistant" and isinstance(message["text"], str):
+        if message["role"] == "assistant" and isinstance(message["text"], str) and bubble_obj is None:
             if message["status"] == "streaming":
                 message["text"] = strip_partial_widget(strip_partial(message["text"]))
             else:
@@ -406,8 +611,171 @@ class PersonalConversation:
         message["suggestions"] = suggestions
         message["widgets"] = []
         if message["role"] == "assistant" and message["status"] != "streaming":
-            message["text"], message["widgets"] = split_widgets(message["text"])
+            if bubble_obj is not None:
+                if raw_btype == "widget" and isinstance(bubble_obj.get("widget"), dict):
+                    message["widgets"] = [bubble_obj["widget"]]
+            else:
+                message["text"], message["widgets"] = split_widgets(message["text"])
+        if message["role"] == "assistant":
+            message["bubble_type"] = raw_btype
+            if bubble_obj is not None:
+                message["bubble"] = bubble_obj
+                if isinstance(bubble_obj.get("images"), list):
+                    message["images"] = bubble_obj["images"]
+            elif message["widgets"]:
+                message["bubble_type"] = "widget"
+                message["bubble"] = {"type": "widget", "content": message["text"], "blocking": False, "widget": message["widgets"][0]}
+            else:
+                message["bubble"] = {"type": "text", "content": message["text"]}
         return project_work(message)
+
+    def emit_bubble(
+        self,
+        mid: str,
+        args: dict[str, Any],
+        *,
+        session_id: str = "",
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        """由 SendMessage 工具触发：校验跨字段 Schema 与会话状态机，写入独立气泡并立即经 SSE 下发。"""
+        root_mid = self.resolve_turn_root(mid)
+        validated = SendMessageValidator.validate(args, cas=self.cas_store)
+        bubble_id = uuid.uuid4().hex
+        bubble_dict = dict(validated.bubble)
+        artifact_items: list[dict[str, Any]] = []
+
+        if validated.local_files:
+            for file_meta in validated.local_files:
+                art: dict[str, Any] | None = None
+                if callable(self.artifact_register_fn):
+                    with contextlib.suppress(Exception):
+                        art = self.artifact_register_fn(bubble_id, file_meta["path"])
+                if art is None:
+                    aid = "art_" + uuid.uuid5(uuid.NAMESPACE_URL, f"{bubble_id}:{file_meta['sha256']}").hex
+                    art = {
+                        "id": aid,
+                        "task_id": "",
+                        "message_id": bubble_id,
+                        "run_id": "",
+                        "name": file_meta["name"],
+                        "path": file_meta["path"],
+                        "reference": file_meta["path"],
+                        "mime": file_meta["mime"],
+                        "size": file_meta["size"],
+                        "sha256": file_meta["sha256"],
+                        "created_at": time.time(),
+                        "availability": "available",
+                        "download_path": "/personal/artifacts/" + aid,
+                    }
+                else:
+                    art = {**art, "sha256": file_meta["sha256"]}
+                artifact_items.append(art)
+            if validated.bubble_type == "attachment" and artifact_items:
+                bubble_dict["artifact_id"] = artifact_items[0]["id"]
+                bubble_dict["download_path"] = artifact_items[0]["download_path"]
+            elif validated.bubble_type == "text" and artifact_items and isinstance(bubble_dict.get("images"), list):
+                art_by_sha = {a.get("sha256"): a for a in artifact_items if a.get("sha256")}
+                for img in bubble_dict["images"]:
+                    matched = art_by_sha.get(img.get("sha256"))
+                    if matched:
+                        img["artifact_id"] = matched["id"]
+                        img["download_path"] = matched["download_path"]
+
+        encoded_suggestions = (
+            json.dumps(validated.suggestions, ensure_ascii=False)
+            if validated.suggestions
+            else None
+        )
+        encoded_artifacts = json.dumps(artifact_items, ensure_ascii=False)
+        encoded_bubble = json.dumps(bubble_dict, ensure_ascii=False)
+
+        with self.db() as db:
+            user_row = db.execute(
+                "SELECT id, request_id, status, channel FROM messages WHERE id=? AND role='user'",
+                (root_mid,),
+            ).fetchone()
+            if not user_row:
+                raise ValueError("SendMessage 缺少真实本轮用户消息来源")
+            parent_channel = normalize_channel(user_row["channel"] if "channel" in user_row.keys() else DEFAULT_CHANNEL)
+            eff_sid = session_id or self._session_id() or "com-personal-main"
+            eff_req = request_id or user_row["request_id"]
+            turn_state = self.send_store.commit_bubble_in_tx(
+                db,
+                root_mid,
+                session_id=eff_sid,
+                request_id=eff_req,
+                bubble_type=validated.bubble_type,
+                blocks_turn=validated.blocks_turn,
+            )
+            now = time.time()
+            seq = self._next_seq(db)
+            revision = self._bump(db)
+            db.execute(
+                "INSERT INTO messages("
+                "id,parent_id,role,text,status,phase,revision,created_at,updated_at,"
+                "suggestions,artifacts,message_seq,bubble_type,bubble_payload,channel"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    bubble_id,
+                    root_mid,
+                    "assistant",
+                    validated.text,
+                    "completed",
+                    "completed",
+                    revision,
+                    now,
+                    now,
+                    encoded_suggestions,
+                    encoded_artifacts,
+                    seq,
+                    validated.bubble_type,
+                    encoded_bubble,
+                    parent_channel,
+                ),
+            )
+            next_phase = "awaiting_user" if validated.blocks_turn else "responding"
+            db.execute(
+                "UPDATE messages SET status=CASE WHEN status IN ('queued','sending') THEN 'running' ELSE status END,"
+                "phase=?,active_tool=NULL,received_at=COALESCE(received_at,?),revision=?,updated_at=? WHERE id=?",
+                (next_phase, now, revision, now, root_mid),
+            )
+
+        if turn_state["bubble_count"] == 1:
+            from turn_planner import responding
+            with contextlib.suppress(Exception):
+                self._step_plan(root_mid, responding)
+        if validated.bubble_type == "text":
+            self._link_artifacts(bubble_id, validated.text)
+        self._notify()
+
+        result: dict[str, Any] = {
+            "ok": True,
+            "delivered": True,
+            "bubble_id": bubble_id,
+            "parent_message_id": root_mid,
+            "message_seq": seq,
+            "type": validated.bubble_type,
+            "turn_state": turn_state["state"],
+            "bubble_count": turn_state["bubble_count"],
+        }
+        if artifact_items:
+            result["artifacts"] = [
+                {
+                    "id": a["id"],
+                    "name": a["name"],
+                    "mime": a["mime"],
+                    "size": a["size"],
+                    "sha256": a.get("sha256", ""),
+                    "download_path": a["download_path"],
+                }
+                for a in artifact_items
+            ]
+        if turn_state["state"] == "awaiting_user":
+            result["note"] = (
+                "已向 Eddie 发出需要确认/输入的交互消息，当前进入 awaiting_user 状态；"
+                "请立即结束本轮，不要再调 send_message，等待用户下一条消息。"
+            )
+        return result
 
     def attach_artifact(self, message_id, artifact):
         with self.db() as db:
@@ -452,68 +820,135 @@ class PersonalConversation:
         if changed:
             self._notify()
 
-    def _active_runs(self, db: sqlite3.Connection) -> list[dict]:
-        rows = db.execute(self._message_query(
-            "WHERE role='user' AND status IN "
-            "('queued','sending','running','unknown','approval_required') "
-            "ORDER BY created_at,id"
-        )).fetchall()
+    def _active_runs(self, db: sqlite3.Connection, channel: str | None = None) -> list[dict]:
+        if channel:
+            rows = db.execute(
+                self._message_query(
+                    "WHERE role='user' AND status IN "
+                    "('queued','sending','running','unknown','approval_required') AND channel=? "
+                    "ORDER BY created_at,id"
+                ),
+                (channel,),
+            ).fetchall()
+        else:
+            rows = db.execute(self._message_query(
+                "WHERE role='user' AND status IN "
+                "('queued','sending','running','unknown','approval_required') "
+                "ORDER BY created_at,id"
+            )).fetchall()
         return self._runs([dict(row) for row in rows])
 
-    def snapshot(self) -> dict:
+    def snapshot(self, channel: str | None = None) -> dict:
+        ch_on = self._channels_enabled()
+        filter_ch = normalize_channel(channel) if (ch_on and is_valid_channel(channel)) else None
         with self.db() as db:
             db.execute("BEGIN")
             revision = int(db.execute("SELECT value FROM meta WHERE key='revision'").fetchone()["value"])
-            rows = db.execute(
-                self._message_query("ORDER BY created_at DESC,id DESC LIMIT 500")
-            ).fetchall()
-            runs = self._active_runs(db)
+            meta_row = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+            active_ch = normalize_channel(meta_row["value"] if meta_row else DEFAULT_CHANNEL)
+            if filter_ch:
+                rows = db.execute(
+                    self._message_query("WHERE channel=? ORDER BY created_at DESC,id DESC LIMIT 500"),
+                    (filter_ch,),
+                ).fetchall()
+                runs = self._active_runs(db, channel=filter_ch)
+            else:
+                rows = db.execute(
+                    self._message_query("ORDER BY created_at DESC,id DESC LIMIT 500")
+                ).fetchall()
+                runs = self._active_runs(db)
             tasks = [json.loads(r[0]) for r in db.execute('SELECT data FROM ledger_cards ORDER BY revision')]
         messages = self._with_receipts([self._project_message(row) for row in reversed(rows)])
-        return {
-            "conversation_id": "personal-main", "revision": revision,
-            "messages": messages, "runs": runs, "tasks": tasks,
+        result = {
+            "conversation_id": "personal-main",
+            "revision": revision,
+            "active_channel": active_ch,
+            "messages": messages,
+            "runs": runs,
+            "tasks": tasks,
         }
+        if filter_ch:
+            result["channel"] = filter_ch
+        return result
 
-    def changes_since(self, revision: int) -> dict:
+    def changes_since(self, revision: int, channel: str | None = None) -> dict:
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
             raise ValueError("无效的会话版本")
+        ch_on = self._channels_enabled()
+        filter_ch = normalize_channel(channel) if (ch_on and is_valid_channel(channel)) else None
         with self.db() as db:
             db.execute("BEGIN")
             current = int(db.execute("SELECT value FROM meta WHERE key='revision'").fetchone()["value"])
-            rows = db.execute(
-                self._message_query("WHERE revision>? AND revision<=? ORDER BY revision,created_at,id"),
-                (revision, current),
-            ).fetchall()
-            runs = self._active_runs(db)
+            meta_row = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+            active_ch = normalize_channel(meta_row["value"] if meta_row else DEFAULT_CHANNEL)
+            if filter_ch:
+                rows = db.execute(
+                    self._message_query("WHERE revision>? AND revision<=? AND channel=? ORDER BY revision,created_at,id"),
+                    (revision, current, filter_ch),
+                ).fetchall()
+                runs = self._active_runs(db, channel=filter_ch)
+            else:
+                rows = db.execute(
+                    self._message_query("WHERE revision>? AND revision<=? ORDER BY revision,created_at,id"),
+                    (revision, current),
+                ).fetchall()
+                runs = self._active_runs(db)
             tasks = [json.loads(r[0]) for r in db.execute('SELECT data FROM ledger_cards WHERE revision>? AND revision<=? ORDER BY revision', (revision, current))]
         messages = self._with_receipts([self._project_message(row) for row in rows])
-        return {
-            "conversation_id": "personal-main", "revision": current,
-            "messages": messages, "runs": runs, "changed_tasks": tasks,
+        result = {
+            "conversation_id": "personal-main",
+            "revision": current,
+            "active_channel": active_ch,
+            "messages": messages,
+            "runs": runs,
+            "changed_tasks": tasks,
         }
+        if filter_ch:
+            result["channel"] = filter_ch
+        return result
 
-    def history(self, before: str = "", around: str = "", limit: int = 60) -> dict:
+    def history(self, before: str = "", around: str = "", limit: int = 60, channel: str | None = None) -> dict:
         """Read-only keyset pages; never restore the native agent."""
         limit = max(1, min(limit, 100))
+        ch_on = self._channels_enabled()
+        filter_ch = normalize_channel(channel) if (ch_on and is_valid_channel(channel)) else None
         with self.db() as db:
             if around:
-                anchor = db.execute("SELECT created_at,id FROM messages WHERE id=?", (around,)).fetchone()
+                if filter_ch:
+                    anchor = db.execute("SELECT created_at,id FROM messages WHERE id=? AND channel=?", (around, filter_ch)).fetchone()
+                else:
+                    anchor = db.execute("SELECT created_at,id FROM messages WHERE id=?", (around,)).fetchone()
                 if not anchor:
                     raise ValueError("原消息不存在")
-                earlier = db.execute(self._message_query("WHERE (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?"), (*anchor, limit // 2)).fetchall()
-                later = db.execute(self._message_query("WHERE (created_at,id)>=(?,?) ORDER BY created_at,id LIMIT ?"), (*anchor, limit - len(earlier))).fetchall()
+                if filter_ch:
+                    earlier = db.execute(self._message_query("WHERE channel=? AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?"), (filter_ch, *anchor, limit // 2)).fetchall()
+                    later = db.execute(self._message_query("WHERE channel=? AND (created_at,id)>=(?,?) ORDER BY created_at,id LIMIT ?"), (filter_ch, *anchor, limit - len(earlier))).fetchall()
+                else:
+                    earlier = db.execute(self._message_query("WHERE (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?"), (*anchor, limit // 2)).fetchall()
+                    later = db.execute(self._message_query("WHERE (created_at,id)>=(?,?) ORDER BY created_at,id LIMIT ?"), (*anchor, limit - len(earlier))).fetchall()
                 rows = list(reversed(earlier)) + list(later)
             else:
                 if before:
-                    anchor = db.execute("SELECT created_at,id FROM messages WHERE id=?", (before,)).fetchone()
+                    if filter_ch:
+                        anchor = db.execute("SELECT created_at,id FROM messages WHERE id=? AND channel=?", (before, filter_ch)).fetchone()
+                    else:
+                        anchor = db.execute("SELECT created_at,id FROM messages WHERE id=?", (before,)).fetchone()
                     if not anchor:
                         raise ValueError("分页位置不存在")
-                    rows = db.execute(self._message_query("WHERE (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?"), (*anchor, limit)).fetchall()
+                    if filter_ch:
+                        rows = db.execute(self._message_query("WHERE channel=? AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?"), (filter_ch, *anchor, limit)).fetchall()
+                    else:
+                        rows = db.execute(self._message_query("WHERE (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?"), (*anchor, limit)).fetchall()
                 else:
-                    rows = db.execute(self._message_query("ORDER BY created_at DESC,id DESC LIMIT ?"), (limit,)).fetchall()
+                    if filter_ch:
+                        rows = db.execute(self._message_query("WHERE channel=? ORDER BY created_at DESC,id DESC LIMIT ?"), (filter_ch, limit)).fetchall()
+                    else:
+                        rows = db.execute(self._message_query("ORDER BY created_at DESC,id DESC LIMIT ?"), (limit,)).fetchall()
                 rows = list(reversed(rows))
-            more = bool(rows and db.execute("SELECT 1 FROM messages WHERE (created_at,id)<(?,?) LIMIT 1", (rows[0]["created_at"], rows[0]["id"])).fetchone())
+            if filter_ch:
+                more = bool(rows and db.execute("SELECT 1 FROM messages WHERE channel=? AND (created_at,id)<(?,?) LIMIT 1", (filter_ch, rows[0]["created_at"], rows[0]["id"])).fetchone())
+            else:
+                more = bool(rows and db.execute("SELECT 1 FROM messages WHERE (created_at,id)<(?,?) LIMIT 1", (rows[0]["created_at"], rows[0]["id"])).fetchone())
         return {"messages": self._with_receipts([self._project_message(r) for r in rows]), "has_more": more,
                 "next_before": rows[0]["id"] if more else ""}
 
@@ -707,7 +1142,7 @@ class PersonalConversation:
             if not user:
                 return None
             reply = db.execute("SELECT text,status,updated_at FROM messages WHERE parent_id=? AND role='assistant' "
-                               "ORDER BY created_at DESC LIMIT 1", (mid,)).fetchone()
+                               "ORDER BY message_seq DESC, created_at DESC LIMIT 1", (mid,)).fetchone()
         return {"id": mid, "text": user["text"], "status": user["status"], "created_at": user["created_at"],
                 "updated_at": max(user["updated_at"], reply["updated_at"] if reply else 0),
                 "reply": strip_partial(reply["text"]) if reply and reply["text"] else "", "reply_status": reply["status"] if reply else ""}
@@ -765,12 +1200,17 @@ class PersonalConversation:
                     (content, status, phase, revision, now, json.dumps(options, ensure_ascii=False) if options else None, existing["id"]),
                 )
             else:
+                parent_row = db.execute("SELECT channel FROM messages WHERE id=?", (mid,)).fetchone()
+                parent_ch = normalize_channel(
+                    parent_row["channel"] if parent_row and "channel" in parent_row.keys() else DEFAULT_CHANNEL
+                )
                 text, options = split_options(text)
+                seq = self._next_seq(db)
                 db.execute(
-                    "INSERT INTO messages(id,parent_id,role,text,status,phase,revision,created_at,updated_at,suggestions)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO messages(id,parent_id,role,text,status,phase,revision,created_at,updated_at,suggestions,message_seq,channel)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (uuid.uuid4().hex, mid, "assistant", text, status, phase, revision, now, now,
-                     json.dumps(options, ensure_ascii=False) if options else None),
+                     json.dumps(options, ensure_ascii=False) if options else None, seq, parent_ch),
                 )
             db.execute(
                 "UPDATE messages SET status='running',phase=?,active_tool=NULL,"
@@ -781,10 +1221,16 @@ class PersonalConversation:
         self._notify()
 
     def _session_id(self) -> str | None:
-        key = getattr(self.client, 'session_key', 'hermes_session_id')
+        explicit_key = getattr(self.client, 'session_key', None)
         with self.db() as db:
-            row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-        return row['value'] if row else None
+            if explicit_key:
+                row = db.execute("SELECT value FROM meta WHERE key=?", (explicit_key,)).fetchone()
+                return row['value'] if row else None
+            for k in ('hermes_v2_session_id', 'pi_session_id', 'hermes_session_id'):
+                row = db.execute("SELECT value FROM meta WHERE key=?", (k,)).fetchone()
+                if row and row['value']:
+                    return row['value']
+        return None
 
     def accepts_origin(self, sid, mid):
         if sid == self._session_id():
@@ -794,8 +1240,11 @@ class PersonalConversation:
         if not row:
             if self._session_id() is None:
                 with self.db() as db:
-                    legacy=db.execute("SELECT value FROM meta WHERE key='hermes_session_id'").fetchone()
-                return bool(legacy and legacy[0]==sid)
+                    legacy = db.execute(
+                        "SELECT value FROM meta WHERE key IN ('hermes_v2_session_id','pi_session_id','hermes_session_id') AND value=?",
+                        (sid,),
+                    ).fetchone()
+                return bool(legacy)
             return False
         mapping = json.loads(row[0])
         with self.db() as db:
@@ -863,18 +1312,81 @@ class PersonalConversation:
                         db.execute("UPDATE messages SET text=?,suggestions=? WHERE id=?",
                                    (body, json.dumps(parsed, ensure_ascii=False), existing["id"]))
             elif output:
+                parent_row = db.execute("SELECT channel FROM messages WHERE id=?", (mid,)).fetchone()
+                parent_ch = normalize_channel(
+                    parent_row["channel"] if parent_row and "channel" in parent_row.keys() else DEFAULT_CHANNEL
+                )
+                seq = self._next_seq(db)
                 db.execute(
-                    "INSERT INTO messages(id,parent_id,role,text,status,phase,revision,created_at,updated_at,suggestions)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (uuid.uuid4().hex, mid, "assistant", output, status, status, revision, now, now, encoded_options),
+                    "INSERT INTO messages(id,parent_id,role,text,status,phase,revision,created_at,updated_at,suggestions,message_seq,channel)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (uuid.uuid4().hex, mid, "assistant", output, status, status, revision, now, now, encoded_options, seq, parent_ch),
                 )
             reply = db.execute("SELECT id,text FROM messages WHERE parent_id=? AND role='assistant'", (mid,)).fetchone() if status == "completed" else None
+            user_row = db.execute("SELECT id,request_id,text FROM messages WHERE id=? AND role='user'", (mid,)).fetchone() if reply else None
         self._notify()
         if reply:
+            self._auto_register_pending(mid, user_row, reply["text"])
             self._link_artifacts(reply["id"], reply["text"])
             turn = self._turn_files.pop(mid, None)
             if turn:
                 self._link_turn_files(reply["id"], turn["since"], turn["paths"])
+
+    def _finish_send_message_turn(self, mid: str, status: str, error: str | None = None) -> None:
+        """SendMessage-as-tool 模式收尾：绝不覆写已发出的独立气泡，仅结算用户回合状态与末条文件关联。"""
+        with self.db() as db:
+            revision = self._bump(db)
+            now = time.time()
+            db.execute(
+                "UPDATE messages SET status=?,phase=?,active_tool=NULL,error=?,revision=?,updated_at=? WHERE id=?",
+                (status, status, error, revision, now, mid),
+            )
+            if status == "completed":
+                self._finalize_tasks(db, mid)
+            self._finish_plan(db, mid, status == "completed")
+            db.execute(
+                "UPDATE user_events SET state=CASE WHEN state='delivered' THEN state ELSE ? END WHERE message_id=?",
+                (status, mid),
+            )
+            last_reply = (
+                db.execute(
+                    "SELECT id,text FROM messages WHERE parent_id=? AND role='assistant' "
+                    "ORDER BY message_seq DESC, created_at DESC LIMIT 1",
+                    (mid,),
+                ).fetchone()
+                if status == "completed"
+                else None
+            )
+            user_row = (
+                db.execute("SELECT id,request_id,text FROM messages WHERE id=? AND role='user'", (mid,)).fetchone()
+                if last_reply
+                else None
+            )
+        self.send_store.close_turn(mid)
+        self._notify()
+        if last_reply:
+            self._auto_register_pending(mid, user_row, last_reply["text"])
+            turn = self._turn_files.pop(mid, None)
+            if turn:
+                self._link_turn_files(last_reply["id"], turn["since"], turn["paths"])
+        else:
+            self._turn_files.pop(mid, None)
+
+    def _auto_register_pending(self, mid: str, user_row, reply_text: str) -> None:
+        if not reply_text:
+            return
+        from pending_actions import auto_register_from_reply
+        try:
+            auto_register_from_reply(
+                self.path.parent,
+                reply_text,
+                origin_session_id=self._session_id() or "com-personal-main",
+                origin_message_id=mid,
+                origin_request_id=user_row["request_id"] if user_row else "",
+                origin_user_text=user_row["text"] if user_row else "",
+            )
+        except Exception:
+            pass
 
     def _delivery(self, mid: str, state: str) -> None:
         with self.db() as db:
@@ -895,11 +1407,19 @@ class PersonalConversation:
 
     def _pi_input(self, row, session_id: str, reaction_token: str, *, supplement_to=None) -> tuple[str, dict]:
         supplement_to = supplement_to or row['supplement_to_message_id']
+        raw_ch = row.get('channel') if isinstance(row, dict) else (row['channel'] if 'channel' in row.keys() else None)
+        msg_channel = normalize_channel(raw_ch)
+        ch_on = self._channels_enabled()
         context = {'origin_session_id': session_id, 'origin_message_id': row['id'],
                    'origin_request_id': row['request_id'],
+                   'channel': msg_channel,
                    'tasks': getattr(self, 'task_index', lambda: slim_tasks(getattr(self, 'task_context', lambda: [])()))(),
                    'environment': getattr(self, 'task_environment', lambda: {})(),
                    'reaction': {'message_id': row['id'], 'token': reaction_token}}
+        from pending_actions import data_freshness
+        freshness = data_freshness(self.path.parent)
+        if freshness:
+            context['data_freshness'] = freshness.get('summary') or freshness
         peers = [] if supplement_to else self._parallel_peers(row['id'])
         if peers:
             context['parallel_turns'] = peers  # 这些在另一条线上跑，结果会单独回给用户；本轮只管本条消息
@@ -920,9 +1440,42 @@ class PersonalConversation:
             if rayneo_table and db.execute('SELECT 1 FROM rayneo_requests WHERE request_id=?',(row['request_id'],)).fetchone():
                 context['input_source'] = 'rayneo'
                 # Task identity/routing only; slim_tasks already dropped full payloads above.
-            history = [] if getattr(self.client, 'has_native_history', False) or supplement_to else [
-                {'role': r['role'], 'text': r['text'][-1000:]} for r in db.execute(
-                    "SELECT role,text FROM messages WHERE status='completed' ORDER BY created_at DESC LIMIT 16")]
+            if supplement_to:
+                history = []
+            elif getattr(self.client, 'has_native_history', False):
+                if getattr(self.client, 'runtime_name', None) == 'pi':
+                    if ch_on:
+                        history = [
+                            {'role': r['role'], 'text': r['text'][-1000:]} for r in db.execute(
+                                "SELECT m.role,m.text FROM messages m "
+                                "LEFT JOIN messages u ON u.id=COALESCE(m.parent_id,m.id) "
+                                "WHERE m.status='completed' AND u.run_id IS NULL AND m.channel=? ORDER BY m.created_at DESC LIMIT 8",
+                                (msg_channel,),
+                            )
+                        ]
+                    else:
+                        history = [
+                            {'role': r['role'], 'text': r['text'][-1000:]} for r in db.execute(
+                                "SELECT m.role,m.text FROM messages m "
+                                "LEFT JOIN messages u ON u.id=COALESCE(m.parent_id,m.id) "
+                                "WHERE m.status='completed' AND u.run_id IS NULL ORDER BY m.created_at DESC LIMIT 8"
+                            )
+                        ]
+                else:
+                    history = []
+            else:
+                if ch_on:
+                    history = [
+                        {'role': r['role'], 'text': r['text'][-1000:]} for r in db.execute(
+                            "SELECT role,text FROM messages WHERE status='completed' AND channel=? ORDER BY created_at DESC LIMIT 16",
+                            (msg_channel,),
+                        )
+                    ]
+                else:
+                    history = [
+                        {'role': r['role'], 'text': r['text'][-1000:]} for r in db.execute(
+                            "SELECT role,text FROM messages WHERE status='completed' ORDER BY created_at DESC LIMIT 16")
+                    ]
         reference = json.loads(row['reference']) if row['reference'] else None
         if supplement_to or reference:
             brief=getattr(self,'task_brief',lambda *_:None)(supplement_to or '',reference)
@@ -937,6 +1490,8 @@ class PersonalConversation:
         return text, context
 
     def _is_supplement(self, row, active_mid: str) -> bool:
+        if row['new_item'] if 'new_item' in row.keys() else False:
+            return False
         reference = json.loads(row['reference']) if row['reference'] else None
         if reference:
             if reference.get('mode') != 'reply' or reference.get('source_session_id') != 'personal-main':
@@ -944,12 +1499,48 @@ class PersonalConversation:
             with self.db() as db:
                 source = db.execute('SELECT id,parent_id FROM messages WHERE id=?', (reference['id'],)).fetchone()
             return bool(source and (source['id'] == active_mid or source['parent_id'] == active_mid))
-        # Only explicit adjustments to the sole active main turn interrupt it.
-        # Independent requests stay in the normal prompt queue.
-        # 并行时没带引用的「补充/改成…」只算给最新开始的那一轮。
-        if len(self.turns) > 1 and active_mid != max(self.turns, key=lambda m: self.turn_started.get(m, 0)):
+        # Only explicit adjustments to the sole active main turn interrupt it when flag is off.
+        # 并行时没带引用的追发消息归入最新开始的那一轮；多频道开启时互不跨频道劫持。
+        if self._channels_enabled():
+            row_ch = normalize_channel(row['channel'] if 'channel' in row.keys() else DEFAULT_CHANNEL)
+            with self.db() as db:
+                act_row = db.execute('SELECT channel FROM messages WHERE id=?', (active_mid,)).fetchone()
+            act_ch = normalize_channel(act_row['channel'] if act_row and 'channel' in act_row.keys() else DEFAULT_CHANNEL)
+            if row_ch != act_ch:
+                return False
+            if len(self.turns) > 1:
+                with self.db() as db:
+                    same_ch_rows = db.execute(
+                        "SELECT id FROM messages WHERE id IN (%s) AND channel=?" % ",".join("?" * len(self.turns)),
+                        (*self.turns.keys(), row_ch),
+                    ).fetchall()
+                same_ch_turns = [r['id'] for r in same_ch_rows if r['id'] in self.turns]
+                if len(same_ch_turns) > 1 and active_mid != max(same_ch_turns, key=lambda m: self.turn_started.get(m, 0)):
+                    return False
+        elif len(self.turns) > 1 and active_mid != max(self.turns, key=lambda m: self.turn_started.get(m, 0)):
             return False
+        if self._send_message_enabled():
+            return True
         return bool(re.match(r'^(?:补充(?:一下|要求|说明|信息)?[：:，,\s]|更正[：:，,\s]|纠正[：:，,\s]|改成|改为|请保持|先(?:只读|别改|不改|仅(?:查看|检查|分析|阅读)|只(?:查看|检查|分析|阅读)|不要)|只读(?:[，。:：\s]|$)|保持只读|不要(?:改|修改|删除|动|执行|提交|发送)|暂停(?:一下|当前|这个|这项)?[。！!\s]*$|停下[。！!\s]*$|继续(?:刚才|这个|原来|当前)|继续[。！!\s]*$)', row['text']))
+
+    def _requeue_supplement(self, mid: str, request_id: str, client=None) -> None:
+        """压哨未消费的中途追发消息：原子重置回 queued，由下一轮 step 立即接手处理，零丢消息。"""
+        with self.db() as db:
+            revision = self._bump(db)
+            now = time.time()
+            db.execute(
+                "UPDATE messages SET status='queued',phase='queued',active_tool=NULL,error=NULL,"
+                "supplement_to_message_id=NULL,received_at=NULL,revision=?,updated_at=? WHERE id=?",
+                (revision, now, mid),
+            )
+            db.execute("UPDATE user_events SET state='queued' WHERE message_id=?", (mid,))
+        clear_fn = getattr(client, 'clear_unconsumed_steer', None)
+        if callable(clear_fn):
+            with contextlib.suppress(Exception):
+                clear_fn(request_id)
+        if not self.turns:
+            self.wake.set()
+        self._notify()
 
     async def _deliver_supplements(self, session_id: str, active_mid: str, supplements: dict, client=None) -> None:
         client = client or self.client
@@ -960,6 +1551,7 @@ class PersonalConversation:
                 if row['id'] == active_mid or not self._is_supplement(row, active_mid):
                     continue
                 mid = row['id']
+                send_mode = self._send_message_enabled()
                 with self.db() as db:
                     db.execute('UPDATE messages SET supplement_to_message_id=? WHERE id=?', (active_mid, mid))
                 self._set(mid, 'sending', phase='awaiting_delivery')
@@ -967,13 +1559,16 @@ class PersonalConversation:
                 supplements[row['request_id']] = mid
                 try:
                     token = self.reactions.open_turn(mid, session_id)
+                    if send_mode:
+                        self.send_store.resume_on_user_input(active_mid)
                     text, context = self._pi_input(row, session_id, token, supplement_to=active_mid)
+                    if send_mode:
+                        text = text + '\n\n' + build_turn_reminder(is_supplement=True)
                     receipt = await client.steer_chat(session_id, text, row['request_id'], context)
                     if receipt.get('state') == 'not_sent':
                         # Native idle was observed before writing any command.
                         supplements.pop(row['request_id'], None)
-                        self._set(mid, 'queued')
-                        self._delivery(mid, 'queued')
+                        self._requeue_supplement(mid, row['request_id'], client)
                         self.reactions.close_turn(mid)
                         return
                     with self.db() as db:
@@ -988,7 +1583,9 @@ class PersonalConversation:
                     raise
                 except Exception:
                     self._finish(mid, 'unknown', error='补充送达结果待核实，未自动重试')
-            await asyncio.sleep(.05)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self.mid_turn_event.wait(), 0.05)
+                self.mid_turn_event.clear()
 
     FAST_BOOKKEEPING_UNCERTAIN = (
         "记账未取得账本写入及回读凭据，结果待核实；请勿重复记账，可在账本里复核这一笔。"
@@ -1018,25 +1615,108 @@ class PersonalConversation:
                 self._finish(mid,'completed',output='这句和 %d 秒前那句一样，已经记过了，没再重复记。真要再记一笔就说「再记一笔」。'%max(1,int(row['created_at']-twins[-1]['created_at'])))
                 return True
         self._set(mid, 'running', phase=route.label)
+        degraded_to_model = False
+
+        def _degrade_pending_action_to_model(reason: str) -> None:
+            nonlocal degraded_to_model
+            degraded_to_model = True
+            action_id = (route.args or {}).get('action_id') or ''
+            logger.error(
+                'pending_action fast path failed (action_id=%s, request_id=%s, message_id=%s), degrading to model: %s',
+                action_id,
+                row['request_id'],
+                mid,
+                reason,
+            )
+            if action_id:
+                try:
+                    from pending_actions import PendingActions
+                    pa = PendingActions(self.path.parent)
+                    with pa.db() as pa_db:
+                        pa_db.execute(
+                            "UPDATE pending_actions SET status='failed', resolved_at=?, resolution=? "
+                            "WHERE id=? AND status IN ('pending', 'running')",
+                            (time.time(), json.dumps({'mode': 'failed', 'error': reason}, ensure_ascii=False), action_id),
+                        )
+                except Exception:
+                    pass
+            try:
+                with router._db() as r_db:
+                    r_db.execute('DELETE FROM decisions WHERE request_id=?', (row['request_id'],))
+            except Exception:
+                pass
+            self._set(mid, 'queued', phase='queued')
+
         try:
             if route.args.get('action')=='confirm':
                 # 候选只出卡，不调用业务写入；后续“是”由既有澄清绑定对原始消息授权。
                 self._finish(mid, 'completed', output=receipt(route, {}))
             else:
-                result=await router.execute(route,{'origin_request_id':row['request_id']},tools_class(self.path.parent))
-            if route.args.get('action')=='confirm':
-                # 候选卡不写账本，直接出确认建议。
-                self._finish(mid, 'completed', output=receipt(route, {}))
-            elif route.args.get('action')=='add' and not result.get('verified'):
-                self._finish(mid,'unknown',output=self.FAST_BOOKKEEPING_UNCERTAIN)
+                origin_sid = self._session_id() or getattr(self.client, 'session_id', None) or 'com-personal-main'
+                result=await router.execute(
+                    route,
+                    {
+                        'origin_request_id': row['request_id'],
+                        'origin_message_id': mid,
+                        'origin_session_id': origin_sid,
+                        'conversation': self,
+                    },
+                    tools_class(self.path.parent),
+                )
+                pending_bk_add = (
+                    route.tool == 'pending_action'
+                    and isinstance(result, dict)
+                    and (result.get('action') or {}).get('tool') == 'bookkeeping'
+                    and ((result.get('action') or {}).get('args') or {}).get('action') == 'add'
+                )
+                is_write_unverified = (
+                    (route.args.get('action') == 'add' and not result.get('verified'))
+                    or (pending_bk_add and not (result.get('verified') or ((result.get('resolution') or {}).get('detail') or {}).get('verified')))
+                )
+                if is_write_unverified:
+                    self._finish(mid, 'unknown', output=self.FAST_BOOKKEEPING_UNCERTAIN)
+                elif isinstance(result, dict) and result.get('status') == 'failed':
+                    err_text = str(result.get('error') or receipt(route, result))
+                    if route.tool == 'pending_action':
+                        _degrade_pending_action_to_model(err_text)
+                        return False
+                    self._finish(mid, 'failed', output=err_text, error=err_text)
+                else:
+                    self._finish(mid, 'completed', output=receipt(route, result))
+                    followup_mid = result.get('followup_message_id') if isinstance(result, dict) else None
+                    if followup_mid:
+                        with self.db() as db:
+                            now = time.time()
+                            seq = self._next_seq(db)
+                            rev = self._bump(db)
+                            db.execute(
+                                'UPDATE messages SET created_at=?, updated_at=?, message_seq=?, revision=? WHERE id=?',
+                                (now, now, seq, rev, followup_mid),
+                            )
+                        self.wake.set()
+                        self._notify()
+        except Exception as exc:
+            is_bk_add = route.args.get('action') == 'add' and route.tool == 'bookkeeping'
+            if route.tool == 'pending_action' and not isinstance(exc, ValueError):
+                from pending_actions import PendingActions
+                target = PendingActions(self.path.parent).get((route.args or {}).get('action_id') or '')
+                act = (target or {}).get('action') or {}
+                if act.get('tool') == 'bookkeeping' and (act.get('args') or {}).get('action') == 'add':
+                    is_bk_add = True
+            if is_bk_add:
+                self._finish(mid, 'unknown', output=self.FAST_BOOKKEEPING_UNCERTAIN)
+            elif route.tool == 'pending_action':
+                _degrade_pending_action_to_model(str(exc) or repr(exc))
+                return False
+            elif (route.args or {}).get('action') in ('recent', 'list', 'search', 'summary'):
+                self._finish(mid, 'failed', error='业务查询暂不可用，请稍后重试。')
             else:
-                self._finish(mid, 'completed', output=receipt(route, result))
-        except Exception:
-            if route.args.get('action')=='add':self._finish(mid,'unknown',output=self.FAST_BOOKKEEPING_UNCERTAIN)
-            else:self._finish(mid,'failed',error='业务查询暂不可用，请稍后重试。')
+                err_msg = str(exc) or '操作执行失败，请稍后重试。'
+                self._finish(mid, 'failed', output=err_msg, error=err_msg)
         finally:
-            elapsed=(time.monotonic()-started)*1000
-            router.complete(row['request_id'],elapsed_ms=elapsed,first_text_ms=elapsed,prompt_chars=0)
+            if not degraded_to_model:
+                elapsed=(time.monotonic()-started)*1000
+                router.complete(row['request_id'],elapsed_ms=elapsed,first_text_ms=elapsed,prompt_chars=0)
         return True
 
     async def process_one(self) -> bool:
@@ -1084,10 +1764,16 @@ class PersonalConversation:
                 self._finish(mid, "failed", error=str(exc))
                 return True
             from message_router import MessageRouter
+            flags = SuperagentFlags(self.path.parent)
+            send_mode = flags.send_message_on()
+            remind_after = flags.send_message_remind_after()
             route=MessageRouter(self.path.parent).decide(row['request_id'],row['text'])
             self._set(mid, "sending", phase=route.label)
             self._start_plan(mid, row["text"])
             pending = ""
+            thinking_buf = ""
+            thinking_step = 0
+            current_run_id: str | None = None
             last_flush = 0.0
             has_partial = False
             completed = False
@@ -1095,30 +1781,58 @@ class PersonalConversation:
             final_text = ""
             work_tasks: list = []
             tool_seq = 0
+            tool_bubbles_before: dict[str, int] = {}
+            last_observed_bubbles = 0
+            unconsumed_supplements: set[str] = set()
             supplements: dict[str, str] = {}
             supplement_task = None
+            msg_channel = normalize_channel(row['channel'] if 'channel' in row.keys() else DEFAULT_CHANNEL)
+            context: dict[str, Any] = {
+                'origin_session_id': session_id,
+                'origin_message_id': mid,
+                'origin_request_id': row['request_id'],
+                'channel': msg_channel,
+            }
             native = getattr(client, 'runtime_name', None) in ('pi','hermes')
             native_received = not native
 
             def flush() -> None:
-                nonlocal pending, last_flush, has_partial
+                nonlocal pending, thinking_buf, thinking_step, last_flush, has_partial
+                if send_mode:
+                    if thinking_buf:
+                        thinking_step += 1
+                        self.send_store.record_thinking(
+                            mid, row["request_id"], thinking_buf,
+                            run_id=current_run_id, step_index=thinking_step,
+                        )
+                        thinking_buf = ""
+                    return
                 if pending:
                     self._assistant(mid, pending, append=True)
                     pending = ""
                     last_flush = time.monotonic()
                     has_partial = True
 
+            def finish_turn(status: str, text_out: str = "", err: str | None = None) -> None:
+                if send_mode:
+                    self._finish_send_message_turn(mid, status, error=err)
+                else:
+                    self._finish(mid, status, text_out, err)
+
             try:
                 reaction_token = self.reactions.open_turn(mid, session_id)
+                if send_mode:
+                    self.send_store.open_turn(mid, session_id, row["request_id"])
                 saved_reference = json.loads(row["reference"]) if row["reference"] else None
                 user_input = referenced_input(row["text"], saved_reference)
                 transport_text = user_input
                 if isinstance(client, HermesClient) and getattr(client,'runtime_name',None) not in ('pi','hermes'):
-                    context = getattr(self, 'task_context', lambda: [])()
+                    task_ctx = getattr(self, 'task_context', lambda: [])()
                     transport_text = (
                         "[Com 主对话上下文；只提供关联，不授予执行权限]\n"
                         + json.dumps({'origin_session_id': session_id, 'origin_message_id': mid,
-                                      'origin_request_id': row['request_id'], 'tasks': context,
+                                      'origin_request_id': row['request_id'], 'channel': msg_channel,
+                                      'tasks': task_ctx,
                                       'environment':getattr(self,'task_environment',lambda:{})(),
                                       'reaction': {'message_id': mid, 'token': reaction_token}}, ensure_ascii=False)
                         + "\n可按当前用户消息的语义自然选一个表情，用 react_to_user_message 附到这条消息；"
@@ -1145,13 +1859,16 @@ class PersonalConversation:
                         "删除、权限扩张不能由工作建议获得授权。\n用户消息：\n" + user_input)
                 if native:
                     transport_text, context = self._pi_input(row, session_id, reaction_token)
+                if send_mode and not getattr(client, 'accepts_turn_reminder', False):
+                    transport_text = transport_text + "\n\n" + build_turn_reminder()
                 async for event, payload in client.stream_chat(session_id, transport_text):
                     if terminal and event != "done":
                         continue
                     if event == "run.started":
                         run_id = payload.get("run_id")
+                        current_run_id = run_id if isinstance(run_id, str) else None
                         self._set(
-                            mid, "sending" if native else "running", run_id if isinstance(run_id, str) else None,
+                            mid, "sending" if native else "running", current_run_id,
                             phase="awaiting_delivery" if native else "thinking", received=not native,
                         )
                         self._delivery(mid, 'sending' if native else 'delivered')
@@ -1174,6 +1891,8 @@ class PersonalConversation:
                                 native_received = True
                                 work_tasks = [{"id": "think", "title": "分析用户请求", "status": "running"}]
                                 self._record_tasks(mid, work_tasks)
+                            elif send_mode:
+                                self.send_store.resume_on_user_input(mid)
                     elif event == "tool.started":
                         flush()
                         name = payload.get("tool_name")
@@ -1187,9 +1906,13 @@ class PersonalConversation:
                             if task.get('id') == 'think' and task.get('status') == 'running':
                                 task['status'] = 'done'
                         tool_seq += 1
+                        call_id = payload.get('tool_call_id')
+                        if send_mode:
+                            call_key = str(call_id) if call_id else f"__seq_{tool_seq}"
+                            tool_bubbles_before[call_key] = self.send_store.bubble_count(mid)
                         work_tasks.append({
                             "id": f"tool-{tool_seq}",
-                            "call_id": payload.get('tool_call_id'), "kind": "tool",
+                            "call_id": call_id, "kind": "tool",
                             "tool": name[:120] if isinstance(name, str) else '',
                             "title": self._tool_task_title(name if isinstance(name, str) else None),
                             "status": "running", "started_at": time.time(),
@@ -1213,81 +1936,148 @@ class PersonalConversation:
                         if len(candidates)==1 and candidates[0].get('tool')=='remind' and event=='tool.completed' and isinstance(reminder,str) and re.fullmatch(r'rm[A-Za-z0-9]+',reminder):
                             candidates[0]['reminder_id']=reminder
                         self._record_tasks(mid, work_tasks)
+                        if send_mode:
+                            if call_id and str(call_id) in tool_bubbles_before:
+                                before_cnt = tool_bubbles_before.pop(str(call_id))
+                            elif len(tool_bubbles_before) == 1:
+                                _, before_cnt = tool_bubbles_before.popitem()
+                            else:
+                                before_cnt = last_observed_bubbles
+                            now_cnt = self.send_store.bubble_count(mid)
+                            tool_name_str = str(payload.get("tool_name") or "")
+                            is_direct_send = event == "tool.completed" and (
+                                tool_name_str == "send_message"
+                                or tool_name_str == "SendMessage"
+                                or tool_name_str.endswith("__send_message")
+                            )
+                            emitted = (now_cnt > before_cnt) or is_direct_send
+                            last_observed_bubbles = now_cnt
+                            if not emitted and self.send_store.note_silent_tool(mid, threshold=remind_after):
+                                inject_fn = getattr(client, "inject_reminder", None)
+                                if callable(inject_fn):
+                                    await inject_fn(session_id, build_progress_reminder(remind_after))
                     elif event == "assistant.delta":
                         delta = payload.get("delta")
                         if isinstance(delta, str) and delta:
-                            if not has_partial and not pending:
-                                from turn_planner import responding
-                                self._step_plan(mid, responding)
-                            pending += delta
-                            if not has_partial or len(pending) >= 64 or time.monotonic() - last_flush >= .08:
-                                flush()
+                            if send_mode:
+                                thinking_buf += delta
+                            else:
+                                if not has_partial and not pending:
+                                    from turn_planner import responding
+                                    self._step_plan(mid, responding)
+                                pending += delta
+                                if not has_partial or len(pending) >= 64 or time.monotonic() - last_flush >= .08:
+                                    flush()
                     elif event == "assistant.completed":
                         flush()
                         content = payload.get("content")
                         if isinstance(content, str):
                             final_text = content
-                            self._assistant(mid, content, status="streaming")
+                            if send_mode:
+                                if content.strip():
+                                    thinking_step += 1
+                                    self.send_store.record_thinking(
+                                        mid, row["request_id"], content,
+                                        run_id=current_run_id, step_index=thinking_step,
+                                    )
+                            else:
+                                self._assistant(mid, content, status="streaming")
                         for task in work_tasks:
                             if task.get('kind') != 'tool' and task.get('status') == 'running':
                                 task['status'] = 'done'
-                        if not any(t.get("id") == "reply" for t in work_tasks):
+                        if not send_mode and not any(t.get("id") == "reply" for t in work_tasks):
                             work_tasks.append({"id": "reply", "title": "撰写回复", "status": "running"})
                         self._record_tasks(mid, work_tasks)
                     elif event == "run.completed":
                         flush()
-                        completed = bool(final_text) and native_received
                         for task in work_tasks:
                             if task.get('status') == 'running':
                                 task['status'] = 'unknown' if task.get('kind') == 'tool' else 'done'
                         self._record_tasks(mid, work_tasks)
-                        self._finish(
-                            mid, "completed" if completed else "unknown", final_text,
-                            None if completed else "主助理未返回完整答复；结果待核实，未自动重试",
-                        )
+                        if send_mode:
+                            raw_unconsumed = payload.get("unconsumed_supplements")
+                            if isinstance(raw_unconsumed, (list, set, tuple)):
+                                unconsumed_supplements.update(str(x) for x in raw_unconsumed if x)
+                            bubbles_sent = self.send_store.bubble_count(mid)
+                            repair_fn = getattr(client, "repair_missing_send_message", None)
+                            if bubbles_sent == 0 and native_received and callable(repair_fn):
+                                with contextlib.suppress(Exception):
+                                    await repair_fn(session_id, row["request_id"], context)
+                                bubbles_sent = self.send_store.bubble_count(mid)
+                            completed = (bubbles_sent > 0) and native_received
+                            self._finish_send_message_turn(
+                                mid,
+                                "completed" if completed else "unknown",
+                                error=None if completed else "模型本轮未通过 send_message 发送可见回复；内部思考已留档，未自动重试",
+                            )
+                        else:
+                            completed = bool(final_text) and native_received
+                            self._finish(
+                                mid, "completed" if completed else "unknown", final_text,
+                                None if completed else "主助理未返回完整答复；结果待核实，未自动重试",
+                            )
                         terminal = True
+                        self.closing_turns.add(mid)
                     elif event == "error":
                         flush()
                         if not terminal:
                             provider_failed = payload.get('failure_code') == 'provider_unavailable' and payload.get('uncertain') is False
-                            self._finish(mid, "failed" if provider_failed else "unknown",
-                                         error=("模型供应商额度已用完，本轮未执行；恢复额度或切换供应商后可重新发送" if payload.get('provider_quota') else "模型供应商在 Magpie 中已关闭，本轮未执行；开启对应供应商后可重新发送" if payload.get('provider_disabled') else "模型供应商配置或认证失败，本轮未执行；请检查服务配置") if provider_failed
-                                         else "主助理执行中断；结果待核实，未自动重试")
+                            finish_turn(mid_status := ("failed" if provider_failed else "unknown"),
+                                        err=("模型供应商额度已用完，本轮未执行；恢复额度或切换供应商后可重新发送" if payload.get('provider_quota') else "模型供应商在 Magpie 中已关闭，本轮未执行；开启对应供应商后可重新发送" if payload.get('provider_disabled') else "模型供应商配置或认证失败，本轮未执行；请检查服务配置") if provider_failed
+                                        else "主助理执行中断；结果待核实，未自动重试")
                             terminal = True
+                            self.closing_turns.add(mid)
                     elif event == "input.handled":
-                        self._finish(mid,"unknown",error="输入已由 Pi 扩展处理，没有原生执行回合；请核对扩展结果，不会自动重发")
+                        finish_turn("unknown", err="输入已由 Pi 扩展处理，没有原生执行回合；请核对扩展结果，不会自动重发")
                         terminal=True
+                        self.closing_turns.add(mid)
                     elif event == "done":
                         break
                 flush()
                 if not terminal:
-                    self._finish(mid, "unknown", error="主助理流已中断；结果待核实，未自动重试")
+                    finish_turn("unknown", err="主助理流已中断；结果待核实，未自动重试")
             except asyncio.CancelledError:
                 flush()
                 if not terminal:
-                    self._finish(mid, "unknown", error="提交中断，可能已被主助理接收；未自动重试")
+                    finish_turn("unknown", err="提交中断，可能已被主助理接收；未自动重试")
                 raise
             except (ValueError, RuntimeError, httpx.HTTPError) as exc:
                 flush()
                 if not terminal:
                     code=str(exc) if re.fullmatch(r'[A-Za-z0-9_:-]{1,100}',str(exc)) else type(exc).__name__
-                    self._finish(mid, "unknown", error="提交结果待核实；未自动重试（"+code+"）")
+                    finish_turn("unknown", err="提交结果待核实；未自动重试（"+code+"）")
             finally:
+                self.closing_turns.add(mid)
                 if supplement_task:
                     supplement_task.cancel()
                     try:
                         await supplement_task
                     except asyncio.CancelledError:
                         pass
-                for supplementary_mid in supplements.values():
+                for sup_req_id, supplementary_mid in supplements.items():
                     with self.db() as db:
                         supplementary = db.execute('SELECT status,received_at FROM messages WHERE id=?', (supplementary_mid,)).fetchone()
-                    if supplementary and supplementary['status'] != 'unknown':
+                    if send_mode and sup_req_id in unconsumed_supplements:
+                        self._requeue_supplement(supplementary_mid, sup_req_id, client)
+                    elif supplementary and supplementary['status'] != 'unknown':
                         delivered = supplementary['received_at'] is not None
-                        self._finish(supplementary_mid, 'completed' if completed and delivered else 'unknown',
-                                     error=None if completed and delivered else '补充执行或送达结果待核实，未自动重试')
+                        if send_mode and (completed and not delivered):
+                            self._requeue_supplement(supplementary_mid, sup_req_id, client)
+                        elif send_mode:
+                            self._finish_send_message_turn(
+                                supplementary_mid,
+                                'completed' if completed and delivered else 'unknown',
+                                error=None if completed and delivered else '补充执行或送达结果待核实，未自动重试',
+                            )
+                        else:
+                            self._finish(supplementary_mid, 'completed' if completed and delivered else 'unknown',
+                                         error=None if completed and delivered else '补充执行或送达结果待核实，未自动重试')
                     self.reactions.close_turn(supplementary_mid)
+                if send_mode:
+                    self.send_store.close_turn(mid)
                 self.reactions.close_turn(mid)
+                if mid not in self.turns:
+                    self.closing_turns.discard(mid)
         return True
 
     MAX_PARALLEL = 3
@@ -1300,6 +2090,8 @@ class PersonalConversation:
         """并行调度：每条待办消息一个协程，最多 MAX_PARALLEL 轮同时跑；补充类消息仍注入原来那一轮。"""
         for mid in [m for m, t in self.turns.items() if t.done()]:
             self._release(mid)
+        if any(self.turn_lanes.get(m) == 0 for m in self.closing_turns if m in self.turns):
+            return False  # 主会话 lane 0 正在 finally 收尾释放，等下一拍（<1ms）由 lane 0 原位接手
         with self.db() as db:
             rows = db.execute("SELECT * FROM messages WHERE role='user' AND status IN ('queued','sending','running')"
                               " ORDER BY created_at,id").fetchall()
@@ -1308,9 +2100,13 @@ class PersonalConversation:
             if len(self.turns) >= self.MAX_PARALLEL:
                 break
             mid = row['id']
-            if mid in self.turns or row['supplement_to_message_id'] in self.turns:
+            sup_parent = row['supplement_to_message_id']
+            if mid in self.turns or (sup_parent in self.turns and sup_parent not in self.closing_turns):
                 continue
-            if row['status'] == 'queued' and any(self._is_supplement(row, active) for active in list(self.turns)):
+            if row['status'] == 'queued' and any(
+                active not in self.closing_turns and self._is_supplement(row, active)
+                for active in list(self.turns)
+            ):
                 continue  # 那一轮的补充投递会接走它
             lane = min(set(range(self.MAX_PARALLEL)) - {self.turn_lanes[m] for m in self.turns})
             client = self.client if lane == 0 else self.client.lane(lane)
@@ -1322,6 +2118,7 @@ class PersonalConversation:
     def _release(self, mid: str) -> None:
         for table in (self.turns, self.turn_lanes, self.turn_clients, self.turn_started):
             table.pop(mid, None)
+        self.closing_turns.discard(mid)
 
     async def _run_turn(self, row, client) -> None:
         mid = row['id']
@@ -1364,6 +2161,7 @@ class PersonalConversation:
 
     async def loop(self):
         while True:
+            self.wake.clear()
             if self.parallel:
                 try:
                     started = self.schedule()
@@ -1372,8 +2170,7 @@ class PersonalConversation:
                 except Exception:
                     await asyncio.sleep(2)
                     continue
-                if not started:
-                    self.wake.clear()
+                if not started and not self.wake.is_set():
                     with contextlib.suppress(asyncio.TimeoutError):
                         await asyncio.wait_for(self.wake.wait(), 3)
                 continue
@@ -1389,8 +2186,7 @@ class PersonalConversation:
                 # A transient adapter failure must not permanently stop delivery.
                 await asyncio.sleep(2)
                 continue
-            if not processed:
-                self.wake.clear()
+            if not processed and not self.wake.is_set():
                 try:
                     await asyncio.wait_for(self.wake.wait(), 3)
                 except asyncio.TimeoutError:

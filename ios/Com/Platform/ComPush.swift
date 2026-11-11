@@ -1,8 +1,12 @@
 import UIKit
+import Intents
 import UserNotifications
 import ComCore
 
 @MainActor final class ComPushDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
+        ComSiriKitHandler.shared
+    }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         do {
             try SecureVault.storeSecret(deviceToken, account: "apns-token")

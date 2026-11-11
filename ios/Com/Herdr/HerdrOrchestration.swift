@@ -27,6 +27,52 @@ enum HerdrAgentKind: String, CaseIterable, Identifiable {
     }
 }
 
+/// 在完整 herdr / 终端里新建 Tab 的预设类型（对齐 Mac 端快捷键脚本与日常工作流）。
+enum HerdrNewTabPreset: String, CaseIterable, Identifiable {
+    case terminal
+    case agy
+    case claudeCode
+    case pi
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .terminal: "普通终端"
+        case .agy: "Agy"
+        case .claudeCode: "Claude Code"
+        case .pi: "Pi"
+        }
+    }
+
+    var tabLabel: String {
+        switch self {
+        case .terminal: "zsh"
+        case .agy: "agy"
+        case .claudeCode: "claude x"
+        case .pi: "pi"
+        }
+    }
+
+    var command: String? {
+        switch self {
+        case .terminal: nil
+        case .agy: "agy"
+        case .claudeCode: "claude x"
+        case .pi: "pi"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .terminal: "terminal"
+        case .agy: "sparkle"
+        case .claudeCode: "cpu"
+        case .pi: "circle.grid.cross"
+        }
+    }
+}
+
 struct HerdrDispatchError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
@@ -101,6 +147,32 @@ extension HerdrSessionStore {
         return c
     }
 
+    /// 顶栏 StripFigure 角色状态映射：
+    /// blocked (等你) -> .ask, working (在跑) -> .exec, done (完成) -> .done, broken (断线/异常) -> .broken, idle (空闲) -> .idle
+    var stripState: StripState {
+        switch phase {
+        case .failed, .hostKeyChanged, .needsAuthorization:
+            return .broken
+        case .idle:
+            return .idle
+        case .connecting:
+            return .idle
+        case .connected:
+            let c = counts
+            if c.blocked > 0 {
+                return .ask
+            } else if c.working > 0 {
+                return .exec
+            } else if c.error > 0 {
+                return .broken
+            } else if c.done > 0 {
+                return .done
+            } else {
+                return .idle
+            }
+        }
+    }
+
     /// 往 pane 里按键。herdr 的键名：`enter` `esc` `C-c` 等（见 `herdr pane send-keys --help`）。
     func sendKeys(paneId: String, keys: [String]) async -> String? {
         guard let client else { return "还没连上 herdr。" }
@@ -144,5 +216,55 @@ extension HerdrSessionStore {
         }
         await refresh()
         return paneId
+    }
+
+    /// 在当前工作区新建一个 Tab（支持：普通终端、Agy、Claude Code、Pi），并自动聚焦到新 Tab。
+    @discardableResult
+    func openNewTab(preset: HerdrNewTabPreset, cwd: String? = nil) async throws -> String {
+        guard let client else { throw HerdrDispatchError(message: "还没连上 herdr。") }
+        let snap = (try? await client.snapshot()) ?? snapshot
+        var params: [String: JSONValue] = [
+            "label": .string(preset.tabLabel),
+            "focus": .bool(true),
+        ]
+        if let ws = snap?.focusedWorkspaceId, !ws.isEmpty {
+            params["workspace_id"] = .string(ws)
+        }
+        let resolvedCwd = cwd
+            ?? snap?.panes.first(where: { $0.paneId == snap?.focusedPaneId })?.cwd
+            ?? snap?.panes.first?.cwd
+        if let resolvedCwd, !resolvedCwd.isEmpty {
+            params["cwd"] = .string(resolvedCwd)
+        }
+        let tab = try await client.request("tab.create", params)
+        guard case .string(let paneId)? = tab["root_pane"]?["pane_id"] else {
+            throw HerdrDispatchError(message: "herdr 没返回新 pane。")
+        }
+        if let cmd = preset.command, !cmd.isEmpty {
+            _ = try? await client.request("pane.send_input", [
+                "pane_id": .string(paneId),
+                "text": .string(cmd),
+                "keys": .array([.string("enter")]),
+            ])
+        }
+        await refresh()
+        return paneId
+    }
+
+    /// 关闭当前 Tab（若指定了 paneId 则关闭该 pane 所属的 Tab，否则关闭当前聚焦的 Tab）。
+    func closeCurrentTab(paneId: String? = nil) async throws {
+        guard let client else { throw HerdrDispatchError(message: "还没连上 herdr。") }
+        let snap = (try? await client.snapshot()) ?? snapshot
+        let tabId: String? = {
+            if let paneId, let match = snap?.panes.first(where: { $0.paneId == paneId }) {
+                return match.tabId
+            }
+            return snap?.focusedTabId ?? snap?.workspaces.first(where: { $0.focused })?.activeTabId ?? snap?.tabs.first(where: { $0.focused })?.tabId
+        }()
+        guard let tabId, !tabId.isEmpty else {
+            throw HerdrDispatchError(message: "未找到当前活动的 Tab。")
+        }
+        _ = try await client.request("tab.close", ["tab_id": .string(tabId)])
+        await refresh()
     }
 }

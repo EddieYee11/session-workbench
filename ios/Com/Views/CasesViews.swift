@@ -12,7 +12,8 @@ extension AppModel {
     /// 交给 Com：建航程。返回航程 id；`""` = 小事进主对话；`nil` = 失败（别把失败当成已进聊天）。
     func delegateNext(_ item: JSON) async -> String? {
         do {
-            let result = try await mutate("/personal/next/" + item.id.pathEncoded, fields: ["action": .string("delegate")])
+            let matterId = item["matter_id"].string.isEmpty ? item.id : item["matter_id"].string
+            let result = try await mutate("/personal/matter/" + matterId.pathEncoded + "/delegate", fields: ["action": .string("delegate")])
             // 已交接；列表没刷齐则乐观收卡 + 开口，别假装下一步/航程已是最新。
             if await load("/personal/next") == nil {
                 var value = nextData
@@ -42,7 +43,6 @@ extension AppModel {
             }
             Haptics.success()
             if result["mode"].string == "chat" {
-                tab = .chat
                 await refresh(.chat)
                 return ""
             }
@@ -103,7 +103,7 @@ extension AppModel {
                     : "已交给我办，今天页没刷上：" + err + "——可到「今天」下拉。不会假装待办已离开。"
             }
             Haptics.success()
-            if result["mode"].string == "chat" { tab = .chat; await refresh(.chat); return "" }
+            if result["mode"].string == "chat" { await refresh(.chat); return "" }
             let id = result["task_id"].string
             return id.isEmpty ? nil : id
         } catch { banner = error.localizedDescription; return nil }

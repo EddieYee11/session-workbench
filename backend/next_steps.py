@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from matter_schema import generate_matter_id
+
 TZ = ZoneInfo('Asia/Shanghai')
 MAIL = ('gmail', 'work_mail')
 CALENDAR = ('apple_calendar', 'google_calendar', 'phone_calendar')
@@ -57,7 +59,7 @@ INSTRUCTIONS = (
 # 划掉时可选的理由（10-25）：「已经办了」算做完；「别人在负责」不拿来静音整个话题（项目执行项常是别人在推）。
 REASONS = {'elsewhere': '已经办了', 'others': '别人在负责', 'unimportant': '不重要', 'not_mine': '不是我的事'}
 HANDLED = "'dismissed','acted','done','todo','resolved'"
-CARRY = ('id', 'title', 'why', 'prompt', 'urgency', 'score', 'evidence', 'phase', 'history', 'action')
+CARRY = ('id', 'matter_id', 'status', 'title', 'why', 'prompt', 'urgency', 'score', 'evidence', 'phase', 'history', 'action')
 STAMP = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
 REPLY_TITLE = re.compile(r'^(?:回复|答复)|^回(?!收|家|顾|款|访|滚|填|传|去|来|到|北京)|^(?:给|跟).{1,12}回(?:复|个|一下|话|消息)|回(?:复)?(?:微信|消息)')
 
@@ -553,7 +555,8 @@ class NextSteps:
             for r in cited:
                 if refs[r]['label'] not in labels:
                     labels.add(refs[r]['label']); evidence.append({'ref': r, **refs[r]})
-            fresh = {'id': key, 'title': title, 'why': why, 'prompt': prompt, 'urgency': urgency, 'score': score, 'evidence': evidence, 'phase': 'new'}
+            mtr_id = item.get('matter_id') or generate_matter_id(self.clock())
+            fresh = {'id': key, 'matter_id': mtr_id, 'status': 'suggested', 'title': title, 'why': why, 'prompt': prompt, 'urgency': urgency, 'score': score, 'evidence': evidence, 'phase': 'new'}
             action = self.clean_action(item.get('action'), cited, refs)
             out.append(fresh | ({'action': action} if action else {}))
         return out[:8]
@@ -861,6 +864,13 @@ class NextSteps:
                 if key:
                     reasons[key] = reasons.get(key, 0) + 1
         self.backfill(items)
+        for item in items:
+            if not item.get('matter_id'):
+                created_ts = item.get('created_at', now)
+                date_str = datetime.fromtimestamp(created_ts, TZ).strftime('%Y%m%d')
+                item['matter_id'] = f"mtr-{date_str}-{item['id'][:8]}"
+            if not item.get('status'):
+                item['status'] = 'suggested'
         order = {'now': 0, 'today': 1, 'week': 2}
         items.sort(key=lambda i: (order.get(i['urgency'], 1), -i['score']))
         from decisions import next_step_ticket

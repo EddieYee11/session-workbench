@@ -246,6 +246,7 @@ struct MemoryView: View {
                 if !search.isEmpty {
                     results
                 } else {
+                    MemoryTruthPanel()
                     LearnedTip()
                     if visible.isEmpty {
                         EmptyState(title: !failNote.isEmpty ? "记忆还没读上"
@@ -321,13 +322,16 @@ struct MemoryView: View {
             while model.memoryOpening && !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(40))
             }
+            _ = await model.loadMemoryTruthFiles()
             gotMem = model.errors[memPath] == nil && model.datasets[memPath] != nil
             gotInbox = model.errors[inboxPath] == nil && model.datasets[inboxPath] != nil
         } else {
             async let mem = model.load(memPath)
             async let inbox: Void = model.loadMemoryInbox()
+            async let truth = model.loadMemoryTruthFiles()
             gotMem = await mem != nil
             await inbox
+            _ = await truth
             gotInbox = model.errors[inboxPath] == nil && model.datasets[inboxPath] != nil
         }
         if gotMem && gotInbox {
@@ -1566,5 +1570,474 @@ struct LearnedMemoryView: View {
             : (hadCache
                ? "自动记忆没刷上：" + err + "——下面仍是上一版。不会假装已是最新。"
                : "自动记忆没拉齐：" + err + "——可再试。不会假装已是最新。")
+    }
+}
+
+// MARK: - Muse 式核心真相文件面板（MEMORY.md / SOUL.md + 左滑忘掉 + 编辑全文 + /dream）
+
+struct MemoryTruthPanel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @Namespace private var truthSegNS
+    @State private var editingFullText = false
+    @State private var draftText = ""
+    @FocusState private var editorFocused: Bool
+
+    private var store: MemoryTruthStore { model.memoryTruth }
+    private var file: MemoryTruthFile { store.selectedFile }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            headerRow
+            segmentedSwitcher
+            feedbackBanners
+            if editingFullText {
+                fullTextEditorCard
+            } else {
+                bulletListCard
+            }
+        }
+        .padding(Space.lg)
+        .background(Palette.surface, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                .strokeBorder(Palette.separator, lineWidth: 0.5)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("memory-truth-panel")
+        .onChange(of: store.selectedName) { _, newName in
+            if editingFullText {
+                draftText = store.files.first(where: { $0.name == newName })?.content ?? ""
+            }
+        }
+    }
+
+    private var headerRow: some View {
+        HStack(alignment: .center, spacing: Space.sm) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Palette.accent)
+                        .frame(width: 7, height: 7)
+                    Text("核心真相文件")
+                        .font(TypeScale.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Palette.textPrimary)
+                }
+                Text("透明可改 · 左滑单条忘掉，保存后下一轮对话生效")
+                    .font(TypeScale.caption)
+                    .foregroundStyle(Palette.textTertiary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button {
+                guard !store.dreaming else { return }
+                Haptics.selection()
+                Task { _ = await model.runMemoryDream() }
+            } label: {
+                HStack(spacing: 4) {
+                    if store.dreaming {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    Text(store.dreaming ? "整理中…" : "整理记忆")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(Palette.accentText)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Tone.accent.soft, in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .disabled(store.dreaming || store.saving)
+            .accessibilityIdentifier("memory-dream-btn")
+
+            Button {
+                Haptics.selection()
+                withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                    if editingFullText {
+                        editingFullText = false
+                        editorFocused = false
+                    } else {
+                        draftText = file.content
+                        editingFullText = true
+                        editorFocused = true
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: editingFullText ? "xmark" : "square.and.pencil")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(editingFullText ? "收起" : "编辑全文")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(Palette.textPrimary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Palette.fill, in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("memory-edit-fulltext-btn")
+        }
+    }
+
+    private var segmentedSwitcher: some View {
+        HStack(spacing: 4) {
+            ForEach(store.files) { item in
+                let isSelected = store.selectedName == item.name
+                Button {
+                    guard store.selectedName != item.name else { return }
+                    Haptics.selection()
+                    withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                        store.selectedName = item.name
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(item.roleSubtitle)
+                            .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                            .foregroundStyle(isSelected ? Palette.textPrimary : Palette.textSecondary)
+                        Text(item.shortLabel)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(isSelected ? Palette.accentText : Palette.textTertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 8)
+                    .background {
+                        if isSelected {
+                            if reduce {
+                                RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                    .fill(Palette.surface)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                            .strokeBorder(Palette.separator, lineWidth: 0.5)
+                                    )
+                            } else {
+                                RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                    .fill(Palette.surface)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                            .strokeBorder(Palette.separator, lineWidth: 0.5)
+                                    )
+                                    .matchedGeometryEffect(id: "truth-file-seg", in: truthSegNS)
+                            }
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                .accessibilityIdentifier("memory-truth-tab-\(item.name)")
+            }
+        }
+        .padding(3)
+        .background(Palette.fill, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var feedbackBanners: some View {
+        if !store.errorNote.isEmpty {
+            InlineNotice(text: store.errorNote, tone: .danger)
+                .accessibilityIdentifier("memory-truth-error")
+        }
+        if let dream = store.lastDream {
+            HStack(alignment: .top, spacing: Space.sm) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.accentText)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(dream.summary)
+                        .font(TypeScale.footnote)
+                        .foregroundStyle(Palette.textPrimary)
+                    if dream.mergedCount > 0 || dream.archivedCount > 0 {
+                        Text("合并 \(dream.mergedCount) 条 · 归档 \(dream.archivedCount) 条")
+                            .font(TypeScale.caption)
+                            .foregroundStyle(Palette.textSecondary)
+                    }
+                }
+                Spacer(minLength: 4)
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        store.lastDream = nil
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Palette.textTertiary)
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭整理摘要")
+            }
+            .padding(Space.md)
+            .background(Tone.accent.soft, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .accessibilityIdentifier("memory-dream-summary")
+        } else if !store.statusNote.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.success)
+                Text(store.statusNote)
+                    .font(TypeScale.caption)
+                    .foregroundStyle(Palette.textSecondary)
+                Spacer(minLength: 0)
+            }
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var bulletListCard: some View {
+        let sections = store.sections(for: file.content)
+        if store.loading && !store.hasLoaded {
+            HStack(spacing: Space.sm) {
+                ProgressView().controlSize(.small)
+                Text("正在读取 \(file.shortLabel)…")
+                    .font(TypeScale.footnote)
+                    .foregroundStyle(Palette.textTertiary)
+            }
+            .padding(.vertical, Space.md)
+        } else if sections.isEmpty {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                Text("\(file.shortLabel) 目前还没有条目。")
+                    .font(TypeScale.footnote)
+                    .foregroundStyle(Palette.textSecondary)
+                Button("点此直接写下第一条") {
+                    draftText = file.name == "SOUL.md" ? "# 分寸与原则\n- " : "# 长期记忆\n- "
+                    withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                        editingFullText = true
+                        editorFocused = true
+                    }
+                }
+                .buttonStyle(.secondaryCompact)
+            }
+            .padding(.vertical, Space.sm)
+        } else {
+            VStack(alignment: .leading, spacing: Space.md) {
+                ForEach(sections) { sec in
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !sec.heading.isEmpty {
+                            Text(sec.heading)
+                                .font(TypeScale.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(Palette.textSecondary)
+                                .padding(.horizontal, 4)
+                        }
+                        VStack(spacing: 0) {
+                            ForEach(Array(sec.bullets.enumerated()), id: \.element.id) { idx, bullet in
+                                TruthBulletSwipeRow(
+                                    bullet: bullet,
+                                    isBusy: store.forgettingIDs.contains(bullet.id),
+                                    showDivider: idx < sec.bullets.count - 1
+                                ) {
+                                    Task {
+                                        _ = await model.forgetMemoryTruthLine(bullet, in: file.name)
+                                    }
+                                }
+                            }
+                        }
+                        .background(Palette.fill.opacity(0.65), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    }
+                }
+            }
+        }
+    }
+
+    private var fullTextEditorCard: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            TextEditor(text: $draftText)
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(Palette.textPrimary)
+                .scrollContentBackground(.hidden)
+                .focused($editorFocused)
+                .padding(Space.sm)
+                .frame(minHeight: 210, maxHeight: 340)
+                .background(Palette.fill, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .strokeBorder(Palette.accent, lineWidth: 1)
+                )
+                .accessibilityIdentifier("memory-truth-editor")
+
+            HStack(spacing: Space.sm) {
+                Text("\(draftText.split(separator: "\n", omittingEmptySubsequences: true).count) 行 Markdown")
+                    .font(TypeScale.caption)
+                    .foregroundStyle(Palette.textTertiary)
+                Spacer()
+                Button("取消") {
+                    Haptics.selection()
+                    editorFocused = false
+                    withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                        editingFullText = false
+                    }
+                }
+                .buttonStyle(.secondaryCompact)
+                .disabled(store.saving)
+
+                Button {
+                    guard !store.saving else { return }
+                    Task {
+                        let ok = await model.saveMemoryTruthFile(name: file.name, content: draftText)
+                        if ok {
+                            editorFocused = false
+                            withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                                editingFullText = false
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        if store.saving {
+                            ProgressView().controlSize(.mini).tint(Palette.onAccent)
+                        } else {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        Text(store.saving ? "保存中…" : "保存全文")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(Palette.onAccent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Palette.accent, in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.saving)
+                .accessibilityIdentifier("memory-truth-save-btn")
+            }
+        }
+    }
+}
+
+/// 单条真相 Bullet 行：支持左滑露出「忘掉这条」（满滑直接忘掉）+ 长按菜单 + 无障碍动作，不与外层 ScrollView 抢竖向滚动。
+private struct TruthBulletSwipeRow: View {
+    let bullet: MemoryTruthBulletLine
+    let isBusy: Bool
+    let showDivider: Bool
+    let onForget: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var offsetX: CGFloat = 0
+    @State private var isOpen = false
+
+    private let actionWidth: CGFloat = 88
+    private let fullSwipeThreshold: CGFloat = -148
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            if offsetX < -2 || isOpen {
+                Button(role: .destructive) {
+                    triggerForget()
+                } label: {
+                    HStack(spacing: 4) {
+                        if isBusy {
+                            ProgressView().controlSize(.mini).tint(.white)
+                        } else {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        Text("忘掉这条")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: max(actionWidth, -offsetX))
+                    .frame(maxHeight: .infinity)
+                    .background(Palette.danger)
+                }
+                .buttonStyle(.plain)
+                .disabled(isBusy)
+                .accessibilityIdentifier("memory-forget-\(bullet.lineIndex)")
+            }
+
+            VStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 10) {
+                    Circle()
+                        .fill(Palette.accentText)
+                        .frame(width: 5, height: 5)
+                        .padding(.top, 7)
+                    Text(bullet.displayText)
+                        .font(TypeScale.callout)
+                        .foregroundStyle(Palette.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, 10)
+                if showDivider {
+                    Divider()
+                        .overlay(Palette.separator)
+                        .padding(.leading, Space.md + 15)
+                }
+            }
+            .background(Palette.surface.opacity(0.96))
+            .offset(x: offsetX)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if isOpen {
+                    withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                        offsetX = 0
+                        isOpen = false
+                    }
+                }
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 16, coordinateSpace: .local)
+                    .onChanged { value in
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        guard abs(dx) > abs(dy) * 1.15 || isOpen else { return }
+                        let base: CGFloat = isOpen ? -actionWidth : 0
+                        let next = min(0, max(-180, base + dx))
+                        offsetX = next
+                    }
+                    .onEnded { value in
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        guard abs(dx) > abs(dy) || isOpen else { return }
+                        let projected = (isOpen ? -actionWidth : 0) + value.predictedEndTranslation.width
+                        if offsetX <= fullSwipeThreshold || projected <= -175 {
+                            triggerForget()
+                        } else if offsetX < -42 || projected < -64 {
+                            Haptics.selection()
+                            withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                                offsetX = -actionWidth
+                                isOpen = true
+                            }
+                        } else {
+                            withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                                offsetX = 0
+                                isOpen = false
+                            }
+                        }
+                    }
+            )
+            .contextMenu {
+                Button(role: .destructive) {
+                    triggerForget()
+                } label: {
+                    Label("忘掉这条", systemImage: "trash")
+                }
+            }
+        }
+        .clipped()
+        .opacity(isBusy ? 0.55 : 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: "忘掉这条") {
+            triggerForget()
+        }
+    }
+
+    private func triggerForget() {
+        guard !isBusy else { return }
+        Haptics.selection()
+        withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+            offsetX = 0
+            isOpen = false
+        }
+        onForget()
     }
 }

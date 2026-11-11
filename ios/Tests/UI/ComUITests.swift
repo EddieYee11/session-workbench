@@ -303,19 +303,94 @@ final class ComUITests: XCTestCase {
         XCTAssertTrue(app.buttons["发送消息"].isHittable)
         capture("04-keyboard", app: app)
     }
-    /// 验收辅助：横屏下的 herdr 终端（假快照）。simctl 转不了屏，借 XCUIDevice 转，截图写到 /tmp 供人看。
+    /// 验收辅助：横屏下的 herdr 终端。借 XCUIDevice 转，截图写到工作区供验收。
     @MainActor func testHerdrTerminalLandscapeCapture() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-herdr-demo", "-appearance", "light"]
         app.launchEnvironment["COM_PREVIEW_TAB"] = "工作"
         app.launchEnvironment["COM_PREVIEW_SURFACE"] = "terminal"
-        app.launchEnvironment["COM_PREVIEW_TERMINAL"] = "1"
-        app.launchEnvironment["COM_PREVIEW_PANE"] = "2"
         app.launch()
+        sleep(2)
         XCUIDevice.shared.orientation = .landscapeRight
-        // XCUITest 自己的截图是黑的（默认显示屏）；停一会儿，让外面用 simctl io --display=3 截内屏。
-        sleep(UInt32(ProcessInfo.processInfo.environment["COM_HOLD_SECONDS"] ?? "4") ?? 4)
+        sleep(4)
+        let landscape = app.screenshot()
+        let outDir = URL(fileURLWithPath: "/Users/eddiegao/AI_Work_System/.agents/teamwork/teamwork_worker_m3_2")
+        try? landscape.pngRepresentation.write(to: outDir.appendingPathComponent("herdr_m3_unfolded_masterdetail.png"))
+        try? landscape.pngRepresentation.write(to: outDir.appendingPathComponent("herdr_m3_landscape_live.png"))
         XCUIDevice.shared.orientation = .portrait
+        sleep(1)
+    }
+    /// 验收辅助：Herdr standalone 姿态截屏（M3 Round 3 全套 6 姿态真实无重复系统截屏）
+    @MainActor func testHerdrPosturesCapture() throws {
+        let outDirM35 = URL(fileURLWithPath: "/Users/eddiegao/AI_Work_System/.agents/teamwork/teamwork_worker_m3_5")
+        let outDirM34 = URL(fileURLWithPath: "/Users/eddiegao/AI_Work_System/.agents/teamwork/teamwork_worker_m3_4")
+        let outDir = URL(fileURLWithPath: "/Users/eddiegao/AI_Work_System/.agents/teamwork/teamwork_worker_m3_3")
+        let outDirM32 = URL(fileURLWithPath: "/Users/eddiegao/AI_Work_System/.agents/teamwork/teamwork_worker_m3_2")
+        
+        func save(_ data: Data, name: String) {
+            try? data.write(to: outDirM35.appendingPathComponent(name))
+            try? data.write(to: outDirM34.appendingPathComponent(name))
+            try? data.write(to: outDir.appendingPathComponent(name))
+            try? data.write(to: outDirM32.appendingPathComponent(name))
+        }
+        
+        // 1. herdr_m3_outer_queue.png: 外屏单栏队列 (Portrait, default collapsed)
+        XCUIDevice.shared.orientation = .portrait
+        var app = XCUIApplication(bundleIdentifier: "work.eddie.herdr")
+        app.launchArguments = ["--ui-herdr-demo"]
+        app.launch()
+        app.activate()
+        sleep(4)
+        save(app.screenshot().pngRepresentation, name: "herdr_m3_outer_queue.png")
+        
+        // 2. herdr_m3_inner_portrait.png: 内屏竖拿单栏队列 (Portrait, expanded first pane with live ANSI preview card)
+        app = XCUIApplication(bundleIdentifier: "work.eddie.herdr")
+        app.launchArguments = ["--ui-herdr-demo", "--expand-first-pane"]
+        app.launch()
+        app.activate()
+        sleep(4)
+        save(app.screenshot().pngRepresentation, name: "herdr_m3_inner_portrait.png")
+        
+        // 3. herdr_m3_unfolded_masterdetail.png: 展开态 Master-Detail 双栏 (Left queue + right live terminal)
+        app = XCUIApplication(bundleIdentifier: "work.eddie.herdr")
+        app.launchArguments = ["--ui-herdr-demo", "--posture-unfolded"]
+        app.launch()
+        app.activate()
+        sleep(5)
+        save(app.screenshot().pngRepresentation, name: "herdr_m3_unfolded_masterdetail.png")
+        
+        // 4. herdr_m3_landscape_live.png: 横屏全屏实时终端 (Genuine LandscapeRight live terminal)
+        // HerdrApp requests UIWindowScene landscapeRight internally via --landscape launch arg.
+        // Do NOT set XCUIDevice.shared.orientation = .landscapeRight as that triggers the CoreSimulator clipping bug.
+        app = XCUIApplication(bundleIdentifier: "work.eddie.herdr")
+        app.launchArguments = ["--ui-herdr-demo", "--preview-terminal", "--landscape"]
+        app.launch()
+        app.activate()
+        sleep(3)
+        save(app.screenshot().pngRepresentation, name: "herdr_m3_landscape_live.png")
+        
+        // 5. herdr_m3_tabletop.png: 半折叠悬停姿态 (Portrait, upper 100% width terminal + lower console)
+        XCUIDevice.shared.orientation = .portrait
+        sleep(2)
+        app = XCUIApplication(bundleIdentifier: "work.eddie.herdr")
+        app.launchArguments = ["--ui-herdr-demo", "--posture-tabletop"]
+        app.launch()
+        app.activate()
+        sleep(5)
+        save(app.screenshot().pngRepresentation, name: "herdr_m3_tabletop.png")
+        
+        // 6. herdr_m3_inner_fullscreen.png: 内屏全屏终端 (Portrait, full screen terminal)
+        XCUIDevice.shared.orientation = .portrait
+        sleep(2)
+        app = XCUIApplication(bundleIdentifier: "work.eddie.herdr")
+        app.launchArguments = ["--ui-herdr-demo", "--preview-terminal"]
+        app.launch()
+        app.activate()
+        sleep(5)
+        save(app.screenshot().pngRepresentation, name: "herdr_m3_inner_fullscreen.png")
+        
+        XCUIDevice.shared.orientation = .portrait
+        sleep(2)
     }
     /// 验收辅助：下一步页把「来源文件夹」展开，横屏 / 内屏下看纸片间距。截图靠外面 simctl io --display=3。
     @MainActor func testNextEvidencePocketOpenCapture() throws {
@@ -775,5 +850,21 @@ final class ComUITests: XCTestCase {
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "帮我盯着日志")).firstMatch.exists)
         XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "suggestion-chips").count, 1)
         capture("r2-chat-incoming", app: app)
+    }
+
+    /// 实时对话（Live Voice）：聊天输入栏右侧光球入口 → 全屏呼吸光球通话页 → 挂断回主界面。
+    @MainActor func testLiveVoiceFlow() throws {
+        let app = self.app()
+        let startButton = app.buttons["chat-live-voice-start"]
+        XCTAssertTrue(startButton.waitForExistence(timeout: 15))
+        capture("live-voice-entry", app: app)
+        startButton.tap()
+        let hangupButton = app.buttons["live-voice-hangup"]
+        XCTAssertTrue(hangupButton.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["live-voice-mute"].exists)
+        XCTAssertTrue(app.buttons["live-voice-subtitle-toggle"].exists)
+        capture("live-voice-fullscreen", app: app)
+        hangupButton.tap()
+        XCTAssertTrue(startButton.waitForExistence(timeout: 5))
     }
 }

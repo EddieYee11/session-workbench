@@ -34,20 +34,42 @@ enum ReplyOptions {
     static func options(for message: JSON) -> [String] {
         let field = message["suggestions"].array.map(\.string).filter { !$0.isEmpty }
         if !field.isEmpty { return Array(field.prefix(3)) }
-        return split(message["text"].string).1
+        let raw = message["text"].isNull ? message["content"].string : message["text"].string
+        return split(raw).1
+    }
+
+    /// 首个选项是否为待确认动作的确认词（消息正文末句含「回我一句「X」」且 X 等于第一个选项）。
+    static func confirmFirst(in text: String, options: [String]) -> Bool {
+        guard let first = options.first?.trimmingCharacters(in: .whitespacesAndNewlines), !first.isEmpty else { return false }
+        let body = split(text).0.replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return false }
+        let lines = body.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let tail = lines.suffix(2).joined(separator: " ")
+        let patterns = [
+            "回我一句「\(first)」",
+            "回我一句『\(first)』",
+            "回我一句“\(first)”",
+            "回我一句\"\(first)\"",
+        ]
+        return patterns.contains { tail.contains($0) }
+    }
+
+    static func confirmFirst(for message: JSON, options: [String]) -> Bool {
+        let raw = message["text"].isNull ? message["content"].string : message["text"].string
+        return confirmFirst(in: raw, options: options)
     }
 
     /// 按字面挑一个图标，让卡片一眼能分出「推进 / 查看 / 放下」。
     static func symbol(for option: String) -> String {
         let rules: [([String], String)] = [
-            (["先不", "不用", "算了", "跳过", "不管", "取消", "以后"], "hand.raised"),
+            (["先不", "不用", "算了", "跳过", "不管", "取消", "以后", "再想想"], "hand.raised"),
             (["详情", "看看", "查看", "展开", "明细", "看下"], "doc.text.magnifyingglass"),
             (["提醒", "闹钟"], "bell"),
             (["明天", "后天", "下周", "改到", "推迟", "日程", "安排"], "calendar"),
             (["记", "存", "收藏", "保存"], "square.and.arrow.down"),
             (["改", "调整", "换", "重写"], "pencil"),
             (["发", "回复", "告诉"], "paperplane"),
-            (["继续", "好", "可以", "确认", "就这样", "开始", "去做"], "checkmark"),
+            (["继续", "好", "可以", "确认", "就这样", "开始", "去做", "叫", "订"], "checkmark"),
         ]
         return rules.first { $0.0.contains(where: option.contains) }?.1 ?? "arrow.turn.down.right"
     }
@@ -57,6 +79,7 @@ enum ReplyOptions {
 struct SuggestionChips: View {
     let messageID: String
     let options: [String]
+    var confirmFirst: Bool = false
     /// 返回是否送达；失败时芯片回弹可再点。
     let choose: (String) async -> Bool
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -71,6 +94,7 @@ struct SuggestionChips: View {
             FlowLayout(spacing: Space.sm) {
                 ForEach(Array(options.enumerated()), id: \.element) { index, option in
                     let primary = index == 0
+                    let filled = primary && confirmFirst
                     Button {
                         guard picked == nil else { return }
                         Haptics.selection()
@@ -85,13 +109,16 @@ struct SuggestionChips: View {
                         HStack(spacing: 6) {
                             Image(systemName: ReplyOptions.symbol(for: option))
                                 .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(primary ? Palette.accentText : Palette.textSecondary)
-                            Text(option).font(TypeScale.subheadline.weight(.medium)).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                                .foregroundStyle(filled ? Palette.onAccent : (primary && !confirmFirst ? Palette.accentText : Palette.textSecondary))
+                            Text(option)
+                                .font(TypeScale.subheadline.weight(filled ? .semibold : .medium))
+                                .foregroundStyle(filled ? Palette.onAccent : Palette.textPrimary)
+                                .lineLimit(1)
                         }
                         .padding(.horizontal, 14).frame(minHeight: 40)
-                        .background(primary ? Palette.accent.opacity(0.12) : Palette.surface, in: .capsule)
+                        .background(filled ? Palette.accent : (primary && !confirmFirst ? Palette.accent.opacity(0.12) : Palette.surface), in: .capsule)
                         .overlay(Capsule().strokeBorder(
-                            picked == option ? Palette.accent : (primary ? Palette.accent.opacity(0.35) : Palette.separator),
+                            picked == option || filled ? Palette.accent : (primary && !confirmFirst ? Palette.accent.opacity(0.35) : Palette.separator),
                             lineWidth: picked == option ? 1.5 : (primary ? 1 : 0.5)))
                         .shadow(color: .black.opacity(0.05), radius: 6, y: 2)
                         .contentShape(.capsule)
@@ -99,6 +126,7 @@ struct SuggestionChips: View {
                     .buttonStyle(SoftPressStyle())
                     .accessibilityIdentifier("suggestion-\(index)")
                     .accessibilityLabel((primary ? "首选：" : "") + option)
+                    .accessibilityValue(filled ? "confirm" : "outline")
                     // curated：错峰 soft pop；Reduce Motion 只淡入不旋转。
                     .scaleEffect(shown ? (picked == nil || picked == option ? 1 : 0.92) : (reduce ? 1 : 0.88), anchor: .topLeading)
                     .opacity(shown ? (picked == nil || picked == option ? 1 : 0) : 0)

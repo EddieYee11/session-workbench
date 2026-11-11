@@ -31,6 +31,9 @@ struct ChatView: View {
     var body: some View {
         Group {
             VStack(spacing: 0) {
+                LivePresenceCapsuleView(model: model)
+                    .padding(.horizontal, Space.lg)
+                    .padding(.vertical, Space.xs)
             ZStack(alignment: .top) {
             VStack(spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
@@ -76,6 +79,7 @@ struct ChatView: View {
                 configureList()
                 rebuildNow()
                 knownAssistants = assistantIDs(model.conversation.messages)
+                model.probeClipboardForDrop()
             }
             .onChange(of: model.conversation.messages) { _, _ in scheduleRebuild() }
             .onChange(of: model.pending) { _, _ in rebuildNow() }
@@ -131,9 +135,9 @@ struct ChatView: View {
                 .padding(.horizontal, Space.lg)
                 .accessibilityIdentifier("chat-finance-refresh-fail")
             }
-            // SSE 断线：HTTP 拉齐成功也不清；勿假装实时已恢复。
-            if !model.streamNote.isEmpty {
-                InlineNotice(text: model.streamNote, tone: .danger)
+            // 仅在有挂起消息未送达时提示断线，避免日常弱网自动重连刷出底栏横幅打断心流（对齐 OpenMuseBot 静默自愈）。
+            if !model.streamNote.isEmpty && !model.pending.isEmpty {
+                InlineNotice(text: model.streamNote, tone: .neutral)
                     .padding(.horizontal, Space.lg)
                     .accessibilityIdentifier("chat-stream-fail")
             }
@@ -187,6 +191,14 @@ struct ChatView: View {
                 .animation(ComMotion.reduced(reduce, ComMotion.settle), value: model.stage.state.isBusy)
                 .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: model.interruptNote.isEmpty)
             }
+            // 实时工具胶囊条 + 边干边报轻播报开关
+            HStack(alignment: .center, spacing: Space.xs) {
+                LiveToolChipsBar()
+                Spacer(minLength: 0)
+                VoiceNarrationTogglePill()
+                    .padding(.trailing, Space.lg)
+            }
+            .padding(.top, 2)
             // 有对话时仍提示「等你 / 下一步」，保持 Muse 式对话重心。
             if !displayRows.isEmpty && model.briefProgress < 0.5 {
                 ChatAttentionStrip()
@@ -283,8 +295,14 @@ struct ChatView: View {
         if displayRows.isEmpty { next.append(.empty) }
         next.append(contentsOf: displayRows.map { .row($0, flying: flights[$0.id] != nil) })
         if let latest = suggestionHost(displayRows), latest.id != usedSuggestions {
-            let options = ReplyOptions.options(for: latest)
-            if !options.isEmpty { next.append(.suggestions(messageID: latest.id, options: options)) }
+            let parsed = SendMessageBubble.parse(from: latest)
+            if parsed.type == .text {
+                let options = parsed.suggestions.isEmpty ? ReplyOptions.options(for: latest) : parsed.suggestions
+                if !options.isEmpty {
+                    let confirmFirst = ReplyOptions.confirmFirst(for: latest, options: options)
+                    next.append(.suggestions(messageID: latest.id, options: options, confirmFirst: confirmFirst))
+                }
+            }
         }
         if next != entries { entries = next }
     }
@@ -321,8 +339,8 @@ struct ChatView: View {
                 .frame(maxWidth: .infinity)
             case .empty:
                 ChatEmptyPresence()
-            case .suggestions(let messageID, let options):
-                SuggestionChips(messageID: messageID, options: options) { option in
+            case .suggestions(let messageID, let options, let confirmFirst):
+                SuggestionChips(messageID: messageID, options: options, confirmFirst: confirmFirst) { option in
                     // 先亮一下再发；送达成功才收起整组；失败芯片回弹可重试。
                     if !reduce { try? await Task.sleep(for: .milliseconds(200)) }
                     let ok = await model.send(textOverride: option)
@@ -335,6 +353,8 @@ struct ChatView: View {
                 switch row.kind {
                 case .day(let label):
                     ChatDayAnchor(label: label)
+                case .time(let label):
+                    ChatTimeAnchor(label: label)
                 case .proactiveStack(let run):
                     ProactiveStack(id: row.id, run: run)
                 case .message(let item, let consecutive):
@@ -405,9 +425,34 @@ struct MessageView: View, Equatable {
     var pending: PendingMessage?
     var isConsecutiveAgent = false
     var user: Bool { message["role"].string == "user" }
+    private var parsedBubble: SendMessageBubble { SendMessageBubble.parse(from: message) }
     var text: String {
-        let raw = textContent(message["text"].isNull ? message["content"] : message["text"])
-        return user ? raw : ReplyOptions.split(raw).0
+        if user {
+            return textContent(message["text"].isNull ? message["content"] : message["text"])
+        }
+        let parsed = parsedBubble
+        switch parsed.type {
+        case .text:
+            let raw = parsed.content.isEmpty ? textContent(message["text"].isNull ? message["content"] : message["text"]) : parsed.content
+            return ReplyOptions.split(raw).0
+        case .attachment:
+            return parsed.caption.isEmpty ? parsed.name : parsed.caption
+        case .widget:
+            return parsed.content.isEmpty ? parsed.widget["title"].string : parsed.content
+        case .secretRequest:
+            return "安全密钥请求：\(parsed.secretName)"
+        }
+    }
+    private var remainingArtifacts: [JSON] {
+        let all = message["artifacts"].array
+        guard !user else { return all }
+        let parsed = parsedBubble
+        if parsed.type == .attachment { return [] }
+        if !parsed.images.isEmpty {
+            let inlineIDs = Set(parsed.images.map(\.artifactID).filter { !$0.isEmpty })
+            return all.filter { !inlineIDs.contains($0.id) }
+        }
+        return all
     }
     private var process: WorkProcess? { WorkProcess.from(message) }
     private var taskEvents: [JSON] { message["work_events"].array.filter { !$0.id.hasPrefix("tool-") && !["think", "reply"].contains($0.id) } }
@@ -439,30 +484,7 @@ struct MessageView: View, Equatable {
                     .modifier(ChatBubbleFrameReport(id: layoutID ?? message.id, enabled: flying)).opacity(flying ? 0 : 1)
                     .accessibilityIdentifier("chat-bubble-" + message.id)
             } else {
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    if text.hasPrefix("已记") {
-                        Label("已记账", systemImage: "yensign.circle.fill")
-                            .font(TypeScale.caption.weight(.semibold))
-                            .foregroundStyle(Palette.success)
-                            .accessibilityIdentifier("chat-bookkeep-receipt-" + message.id)
-                            .onAppear {
-                                let age = Date().timeIntervalSince1970 - message["created_at"].double
-                                if age >= 0, age < 3 { Haptics.success() }
-                            }
-                    }
-                    ClampedWhenProactive(id: message.id, proactive: ProactiveMessage.matches(message), text: text) {
-                        ReplyText(text: text, motionID: message.id, createdAt: message["created_at"].double)
-                    }
-                    .foregroundStyle(Palette.textPrimary)
-                }
-                .agentBubble()
-                .overlay(alignment: .leading) {
-                    if text.hasPrefix("已记") {
-                        RoundedRectangle(cornerRadius: 2).fill(Palette.success.opacity(0.85))
-                            .frame(width: 3).padding(.vertical, Space.sm).padding(.leading, 4)
-                    }
-                }
-                .accessibilityIdentifier("agent-bubble-" + message.id)
+                AssistantBubbleBodyView(message: message, bubble: parsedBubble)
             }
             if ProactiveMessage.matches(message) {
                 ProactiveAction(requestID: message["request_id"].string, messageID: message.id)
@@ -470,7 +492,7 @@ struct MessageView: View, Equatable {
             if !user && !message["receipts"].array.isEmpty {
                 ReceiptStrip(receipts: message["receipts"].array)
             }
-            if !user && !message["widgets"].array.isEmpty {
+            if !user && parsedBubble.type != .widget && !message["widgets"].array.isEmpty {
                 MessageWidgets(messageID: message.id, widgets: message["widgets"].array)
             }
             if !message["attachments"].array.isEmpty {
@@ -492,14 +514,21 @@ struct MessageView: View, Equatable {
                 DisclosureGroup("工作过程 · \(taskEvents.count)") {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(events.enumerated()), id: \.offset) { index, event in
-                            StepRow(text: eventLabel(event), state: index < events.count - 1 ? .done : stepState(event), time: clockTime(event["at"].double))
+                            StepRow(
+                                text: eventLabel(event),
+                                state: index < events.count - 1 ? .done : stepState(event),
+                                time: clockTime(event["at"].double),
+                                stepId: event["id"].string.isEmpty ? "step-\(index)" : event["id"].string,
+                                messageId: message.id,
+                                stepIndex: index
+                            )
                         }
                     }.padding(.top, Space.sm)
                 }.font(TypeScale.footnote.weight(.medium)).tint(Palette.textSecondary).foregroundStyle(Palette.textSecondary)
                     .padding(.horizontal, Space.lg).padding(.vertical, Space.md)
                     .noteSurface()
             }
-            if !message["artifacts"].array.isEmpty { ArtifactList(artifacts: message["artifacts"].array, chips: true) }
+            if !remainingArtifacts.isEmpty { ArtifactList(artifacts: remainingArtifacts, chips: true) }
         }
         .frame(maxWidth: .infinity, alignment: user ? .trailing : .leading)
         .padding(user ? .leading : .trailing, user ? 48 : 20)
@@ -679,9 +708,9 @@ private struct MessageDeliveryStatus: View {
                     Button("回到草稿") { model.restoreRejected(pending.id) }.buttonStyle(.quiet).font(TypeScale.footnote.weight(.semibold))
                 }
             }
-        } else if !message["status"].string.isEmpty && !(processLive && ["sending", "running"].contains(message["status"].string)) {
+        } else if !message["status"].string.isEmpty && message["status"].string != "completed" && !(processLive && ["sending", "running"].contains(message["status"].string)) {
             let status = message["status"].string
-            Label(["queued": "收到了 · 我先排上", "sending": "收到了 · 我在接", "running": "我在办", "completed": "办完了", "failed": "这轮没办成", "unknown": "结果还不清楚", "approval_required": "要你批准这一步", "cancelled": "已停下"][status] ?? "收到了", systemImage: status == "failed" || status == "unknown" ? "exclamationmark.circle" : "checkmark")
+            Label(["queued": "收到了 · 我先排上", "sending": "收到了 · 我在接", "running": "我在办", "failed": "这轮没办成", "unknown": "结果还不清楚", "approval_required": "要你批准这一步", "cancelled": "已停下"][status] ?? "收到了", systemImage: status == "failed" || status == "unknown" ? "exclamationmark.circle" : "clock")
                 .font(TypeScale.footnote).foregroundStyle(status == "failed" || status == "unknown" ? Palette.warning : Palette.textTertiary)
         }
     }
@@ -697,33 +726,154 @@ func stepState(_ event: JSON) -> StepState {
     return .current
 }
 
+/// TurnPlanner 思考步骤实体
+struct TurnPlanStep: Identifiable, Sendable, Equatable {
+    let id: String
+    let title: String
+    let state: String
+    let stepIndex: Int
+    let messageId: String
+    let isMaterialized: Bool
+
+    init(
+        id: String = "",
+        title: String,
+        state: String = "pending",
+        stepIndex: Int = 0,
+        messageId: String = "",
+        isMaterialized: Bool = false
+    ) {
+        self.id = id.isEmpty ? "step-\(stepIndex)" : id
+        self.title = title
+        self.state = state
+        self.stepIndex = stepIndex
+        self.messageId = messageId
+        self.isMaterialized = isMaterialized
+    }
+}
+
 /// 步骤行：做完的划线勾掉，正在做的实心方块，等你的朱砂框，没到的淡框。
+/// 支持长按菜单/直接点击操作图标一键沉淀为待办事项 (调用 POST /personal/matters/from_step)。
 struct StepRow: View {
+    @Environment(AppModel.self) private var appModel
     let text: String
     let state: StepState
-    var time = ""
+    var time: String = ""
+    var stepId: String = ""
+    var messageId: String = ""
+    var stepIndex: Int = 0
+    @State private var isMaterializing = false
+    @State private var materialized = false
+
+    init(
+        text: String,
+        state: StepState,
+        time: String = "",
+        stepId: String = "",
+        messageId: String = "",
+        stepIndex: Int = 0
+    ) {
+        self.text = text
+        self.state = state
+        self.time = time
+        self.stepId = stepId
+        self.messageId = messageId
+        self.stepIndex = stepIndex
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: Space.md) {
             ZStack {
                 switch state {
-                case .done: Circle().fill(Palette.success); Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
-                case .current: Circle().strokeBorder(Palette.accentText, lineWidth: 1.6); Circle().fill(Palette.accent).frame(width: 8, height: 8)
-                case .blocked: Circle().strokeBorder(Palette.warning, lineWidth: 1.6); Circle().fill(Palette.warning).frame(width: 6, height: 6)
-                case .pending: Circle().strokeBorder(Palette.separator, lineWidth: 1.6)
+                case .done:
+                    Circle().fill(Palette.success)
+                    Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
+                case .current:
+                    Circle().strokeBorder(Palette.accentText, lineWidth: 1.6)
+                    Circle().fill(Palette.accent).frame(width: 8, height: 8)
+                case .blocked:
+                    Circle().strokeBorder(Palette.warning, lineWidth: 1.6)
+                    Circle().fill(Palette.warning).frame(width: 6, height: 6)
+                case .pending:
+                    Circle().strokeBorder(Palette.separator, lineWidth: 1.6)
                 }
-            }.frame(width: 16, height: 16)
-            Text(text).font(state == .current ? TypeScale.rowTitle : TypeScale.body)
+            }
+            .frame(width: 16, height: 16)
+
+            Text(text)
+                .font(state == .current ? TypeScale.rowTitle : TypeScale.body)
                 .foregroundStyle(state == .blocked ? Palette.warning : state == .done || state == .pending ? Palette.textTertiary : Palette.textPrimary)
                 .strikethrough(state == .done, color: Palette.textTertiary.opacity(0.6))
-                .frame(maxWidth: .infinity, alignment: .leading).lineLimit(2)
-            if !time.isEmpty { Text(time).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary) }
-        }.frame(minHeight: 30).accessibilityElement(children: .combine)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
+
+            if !time.isEmpty {
+                Text(time).font(TypeScale.footnote).foregroundStyle(Palette.textTertiary)
+            }
+
+            // 一键沉淀为待办事项按钮 [⚡️ 移入待办]
+            Button(action: {
+                triggerMaterialize()
+            }) {
+                HStack(spacing: 3) {
+                    if isMaterializing {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 10))
+                    } else if materialized {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10))
+                    }
+                    Text(materialized ? "已移入待办" : "⚡️ 移入待办")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(materialized ? Palette.success : Palette.accent)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Palette.fill, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(isMaterializing || materialized)
+            .accessibilityLabel("沉淀为待办事项")
+            .accessibilityIdentifier("step-materialize-button-\(stepIndex)")
+        }
+        .frame(minHeight: 30)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button(action: {
+                triggerMaterialize()
+            }) {
+                Label("⚡️ 移入待办 (Matter)", systemImage: "checklist")
+            }
+        }
+        .onLongPressGesture(minimumDuration: 0.5) {
+            triggerMaterialize()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func triggerMaterialize() {
+        guard !isMaterializing, !materialized else { return }
+        isMaterializing = true
+        Haptics.impact(.medium)
+        Task {
+            let res = await appModel.createMatterFromStep(
+                stepId: stepId.isEmpty ? "step-\(stepIndex)" : stepId,
+                messageId: messageId,
+                stepIndex: stepIndex,
+                title: text
+            )
+            isMaterializing = false
+            if res != nil {
+                materialized = true
+            }
+        }
     }
 }
 
 struct ComposerView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @Environment(ComDuoHingeCoordinator.self) private var duoCoordinator: ComDuoHingeCoordinator?
     @FocusState private var focused: Bool
     @State private var importing = false
     @State private var photo: PhotosPickerItem?
@@ -777,6 +927,28 @@ struct ComposerView: View {
                     }
                 }.scrollIndicators(.hidden).padding(.horizontal, Space.xs)
             }
+            ComposerDualCapsulesBar()
+                .padding(.horizontal, Space.xs)
+            if let contextMatter = model.contextMatter {
+                HStack(spacing: Space.xs) {
+                    Image(systemName: "link.badge.plus")
+                        .foregroundStyle(Palette.accentText)
+                    Text("关联事项: \(contextMatter["title"].string)")
+                        .font(TypeScale.footnote.weight(.medium))
+                        .lineLimit(1)
+                    Spacer()
+                    Button {
+                        model.contextMatter = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Palette.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, Space.sm)
+                .padding(.vertical, Space.xs)
+                .background(Palette.fill, in: Capsule())
+            }
             if let reference = model.reference {
                 HStack(alignment: .top) {
                     RoundedRectangle(cornerRadius: 2).fill(Palette.accent).frame(width: 3)
@@ -799,28 +971,53 @@ struct ComposerView: View {
                                 model.openSearch()
                             }
                             .disabled(model.searchOpening)
+                            Divider()
+                            Button(
+                                model.voiceNarrationEnabled ? "关闭语音边干边报" : "开启语音边干边报",
+                                systemImage: model.voiceNarrationEnabled ? "speaker.wave.2.fill" : "speaker.slash"
+                            ) {
+                                Haptics.selection()
+                                model.voiceNarrationEnabled.toggle()
+                            }
                         } label: {
                             Image(systemName: uploading ? "hourglass" : "plus").font(.system(size: 18, weight: .medium)).foregroundStyle(Palette.textPrimary)
                                 .frame(width: 44, height: 44).background(Palette.fill, in: .circle)
                         }.disabled(uploading).accessibilityLabel("附件与成果")
                         TextField("发消息", text: $model.draft, axis: .vertical).font(TypeScale.callout).lineLimit(1...6).focused($focused).padding(.vertical, Space.md).accessibilityIdentifier("message-input").chatFrame("composer")
                         if model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Button {
-                                guard !model.voice.starting else { return }
-                                focused = false
-                                model.openVoice()
-                            } label: {
-                                Image(systemName: model.voice.starting ? "hourglass" : "mic")
-                                    .font(.system(size: 20, weight: .regular))
-                                    .foregroundStyle(Palette.textPrimary)
-                                    .frame(width: 44, height: 44)
-                                    .contentShape(Rectangle())
+                            HStack(spacing: 4) {
+                                Button {
+                                    guard !model.voice.starting else { return }
+                                    focused = false
+                                    model.openVoice()
+                                } label: {
+                                    Image(systemName: model.voice.starting ? "hourglass" : "mic")
+                                        .font(.system(size: 20, weight: .regular))
+                                        .foregroundStyle(Palette.textPrimary)
+                                        .frame(width: 40, height: 44)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(SoftPressStyle(scale: 0.92))
+                                .contentShape(Rectangle())
+                                .disabled(model.voice.starting)
+                                .accessibilityIdentifier("chat-voice-start")
+                                .accessibilityLabel(model.voice.starting ? "正在开麦" : "开始语音")
+
+                                Button {
+                                    focused = false
+                                    Haptics.selection()
+                                    model.openLiveVoice()
+                                } label: {
+                                    Image(systemName: "waveform")
+                                        .font(.system(size: 16, weight: .bold))
+                                        .foregroundStyle(Palette.onAccent)
+                                        .frame(width: 38, height: 38)
+                                        .background(Palette.accent, in: Circle())
+                                }
+                                .buttonStyle(SoftPressStyle(scale: 0.92))
+                                .accessibilityIdentifier("chat-live-voice-start")
+                                .accessibilityLabel("实时语音通话")
                             }
-                            .buttonStyle(SoftPressStyle(scale: 0.92))
-                            .contentShape(Rectangle())
-                            .disabled(model.voice.starting)
-                            .accessibilityIdentifier("chat-voice-start")
-                            .accessibilityLabel(model.voice.starting ? "正在开麦" : "开始语音")
                         } else {
                             CircleActionButton(symbol: model.sending ? "hourglass" : "arrow.up", label: model.sending ? "发送中" : "发送消息", filled: true, size: 40) {
                                 // 按下即反馈，受理成功后再 Haptics.sent（AppModel.send）——快路径体感更跟手。
@@ -836,7 +1033,27 @@ struct ComposerView: View {
                 }
             }
             .composerSurface()
+            .overlay {
+                if let duo = duoCoordinator, duo.hoverDropTarget == .inputBar {
+                    RoundedRectangle(cornerRadius: Radius.md)
+                        .stroke(Palette.accent, lineWidth: 2)
+                        .shadow(color: Palette.accent.opacity(0.4), radius: 8)
+                        .animation(.easeInOut(duration: 0.15), value: duo.hoverDropTarget)
+                }
+            }
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear {
+                            duoCoordinator?.registeredDropRects[.inputBar] = geo.frame(in: .named("duoRoot"))
+                        }
+                        .onChange(of: geo.frame(in: .named("duoRoot"))) { _, newFrame in
+                            duoCoordinator?.registeredDropRects[.inputBar] = newFrame
+                        }
+                }
+            }
             .animation(ComMotion.reduced(reduce, ComMotion.crossfade), value: model.voice.phase)
+            .frame(maxHeight: duoCoordinator?.posture == .innerTabletop ? 210 : nil)
 
         }
         .onChange(of: model.draft) { _, _ in model.persistSoon() }

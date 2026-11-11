@@ -153,15 +153,23 @@ class PersonalHub:
             d.execute('INSERT OR REPLACE INTO feedback VALUES(?,?)',(ident,json.dumps(row,ensure_ascii=False)))
         return row
     async def command(self,args,timeout=25):
-        env={**os.environ,'PATH':'/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin'}
-        proc=await asyncio.create_subprocess_exec(*map(str,args),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,env=env)
-        try:out,err=await asyncio.wait_for(proc.communicate(),timeout)
-        except asyncio.TimeoutError:
-            proc.kill();await proc.wait();raise RuntimeError('Connector timed out') from None
-        if proc.returncode:raise RuntimeError('Connector authorization or service unavailable')
-        data=json.loads(out)
-        if data.get('error'):raise RuntimeError('Connector authorization required')
-        return data
+        env={**os.environ,'PATH':'/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin','GWS_USE_PROXY':'1'}
+        last_err=None
+        for attempt in range(2):
+            proc=await asyncio.create_subprocess_exec(*map(str,args),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,env=env)
+            try:out,err=await asyncio.wait_for(proc.communicate(),timeout)
+            except asyncio.TimeoutError:
+                proc.kill();await proc.wait();last_err=RuntimeError('Connector timed out')
+                continue
+            if proc.returncode:
+                last_err=RuntimeError('Connector authorization or service unavailable')
+                continue
+            text_out=out.decode('utf-8',errors='replace') if isinstance(out,(bytes,bytearray)) else str(out)
+            idx=text_out.find('{')
+            data=json.loads(text_out[idx:] if idx>=0 else text_out)
+            if data.get('error'):raise RuntimeError('Connector authorization required')
+            return data
+        raise (last_err or RuntimeError('Connector authorization or service unavailable'))
     async def gws(self,service,*path,params):
         return await self.command(['gws',service,*path,'--params',json.dumps(params)])
 
@@ -221,7 +229,11 @@ class PersonalHub:
                 for item in data.get('messages',[]):
                     count+=1
                     if self.seen(name,item['id']):continue
-                    m=await self.gws('gmail','users','messages','get',params={'userId':'me','id':item['id'],'format':'metadata'})  # gws 带 metadataHeaders 数组时返回 0 个邮件头
+                    if updated>=20:continue
+                    try:
+                        m=await self.gws('gmail','users','messages','get',params={'userId':'me','id':item['id'],'format':'metadata'})  # gws 带 metadataHeaders 数组时返回 0 个邮件头
+                    except Exception:
+                        continue
                     heads={h['name'].lower():h['value'] for h in m.get('payload',{}).get('headers',[])}
                     self.matter(name,m.get('threadId',m['id']),heads.get('subject','邮件'),{'from':heads.get('from',''),'snippet':m.get('snippet',''),'message_id':m['id']},source_updated_at=int(m.get('internalDate',0))/1000,link='https://mail.google.com/mail/u/0/#all/'+m.get('threadId',m['id']),deadline=None)
                     self.mark_seen(name,item['id']);updated+=1
@@ -317,6 +329,8 @@ class PersonalHub:
             root=self.home/'.pi-dashboard';token=root/'google-token.secret'
             if not token.exists():raise RuntimeError('Google Calendar 需要重新授权') from None
             def auth():
+                if not os.environ.get('HTTPS_PROXY') and not os.environ.get('https_proxy'):
+                    os.environ['HTTPS_PROXY']=os.environ.get('HTTP_PROXY') or 'http://127.0.0.1:7897'
                 cred=Credentials.from_authorized_user_file(str(token),['https://www.googleapis.com/auth/calendar'])
                 if not cred.valid:
                     cred.refresh(Request());token.write_text(cred.to_json());token.chmod(0o600)
@@ -325,7 +339,8 @@ class PersonalHub:
             settings=json.loads((root/'google-calendar.secret').read_text())
             from urllib.parse import quote
             import httpx
-            async with httpx.AsyncClient(timeout=25,trust_env=False) as client:
+            proxy_url=os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY') or 'http://127.0.0.1:7897'
+            async with httpx.AsyncClient(timeout=25,trust_env=True,proxy=proxy_url) as client:
                 response=await client.get('https://www.googleapis.com/calendar/v3/calendars/'+quote(settings['id'],safe='')+'/events',headers={'Authorization':'Bearer '+key},params={'timeMin':(now-timedelta(days=7)).isoformat(),'timeMax':(now+timedelta(days=30)).isoformat(),'singleEvents':'true','maxResults':250})
                 response.raise_for_status();return response.json()
     def ingest_reminders(self,row):

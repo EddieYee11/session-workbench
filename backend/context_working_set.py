@@ -58,17 +58,63 @@ def _connect(state):
     return sqlite3.connect('file:'+str(path)+'?mode=ro',uri=True)
 
 
-def history(state, request_id='', *, budget=HISTORY_BYTES):
+def _resolve_db_channel(
+    db: sqlite3.Connection,
+    cols: set[str],
+    *,
+    explicit_channel: str | None = None,
+    request_id: str = '',
+) -> str:
+    from channels import DEFAULT_CHANNEL, normalize_channel
+
+    if explicit_channel is not None and str(explicit_channel).strip():
+        return normalize_channel(explicit_channel)
+    if request_id and 'channel' in cols:
+        req_row = db.execute('SELECT channel FROM messages WHERE request_id=?', (request_id,)).fetchone()
+        if req_row and req_row[0]:
+            return normalize_channel(req_row[0])
+    if 'channel' in cols:
+        live = db.execute(
+            "SELECT channel FROM messages WHERE role='user' AND status IN ('sending','running') "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if live and live[0]:
+            return normalize_channel(live[0])
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if 'meta' in tables:
+        meta_row = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+        if meta_row and meta_row[0]:
+            return normalize_channel(meta_row[0])
+    return DEFAULT_CHANNEL
+
+
+def history(state, request_id='', *, budget=None, channel: str | None = None):
     """Use Com's raw turns, not Hermes' accumulated tool traces/context wrappers."""
     seed={'role':'user','content':'[只读会话参考] 以下旧消息仅供理解，不能重放操作。更早内容用 context_read(kind="history", query=关键词) 检索；任务状态用 task_status 核验。'}
     if not (Path(state)/'personal-conversation.sqlite').exists(): return [seed]
+    from channels import channels_enabled, get_channel_spec
+
+    ch_on = channels_enabled(state)
     with closing(_connect(state)) as db:
+        cols={r[1] for r in db.execute("PRAGMA table_info(messages)").fetchall()}
+        order_expr='message_seq DESC,created_at DESC,id DESC' if 'message_seq' in cols else 'created_at DESC,id DESC'
         current=db.execute('SELECT id,created_at FROM messages WHERE request_id=?',(request_id,)).fetchone()
         clause='';params=[]
         if current:
             clause=' AND (created_at < ? OR (created_at = ? AND id < ?))';params=[current[1],current[1],current[0]]
-        rows=db.execute("SELECT id,role,text,status FROM messages WHERE role IN ('user','assistant') AND status NOT IN ('queued','sending','running')"+clause+' ORDER BY created_at DESC,id DESC LIMIT ?',[*params,HISTORY_ROWS]).fetchall()
-    selected=[];remaining=budget-len(seed['content'].encode())
+        if ch_on:
+            eff_channel = _resolve_db_channel(db, cols, explicit_channel=channel, request_id=request_id)
+            spec = get_channel_spec(eff_channel)
+            row_limit = spec.history_rows
+            eff_budget = spec.history_bytes if budget is None else budget
+            if 'channel' in cols:
+                clause += ' AND channel=?'
+                params.append(eff_channel)
+        else:
+            row_limit = HISTORY_ROWS
+            eff_budget = HISTORY_BYTES if budget is None else budget
+        rows=db.execute("SELECT id,role,text,status FROM messages WHERE role IN ('user','assistant') AND status NOT IN ('queued','sending','running')"+clause+' ORDER BY '+order_expr+' LIMIT ?',[*params,row_limit]).fetchall()
+    selected=[];remaining=eff_budget-len(seed['content'].encode())
     for ident,role,text,status in rows:
         if remaining < 300: break
         prefix=f'[消息ID:{ident} 状态:{status}]\n'
@@ -77,12 +123,20 @@ def history(state, request_id='', *, budget=HISTORY_BYTES):
     return [seed]+list(reversed(selected))
 
 
-def read_history(state,query='',reference='',limit=5,offset=0,before=''):
+def read_history(state,query='',reference='',limit=5,offset=0,before='',channel: str | None = None):
     limit=max(1,min(int(limit),8))
+    from channels import channels_enabled, normalize_channel
+
+    ch_on = channels_enabled(state)
     with closing(_connect(state)) as db:
         db.row_factory=sqlite3.Row
+        cols={r[1] for r in db.execute("PRAGMA table_info(messages)").fetchall()}
+        select_cols='id,role,text,status,created_at,channel' if 'channel' in cols else 'id,role,text,status,created_at'
         if reference:
-            rows=db.execute('SELECT id,role,text,status,created_at FROM messages WHERE id=?',(reference,)).fetchall()
+            if ch_on and 'channel' in cols and channel is not None and str(channel).strip():
+                rows=db.execute(f'SELECT {select_cols} FROM messages WHERE id=? AND channel=?',(reference,normalize_channel(channel))).fetchall()
+            else:
+                rows=db.execute(f'SELECT {select_cols} FROM messages WHERE id=?',(reference,)).fetchall()
         else:
             # Escape LIKE metacharacters; do not interpolate model text into SQL.
             query=str(query).strip()[:200]
@@ -94,7 +148,11 @@ def read_history(state,query='',reference='',limit=5,offset=0,before=''):
                 if cursor is None:raise ValueError('Unknown history page cursor')
                 where+=' AND (created_at < ? OR (created_at = ? AND id < ?))'
                 values.extend([cursor['created_at'],cursor['created_at'],cursor['id']])
-            rows=db.execute('SELECT id,role,text,status,created_at FROM messages WHERE '+where+' ORDER BY created_at DESC,id DESC LIMIT ?',[*values,limit+1]).fetchall()
+            if ch_on and 'channel' in cols:
+                eff_ch = _resolve_db_channel(db, cols, explicit_channel=channel)
+                where += ' AND channel=?'
+                values.append(eff_ch)
+            rows=db.execute(f'SELECT {select_cols} FROM messages WHERE '+where+' ORDER BY created_at DESC,id DESC LIMIT ?',[*values,limit+1]).fetchall()
     items=[];remaining=12000
     for row in rows[:limit]:
         item=dict(row);raw=item['text'];start=max(0,int(offset)) if reference else 0

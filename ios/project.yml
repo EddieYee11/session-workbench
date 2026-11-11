@@ -15,7 +15,7 @@ settings:
     TARGETED_DEVICE_FAMILY: "1"
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "2026110101"
+    CURRENT_PROJECT_VERSION: "2026111001"
     COM_ENTITLEMENTS_FILE: Com/Com.entitlements
     COM_APNS_ENVIRONMENT: ""
 packages:
@@ -82,7 +82,7 @@ targets:
   ComControls:
     type: app-extension
     platform: iOS
-    sources: [ComControls, VoiceIntents, Shared/StatusWidgetSnapshot.swift, Shared/ComActivity.swift]
+    sources: [ComControls, Shared/StatusWidgetSnapshot.swift, Shared/ComActivity.swift]
     settings:
       TARGETED_DEVICE_FAMILY: "1"
       PRODUCT_BUNDLE_IDENTIFIER: work.eddie.com.controls
@@ -108,6 +108,33 @@ targets:
     settings:
       TARGETED_DEVICE_FAMILY: "1"
       GENERATE_INFOPLIST_FILE: YES
+  Herdr:
+    type: application
+    platform: iOS
+    sources:
+      - Com/Herdr
+      - Com/Views/DesignSystem.swift
+      - Com/Views/Haptics.swift
+      - Com/Views/AgentBrand.swift
+      - Com/Views/DuoPosture.swift
+      - Com/Views/ChatMotion.swift
+      - Com/Views/Character.swift
+      - HerdrApp
+    dependencies:
+      - target: ComCore
+      - package: Textual
+      - package: RemoteAgentKit
+        product: HerdrKit
+      - package: GhosttyTerminal
+    settings:
+      TARGETED_DEVICE_FAMILY: "1"
+      PRODUCT_BUNDLE_IDENTIFIER: work.eddie.herdr
+      SUPPORTS_MACCATALYST: NO
+      SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+      SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+      INFOPLIST_FILE: HerdrApp/Info.plist
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      OTHER_LDFLAGS: $(inherited) -ObjC
 schemes:
   Com:
     build:
@@ -115,3 +142,7 @@ schemes:
         Com: all
     test:
       targets: [ComCoreTests, ComUITests]
+  Herdr:
+    build:
+      targets:
+        Herdr: all

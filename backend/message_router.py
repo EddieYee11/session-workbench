@@ -1,5 +1,8 @@
-"""Conservative routing for the deployed Hermes main; no classifier model or hidden writes."""
+"""Conservative routing for the deployed Hermes main; optional <500ms pre-turn fast classifier when gated on."""
+from __future__ import annotations
+
 import json
+import os
 import re
 import sqlite3
 import time
@@ -16,11 +19,14 @@ class Route:
     label: str
     tool: str = ''
     args: dict | None = None
+    prebound_tools: list[str] | None = None
 
 
 def classify(text, now=None):
     now=now or datetime.now(ZoneInfo("Asia/Shanghai"))
     text = str(text).strip()
+    if text.startswith('Eddie 已确认：'):
+        return Route('L2','general','处理中')
     # Third-person reports need semantic interpretation even with a bookkeeping word.
     plan = None if re.search(r"我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)",text) else parse(text)
     if plan:
@@ -67,12 +73,43 @@ def classify(text, now=None):
     return Route('L2','general','处理中')
 
 
+DEFAULT_CASUAL_MODEL = "vertex-948/gemini-3.5-flash-lite"
+_CASUAL_DEGRADED_MODELS: set[str] = set()
+
+
 # 11-02 Eddie 拍板：日常对话和查询走 flash；要深度判断、带附件、交办开发的留给网关默认模型（grok）。
 # 模型和判据在 event_rules.json 的 conversation 段；「最该先做什么」这类排优先级算判断：
 # 11-02 同题对比里 flash 把退指力板排在给人打款的劳务单前面。
 def fast_model():
     from event_rules import rules
     return rules.conversation().get('fast_model') or {}
+
+
+def casual_fast_model() -> dict:
+    """纯寒暄/短句闲聊（L1/chat）极速模型，支持 COM_CASUAL_MODEL 覆盖，异常/降级时回退 fast_model()。"""
+    try:
+        fallback = dict(fast_model() or {})
+    except Exception:
+        fallback = {}
+    provider = str(fallback.get("provider") or "magpie").strip() or "magpie"
+    candidate = os.environ.get("COM_CASUAL_MODEL", "").strip() or DEFAULT_CASUAL_MODEL
+    if not candidate or candidate in _CASUAL_DEGRADED_MODELS:
+        if fallback.get("model"):
+            return fallback
+        return {"model": DEFAULT_CASUAL_MODEL, "provider": provider}
+    return {"model": candidate, "provider": provider}
+
+
+def mark_casual_model_degraded(model_name: str | None = None) -> dict:
+    """标记当前闲聊快模型不可用并返回回退的 fast_model()。"""
+    target = (model_name or os.environ.get("COM_CASUAL_MODEL", "").strip() or DEFAULT_CASUAL_MODEL).strip()
+    if target:
+        _CASUAL_DEGRADED_MODELS.add(target)
+    return dict(fast_model() or {"model": DEFAULT_CASUAL_MODEL, "provider": "magpie"})
+
+
+def reset_casual_model_state() -> None:
+    _CASUAL_DEGRADED_MODELS.clear()
 
 
 def use_fast_model(level,text,has_attachments=False):
@@ -85,18 +122,89 @@ def use_fast_model(level,text,has_attachments=False):
 
 class MessageRouter:
     def __init__(self,state):
-        self.path=Path(state)/'message-routing.sqlite'
+        self.state=Path(state)
+        self.path=self.state/'message-routing.sqlite'
         with sqlite3.connect(self.path) as db:
-            db.execute('CREATE TABLE IF NOT EXISTS decisions(request_id TEXT PRIMARY KEY,route TEXT NOT NULL,classify_ms REAL NOT NULL,first_text_ms REAL,elapsed_ms REAL,prompt_chars INTEGER)')
+            db.execute('CREATE TABLE IF NOT EXISTS decisions(request_id TEXT PRIMARY KEY,route TEXT NOT NULL,classify_ms REAL NOT NULL,first_text_ms REAL,elapsed_ms REAL,prompt_chars INTEGER,fast_classified INTEGER DEFAULT 0)')
+            cols={r[1] for r in db.execute('PRAGMA table_info(decisions)').fetchall()}
+            if 'fast_classified' not in cols:
+                db.execute('ALTER TABLE decisions ADD COLUMN fast_classified INTEGER DEFAULT 0')
         self.path.chmod(0o600)
 
     def decide(self,request_id,text):
         with sqlite3.connect(self.path) as db:
             row=db.execute('SELECT route FROM decisions WHERE request_id=?',(request_id,)).fetchone()
             if row:return Route(**json.loads(row[0]))
-            start=time.monotonic();route=classify(text)
-            db.execute('INSERT INTO decisions(request_id,route,classify_ms) VALUES(?,?,?)',(request_id,json.dumps(asdict(route),ensure_ascii=False),(time.monotonic()-start)*1000))
+            start=time.monotonic()
+            route=self._match_pending(text) or classify(text)
+            db.execute('INSERT INTO decisions(request_id,route,classify_ms,fast_classified) VALUES(?,?,?,0)',(request_id,json.dumps(asdict(route),ensure_ascii=False),(time.monotonic()-start)*1000))
         return route
+
+    async def decide_async(self,request_id,text,*,timeout_s:float=0.72,caller=None,transport=None,models_path=None)->Route:
+        base_route=self.decide(request_id,text)
+        if base_route.level=='L0':
+            return base_route
+        from superagent_flags import SuperagentFlags
+        if not SuperagentFlags(self.state).fast_classifier_on():
+            return base_route
+        with sqlite3.connect(self.path) as db:
+            row=db.execute('SELECT route,COALESCE(fast_classified,0) FROM decisions WHERE request_id=?',(request_id,)).fetchone()
+        if row and int(row[1]):
+            return Route(**json.loads(row[0]))
+        from fast_classifier import FastClassification, append_classifier_log, classify_fast
+        if base_route.level=='L1' and base_route.group=='chat' and caller is None and transport is None:
+            fast_res=FastClassification(intent='chat',confidence=1.0,tools=[],level='L1',accepted=True,fallback='',elapsed_ms=0.05)
+            append_classifier_log(self.state,request_id=request_id,result=fast_res)
+            upgraded=Route('L1','chat','回复中',prebound_tools=[])
+            with sqlite3.connect(self.path) as db:
+                db.execute('UPDATE decisions SET route=?,fast_classified=1 WHERE request_id=?',
+                           (json.dumps(asdict(upgraded),ensure_ascii=False),request_id))
+            return upgraded
+        fc=await classify_fast(self.state,request_id,text,timeout_s=timeout_s,caller=caller,transport=transport,models_path=models_path)
+        if not fc.accepted:
+            with sqlite3.connect(self.path) as db:
+                db.execute('UPDATE decisions SET classify_ms=classify_ms+?,fast_classified=1 WHERE request_id=?',
+                           (fc.elapsed_ms,request_id))
+            return base_route
+        upgraded=self._merge_fast_route(base_route,text,fc)
+        with sqlite3.connect(self.path) as db:
+            db.execute('UPDATE decisions SET route=?,classify_ms=classify_ms+?,fast_classified=1 WHERE request_id=?',
+                       (json.dumps(asdict(upgraded),ensure_ascii=False),fc.elapsed_ms,request_id))
+        return upgraded
+
+    @staticmethod
+    def _merge_fast_route(base_route:Route,text:str,fc)->Route:
+        from event_rules import rules
+        level='L3' if base_route.level=='L3' else fc.level
+        deep=rules.conversation().get('deep_work')
+        if level=='L1' and deep and re.search(deep,str(text or ''),re.I):
+            level='L2'
+        tools=list(fc.tools)
+        if fc.intent=='chat' and level!='L3' and not tools:
+            return Route('L1','chat','回复中',prebound_tools=[])
+        if fc.intent=='bookkeeping':
+            if 'business_operation' not in tools:
+                tools=['business_operation',*tools]
+            return Route(level,'ledger','处理中',prebound_tools=tools)
+        if level=='L3' or 'task_submit' in tools:
+            return Route(level,'tasks','处理交办',prebound_tools=tools)
+        if base_route.group in ('ledger','calendar','reminder','collect'):
+            return Route(level,base_route.group,'处理中',prebound_tools=tools)
+        return Route(level,fc.intent,'处理中',prebound_tools=tools)
+
+    def _match_pending(self,text):
+        if str(text or '').strip().startswith('Eddie 已确认：'):
+            return None
+        if not (self.state/'pending-actions.sqlite').exists():
+            return None
+        from pending_actions import PendingActions
+        matched=PendingActions(self.state).match(text)
+        if not matched:
+            return None
+        pending=matched['pending']
+        if matched['decision']=='affirm':
+            return Route('L0','pending','执行确认动作','pending_action',{'decision':'affirm','action_id':pending['id'],'description':pending['description']})
+        return Route('L0','pending','取消待确认动作','pending_action',{'decision':'negate','action_id':pending['id'],'description':pending['description']})
 
     def complete(self,request_id,*,elapsed_ms,first_text_ms=None,prompt_chars=None):
         with sqlite3.connect(self.path) as db:
@@ -104,10 +212,30 @@ class MessageRouter:
 
     async def execute(self,route,context,service):
         if route.level!='L0':return None
+        if route.tool=='pending_action':
+            from pending_actions import PendingActions
+            pa=PendingActions(self.state)
+            action_id=(route.args or {}).get('action_id')
+            if (route.args or {}).get('decision')=='negate':
+                cancelled=pa.cancel(action_id)
+                desc=(cancelled or {}).get('description') or (route.args or {}).get('description') or '该操作'
+                return {'status':'cancelled','receipt':f'好的，已取消：{desc}。'}
+            return await pa.execute(
+                action_id,
+                request_id=(context or {}).get('origin_request_id',''),
+                message_id=(context or {}).get('origin_message_id',''),
+                session_id=(context or {}).get('origin_session_id',''),
+                conversation=(context or {}).get('conversation'),
+                service=service,
+            )
         return await service.call(route.tool,route.args,context)
 
 
 def receipt(route,result):
+    if route.tool=='pending_action':
+        if isinstance(result,dict) and result.get('receipt'):
+            return result['receipt']
+        return '已处理确认动作。'
     # 模糊候选不由 route.execute 写入， receipts 需要单独转成确认卡。
     if route.tool == 'bookkeeping' and route.args.get('action') == 'confirm':
         from fast_bookkeeping import confirm_card

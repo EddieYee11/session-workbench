@@ -11,7 +11,7 @@
     {"name": "其他来源只判断", "when": {}, "then": "judge"}
   ],
   "conversation": {
-    "fast_model": {"model": "auto/gemini-3.8-flash", "provider": "magpie"},
+    "fast_model": {"model": "opencode-go/deepseek-v4.1-flash", "provider": "magpie"},
     "deep_work": "分析|方案|对比|评估|复盘|设计|架构|为什么|怎么看|调研|研究|规划|策略|排查|起草|帮我写|写一(?:篇|份|段)|最该|先处理|先做|优先|该不该|值不值|debug"
   }
 }

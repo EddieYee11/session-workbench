@@ -1,0 +1,32 @@
+{
+  "daily_max": {
+    "quiet": 2,
+    "balanced": 6,
+    "active": 12
+  },
+  "schedule_window_minutes": 60,
+  "rules": [
+    {
+      "name": "快递派送或待取件",
+      "kind": "express",
+      "sources": ["sms", "wechat", "gmail", "work_mail"],
+      "carrier_pattern": "顺丰|京东|菜鸟|丰巢|中通|圆通|韵达|申通|极兔|EMS|邮政|德邦|快递|驿站|快递柜",
+      "delivering_pattern": "派送中|正在派送|在派送|派件中|开始派送|为您派送|配送中|正在配送|即将送达",
+      "pickup_pattern": "待取|取件码|请凭|已放入|已投递|已送达.*?(?:驿站|柜|门卫|前台|代收)|已到.*?(?:驿站|柜)|到件|凭.*?取",
+      "status_pattern": "派送中|正在派送|在派送|派件中|开始派送|配送中|正在配送|即将送达|待取|取件码|已放入|已投递|已到.*?驿站|已到.*?柜|到件"
+    },
+    {
+      "name": "1小时内日程",
+      "kind": "schedule",
+      "sources": ["apple_calendar", "google_calendar", "phone_calendar"],
+      "window_minutes": 60
+    },
+    {
+      "name": "航班火车出行变动",
+      "kind": "travel",
+      "sources": ["sms", "wechat", "gmail", "work_mail", "apple_calendar", "google_calendar", "phone_calendar"],
+      "carrier_pattern": "航班|飞机|机票|航旅纵横|飞常准|国航|东航|南航|海航|川航|厦航|深航|高铁|动车|火车|列车|12306|铁路|车次|登机口|检票口",
+      "change_pattern": "延误|取消|改签|变更|调整|提前|推迟|晚点|停运|登机口(?:变更|改为|调整)|检票口(?:变更|改为|调整)|时间(?:变更|调整)|改到|改为"
+    }
+  ]
+}

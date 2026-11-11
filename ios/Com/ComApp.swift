@@ -1,5 +1,6 @@
 import SwiftUI
 import AppIntents
+import Intents
 import BackgroundTasks
 import UserNotifications
 import ComCore
@@ -13,8 +14,21 @@ import ComCore
         WindowGroup {
             RootView()
                 .environment(model)
+                .environment(\.herdrBackend, model)
                 .environment(herdr)
-                .task { ComShortcuts.updateAppShortcutParameters(); ComNotifications.install(); ComLiveActivity.shared.start(model); await model.start(); if model.isPaired && !model.isUITesting { await ComNotifications.requestIfNeeded(); await herdr.registerDeviceKey(model: model) } }
+                .task {
+                    ComNotifications.install()
+                    await model.start()
+                    ComLiveActivity.shared.start(model)
+                    if !model.isUITesting {
+                        ComShortcuts.updateAppShortcutParameters()
+                        INPreferences.requestSiriAuthorization { _ in }
+                    }
+                    if model.isPaired && !model.isUITesting {
+                        await ComNotifications.requestIfNeeded()
+                        await herdr.registerDeviceKey(backend: model)
+                    }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     // 灵动岛常驻（轨道 r3-memory）：要在 setActive(false) 断开连接之前，把这一刻的状态推上去。
                     ComLiveActivity.shared.scene(phase)
@@ -45,6 +59,7 @@ import ComCore
                         model.applyPairDeepLink(url)
                     }
                     if url.host == "voice" { model.openVoice(quick: true) }
+                    if url.host == "live" { model.openLiveVoice() }
                     if url.host == "work" {
                         model.tab = .work
                         Task { await model.refresh(.work) }
@@ -67,7 +82,115 @@ import ComCore
 
 struct ComShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
-        AppShortcut(intent: OpenComVoice(), phrases: ["打开 \(.applicationName) 语音"], shortTitle: "Com 语音", systemImageName: "waveform")
+        AppShortcut(
+            intent: BookComExpenseIntent(),
+            phrases: [
+                "用 \(.applicationName) 记账",
+                "让 \(.applicationName) 记一笔",
+                "\(.applicationName) 记账",
+                "在 \(.applicationName) 记账",
+                "Log expense in \(.applicationName)",
+                "Bookkeep with \(.applicationName)"
+            ],
+            shortTitle: "Com 记账",
+            systemImageName: "yensign.circle.fill"
+        )
+        AppShortcut(
+            intent: SendComMessageIntent(),
+            phrases: [
+                "给 \(.applicationName) 发消息",
+                "跟 \(.applicationName) 说",
+                "让 \(.applicationName) 帮我",
+                "向 \(.applicationName) 发送消息",
+                "Tell \(.applicationName)",
+                "Send message to \(.applicationName)",
+                "Ask \(.applicationName)"
+            ],
+            shortTitle: "发消息给 Com",
+            systemImageName: "bubble.left.and.bubble.right.fill"
+        )
+        AppShortcut(
+            intent: QueryComNextIntent(),
+            phrases: [
+                "问 \(.applicationName) 下一步做什么",
+                "查看 \(.applicationName) 下一步",
+                "\(.applicationName) 下一步",
+                "What's next in \(.applicationName)"
+            ],
+            shortTitle: "Com 下一步",
+            systemImageName: "shoeprints.fill"
+        )
+        AppShortcut(
+            intent: QueryComTodayIntent(),
+            phrases: [
+                "查 \(.applicationName) 今日日程",
+                "看 \(.applicationName) 今天安排",
+                "\(.applicationName) 今天有什么事",
+                "Check today in \(.applicationName)"
+            ],
+            shortTitle: "今日日程待办",
+            systemImageName: "calendar.day.timeline.left"
+        )
+        AppShortcut(
+            intent: QueryComFinanceIntent(),
+            phrases: [
+                "查 \(.applicationName) 账本",
+                "看 \(.applicationName) 花了多少钱",
+                "\(.applicationName) 本月开销",
+                "Check finance in \(.applicationName)"
+            ],
+            shortTitle: "查账本开销",
+            systemImageName: "chart.pie.fill"
+        )
+        AppShortcut(
+            intent: QueryComWaitingIntent(),
+            phrases: [
+                "查 \(.applicationName) 等我拍板的事",
+                "看 \(.applicationName) 待确认事项",
+                "Check waiting in \(.applicationName)"
+            ],
+            shortTitle: "等我拍板",
+            systemImageName: "tray.full.fill"
+        )
+        AppShortcut(
+            intent: CreateComTaskIntent(),
+            phrases: [
+                "在 \(.applicationName) 新建待办",
+                "用 \(.applicationName) 记个待办",
+                "Create task in \(.applicationName)"
+            ],
+            shortTitle: "新建 Com 待办",
+            systemImageName: "checkmark.circle.fill"
+        )
+        AppShortcut(
+            intent: DispatchComSessionIntent(),
+            phrases: [
+                "用 \(.applicationName) 给电脑派活",
+                "让 \(.applicationName) 启动电脑任务",
+                "Dispatch task in \(.applicationName)"
+            ],
+            shortTitle: "给电脑派活",
+            systemImageName: "terminal.fill"
+        )
+        AppShortcut(
+            intent: QueryComHealthIntent(),
+            phrases: [
+                "查 \(.applicationName) 身体电量",
+                "看 \(.applicationName) 恢复状态",
+                "Check health in \(.applicationName)"
+            ],
+            shortTitle: "身体电量评估",
+            systemImageName: "heart.text.square.fill"
+        )
+        AppShortcut(
+            intent: OpenComVoice(),
+            phrases: [
+                "打开 \(.applicationName) 语音",
+                "Open \(.applicationName) voice"
+            ],
+            shortTitle: "Com 语音",
+            systemImageName: "waveform"
+        )
     }
 }
 

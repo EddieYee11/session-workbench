@@ -7,7 +7,7 @@ enum ChatListEntry: Equatable, Identifiable {
     case history(loading: Bool, note: String)
     case empty
     case row(ChatDisplayRow, flying: Bool)
-    case suggestions(messageID: String, options: [String])
+    case suggestions(messageID: String, options: [String], confirmFirst: Bool = false)
 
     var id: String {
         switch self {
@@ -26,7 +26,7 @@ enum ChatListEntry: Equatable, Identifiable {
         case .suggestions: return 56
         case .row(let row, _):
             switch row.kind {
-            case .day: return 24
+            case .day, .time: return 24
             case .proactiveStack: return 56
             case .message(let item, _):
                 let perLine = max(10, (width - 60) / 16)
@@ -48,12 +48,12 @@ final class ChatTimelineLayout: UICollectionViewLayout {
     private var heights: [String: CGFloat] = [:]
     private var frames: [CGRect] = []
     private var indexByID: [String: Int] = [:]
-    private var contentHeight: CGFloat = 0
+    private(set) var contentHeight: CGFloat = 0
     private var measuredWidth: CGFloat = 0
 
     func setIDs(_ new: [String]) {
         ids = new
-        indexByID = Dictionary(uniqueKeysWithValues: new.enumerated().map { ($1, $0) })
+        indexByID = Dictionary(new.enumerated().map { ($1, $0) }, uniquingKeysWith: { _, last in last })
         let live = Set(new)
         heights = heights.filter { live.contains($0.key) }
         invalidateLayout()
@@ -80,9 +80,8 @@ final class ChatTimelineLayout: UICollectionViewLayout {
             resolved[index] = height
             total += height + (index > 0 ? spacing : 0)
         }
-        let visible = view.bounds.height - view.adjustedContentInset.top - view.adjustedContentInset.bottom
-        // 内容不满一屏时贴底，和聊天的阅读习惯一致。
-        var y = verticalPadding + max(0, visible - total)
+        // 内容不满一屏时通过 contentInset.top 贴底，气泡坐标 frames 保持静态不变，彻底消除键盘弹起时的相对位移抖动。
+        var y = verticalPadding
         var next: [CGRect] = []
         next.reserveCapacity(ids.count)
         for height in resolved {
@@ -90,7 +89,7 @@ final class ChatTimelineLayout: UICollectionViewLayout {
             y += height + spacing
         }
         frames = next
-        contentHeight = max(total, visible)
+        contentHeight = total
     }
 
     override var collectionViewContentSize: CGSize {
@@ -220,7 +219,9 @@ final class ChatTimelineCollection: UICollectionView {
         return view
     }
 
-    func update(_ new: [ChatListEntry]) {
+    func update(_ rawNew: [ChatListEntry]) {
+        var seen = Set<String>()
+        let new = rawNew.filter { seen.insert($0.id).inserted }
         guard new != entries, let view = collection else { return }
         let oldIDs = entries.map(\.id), newIDs = new.map(\.id)
         let anchor = following ? nil : readingAnchor(in: view)
@@ -292,6 +293,11 @@ final class ChatTimelineCollection: UICollectionView {
 
     private func layoutDidRun() {
         guard let view = collection else { return }
+        let visible = view.bounds.height - view.adjustedContentInset.bottom
+        let spare = max(0, visible - layout.contentHeight)
+        if abs(view.contentInset.top - spare) > 0.5 {
+            view.contentInset.top = spare
+        }
         if view.bounds.width != lastWidth {
             let wasFirst = lastWidth == 0
             lastWidth = view.bounds.width
@@ -391,5 +397,17 @@ struct ChatDayAnchor: View {
             .foregroundStyle(Palette.textTertiary)
             .frame(maxWidth: .infinity)
             .accessibilityIdentifier("chat-day-anchor")
+    }
+}
+
+/// 时间分隔（相邻消息间隔 ≥ 10 分钟）。
+struct ChatTimeAnchor: View {
+    let label: String
+    var body: some View {
+        Text(label)
+            .font(TypeScale.caption)
+            .foregroundStyle(Palette.textTertiary)
+            .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("chat-time-separator")
     }
 }

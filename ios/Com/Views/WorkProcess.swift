@@ -15,7 +15,7 @@ enum StepKind: String, CaseIterable, Sendable {
     /// 工具名 → 类别。先精确后包含；未知工具一律「other」，不把内部名字露给用户。
     static func of(_ tool: String) -> StepKind? {
         let name = tool.lowercased().split(separator: "__").last.map(String.init) ?? tool.lowercased()
-        if ["react_to_user_message", "react", "think"].contains(name) { return nil }
+        if ["react_to_user_message", "react", "think", "send_message", "sendmessage"].contains(name) { return nil }
         let table: [(StepKind, [String])] = [
             (.ledger, ["bookkeeping_search", "finance", "ledger", "expense_search"]),
             (.money, ["bookkeeping", "expense", "business_operation"]),

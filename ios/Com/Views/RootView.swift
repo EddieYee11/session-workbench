@@ -12,11 +12,34 @@ struct RootView: View {
     /// 折痕（官方：向 GeometryProxy 要 reservedRegions(kind: .division)）：半折叠时是内屏上一条有宽度的活动区域，摊平 / 合上时没有。
     @State private var crease: CGRect?
     @State private var hingeTick = 0
+    @State private var measuredHingeAngle: Double? = nil
     /// 系统在右边缘留出的一列（Duo 外屏、展开横屏都有）：宽度 = 右安全区。Dock 放进这一列的底部。
     @State private var rail = SideRail()
     @Namespace private var details
     @AppStorage("appearance") private var appearance = "light"
     @State private var lock = AppLock.shared
+    @State private var duoCoordinator = ComDuoHingeCoordinator()
+    @State private var lastKeyboardOriginY: CGFloat = UIScreen.main.bounds.height
+    /// 双栏右看左聊联动：右侧事项挂入左侧输入框时，中缝与左栏给一次轻柔青柠响应。
+    @State private var attachPulse = false
+    @State private var attachPulseToken = 0
+
+    private var effectiveHingeAngle: Double {
+        let rawAngle: Double
+        if let envAngle = ProcessInfo.processInfo.environment["COM_HINGE_ANGLE"].flatMap(Double.init) {
+            rawAngle = envAngle
+        } else if let arg = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--hinge-angle=") }),
+           let val = Double(arg.dropFirst("--hinge-angle=".count)) {
+            rawAngle = val
+        } else if let measured = measuredHingeAngle {
+            rawAngle = measured
+        } else if let crease, crease.width > 0, crease.height > 0 {
+            rawAngle = (crease.width > crease.height) ? 90.0 : 135.0
+        } else {
+            rawAngle = 180.0
+        }
+        return min(180.0, max(0.0, rawAngle))
+    }
     var body: some View {
         Group {
             if model.isPaired { paired } else { PairingView() }
@@ -44,6 +67,7 @@ struct RootView: View {
     private var paired: some View {
         @Bindable var model = model
         let wide = screenWidth >= Self.splitMinWidth
+        let widePortrait = !wide && screenWidth >= 560
         // 折痕是竖条（展开横拿、半折叠）：左右栏各占折痕两边，折痕那一条留空；其他情况按固定比例分栏。
         let vertical = crease.flatMap { $0.width > 0 && $0.height > $0.width ? $0 : nil }
         let leftWidth = vertical.map { $0.minX.rounded() } ?? Self.leftPaneWidth(for: screenWidth)
@@ -52,7 +76,8 @@ struct RootView: View {
         let base: CGFloat = model.showWorkSidebar ? sidebar : 0
         let open = min(1, max(0, (base + model.workSidebarDrag) / sidebar))
         // 双栏时左栏是聊天根页、不会推详情；它的 onDisappear 只会在旋转/折叠重建时误触发，不能拿来藏顶栏。
-        let barHidden = !wide && pushed.contains(model.tab)
+        let hideChat = wide && (model.rightTab == .work || (model.rightTab == .next && model.boardFocus))
+        let barHidden = (!wide && pushed.contains(model.tab)) || hideChat
         let rightBarHidden = pushed.contains(model.rightTab)
         return ZStack(alignment: .top) {
             // 主内容：页面 + Dock + 顶栏。工作页开侧栏时整块往右推走，Dock 跟着淡出。
@@ -83,9 +108,11 @@ struct RootView: View {
                     }
                 }
                 // 顶栏也只有一条（r3-work）：她是全 App 唯一的实例，切页不重建、不挪位。进详情页时往左淡出让位。
-                ComTopBar(pinned: wide ? .chat : nil)
+                // 展开竖屏（widePortrait）时直接上移进系统状态栏行，底边与右上角 Wi-Fi/时间底边齐平，省出整条高度。
+                ComTopBar(pinned: wide ? .chat : nil, widePortrait: widePortrait)
                     .frame(width: wide ? leftWidth : nil)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .ignoresSafeArea(.container, edges: widePortrait ? .top : [])
                     .opacity(barHidden ? 0 : 1).offset(x: barHidden ? -40 : 0)
                     .allowsHitTesting(!barHidden).accessibilityHidden(barHidden)
                     .animation(reduce ? .easeOut(duration: 0.2) : .easeInOut(duration: 0.32), value: barHidden)
@@ -119,16 +146,51 @@ struct RootView: View {
                     .zIndex(4)
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { screenWidth = $0; model.splitView = $0 >= Self.splitMinWidth }
+        .coordinateSpace(name: "duoRoot")
+        .overlay {
+            if duoCoordinator.isDragging {
+                ComDuoFloatingCardOverlay(coordinator: duoCoordinator)
+                    .allowsHitTesting(false)
+                    .zIndex(100)
+            }
+        }
+        .environment(duoCoordinator)
+        .environment(duoCoordinator.duoPosture)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+            screenWidth = $0
+            model.splitView = $0 >= Self.splitMinWidth
+            duoCoordinator.updateGeometry(width: $0, height: UIScreen.main.bounds.height, crease: crease, angle: effectiveHingeAngle)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notif in
+            if let frame = notif.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                let deltaY = frame.origin.y - lastKeyboardOriginY
+                lastKeyboardOriginY = frame.origin.y
+                duoCoordinator.syncKeyboardOffset(deltaY)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ComHingeAngleDidChange"))) { notif in
+            if let angle = notif.object as? Double ?? (notif.userInfo?["angle"] as? Double) {
+                let clamped = min(180.0, max(0.0, angle))
+                measuredHingeAngle = clamped
+                duoCoordinator.updateGeometry(width: screenWidth > 0 ? screenWidth : UIScreen.main.bounds.width, height: UIScreen.main.bounds.height, crease: crease, angle: clamped)
+            }
+        }
         .background { CreaseProbe(tick: hingeTick) { crease = $0 } }
         .background { SideRailProbe(tick: hingeTick) { rail = $0 } }
         .modifier(HingeWatch { hingeTick += 1 })
-        // 折痕上不放交互元素：不管下面是什么，这一条不接触摸（官方只给了区域，怎么避开由 App 定）。
+        .onChange(of: crease) { _, newCrease in
+            duoCoordinator.updateGeometry(width: screenWidth > 0 ? screenWidth : UIScreen.main.bounds.width, height: UIScreen.main.bounds.height, crease: newCrease, angle: effectiveHingeAngle)
+        }
+        .onChange(of: hingeTick) { _, _ in
+            duoCoordinator.updateGeometry(width: screenWidth > 0 ? screenWidth : UIScreen.main.bounds.width, height: UIScreen.main.bounds.height, crease: crease, angle: effectiveHingeAngle)
+        }
+        // 折痕上不放交互元素：不管下面是什么，拖拽时让位给全局手势，静止时阻断误触。
         .overlay(alignment: .topLeading) {
             if let crease, crease.width > 0, crease.height > 0 {
                 Color.clear.frame(width: crease.width, height: crease.height)
                     .contentShape(Rectangle()).onTapGesture {}
                     .offset(x: crease.minX, y: crease.minY)
+                    .allowsHitTesting(!duoCoordinator.isDragging)
                     .accessibilityHidden(true)
             }
         }
@@ -144,6 +206,29 @@ struct RootView: View {
             if model.tab != .work { withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) { model.tab = .work } }
             // 立刻拉齐会话；失败 work.note 开口，别只切页假装已打开内容。
             Task { await model.work.refresh(model) }
+        }
+        .onChange(of: model.attachedContext) { _, attached in
+            guard attached != nil else {
+                attachPulse = false
+                return
+            }
+            if wide && model.rightTab == .next && model.boardFocus {
+                withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                    model.boardFocus = false
+                }
+            }
+            guard wide, !reduce else { return }
+            attachPulseToken += 1
+            let token = attachPulseToken
+            withAnimation(.easeOut(duration: 0.18)) {
+                attachPulse = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.62) {
+                guard attachPulseToken == token else { return }
+                withAnimation(.easeOut(duration: 0.42)) {
+                    attachPulse = false
+                }
+            }
         }
     }
     /// 展开的折叠屏：宽度到这个值就换成左右双栏（iPhone Duo 展开横屏约 951pt；竖拿约 669pt 仍是单栏）。
@@ -170,7 +255,7 @@ struct RootView: View {
     /// 展开后的双栏：左边 Com 主对话（顶栏上的她留在左栏），右边一个工作页面（自己的标题栏 + Dock）。
     private func splitContent(leftWidth: CGFloat, gap: CGFloat, rightBarHidden: Bool) -> some View {
         @Bindable var model = model
-        let hideChat = model.splitView && model.rightTab == .next && model.boardFocus
+        let hideChat = model.splitView && (model.rightTab == .work || (model.rightTab == .next && model.boardFocus))
         if hideChat {
             return AnyView(
                 tabHost(SectionTab.workspace, selection: Binding(get: { model.rightTab }, set: { model.tab = $0 }), sideDock: true)
@@ -194,8 +279,35 @@ struct RootView: View {
                 page(.chat, dock: false)
             }
             .frame(width: leftWidth)
-            // 半折叠时这里是折痕：不画线、不放任何东西；摊平时是一条分隔线。
-            if gap > 0 { Color.clear.frame(width: gap) } else { Rectangle().fill(Palette.separator).frame(width: 1).ignoresSafeArea() }
+            .overlay {
+                Palette.accent
+                    .opacity(attachPulse ? 0.055 : 0)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+            // 半折叠时这里是折痕：不画线、不放任何东西；摊平时是一条分隔线（右栏挂卡联动时轻柔亮起青柠）。
+            if gap > 0 {
+                Color.clear.frame(width: gap)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(Palette.accent)
+                            .frame(width: 2)
+                            .opacity(attachPulse ? 0.85 : 0)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
+                    }
+            } else {
+                ZStack {
+                    Rectangle().fill(Palette.separator).frame(width: 1)
+                    Rectangle()
+                        .fill(Palette.accent)
+                        .frame(width: attachPulse ? 2.5 : 1)
+                        .opacity(attachPulse ? 0.9 : 0)
+                }
+                .frame(width: 1)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            }
             tabHost(SectionTab.workspace, selection: Binding(get: { model.rightTab }, set: { model.tab = $0 }), sideDock: true)
                 .onChange(of: model.rightTab) { _, tab in
                     Task { await model.refresh(tab) }; model.showMenu = false
@@ -242,10 +354,10 @@ struct RootView: View {
         Group {
             switch tab { case .chat: ChatView(); case .next: NextView(); case .doing: TodayView(); case .health: HealthView(); case .work: WorkView() }
         }
-        // 顶栏在 RootView 最上层只有一条（r3-work）：这里只给它让出高度，内容从它下面滑过。
-        .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: Layout.topBar) }
-        // 给上面那条 Dock 留位置；聊天页和工作页打字时让位给键盘。
-        .safeAreaInset(edge: .bottom, spacing: 0) { if dock && (!SectionTab.typing.contains(tab) || !keyboardVisible) { DockSpacer() } }
+        // 顶栏在 RootView 最上层只有一条（r3-work）：展开竖屏时顶栏已融进系统状态栏行，只留 6pt 呼吸间距；其余形态让出 Layout.topBar。
+        .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: (!model.splitView && screenWidth >= 560) ? 6 : Layout.topBar) }
+        // 给底部 Dock 留位置：展开竖屏等单栏底置 Dock 形态下，聊天页同样需要让出 DockSpacer，打字弹出键盘时瞬间归零，彻底消除底栏与发消息框重叠。
+        .safeAreaInset(edge: .bottom, spacing: 0) { if dock && !sideDock && (!SectionTab.typing.contains(tab) || !keyboardVisible) { DockSpacer() } }
         // 横屏双栏：Dock 在系统右边缘那一列；那一列不够宽（没有系统列）时内容自己让出。
         .safeAreaInset(edge: .trailing, spacing: 0) { if sideDock { Color.clear.frame(width: max(0, ComDock.sideWidth - rail.trailing)) } }
     }
@@ -257,6 +369,7 @@ private struct RootSheets: ViewModifier {
     func body(content: Content) -> some View {
         @Bindable var model = model
         content
+            .fullScreenCover(isPresented: $model.showLiveVoice) { LiveVoiceView() }
             .sheet(isPresented: $model.showQuickVoice) { QuickVoiceView().presentationDetents([.height(360), .medium]).presentationDragIndicator(.visible).presentationBackground(Palette.background).interactiveDismissDisabled(model.voice.phase == .recording || model.voice.phase == .transcribing) }
             .sheet(isPresented: $model.showSettings) { SettingsView() }
             .sheet(isPresented: $model.showShareInbox) { ShareInboxView().presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
@@ -266,6 +379,7 @@ private struct RootSheets: ViewModifier {
             .sheet(isPresented: $model.showConnectors) { ConnectorsSheet() }
             .sheet(isPresented: $model.showNewWork) { NewWorkView(initialAgent: "codex") }
             .sheet(isPresented: $model.showActivity) { ActivityFeedSheet() }
+            .sheet(isPresented: $model.showWaiting) { WaitingSheet().presentationDetents([.medium, .large]).presentationDragIndicator(.visible) }
             .modifier(RootItemSheets())
     }
 }
@@ -328,6 +442,12 @@ private struct RootEvents: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .comVoiceIntent)) { _ in
                 UserDefaults.standard.set(false, forKey: "openVoiceIntent")
                 model.openVoice(quick: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .comOpenPageIntent)) { event in
+                UserDefaults.standard.removeObject(forKey: "openPageIntent")
+                if let page = event.object as? String {
+                    model.openSiriPage(page)
+                }
             }
     }
 }

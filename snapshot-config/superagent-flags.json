@@ -1,0 +1,7 @@
+{
+  "router": "off",
+  "mandate": "off",
+  "herdr_write": "off",
+  "send_message": "on",
+  "send_message_remind_after": 4
+}

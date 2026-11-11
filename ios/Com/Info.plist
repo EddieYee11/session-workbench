@@ -4,8 +4,42 @@
 <dict>
 	<key>ComAPNSEnvironment</key>
 	<string>$(COM_APNS_ENVIRONMENT)</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+		<string>zh-Hant</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleDisplayName</key>
-	<string>Com!</string>
+	<string>Com</string>
+	<key>CFBundleSpokenName</key>
+	<string>Com</string>
+	<key>NSSiriUsageDescription</key>
+	<string>通过 Siri 直接用 Com 记账、发消息、查账本、看日程和派发任务。</string>
+	<key>INIntentsSupported</key>
+	<array>
+		<string>INSendMessageIntent</string>
+		<string>INSearchForMessagesIntent</string>
+		<string>INCreateNoteIntent</string>
+		<string>INAppendToNoteIntent</string>
+		<string>INAddTasksIntent</string>
+		<string>INSearchForNotebookItemsIntent</string>
+		<string>INSearchForBillsIntent</string>
+		<string>INSearchForAccountsIntent</string>
+	</array>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Com</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>小派</string>
+		</dict>
+	</array>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -65,6 +99,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
+		<string>audio</string>
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>

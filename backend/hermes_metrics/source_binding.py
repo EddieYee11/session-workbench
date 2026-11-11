@@ -1,4 +1,6 @@
 """Bind hidden Com source arguments to the native caller session, never global latest."""
+from __future__ import annotations
+
 import sqlite3
 import json
 import time
@@ -8,6 +10,7 @@ SOURCE_TOOLS = {
     'create_task', 'task_submit', 'artifact_register', 'task_send', 'task_cancel',
     'task_resume', 'task_verify', 'task_merge', 'business_operation', 'memory_save', 'decision_record',
     'update_task_constraints', 'calendar_adjust', 'device_call', 'cancel_task', 'propose_work',
+    'pending_action_register', 'send_message', 'trigger_manage',
 }
 KEYS = ('origin_session_id', 'origin_message_id', 'origin_request_id')
 
@@ -30,16 +33,20 @@ def _live_turn(root, session_id):
     try:
         db = sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=1)
         try:
-            rows = db.execute('''SELECT t.session_id,t.message_id,t.request_id
+            cols = {r[1] for r in db.execute("PRAGMA table_info(messages)").fetchall()}
+            sup_col = "m.supplement_to_message_id" if "supplement_to_message_id" in cols else "NULL"
+            rows = db.execute(f'''SELECT t.session_id,t.message_id,t.request_id,{sup_col}
                 FROM reaction_turns t JOIN messages m ON m.id=t.message_id
                 WHERE t.session_id=? AND t.expires_at>? AND m.role='user'
-                AND m.status IN ('sending','running') AND m.request_id=t.request_id LIMIT 2''',
+                AND m.status IN ('sending','running') AND m.request_id=t.request_id LIMIT 6''',
                 (session_id, time.time())).fetchall()
         finally:
             db.close()
     except (ValueError, OSError, sqlite3.Error):
         return None
-    return rows[0] if len(rows) == 1 else None
+    ids = {r[1] for r in rows}
+    roots = [r[:3] for r in rows if not r[3] or r[3] not in ids]
+    return roots[0] if len(roots) == 1 else None
 
 
 def _bound_runs(root, session_id):
@@ -74,7 +81,12 @@ def _resolve(rows, live):
 def bind_source(*, tool_name='', session_id='', args=None, state=None, **_):
     # Hermes invokes this for the underlying deferred tool as well as direct tools.
     prefix = 'mcp__com_workbench__'
-    if not tool_name.startswith(prefix) or tool_name[len(prefix):] not in SOURCE_TOOLS:
+    if not tool_name.startswith(prefix):
+        return None
+    short_name = tool_name[len(prefix):]
+    if short_name not in SOURCE_TOOLS:
+        return None
+    if short_name == 'trigger_manage' and isinstance(args, dict) and args.get('action') == 'list':
         return None
     if not session_id:
         return {'action': 'block', 'message': 'Com 调用缺少真实会话来源，请在原对话中继续。'}

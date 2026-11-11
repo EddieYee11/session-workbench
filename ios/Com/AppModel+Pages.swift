@@ -62,6 +62,7 @@ extension AppModel {
         datasets["/personal/next"] = next
         if ProcessInfo.processInfo.arguments.contains("--ui-r3-dense") { seedDenseToday() }
         seedHealthPage()
+        seedSohuRepostPreview()
     }
 
     /// 健康页验收数据（10-17）：在今天页那 7 天前面再补 7 天，今天带上新接的字段（呼吸、血氧、负荷、体能年龄、活动）和一份评估。
@@ -183,6 +184,119 @@ extension AppModel {
                 todo("预赛前最终策略上传", due: "", overdue: false, next: "跑完回测再传"),
                 todo("白晓萌合同续期", due: "", overdue: false, next: "确认续期金额")
             ])
+        ])
+    }
+
+    func seedSohuRepostPreview() {
+        let now = Date().timeIntervalSince1970
+        datasets["/personal/sohu-repost"] = .object([
+            "available": .bool(true),
+            "updated_at": .number(now),
+            "health": .object([
+                "login_ok": .bool(true),
+                "nas_ok": .bool(true),
+                "pipeline_ok": .bool(true),
+                "uid": .string("376622042"),
+                "account_name": .string("搜狐户外"),
+                "last_run_at": .number(now - 720),
+                "last_publish_at": .number(now - 3100),
+                "last_probe_at": .number(now - 1200),
+                "nas_heartbeat_hours": .number(0.2),
+                "crash_streak": .number(0),
+                "net_failures": .number(0),
+                "queue_total": .number(445),
+                "status_text": .string("登录正常 · NAS 心跳 0.2h · 队列 445 条 · 待审 1 条")
+            ]),
+            "quota": .object([
+                "date": .string("2026-11-07"),
+                "daily_total": .number(6),
+                "daily_max": .number(10),
+                "outdoor_today": .number(4),
+                "topic_today": .number(2),
+                "non_outdoor_today": .number(0),
+                "non_outdoor_max": .number(1),
+                "non_outdoor_cooldown_hours": .number(0),
+                "per_creator_max": .number(3)
+            ]),
+            "week": .array([
+                .object(["date": .string("2026-11-01"), "label": .string("11/01"), "total": .number(1), "outdoor": .number(1), "topic": .number(0), "non_outdoor": .number(0)]),
+                .object(["date": .string("2026-11-02"), "label": .string("11/02"), "total": .number(2), "outdoor": .number(2), "topic": .number(0), "non_outdoor": .number(0)]),
+                .object(["date": .string("2026-11-03"), "label": .string("11/03"), "total": .number(3), "outdoor": .number(3), "topic": .number(0), "non_outdoor": .number(0)]),
+                .object(["date": .string("2026-11-04"), "label": .string("11/04"), "total": .number(1), "outdoor": .number(1), "topic": .number(0), "non_outdoor": .number(0)]),
+                .object(["date": .string("2026-11-05"), "label": .string("11/05"), "total": .number(0), "outdoor": .number(0), "topic": .number(0), "non_outdoor": .number(0)]),
+                .object(["date": .string("2026-11-06"), "label": .string("11/06"), "total": .number(2), "outdoor": .number(2), "topic": .number(0), "non_outdoor": .number(0)]),
+                .object(["date": .string("2026-11-07"), "label": .string("今天"), "total": .number(6), "outdoor": .number(4), "topic": .number(2), "non_outdoor": .number(0)])
+            ]),
+            "review_queue": .array([
+                .object([
+                    "id": .string("9668bbf3b7fb96b8b7556edaf28549203f0a1808"),
+                    "creator_name": .string("Eating爱自由"),
+                    "uid": .string("261499995"),
+                    "theme": .string("朝圣之旅第二天，探访法国小镇SJPP"),
+                    "text": .string("查看详情"),
+                    "link": .string("https://tv.sohu.com/v/dXMvMC83NTY0ODQ0NDYuc2h0bWw=.html"),
+                    "category": .string("outdoor"),
+                    "category_label": .string("关注流"),
+                    "confidence": .null,
+                    "angles": .array([
+                        .string("法线起点小镇的风景真好，难怪那么多人选择这里。"),
+                        .string("开启朝圣之旅的第二天，这个小镇就是法线第一站。"),
+                        .string("这个法线起点小镇真的很美，给朝圣之旅开了个好头。")
+                    ])
+                ])
+            ]),
+            "recent": .array([
+                .object([
+                    "id": .string("pub-1"),
+                    "at": .number(now - 3100),
+                    "date": .string("2026-11-07"),
+                    "time_text": .string("13:50"),
+                    "creator_name": .string("暴走兄弟"),
+                    "category": .string("topic_dayoukepan"),
+                    "category_label": .string("#大有可攀"),
+                    "copy": .string("@户外殷大杰 一眼望三国，这地方挺有意思啊，地图上哪儿？[机智]"),
+                    "mentions": .array([.string("@户外殷大杰")]),
+                    "emojis": .array([.string("[机智]")]),
+                    "theme": .string("边境小城的探索奇遇"),
+                    "link": .string("https://tv.sohu.com/v/dXMvMC83NTU3MDgyOTkuc2h0bWw=.html")
+                ]),
+                .object([
+                    "id": .string("pub-2"),
+                    "at": .number(now - 3200),
+                    "date": .string("2026-11-07"),
+                    "time_text": .string("13:48"),
+                    "creator_name": .string("耀阳环游记"),
+                    "category": .string("topic_dayoukepan"),
+                    "category_label": .string("#大有可攀"),
+                    "copy": .string("@泡饭-climbing 这油箱口，是不是有啥特别的？[吃瓜]"),
+                    "mentions": .array([.string("@泡饭-climbing")]),
+                    "emojis": .array([.string("[吃瓜]")]),
+                    "theme": .string("异国加油体验，探讨油价与细节"),
+                    "link": .string("https://tv.sohu.com/v/dXMvMC83NTU3MTQ5Njkuc2h0bWw=.html")
+                ]),
+                .object([
+                    "id": .string("pub-3"),
+                    "at": .number(now - 5000),
+                    "date": .string("2026-11-07"),
+                    "time_text": .string("13:18"),
+                    "creator_name": .string("Aries-丁丁"),
+                    "category": .string("outdoor"),
+                    "category_label": .string("关注流"),
+                    "copy": .string("看这身姿，平时没少下功夫吧[赞]"),
+                    "mentions": .array([]),
+                    "emojis": .array([.string("[赞]")]),
+                    "theme": .string("攀岩比赛前一天的备战训练"),
+                    "link": .string("https://tv.sohu.com/v/dXMvMC83NTY1OTMxNTIuc2h0bWw=.html")
+                ])
+            ]),
+            "top_creators": .array([
+                .object(["uid": .string("440733755"), "name": .string("施瓦辛格.雪"), "count_14d": .number(6), "today_count": .number(0), "daily_limit": .number(3)]),
+                .object(["uid": .string("261499995"), "name": .string("Eating爱自由"), "count_14d": .number(4), "today_count": .number(1), "daily_limit": .number(3)]),
+                .object(["uid": .string("432172858"), "name": .string("野生老马"), "count_14d": .number(4), "today_count": .number(0), "daily_limit": .number(3)]),
+                .object(["uid": .string("441261006"), "name": .string("Aries-丁丁"), "count_14d": .number(2), "today_count": .number(1), "daily_limit": .number(3)]),
+                .object(["uid": .string("177298470"), "name": .string("攀岩土豆"), "count_14d": .number(3), "today_count": .number(1), "daily_limit": .number(3)])
+            ]),
+            "recent_mentions": .array([.string("@户外殷大杰"), .string("@泡饭-climbing"), .string("@大杰_攀岩")])
         ])
     }
 }

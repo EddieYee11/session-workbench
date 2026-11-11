@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from conversation import PersonalConversation
 from heartbeat import Heartbeat
-from proactive import Nudges, parse_subscriptions
+from nudges import NUDGE_DAILY_MAX, Nudges, parse_subscriptions
 from push_notifications import PushNotifications
 from reminder_cards import ReminderCards
 
@@ -78,7 +78,7 @@ def test_calendar_reminder_and_subscription_each_said_once(tmp_path):
     n, conv = build(tmp_path, now, hub, ReminderCards(path))
     assert n.tick() == 4
     texts = receipts(conv)
-    assert '10:00 「周会」，还有 10 分钟，地点：3楼。' in texts
+    assert any('10:00「周会」还有 10 分钟开始。' in t and '3楼' in t for t in texts)
     assert '提醒：给百度发信息' in texts
     assert any(t.startswith('Claude Max 5倍（¥888/每月）今天到期') for t in texts)
     assert any(t.startswith('YouTube Premium（¥85/每年）10月12日到期，还有 2 天') for t in texts)
@@ -94,7 +94,6 @@ def test_quiet_hours_pause_and_daily_cap(tmp_path):
     assert n.tick() == 0 and receipts(conv) == []
     paused, conv2 = build(tmp_path / 'p', [at(9, 50)], settings={'paused': True})
     assert paused.tick() == 0
-    from proactive import NUDGE_DAILY_MAX
     cap = NUDGE_DAILY_MAX['quiet']
     hub = Hub([calendar('会' + str(i), '2026-10-10T10:00+08:00') for i in range(cap + 3)])
     capped, conv3 = build(tmp_path / 'c', [at(9, 50)], hub, settings={'intensity': 'quiet'})

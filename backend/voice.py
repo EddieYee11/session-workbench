@@ -32,7 +32,7 @@ async def transcribe_local(audio: bytes, mime: str = 'audio/mp4') -> str:
     return text
 
 
-POLISH_MODEL = os.environ.get('VOICE_POLISH_MODEL', 'volcengine/doubao-seed-2.1-lite')
+POLISH_MODEL = os.environ.get('VOICE_POLISH_MODEL', 'auto/gemini-3.8-flash')
 POLISH_TIMEOUT = float(os.environ.get('VOICE_POLISH_TIMEOUT', '4'))
 POLISH_PROMPT = ('你是语音转写校对器。输入是语音识别的原文，只做最小修正：同音错字、多音字误识别、'
                  '专有名词（词表见下）、标点与断句、明显的口误重复和语气词。保持原意、语气、人称，'
@@ -154,7 +154,7 @@ def voice_router(state: Path) -> APIRouter:
                     continue
                 with contextlib.suppress(ValueError):
                     event = json.loads(frame)
-                    if event.get('type') == 'final' and event.get('text'):
+                    if event.get('type') == 'final' and event.get('text') and not str(event.get('engine', '')).startswith('google'):
                         fixed = await polish(event['text'])
                         if fixed != event['text']:
                             frame = json.dumps({**event, 'text': fixed, 'raw': event['text']}, ensure_ascii=False)

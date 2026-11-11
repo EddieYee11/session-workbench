@@ -49,15 +49,25 @@ extension AppModel {
         }
     }
 
-    /// 微信在等回话：让 Com 起草回复（发到主对话，草稿给他确认，不替他发）。
-    /// 返回是否送达；失败时收件箱应留页并提示可重试。
+    /// 微信在等回话：让 Com 起草回复（启动独立航程，当前视窗闭环，不发假消息、不切 Tab）。
     @discardableResult
     func draftWechatReply(_ item: JSON) async -> Bool {
-        let ok = await send(textOverride: "帮我起草一条回复给「" + item["title"].string + "」的微信，对方最后说：" + item["why"].string + "。先给我看草稿，不要替我发。")
-        // 先送达再关等你/跳聊天；失败留在收件箱，别丢上下文。
-        guard ok else { return false }
-        tab = .chat
-        return true
+        do {
+            let res = try await mutate("/personal/waiting/wechat/delegate", fields: [
+                "id": .string(item.id),
+                "title": .string(item["title"].string),
+                "why": .string(item["why"].string)
+            ])
+            let taskId = res["task_id"].string
+            if !taskId.isEmpty {
+                presentedCase = taskId
+            }
+            Haptics.success()
+            return true
+        } catch {
+            banner = "起草失败：" + error.localizedDescription
+            return false
+        }
     }
     @discardableResult
     func waitingTodo(_ path: String, _ action: String) async -> Bool {
@@ -387,7 +397,10 @@ struct WaitingSheet: View {
                 section("核对没过", kind: "audit") { item in
                     AuditCard(item: item) { note in
                         handoffNote = note
-                        withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { _ = hidden.insert(item.id) }
+                        withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) {
+                            _ = hidden.insert(item.id)
+                            model.removeWaitingItemLocally(item.id)
+                        }
                     }
                 }
                 .enterRise(on: shown, delay: 0.06, y: 14, blur: 6)
@@ -395,11 +408,24 @@ struct WaitingSheet: View {
                     VStack(alignment: .leading, spacing: Space.sm) {
                         row(item, symbol: "rectangle.stack", tone: .warning) { model.openThreadNode(.object(["kind": .string("case"), "id": item["case_id"]])) }
                         TicketLines(ticket: item["ticket"], showsBasis: false).padding(.leading, 44)
+                        HStack(spacing: Space.sm) {
+                            Button("查看航程") {
+                                model.openThreadNode(.object(["kind": .string("case"), "id": item["case_id"]]))
+                            }
+                            .buttonStyle(.secondaryCompact)
+                            Button("知道了") {
+                                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) {
+                                    _ = hidden.insert(item.id)
+                                    model.removeWaitingItemLocally(item.id)
+                                }
+                                Task { _ = await model.waitingAck(item) }
+                            }
+                            .buttonStyle(.quiet)
+                        }
+                        .padding(.leading, 44)
                     }
                 }
                 .enterRise(on: shown, delay: 0.08, y: 14, blur: 6)
-                // 11-03：嵌在「下一步」里只留要拍板 / 核对 / 航程；微信待回（11-02 不提醒回）、过期待办（下一步有清理卡）、刚拍板的结论只在独立「等你」页看。
-                if !embedded {
                 section("微信在等你回", kind: "wechat") { item in
                     VStack(alignment: .leading, spacing: Space.sm) {
                         row(item, symbol: "bubble.left.and.bubble.right", tone: .info) {}
@@ -411,7 +437,9 @@ struct WaitingSheet: View {
                                 Task {
                                     let ok = await model.draftWechatReply(item)
                                     draftingID = nil
-                                    if !ok {
+                                    if ok {
+                                        model.removeWaitingItemLocally(item.id)
+                                    } else {
                                         draftFailNote = "没送出去，微信卡还在——可再点一次起草"
                                     }
                                 }
@@ -419,7 +447,10 @@ struct WaitingSheet: View {
                             .buttonStyle(.secondaryCompact)
                             .disabled(draftingID != nil)
                             Button("已经回了") {
-                                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { _ = hidden.insert(item.id) }
+                                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) {
+                                    _ = hidden.insert(item.id)
+                                    model.removeWaitingItemLocally(item.id)
+                                }
                                 Task {
                                     if !(await model.waitingAck(item)) {
                                         withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { _ = hidden.remove(item.id) }
@@ -437,29 +468,18 @@ struct WaitingSheet: View {
                 section("过期的待办", kind: "todo") { item in
                     let path = item["path"].string
                     let todoBusy = todoBusyID == item.id
-                    row(item, symbol: "checklist", tone: .warning) { model.openThreadNode(.object(["kind": .string("todo"), "url": item["url"]])) }
-                        .opacity(todoBusy ? 0.55 : 1)
-                        .contextMenu {
-                            Button(todoBusy ? "改期中…" : "改到明天", systemImage: "arrow.uturn.forward") {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        row(item, symbol: "checklist", tone: .warning) { model.openThreadNode(.object(["kind": .string("todo"), "url": item["url"]])) }
+                            .opacity(todoBusy ? 0.55 : 1)
+                        HStack(spacing: Space.sm) {
+                            Button(todoBusy ? "完成中…" : "完成") {
                                 guard todoBusyID == nil else { return }
                                 todoBusyID = item.id
                                 todoFailNote = ""
-                                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { _ = hidden.insert(item.id) }
-                                Task {
-                                    let ok = await model.waitingTodo(path, "postpone")
-                                    todoBusyID = nil
-                                    if !ok {
-                                        withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { _ = hidden.remove(item.id) }
-                                        todoFailNote = "改期没成，待办还在——可再试"
-                                    }
+                                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) {
+                                    _ = hidden.insert(item.id)
+                                    model.removeWaitingItemLocally(item.id)
                                 }
-                            }
-                            .disabled(todoBusyID != nil)
-                            Button(todoBusy ? "完成中…" : "完成", systemImage: "checkmark.circle") {
-                                guard todoBusyID == nil else { return }
-                                todoBusyID = item.id
-                                todoFailNote = ""
-                                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { _ = hidden.insert(item.id) }
                                 Task {
                                     let ok = await model.waitingTodo(path, "done")
                                     todoBusyID = nil
@@ -469,20 +489,42 @@ struct WaitingSheet: View {
                                     }
                                 }
                             }
+                            .buttonStyle(.secondaryCompact)
                             .disabled(todoBusyID != nil)
-                            Button(todoBusy ? "交接中…" : "交给我办", systemImage: "paperplane") {
+
+                            Button(todoBusy ? "改期中…" : "改到明天") {
+                                guard todoBusyID == nil else { return }
+                                todoBusyID = item.id
+                                todoFailNote = ""
+                                withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) {
+                                    _ = hidden.insert(item.id)
+                                    model.removeWaitingItemLocally(item.id)
+                                }
+                                Task {
+                                    let ok = await model.waitingTodo(path, "postpone")
+                                    todoBusyID = nil
+                                    if !ok {
+                                        withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) { _ = hidden.remove(item.id) }
+                                        todoFailNote = "改期没成，待办还在——可再试"
+                                    }
+                                }
+                            }
+                            .buttonStyle(.secondaryCompact)
+                            .disabled(todoBusyID != nil)
+
+                            Button(todoBusy ? "交接中…" : "交给我办") {
                                 guard todoBusyID == nil else { return }
                                 todoBusyID = item.id
                                 todoFailNote = ""
                                 handoffNote = ""
                                 Task {
-                                    // "" = 进主对话；非空 = 航程；nil = 失败（别假报已接进）。
                                     let id = await model.delegateTodo(path)
                                     todoBusyID = nil
                                     guard let id else {
                                         todoFailNote = "没接上，待办还在——可再试「交给我办」"
                                         return
                                     }
+                                    model.removeWaitingItemLocally(item.id)
                                     if id.isEmpty {
                                         handoffNote = "已接进主对话——去 Com 页继续"
                                     } else {
@@ -491,11 +533,15 @@ struct WaitingSheet: View {
                                     }
                                 }
                             }
+                            .buttonStyle(.quiet)
                             .disabled(todoBusyID != nil)
                         }
+                        .padding(.leading, 44)
+                    }
                 }
                 .enterRise(on: shown, delay: 0.16, y: 12, blur: 5)
-                concludedSection
+                if !embedded {
+                    concludedSection
                 }
     }
     private func pullWaiting(force: Bool) async {

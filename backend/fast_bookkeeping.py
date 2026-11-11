@@ -26,9 +26,9 @@ MAX_AMOUNT = 200000
 CATEGORY_KEYWORDS = (
     # 10-29：补口语漏词（茶、豆浆、美团、哈啰等），避免明确花销静默回落到大模型。
     ('餐饮外卖', '早饭 早餐 午饭 午餐 晚饭 晚餐 夜宵 外卖 咖啡 奶茶 饮料 饮品 可乐 啤酒 茶 豆浆 包子 盒饭 便当 沙拉 蛋糕 甜品 美团 饿了么 饭 餐 吃 喝 面 粉 火锅 烧烤 瑞幸 星巴克 麦当劳 肯德基 便利店 水果 零食 超市 买菜'),
-    ('出行交通', '打车 滴滴 地铁 公交 高铁 火车 机票 飞机 油 加油 停车 高速 过路 骑行 单车 出租 哈啰 青桔 共享单车 快递'),
-    ('汽车摩托', '摩托 机油 保养 车险 洗车 轮胎 头盔'),
-    ('居住房租', '房租 水电 燃气 物业 电费 水费'),
+    ('出行交通', '打车 滴滴 地铁 公交 高铁 火车 机票 飞机 油 加油 停车 高速 过路 骑行 单车 出租 哈啰 青桔 共享单车 快递 顺风车 代驾 充电桩'),
+    ('汽车摩托', '摩托 机油 保养 车险 洗车 轮胎 头盔 汽修 修车 改车 配件'),
+    ('居住房租', '房租 水电 燃气 物业 电费 水费 家电维修 维修 家具 家政 保洁 暖气 开锁'),
     ('通讯话费', '话费 流量 宽带'),
     ('App订阅', '订阅 会员 Claude ChatGPT Kimi iCloud Netflix Spotify Apple'),
     ('健康医疗', '药 医院 挂号 体检 牙 诊所'),
@@ -77,6 +77,7 @@ def _comment(text):
     rest = text
     for start, end, _ in reversed(_money_matches(text)):
         rest = rest[:start] + ' ' + rest[end:]
+    rest = re.sub(r'(?:[¥￥]|\brmb\b)', ' ', rest, flags=re.I)
     rest = PREFIX.sub('', rest.strip())
     rest = POLITE.sub('', rest)
     for _, keywords in ACCOUNT_KEYWORDS:
@@ -103,10 +104,56 @@ def suspect(plan, text):
     return None
 
 
+# 日程提醒、时刻、引号内编号名称与待确认交办语义一律交回模型，不进记账快通道。
+_SCHEDULE_OR_TIME = re.compile(
+    r'提醒|日程|日历|闹钟|会议|开会|待办|预约|叫醒'
+    r'|明早|明晚|明天|明日|后天|大后天|下周|下星期|下礼拜|下个月'
+    r'|(?<!\d)\d{1,2}[:：]\d{2}(?!\d)'
+    r'|(?<!\d)\d{1,2}\s*点(?!\s*[0-9零〇一二两三四五六七八九]{1,2}\s*(?:元|圆|块|毛|角))'
+    r'|(?:早上|明早|今早|上午|中午|下午|晚上|今晚|明晚|凌晨|夜里|半夜)\s*[零〇一二两三四五六七八九十]{1,3}\s*点'
+    r'|[零〇一二两三四五六七八九十]{1,3}\s*点\s*(?:钟|半|刻|整|[0-9零〇一二三四五六七八九十]{1,3}\s*分)'
+    r'|[二两三四五六七八九十]{1,3}\s*点(?!\s*[0-9零〇一二两三四五六七八九]{1,2}\s*(?:元|圆|块|毛|角))'
+)
+_QUOTED_NAME_NUMBER = re.compile(
+    r'[「『“"\'《][^」』”"\'》\n]*'
+    r'(?:[\u4e00-\u9fffA-Za-z]\s*[0-9零〇一二两三四五六七八九十]+|[0-9零〇一二两三四五六七八九十]+\s*[\u4e00-\u9fffA-Za-z])'
+    r'[^」』”"\'》\n]*[」』”"\'》]'
+)
+_NON_EXPENSE_CONTEXT = re.compile(
+    r'你先准备|先准备好|确认了?再'
+    r'|(?:验收测试|测试用例|测试项|步骤|方案|问题|事项|阶段|版本|章节|条目)[0-9零〇一二两三四五六七八九十]+'
+    r'|[零〇一二两三四五六七八九十]+\s*[:：]'
+)
+_CURRENCY_UNIT = re.compile(
+    r'(?:[0-9零〇一二两三四五六七八九十百千万亿]+(?:\.[0-9]+)?\s*(?:元|圆|块钱?|块|毛|角(?![洲形度色板尺架楼函钢铁])|分(?!钟)|rmb\b)'
+    r'|(?:[¥￥]|rmb)\s*\d)',
+    re.I,
+)
+_BOOK_SEMANTICS = re.compile(
+    r'记(?:个|一下|一笔|一条)?账|记一(?:笔|条)|记一下|记下|记录(?:一下|这笔|一笔)?'
+    r'|花了|花的|花费|消费|支出|用了|付了|付款|支付|买了?|卖了?|到账|收入|收到|报销|充值|充了'
+)
+
+
+def _excluded_from_fast_bookkeeping(raw_text, external):
+    raw = str(raw_text or '')
+    return bool(
+        not external
+        or not _looks_like_statement(external)
+        or _SCHEDULE_OR_TIME.search(raw)
+        or _SCHEDULE_OR_TIME.search(external)
+        or _QUOTED_NAME_NUMBER.search(raw)
+        or _NON_EXPENSE_CONTEXT.search(raw)
+        or _NON_EXPENSE_CONTEXT.search(external)
+    )
+
+
 def parse(text):
     """返回 ezbookkeeping 的记账参数；返回 None 表示交回 Hermes（模糊回退）。"""
     external = _HUAFEI.sub('花费', quote_free(text) or '')
-    if not external or not bookkeeping_intent(external) or not _looks_like_statement(external):
+    if _excluded_from_fast_bookkeeping(text, external) or not bookkeeping_intent(external):
+        return None
+    if not (_CURRENCY_UNIT.search(external) or _BOOK_SEMANTICS.search(external)):
         return None
     amounts = {value for value in money_amounts(external)}
     if len(amounts) != 1:
@@ -151,11 +198,9 @@ def parse_candidate(text):
     单个金额、不是查询/否定/第三人口述，且金额外还留有可读用途。
     """
     external = _HUAFEI.sub('花费', quote_free(text) or '')
-    if not external or bookkeeping_query(external) or BOOK_BLOCK.search(external):
+    if _excluded_from_fast_bookkeeping(text, external) or bookkeeping_query(external) or BOOK_BLOCK.search(external):
         return None
     if re.search(r"我(?:的)?(?:朋友|同事|家人)|(?:他|她|他们|她们)(?:买|花|消费|支出|付)", external):
-        return None
-    if not _looks_like_statement(external):
         return None
     hits = _money_matches(external)
     if len(hits) != 1:
@@ -164,6 +209,17 @@ def parse_candidate(text):
     # 中文金额没有阿拉伯数字；只有出现裸数字时才用它们识别多金额。
     separate_numbers = re.findall(r'\d+(?:\.\d+)?', external)
     if separate_numbers and (len(separate_numbers) != 1 or len(set(separate_numbers)) != 1):
+        return None
+    category = (_keyword(external, INCOME_KEYWORDS)
+                or _keyword(external, CATEGORY_KEYWORDS)
+                or ('其他收入' if '得' in external else None))
+    has_unit = bool(_CURRENCY_UNIT.search(external))
+    has_semantics = bool(_BOOK_SEMANTICS.search(external) or '得' in external)
+    if not (has_unit or has_semantics or (category and separate_numbers)):
+        return None
+    if not separate_numbers and not (has_unit or has_semantics):
+        return None
+    if not category and not (has_unit and has_semantics):
         return None
     amount = hits[0][2]
     if not 0 < amount <= MAX_AMOUNT:
@@ -179,9 +235,7 @@ def parse_candidate(text):
     # 金额、分类与账户只用于展示建议；只有用户确认后且 policy 校验通过才会写入。
     return {
         'amount': float(amount),
-        'category': (_keyword(external, INCOME_KEYWORDS)
-                     or _keyword(external, CATEGORY_KEYWORDS)
-                     or ('其他收入' if '得' in external else '购物消费')),
+        'category': category or '购物消费',
         'account': DEFAULT_ACCOUNT,
         'comment': _comment(external),
     }

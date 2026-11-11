@@ -112,3 +112,20 @@ def test_todo_endpoints_use_configured_vault(tmp_path,monkeypatch):
         bad=c.post('/personal/today/todos/done',json={'path':'../../../../.ssh/id_rsa'},headers=auth)
         assert bad.status_code==409 and '待处理' in bad.json()['detail']
         assert c.post('/personal/today/todos/done',json={'path':rel}).status_code==401
+
+        # 待我拍板/等你界面：支持完成根目录或已在已完成目录的任务，不报错「只能改行动台待处理里的待办」
+        root_task = root / '任务' / '根任务.md'
+        root_task.write_text(TEMPLATE.replace('八月打车报销', '根任务'), encoding='utf-8')
+        r_root = c.post('/personal/today/todos/done', json={'path': '任务/根任务.md'}, headers=auth)
+        assert r_root.status_code == 200 and r_root.json()['changed'] is True
+
+        done_task = root / '任务' / '已完成' / '已完结.md'
+        done_task.write_text(TEMPLATE.replace('状态: 待处理', '状态: 已完成'), encoding='utf-8')
+        r_done = c.post('/personal/today/todos/done', json={'path': '任务/已完成/已完结.md'}, headers=auth)
+        assert r_done.status_code == 200 and r_done.json()['changed'] is False
+
+        # waiting 接口绝不把已完成的待办算进「等你」
+        r_waiting = c.get('/personal/waiting', headers=auth)
+        assert r_waiting.status_code == 200
+        waiting_paths = [item['path'] for item in r_waiting.json()['items'] if item.get('kind') == 'todo']
+        assert '任务/已完成/已完结.md' not in waiting_paths

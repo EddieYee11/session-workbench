@@ -21,6 +21,49 @@ enum BoardGroup: String, CaseIterable, Identifiable {
     func persistedRawValue() -> String { rawValue }
 }
 
+/// PRD §3.1 定义的 11 项全分支有限状态机 (FSM) 状态
+enum MatterStatus: String, CaseIterable, Identifiable, Sendable {
+    case suggested = "suggested"
+    case suggest = "suggest"
+    case todo = "todo"
+    case doing = "doing"
+    case executing = "executing"
+    case waitingInput = "waiting_input"
+    case errorRetrying = "error_retrying"
+    case errorBlocked = "error_blocked"
+    case snoozed = "snoozed"
+    case dismissed = "dismissed"
+    case cancelled = "cancelled"
+    case done = "done"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .suggested, .suggest: "建议待办"
+        case .todo: "待办"
+        case .doing: "正在做"
+        case .executing: "执行中"
+        case .waitingInput: "等待输入"
+        case .errorRetrying: "重试中"
+        case .errorBlocked: "执行受阻"
+        case .snoozed: "已稍后"
+        case .dismissed: "已划掉"
+        case .cancelled: "已取消"
+        case .done: "已完成"
+        }
+    }
+
+    var boardColumn: BoardColumn {
+        switch self {
+        case .suggested, .suggest, .dismissed, .snoozed: .suggest
+        case .todo: .todo
+        case .doing, .executing, .waitingInput, .errorRetrying, .errorBlocked: .doing
+        case .done, .cancelled: .done
+        }
+    }
+}
+
 enum BoardColumn: String, CaseIterable, Identifiable {
     case suggest, todo, doing, done
     var id: String { rawValue }
@@ -155,24 +198,51 @@ extension AppModel {
         #endif
 
         do {
-            var fields: [String: JSON] = [
-                "card": .string(id),
-                "to": .string(apiTarget),
-                "rev": card["rev"],
-            ]
-            if let reason { fields["reason"] = .string(reason) }
-            let result = try await mutate(Self.boardPath + "/move", fields: fields)
+            func buildFields(using sourceCard: JSON, forceLatest: Bool) -> [String: JSON] {
+                let mId = sourceCard["matter_id"].string.isEmpty ? sourceCard.id : sourceCard["matter_id"].string
+                let mRev = max(1, sourceCard["matter_rev"].int)
+                let revJSON: JSON = sourceCard["rev"].isNull ? .number(Double(mRev)) : sourceCard["rev"]
+                var f: [String: JSON] = [
+                    "matter_id": .string(mId),
+                    "from_status": .string(fromCol.rawValue),
+                    "to_status": .string(apiTarget),
+                    "rev": revJSON,
+                    "matter_rev": .number(Double(mRev)),
+                    "card": .string(sourceCard.id.isEmpty ? id : sourceCard.id),
+                    "to": .string(apiTarget),
+                    "non_destructive": .bool(true),
+                ]
+                if forceLatest {
+                    f["force_latest"] = .bool(true)
+                }
+                if let reason { f["reason"] = .string(reason) }
+                return f
+            }
+
+            let result: JSON
+            do {
+                result = try await mutate("/personal/matter/move", fields: buildFields(using: card, forceLatest: true), silentBanner: true)
+            } catch let conflictErr as APIError where conflictErr.status == 409 {
+                // 若远端刚刚发生改动，自动拉取最新快照并以最新 rev 重试一次，无需打断用户操作
+                _ = await load(Self.boardPath)
+                let mId = card["matter_id"].string
+                let refreshedCard = boardCards.values.flatMap { $0 }.first(where: {
+                    $0.id == id || (!mId.isEmpty && $0["matter_id"].string == mId)
+                }) ?? card
+                result = try await mutate("/personal/matter/move", fields: buildFields(using: refreshedCard, forceLatest: true), silentBanner: true)
+            }
             pending.cancel()
             boardInFlightIDs.remove(id)
             boardPendingIDs.remove(id)
-            let updated = result["card"]
+            let hasBoardCard = !result["card"].isNull && !result["card"]["column"].string.isEmpty
+            let updated = hasBoardCard ? result["card"] : (result["matter"].isNull ? result["card"] : result["matter"])
             if !updated.isNull {
                 if target == .done, updated.id != id, boardRecentlyDoneIDs.contains(id) {
                     markBoardRecentlyDone(updated.id)
                 }
                 applyBoardMoveLocally(cardID: id, from: fromCol, to: target, insertIndex: insertIndex, replacement: updated)
             }
-            let version = result["version"].string
+            let version = result["version"].string.isEmpty ? result["new_version"].string : result["version"].string
             if !version.isEmpty {
                 var data = boardData
                 data["version"] = .string(version)
@@ -186,7 +256,7 @@ extension AppModel {
             boardPendingIDs.remove(id)
             boardRecentlyDoneIDs.remove(id)
             withAnimation(ComMotion.settle) {
-                datasets[Self.boardPath] = snapshot
+                applyBoardMoveLocally(cardID: id, from: target, to: fromCol, replacement: nil)
             }
             _ = await load(Self.boardPath)
             showBoardMoveError(for: id)
@@ -198,7 +268,7 @@ extension AppModel {
             boardPendingIDs.remove(id)
             boardRecentlyDoneIDs.remove(id)
             withAnimation(ComMotion.settle) {
-                datasets[Self.boardPath] = snapshot
+                applyBoardMoveLocally(cardID: id, from: target, to: fromCol, replacement: nil)
             }
             showBoardMoveError(for: id)
             Haptics.error()
@@ -254,9 +324,12 @@ extension AppModel {
         var cols = data["columns"].object
         var moving: JSON?
         var existingTargetIndex: Int?
+        let repMatterID = replacement?["matter_id"].string ?? ""
         for col in BoardColumn.allCases {
             var rows = cols[col.rawValue]?.array ?? []
-            if let index = rows.firstIndex(where: { $0.id == cardID }) {
+            if let index = rows.firstIndex(where: {
+                $0.id == cardID || (!repMatterID.isEmpty && $0["matter_id"].string == repMatterID)
+            }) {
                 moving = rows.remove(at: index)
                 if col == to { existingTargetIndex = index }
                 cols[col.rawValue] = .array(rows)
@@ -266,12 +339,127 @@ extension AppModel {
         if let replacement { moving = replacement }
         guard var card = moving else { return }
         card["column"] = .string(to.rawValue)
-        var dest = cols[to.rawValue]?.array ?? []
+        var dest = (cols[to.rawValue]?.array ?? []).filter {
+            $0.id != card.id && $0.id != cardID && (repMatterID.isEmpty || $0["matter_id"].string != repMatterID)
+        }
         let targetIndex = min(max(0, insertIndex ?? existingTargetIndex ?? 0), dest.count)
         dest.insert(card, at: targetIndex)
         cols[to.rawValue] = .array(dest)
         data["columns"] = .object(cols)
         datasets[Self.boardPath] = data
+    }
+
+    /// 对收到的 matter.update 进行内存增量打补丁，避免全量重新拉取 /personal/board
+    func applyMatterDeltaLocally(_ delta: JSON) {
+        guard !boardDragFreeze else { return }
+        let matter = delta["matter"].isNull ? delta : delta["matter"]
+        let mId = matter["matter_id"].string.isEmpty
+            ? (matter["id"].string.isEmpty ? delta["matter_id"].string : matter["id"].string)
+            : matter["matter_id"].string
+        guard !mId.isEmpty else { return }
+
+        let newStatus = matter["status"].string.isEmpty ? delta["status"].string : matter["status"].string
+        let targetCol: BoardColumn
+        if let fsm = MatterStatus(rawValue: newStatus) {
+            targetCol = fsm.boardColumn
+        } else {
+            switch newStatus {
+            case "suggested", "suggest", "dismissed", "snoozed": targetCol = .suggest
+            case "todo": targetCol = .todo
+            case "doing", "executing", "waiting_input", "error_retrying", "error_blocked": targetCol = .doing
+            case "done", "cancelled": targetCol = .done
+            default: targetCol = .todo
+            }
+        }
+
+        var data = boardData
+        if data.isNull {
+            data = .object(["version": .string("local"), "columns": .object([:])])
+        }
+        var cols = data["columns"].object
+        var existingCard: JSON?
+        var existingCol: BoardColumn?
+        var existingIndex: Int?
+
+        for col in BoardColumn.allCases {
+            let rows = cols[col.rawValue]?.array ?? []
+            if let idx = rows.firstIndex(where: {
+                $0.id == mId || $0["matter_id"].string == mId || $0.id == "next:" + mId || $0.id == "todo:" + mId
+            }) {
+                existingCard = rows[idx]
+                existingCol = col
+                existingIndex = idx
+                break
+            }
+        }
+
+        let hasFullCard = !delta["card"].isNull && !delta["card"]["column"].string.isEmpty
+        var updatedCard: JSON
+        if let c = existingCard {
+            let patchSource = hasFullCard ? delta["card"] : matter
+            var dict = c.object
+            for (k, v) in patchSource.object where !v.isNull {
+                if k == "rev" && !hasFullCard {
+                    continue
+                }
+                if k == "id" && !hasFullCard && v.string.hasPrefix("mtr-") && !c.id.hasPrefix("mtr-") {
+                    continue
+                }
+                dict[k] = v
+            }
+            dict["status"] = .string(newStatus.isEmpty ? c["status"].string : newStatus)
+            dict["column"] = .string(targetCol.rawValue)
+            updatedCard = .object(dict)
+        } else {
+            let patchSource = hasFullCard ? delta["card"] : matter
+            guard !patchSource["title"].string.isEmpty else { return }
+            var dict = patchSource.object
+            if dict["id"] == nil || dict["id"]?.string.isEmpty == true {
+                dict["id"] = .string(mId)
+            }
+            dict["matter_id"] = .string(mId)
+            dict["column"] = .string(targetCol.rawValue)
+            dict["status"] = .string(newStatus.isEmpty ? "suggest" : newStatus)
+            updatedCard = .object(dict)
+        }
+
+        if let existingCol, let existingIndex {
+            if existingCol == targetCol {
+                // 原列未变时保持原有排序位置，避免破坏用户的视觉上下文
+                var rows = cols[existingCol.rawValue]?.array ?? []
+                if rows.indices.contains(existingIndex) {
+                    rows[existingIndex] = updatedCard
+                    cols[existingCol.rawValue] = .array(rows)
+                } else {
+                    rows.insert(updatedCard, at: 0)
+                    cols[existingCol.rawValue] = .array(rows)
+                }
+            } else {
+                // 跨列流转时从原列移除，插入目标列头部
+                var oldRows = cols[existingCol.rawValue]?.array ?? []
+                if oldRows.indices.contains(existingIndex) {
+                    oldRows.remove(at: existingIndex)
+                    cols[existingCol.rawValue] = .array(oldRows)
+                }
+                var targetRows = cols[targetCol.rawValue]?.array ?? []
+                targetRows.insert(updatedCard, at: 0)
+                cols[targetCol.rawValue] = .array(targetRows)
+            }
+        } else {
+            var targetRows = cols[targetCol.rawValue]?.array ?? []
+            targetRows.insert(updatedCard, at: 0)
+            cols[targetCol.rawValue] = .array(targetRows)
+        }
+        data["columns"] = .object(cols)
+
+        if targetCol == .done {
+            markBoardRecentlyDone(mId)
+        }
+
+        guard !boardDragFreeze else { return }
+        withAnimation(ComMotion.settle) {
+            datasets[Self.boardPath] = data
+        }
     }
 
     #if DEBUG

@@ -289,11 +289,18 @@ class PushNotifications:
         if mid.startswith("task-result:nudge:"):
             kind = mid[len("task-result:nudge:") :]
             url = "com-eddie://today"
-            if kind.startswith("calendar:"):
-                return "Com · 日程将至", url, self._clip(plain or "有一场日程快到了", 48)
+            first_line = (text or "").splitlines()[0].strip() if text else ""
+            if kind.startswith(("calendar:", "schedule:")):
+                return "Com · 日程将至", url, self._clip(first_line or plain or "有一场日程快到了", 48)
+            if kind.startswith("express:"):
+                return "Com · 快递提醒", url, self._clip(first_line or plain or "有新的快递动态", 48)
+            if kind.startswith("travel:"):
+                return "Com · 出行变动", url, self._clip(first_line or plain or "有一条出行变动提醒", 48)
             if kind.startswith("reminder:"):
                 return "Com · 提醒", url, self._clip(plain or "有一条提醒到点了", 48)
-            return "Com · 提醒你", url, self._clip(plain or "有一件事要看", 48)
+            if kind.startswith("subscription:"):
+                return "Com · 订阅到期", url, self._clip(first_line or plain or "有一项订阅快到期了", 48)
+            return "Com · 提醒你", url, self._clip(first_line or plain or "有一件事要看", 48)
         if mid.startswith("task-result:plan:"):
             return "Com · 下一步", "com-eddie://plan", self._clip(plain or "有新的下一步建议", 48)
         if mid.startswith("task-result:task_"):

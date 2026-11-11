@@ -1,0 +1,407 @@
+# Hermes com-personal config.yaml - sanitized snapshot 2026-11-12
+# Removed: all api_key values, key_cmd lines, Authorization headers.
+# Source: ~/.hermes/profiles/com-personal/config.yaml (live on mini).
+
+model:
+  default: opencode-go/deepseek-v4.1-flash
+  provider: magpie
+  context_length: 200000
+  base_url: http://127.0.0.1:3425/v1
+  ollama_num_ctx: 200000
+platforms:
+  api_server:
+    enabled: true
+    host: 127.0.0.1
+    port: 8649
+  weixin:
+    enabled: false
+platform_toolsets:
+  api_server:
+    - browser
+    - clarify
+    - code_execution
+    - com_workbench
+    - computer_use
+    - connections
+    - cronjob
+    - delegation
+    - file
+    - homeassistant
+    - image_gen
+    - memory
+    - session_search
+    - skills
+    - terminal
+    - todo
+    - tts
+    - vision
+    - web
+  cron:
+    - hermes-cli
+    - com_workbench
+agent:
+  disabled_toolsets:
+    - bfl
+  max_turns: 100
+  gateway_timeout: 1800
+  system_prompt: ''
+mcp_servers:
+  com_workbench:
+    command: /Users/eddiegao/.session-workbench/venv/bin/python
+    args:
+      - /Users/eddiegao/AI_Work_System/work/工具与效率/会话工作台/backend/hermes_mcp.py
+    enabled: true
+    tools:
+      prompts: false
+      resources: false
+    timeout: 60
+    connect_timeout: 15
+    trust: full
+  luckin:
+    url: https://gwmcp.lkcoffee.com/order/user/mcp
+    headers:
+    timeout: 60
+    connect_timeout: 20
+    sampling:
+      enabled: false
+  '12306':
+    command: /usr/local/bin/npx
+    args:
+      - -y
+      - 12306-mcp
+    enabled: true
+    tools:
+      prompts: false
+      resources: false
+      include:
+        - get-current-date
+        - get-stations-code-in-city
+        - get-station-code-by-names
+        - get-tickets
+        - get-interline-tickets
+        - get-train-route-stations
+    timeout: 90
+    connect_timeout: 40
+    trust: full
+_config_version: 49
+gateway:
+  standalone: true
+auxiliary:
+  title_generation:
+    model_upgrade_enabled: false
+  background_review:
+    enabled: true
+terminal:
+  backend: local
+  modal_mode: auto
+  cwd: /Users/eddiegao/AI_Work_System
+  timeout: 180
+  env_passthrough: []
+  home_mode: auto
+  shell_init_files: []
+  auto_source_bashrc: true
+  docker_forward_env: []
+  container_cpu: 1
+  container_memory: 5120
+  container_disk: 51200
+  container_persistent: true
+  docker_volumes: []
+  docker_mount_cwd_to_workspace: false
+  docker_extra_args: []
+  docker_run_as_host_user: false
+  persistent_shell: true
+  lifetime_seconds: 300
+skills:
+  disabled:
+    - comfyui
+    - baoyu-infographic
+    - songwriting-and-ai-music
+    - ascii-video
+    - touchdesigner-mcp
+    - excalidraw
+    - claude-design
+    - ascii-art
+    - design-md
+    - popular-web-designs
+    - manim-video
+    - pretext
+    - humanizer
+    - p5js
+    - architecture-diagram
+    - sketch
+    - huggingface-hub
+    - serving-llms-vllm
+    - llama-cpp
+    - evaluating-llms-harness
+    - weights-and-biases
+    - xurl
+    - capcut-download
+    - climb-progress-bar
+    - dual-cam-shorts-edit
+    - find-animation-opportunities
+    - gym-score-card
+    - hyperframes-motion-director
+    - improve-animations
+    - review-animations
+    - text-to-lottie
+    - video-replica
+    - web-shader-extractor
+  external_dirs:
+    - /Users/eddiegao/.pi-gateway/skills
+    - /Users/eddiegao/AI_Work_System/.agents/skills
+  template_vars: true
+  inline_shell: false
+  inline_shell_timeout: 10
+  guard_agent_created: false
+  write_approval: false
+  creation_nudge_interval: 10
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+approvals:
+  mode: 'off'
+delegation:
+  model: ''
+  provider: ''
+  base_url: ''
+  api_mode: ''
+  inherit_mcp_toolsets: true
+  max_iterations: 250
+  child_timeout_seconds: 600
+  reasoning_effort: ''
+  max_concurrent_children: 2
+  max_spawn_depth: 1
+  orchestrator_enabled: true
+  subagent_auto_approve: true
+  default_toolsets:
+    - terminal
+    - file
+    - web
+timezone: Asia/Shanghai
+compression:
+  threshold_tokens: 150000
+providers:
+  xai-pi:
+    name: xai-pi
+    api_mode: codex_responses
+    base_url: https://api.x.ai/v1
+    models:
+      - grok-4.7
+  magpie:
+    api_mode: chat_completions
+    base_url: http://127.0.0.1:3425/v1
+    extra_headers:
+      User-Agent: hermes-agent
+    models:
+      - auto/deepseek-v4.1-flash
+      - auto/glm-5.2
+      - group/ds-flash-credits
+      - auto/glm-5.3-flash
+      - auto/deepseek-v4-flash
+      - auto/deepseek-v4-pro
+      - auto/gemini-4-argon
+      - auto/gemini-3.8-flash
+      - auto/gemini-3.7-flash
+      - auto/gemini-3.5-flash-lite
+      - auto/gemini-3.6-flash
+      - auto/gemini-3.5-flash
+      - auto/gemini-3.1-flash-lite
+      - auto/gemini-2.5-flash
+      - auto/gemini-2.5-flash-lite
+      - auto/gemini-2.5-pro
+      - auto/gemini-3-flash-preview
+      - auto/gemini-3.1-pro-preview
+      - auto/gemini-3.1-pro-preview-customtools
+      - auto/deepseek-v4.1-flash-maas
+      - auto/glm-5.2-maas
+      - auto/gpt-oss-120b-maas
+      - opencode-go/minimax-m3.1-flash-free
+      - opencode-go/deepseek-v4.1-flash
+      - opencode-go/muse-spark-1.3-contributor
+      - opencode-go/beam-free
+      - opencode-go/iceman-contributor-free
+      - opencode-go/glm-5.3-flash
+      - deepseek/deepseek-flash
+      - deepseek/deepseek-v4-flash
+      - deepseek/deepseek-v4-pro
+      - vertex-948/gemini-3.8-flash
+      - vertex-948/gemini-3.7-flash
+      - vertex-948/gemini-3.6-flash
+      - vertex-948/gemini-3.5-flash
+      - vertex-948/gemini-3.5-flash-lite
+      - vertex-948/gemini-4-argon
+      - vertex-948/gemini-3.1-pro-preview
+      - vertex-948/gemini-3.1-pro-preview-customtools
+      - vertex-948/gemini-3.1-flash-lite
+      - vertex-948/gemini-3-flash-preview
+      - vertex-948/gemini-2.5-pro
+      - vertex-948/gemini-2.5-flash
+      - vertex-948/gemini-2.5-flash-lite
+      - vertex-948/deepseek-ai/deepseek-v4.1-flash-maas
+      - vertex-948/zai-org/glm-5.2-maas
+      - vertex-948/openai/gpt-oss-120b-maas
+      - vertex-a123/gemini-3.8-flash
+      - vertex-a123/gemini-3.7-flash
+      - vertex-a123/gemini-3.6-flash
+      - vertex-a123/gemini-3.5-flash
+      - vertex-a123/gemini-3.5-flash-lite
+      - vertex-a123/gemini-4-argon
+      - vertex-a123/gemini-3.1-pro-preview
+      - vertex-a123/gemini-3.1-pro-preview-customtools
+      - vertex-a123/gemini-3.1-flash-lite
+      - vertex-a123/gemini-3-flash-preview
+      - vertex-a123/gemini-2.5-pro
+      - vertex-a123/gemini-2.5-flash
+      - vertex-a123/gemini-2.5-flash-lite
+      - vertex-a123/deepseek-ai/deepseek-v4.1-flash-maas
+      - vertex-a123/zai-org/glm-5.2-maas
+      - vertex-a123/openai/gpt-oss-120b-maas
+      - colab-qwen/qwen3.8-27b
+      - claude/claude-fable-5-2
+      - claude/claude-haiku-5-5
+      - claude/claude-sonnet-5-5
+      - claude/claude-opus-5-5
+      - claude/claude-fable-5-1
+      - claude/claude-opus-5
+      - claude/claude-sonnet-5
+      - claude/claude-fable-5
+      - claude/claude-opus-4-8
+      - claude/claude-opus-4-7
+      - claude/claude-sonnet-4-6
+      - claude/claude-opus-4-6
+      - claude/claude-opus-4-5
+      - claude/claude-opus-4-5-20251101
+      - claude/claude-haiku-4-5
+      - claude/claude-haiku-4-5-20251001
+      - claude/claude-sonnet-4-5
+      - claude/claude-sonnet-4-5-20250929
+      - codex/gpt-6-luna
+      - codex/gpt-5.6-terra
+      - codex/gpt-5.6-luna
+    name: magpie
+    stale_timeout_seconds: 25
+  magpie-anthropic:
+    name: magpie-anthropic
+    base_url: http://127.0.0.1:3425
+    api_mode: anthropic_messages
+    extra_headers:
+      User-Agent: hermes-agent
+    models:
+      - kiov/gpt-6.1-sol
+tools:
+  tool_search:
+    enabled: 'on'
+    listing: auto
+    listing_max_tokens: 800
+    search_default_limit: 4
+    max_search_limit: 8
+    defer:
+      - annotate_preview
+      - apply_layout
+      - browser_back
+      - browser_cdp
+      - browser_click
+      - browser_console
+      - browser_dialog
+      - browser_exec
+      - browser_get_images
+      - browser_navigate
+      - browser_press
+      - browser_scroll
+      - browser_snapshot
+      - browser_type
+      - browser_vault_enter_code
+      - browser_vault_fill
+      - browser_vault_list
+      - browser_vault_save_login
+      - browser_vault_unlock
+      - browser_vision
+      - close_terminal
+      - computer_use
+      - cronjob_manage
+      - delegate_task
+      - desktop_preview
+      - desktop_project
+      - drive_preview
+      - execute_code
+      - focus_pane
+      - gui_tour
+      - ha_call_service
+      - ha_get_state
+      - ha_list_entities
+      - ha_list_services
+      - image_generate
+      - kanban_attach
+      - kanban_attach_url
+      - kanban_attachments
+      - kanban_block
+      - kanban_comment
+      - kanban_complete
+      - kanban_create
+      - kanban_heartbeat
+      - kanban_link
+      - kanban_list
+      - kanban_request_changes
+      - kanban_request_review
+      - kanban_show
+      - kanban_unblock
+      - manage_connections
+      - memory
+      - patch
+      - process_manage
+      - read_terminal
+      - read_window_below
+      - session_search
+      - show_tip
+      - skill_manage
+      - skills_list
+      - text_to_speech
+      - todo_list
+      - vision_analyze
+      - web_extract
+      - web_search
+      - write_file
+plugins:
+  enabled:
+    - com-metrics
+  disabled: []
+curator:
+  enabled: true
+  consolidate: true
+  interval_hours: 24
+known_plugin_toolsets:
+  api_server:
+    - a2a
+    - spotify
+known_builtin_toolsets:
+  api_server:
+    - browser
+    - clarify
+    - code_execution
+    - computer_use
+    - connections
+    - context_engine
+    - cronjob
+    - delegation
+    - discord
+    - discord_admin
+    - file
+    - homeassistant
+    - image_gen
+    - kanban
+    - memory
+    - session_search
+    - skills
+    - spotify
+    - stt
+    - terminal
+    - todo
+    - tts
+    - video
+    - video_gen
+    - vision
+    - web
+    - x_search
+    - yuanbao
+browser:
+  cdp_url: http://127.0.0.1:9333

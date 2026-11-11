@@ -1,0 +1,691 @@
+{
+  "timestamp": "2026-11-11T14:25:05.212435+08:00",
+  "suites": {
+    "default_safe": [
+      {
+        "label": "记账1",
+        "category": "bookkeeping",
+        "prompt": "查一下最近的记账记录",
+        "route_level": "L0",
+        "route_group": "ledger",
+        "model_tier": "L0_deterministic",
+        "first_bubble_ms": 86.3,
+        "first_text_ms": 86.3,
+        "elapsed_ms": 86.3,
+        "tools": [
+          "bookkeeping"
+        ],
+        "tools_count": 1,
+        "discovery_calls": 0,
+        "send_message_calls": 0,
+        "snippet": "3853397918392254465 · 42.5 元 · 滴滴快车往返搜狐媒体大厦 3853397918392254464 · 150 元 · 北京-天津高铁票 3853397729413693440 · 42.5 元 · 滴滴快车往返"
+      },
+      {
+        "label": "记账2",
+        "category": "bookkeeping",
+        "prompt": "帮我看看这个月一共花了多少钱，顺便列最近 3 笔消费",
+        "route_level": "L1",
+        "route_group": "ledger",
+        "classify_ms": 0.7,
+        "model_tier": "fast",
+        "first_bubble_ms": 5920.7,
+        "router_first_text_ms": 5861.1,
+        "first_stream_text_ms": 31345.4,
+        "elapsed_ms": 31825.0,
+        "wall_elapsed_ms": 31886.6,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__business_operation",
+          "tool_call",
+          "tool_call",
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 6,
+        "discovery_calls": 0,
+        "send_message_calls": 2,
+        "bubbles_emitted": 2,
+        "memory_chars": 0,
+        "assembly_ms": 4.49,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register"
+        ],
+        "snippet": "好，我查下这个月账和最近几笔 | **11月到现在花了 6911.79 元，62 笔**，无收入。  ### 最近 3 笔 - **42.5** 出行·滴滴往返搜狐媒体大厦 - **150** 出行·北京-天津高铁票 - **42.5** 出行·滴滴往返搜狐媒体大厦  不过这 3"
+      },
+      {
+        "label": "记账3",
+        "category": "bookkeeping",
+        "prompt": "帮我搜一下最近 7 天有没有餐饮相关的消费记录",
+        "route_level": "L1",
+        "route_group": "ledger",
+        "classify_ms": 0.44,
+        "model_tier": "fast",
+        "first_bubble_ms": 9636.1,
+        "router_first_text_ms": 9614.7,
+        "first_stream_text_ms": 29622.2,
+        "elapsed_ms": 30100.5,
+        "wall_elapsed_ms": 30123.9,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 4,
+        "discovery_calls": 0,
+        "send_message_calls": 2,
+        "bubbles_emitted": 2,
+        "memory_chars": 799,
+        "assembly_ms": 1159.87,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register"
+        ],
+        "snippet": "我去翻一下最近7天的账，只看餐饮。 | **最近7天（11-05～11-11）餐饮共17笔，合计351.95元**  ### 按天 - **11-05**：44（早7、饮料7、午30） - **11-06**：41.25（午33.25、饮料8） - **11-07**：21（晚饭"
+      },
+      {
+        "label": "闲聊1",
+        "category": "chat",
+        "prompt": "你好",
+        "route_level": "L1",
+        "route_group": "chat",
+        "classify_ms": 1.58,
+        "model_tier": "fast",
+        "first_bubble_ms": 6895.4,
+        "router_first_text_ms": 6863.4,
+        "first_stream_text_ms": 11931.7,
+        "elapsed_ms": 11931.9,
+        "wall_elapsed_ms": 11965.1,
+        "tools": [
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 1,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 0,
+        "assembly_ms": 3.12,
+        "prebound_tools": [],
+        "snippet": "在，说吧。今天没别的安排，就晚上7点半跳舞。"
+      },
+      {
+        "label": "闲聊2",
+        "category": "chat",
+        "prompt": "今天忙了一整天有点累，陪我随便聊两句放松一下",
+        "route_level": "L2",
+        "route_group": "general",
+        "classify_ms": 0.9,
+        "model_tier": "fast",
+        "first_bubble_ms": 5548.4,
+        "router_first_text_ms": 5521.8,
+        "first_stream_text_ms": 8772.9,
+        "elapsed_ms": 8901.3,
+        "wall_elapsed_ms": 8930.4,
+        "tools": [
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 1,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 0,
+        "assembly_ms": 57.71,
+        "prebound_tools": [
+          "business_operation",
+          "memory_recall",
+          "task_status",
+          "context_read"
+        ],
+        "snippet": "累就歇会儿，别硬撑。  今天一整天都在跑？是活儿多，还是到处赶场？晚上别再给自己加任务了，躺平也算正事。"
+      },
+      {
+        "label": "闲聊3",
+        "category": "chat",
+        "prompt": "你还记得我是做什么工作的、平时有什么运动习惯吗？",
+        "route_level": "L2",
+        "route_group": "general",
+        "classify_ms": 0.71,
+        "model_tier": "fast",
+        "first_bubble_ms": 8148.4,
+        "router_first_text_ms": 8111.7,
+        "first_stream_text_ms": 11778.9,
+        "elapsed_ms": 11889.7,
+        "wall_elapsed_ms": 11928.1,
+        "tools": [
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 1,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 1500,
+        "assembly_ms": 1170.61,
+        "prebound_tools": [
+          "business_operation",
+          "memory_recall",
+          "task_status",
+          "context_read"
+        ],
+        "snippet": "**记得：搜狐资深视频编辑，搜狐户外账号主理；运动是晚 19:30–20:30 健身 + 攀岩。**  - **职业**：搜狐在职（2022.05 起），做口播/结构/平台策略，日更视频号 + 关注流运营 - **运动**：大学体育专业出身，晚上健身，平时玩攀岩（大有可攀那块你一"
+      },
+      {
+        "label": "办事1",
+        "category": "action",
+        "prompt": "帮我看看今天和明天的日程安排，有没有时间冲突？",
+        "route_level": "L1",
+        "route_group": "calendar",
+        "classify_ms": 0.79,
+        "model_tier": "fast",
+        "first_bubble_ms": 7202.1,
+        "router_first_text_ms": 7167.2,
+        "first_stream_text_ms": 17142.2,
+        "elapsed_ms": 18506.4,
+        "wall_elapsed_ms": 18544.3,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__calendar_read"
+        ],
+        "tools_count": 2,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 1499,
+        "assembly_ms": 1170.41,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register"
+        ],
+        "snippet": "好，我去看今明两天的日历"
+      },
+      {
+        "label": "办事2",
+        "category": "action",
+        "prompt": "帮我列出当前未完成的提醒事项，再看一眼有没有正在跑的后台任务",
+        "route_level": "L1",
+        "route_group": "reminder",
+        "classify_ms": 0.79,
+        "model_tier": "fast",
+        "first_bubble_ms": 4368.6,
+        "router_first_text_ms": 4334.7,
+        "first_stream_text_ms": 12594.6,
+        "elapsed_ms": 14839.1,
+        "wall_elapsed_ms": 14875.8,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__task_status",
+          "mcp__com_workbench__recent_work_sessions"
+        ],
+        "tools_count": 4,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 0,
+        "assembly_ms": 3.6,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register",
+          "task_status"
+        ],
+        "snippet": "我查下提醒列表和后台任务"
+      },
+      {
+        "label": "办事3",
+        "category": "action",
+        "prompt": "帮我检索一下之前关于搜狐户外或攀岩的记忆线索，整理成三条要点",
+        "route_level": "L2",
+        "route_group": "general",
+        "classify_ms": 0.73,
+        "model_tier": "fast",
+        "first_bubble_ms": 5881.1,
+        "router_first_text_ms": 5846.6,
+        "first_stream_text_ms": 17410.3,
+        "elapsed_ms": 17750.3,
+        "wall_elapsed_ms": 17786.8,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__memory_recall",
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 3,
+        "discovery_calls": 0,
+        "send_message_calls": 2,
+        "bubbles_emitted": 2,
+        "memory_chars": 1499,
+        "assembly_ms": 1171.05,
+        "prebound_tools": [
+          "business_operation",
+          "memory_recall",
+          "task_status",
+          "context_read"
+        ],
+        "snippet": "我去翻一下记忆里的搜狐户外和攀岩线索，给你理三条。 | **三条线索，都来自已核验记忆**  ### 1. 日常运营 **日更搜狐户外视频号 + 关注流**是固定工作，周报按五个板块写：攀岩节对接、人员招募、摊位物料、直播推进、日更运营。周报直接发聊天里，不写成文档。  ### "
+      },
+      {
+        "label": "办事4",
+        "category": "action",
+        "prompt": "先帮我核对一下明天的日历安排和本月记账概况，再给我一句明天的行动建议",
+        "route_level": "L1",
+        "route_group": "ledger",
+        "classify_ms": 0.44,
+        "model_tier": "fast",
+        "first_bubble_ms": 7850.2,
+        "router_first_text_ms": 7824.4,
+        "first_stream_text_ms": 32274.5,
+        "elapsed_ms": 32906.1,
+        "wall_elapsed_ms": 32933.7,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__business_operation",
+          "tool_call",
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 5,
+        "discovery_calls": 0,
+        "send_message_calls": 2,
+        "bubbles_emitted": 2,
+        "memory_chars": 769,
+        "assembly_ms": 1134.27,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register"
+        ],
+        "snippet": "好，我查一下明天的日历和11月账本。 | **明天基本是空的，就晚上一场跳舞；11月到现在花了 6911.79，62 笔。**  ### 明天 11-12 **唯一日程**：19:30–21:00 跳舞（女朋友安排） 白天没有任何安排  ### 11月账本 **支出**：6911"
+      }
+    ],
+    "fast_classifier_on": [
+      {
+        "label": "记账1",
+        "category": "bookkeeping",
+        "prompt": "查一下最近的记账记录",
+        "route_level": "L0",
+        "route_group": "ledger",
+        "model_tier": "L0_deterministic",
+        "first_bubble_ms": 44.6,
+        "first_text_ms": 44.6,
+        "elapsed_ms": 44.6,
+        "tools": [
+          "bookkeeping"
+        ],
+        "tools_count": 1,
+        "discovery_calls": 0,
+        "send_message_calls": 0,
+        "snippet": "3853397918392254465 · 42.5 元 · 滴滴快车往返搜狐媒体大厦 3853397918392254464 · 150 元 · 北京-天津高铁票 3853397729413693440 · 42.5 元 · 滴滴快车往返"
+      },
+      {
+        "label": "记账2",
+        "category": "bookkeeping",
+        "prompt": "帮我看看这个月一共花了多少钱，顺便列最近 3 笔消费",
+        "route_level": "L1",
+        "route_group": "ledger",
+        "classify_ms": 430.99,
+        "model_tier": "fast",
+        "first_bubble_ms": 7779.3,
+        "router_first_text_ms": 7307.4,
+        "first_stream_text_ms": 34213.0,
+        "elapsed_ms": 34437.4,
+        "wall_elapsed_ms": 34911.9,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 5,
+        "discovery_calls": 0,
+        "send_message_calls": 2,
+        "bubbles_emitted": 2,
+        "memory_chars": 0,
+        "assembly_ms": 1.22,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register"
+        ],
+        "snippet": "我去翻一下账本，看本月总额和最近几笔。 | **本月花了 6911.79 元**，62 笔，但里面有多算的，先看下面一条。  ### 最近 3 笔（都是今天） - **14:23** 滴滴快车往返搜狐媒体大厦 **42.5** - **14:23** 北京-天津高铁票 **150"
+      },
+      {
+        "label": "记账3",
+        "category": "bookkeeping",
+        "prompt": "帮我搜一下最近 7 天有没有餐饮相关的消费记录",
+        "route_level": "L1",
+        "route_group": "ledger",
+        "classify_ms": 427.32,
+        "model_tier": "fast",
+        "first_bubble_ms": 7835.9,
+        "router_first_text_ms": 7358.4,
+        "first_stream_text_ms": 21743.9,
+        "elapsed_ms": 21374.3,
+        "wall_elapsed_ms": 21854.0,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 3,
+        "discovery_calls": 0,
+        "send_message_calls": 2,
+        "bubbles_emitted": 2,
+        "memory_chars": 799,
+        "assembly_ms": 1157.18,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register"
+        ],
+        "snippet": "好，我去翻下最近 7 天的账。 | **最近 7 天餐饮外卖一共 17 笔，合计 351.95 元。**  **11-11**：早餐 11、午饭 30、饮料 5.5 **11-10**：手抓饭 30、晚饭 34 **11-09**：午饭 34 + 39（11:01 两笔）、咖啡 "
+      },
+      {
+        "label": "闲聊1",
+        "category": "chat",
+        "prompt": "你好",
+        "route_level": "L1",
+        "route_group": "chat",
+        "classify_ms": 0.75,
+        "model_tier": "fast",
+        "first_bubble_ms": 5191.8,
+        "router_first_text_ms": 5162.9,
+        "first_stream_text_ms": 9334.3,
+        "elapsed_ms": 9691.5,
+        "wall_elapsed_ms": 9722.7,
+        "tools": [
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 1,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 0,
+        "assembly_ms": 1.22,
+        "prebound_tools": [],
+        "snippet": "**在呢。** 刚记完那两笔——手机配件 23.3、买饮料 5.5。  顺口提醒一句：明天(12日)只有晚上 19:30–21:00 跳舞，白天空着；另外那条「Scenario B1 二元冲突竞争测试」还挂在日历今天全天，要不要我删了？  [[选项: 删掉测试日程 | 先留着]]"
+      },
+      {
+        "label": "闲聊2",
+        "category": "chat",
+        "prompt": "今天忙了一整天有点累，陪我随便聊两句放松一下",
+        "route_level": "L2",
+        "route_group": "general",
+        "classify_ms": 430.69,
+        "model_tier": "fast",
+        "first_bubble_ms": 4302.1,
+        "router_first_text_ms": 3826.4,
+        "first_stream_text_ms": 5493.4,
+        "elapsed_ms": 5456.9,
+        "wall_elapsed_ms": 5934.5,
+        "tools": [
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 1,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 0,
+        "assembly_ms": 61.34,
+        "prebound_tools": [
+          "business_operation",
+          "memory_recall",
+          "task_status",
+          "context_read"
+        ],
+        "snippet": "忙一整天，先别急着再安排事，人就往沙发上一靠得了。  今天主要是哪块最耗你？活儿多还是来回折腾那种累？我听着。"
+      },
+      {
+        "label": "闲聊3",
+        "category": "chat",
+        "prompt": "你还记得我是做什么工作的、平时有什么运动习惯吗？",
+        "route_level": "L2",
+        "route_group": "general",
+        "classify_ms": 431.8,
+        "model_tier": "fast",
+        "first_bubble_ms": 5718.0,
+        "router_first_text_ms": 5248.0,
+        "first_stream_text_ms": 7279.2,
+        "elapsed_ms": 6845.9,
+        "wall_elapsed_ms": 7318.9,
+        "tools": [
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 1,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 1500,
+        "assembly_ms": 1157.65,
+        "prebound_tools": [
+          "business_operation",
+          "memory_recall",
+          "task_status",
+          "context_read"
+        ],
+        "snippet": "**记得。**  **工作**：搜狐资深视频编辑，偏内容导演那挂，主理「搜狐户外」账号，日更视频号加关注流运营  **运动**：晚上 **19:30–20:30** 固定健身；另外玩攀岩，最近在忙大有可攀攀岩生活节  住处北七家和悦华玺，通勤单程一个半小时，周末不加班。"
+      },
+      {
+        "label": "办事1",
+        "category": "action",
+        "prompt": "帮我看看今天和明天的日程安排，有没有时间冲突？",
+        "route_level": "L1",
+        "route_group": "calendar",
+        "classify_ms": 435.69,
+        "model_tier": "fast",
+        "first_bubble_ms": 6719.0,
+        "router_first_text_ms": 6232.5,
+        "first_stream_text_ms": 16609.1,
+        "elapsed_ms": 17552.9,
+        "wall_elapsed_ms": 18041.9,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__calendar_read"
+        ],
+        "tools_count": 2,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 1499,
+        "assembly_ms": 1164.06,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register"
+        ],
+        "snippet": "查一下今天和明天的日程安排"
+      },
+      {
+        "label": "办事2",
+        "category": "action",
+        "prompt": "帮我列出当前未完成的提醒事项，再看一眼有没有正在跑的后台任务",
+        "route_level": "L1",
+        "route_group": "reminder",
+        "classify_ms": 432.82,
+        "model_tier": "fast",
+        "first_bubble_ms": 12001.2,
+        "router_first_text_ms": 11520.5,
+        "first_stream_text_ms": 34792.5,
+        "elapsed_ms": 34726.0,
+        "wall_elapsed_ms": 35209.7,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__business_operation",
+          "mcp__com_workbench__task_status",
+          "mcp__com_workbench__recent_work_sessions",
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 5,
+        "discovery_calls": 0,
+        "send_message_calls": 2,
+        "bubbles_emitted": 2,
+        "memory_chars": 0,
+        "assembly_ms": 1.65,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register",
+          "task_status"
+        ],
+        "snippet": "好，我去翻一下提醒和后台任务。 | **3 条未完成提醒，后台没有正在跑的任务。**  ### 提醒 **交周报**：11-12 15:00，每周重复（明天下车） **Google AI Ultra（30TB）**：12-01 10:00，要决定续费还是停自动续订 **摩托车交强"
+      },
+      {
+        "label": "办事3",
+        "category": "action",
+        "prompt": "帮我检索一下之前关于搜狐户外或攀岩的记忆线索，整理成三条要点",
+        "route_level": "L2",
+        "route_group": "general",
+        "classify_ms": 433.74,
+        "model_tier": "fast",
+        "first_bubble_ms": 4164.7,
+        "router_first_text_ms": 3697.1,
+        "first_stream_text_ms": 13103.2,
+        "elapsed_ms": 13285.5,
+        "wall_elapsed_ms": 13754.7,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__memory_recall",
+          "mcp__com_workbench__send_message"
+        ],
+        "tools_count": 3,
+        "discovery_calls": 0,
+        "send_message_calls": 2,
+        "bubbles_emitted": 2,
+        "memory_chars": 1499,
+        "assembly_ms": 1159.48,
+        "prebound_tools": [
+          "business_operation",
+          "memory_recall",
+          "task_status",
+          "context_read"
+        ],
+        "snippet": "我去翻一下搜狐户外和攀岩的记忆，稍等。 | **搜到的主要线索，归成三条：**  ### 1. 账号身份 你是搜狐生活方式中心/内容部的「**搜狐户外**」账号主理人，日常活就是**日更视频号 + 关注流运营**。这块有整套运营工程记录（防漏转探活、去 AI 味提示词、转帖脚本）"
+      },
+      {
+        "label": "办事4",
+        "category": "action",
+        "prompt": "先帮我核对一下明天的日历安排和本月记账概况，再给我一句明天的行动建议",
+        "route_level": "L1",
+        "route_group": "ledger",
+        "classify_ms": 427.12,
+        "model_tier": "fast",
+        "first_bubble_ms": 9260.1,
+        "router_first_text_ms": 8790.7,
+        "first_stream_text_ms": 21821.5,
+        "elapsed_ms": 23156.8,
+        "wall_elapsed_ms": 23628.0,
+        "tools": [
+          "mcp__com_workbench__send_message",
+          "mcp__com_workbench__calendar_read",
+          "mcp__com_workbench__business_operation"
+        ],
+        "tools_count": 3,
+        "discovery_calls": 0,
+        "send_message_calls": 1,
+        "bubbles_emitted": 1,
+        "memory_chars": 1500,
+        "assembly_ms": 1164.27,
+        "prebound_tools": [
+          "business_operation",
+          "pending_action_register"
+        ],
+        "snippet": "好，我去翻明天的日历和11月的账。"
+      }
+    ]
+  },
+  "fast_classifier_audit": [
+    {
+      "at": 1794378485.062,
+      "request_id": "probe10-req-6a2680bf52",
+      "elapsed_ms": 430.38,
+      "intent": "",
+      "confidence": 0.0,
+      "tools": [],
+      "level": "",
+      "accepted": false,
+      "fallback": "timeout"
+    },
+    {
+      "at": 1794378520.069,
+      "request_id": "probe10-req-d8a29db757",
+      "elapsed_ms": 426.98,
+      "intent": "",
+      "confidence": 0.0,
+      "tools": [],
+      "level": "",
+      "accepted": false,
+      "fallback": "timeout"
+    },
+    {
+      "at": 1794378541.515,
+      "request_id": "probe10-req-32f5b7eef9",
+      "elapsed_ms": 0.05,
+      "intent": "chat",
+      "confidence": 1.0,
+      "tools": [],
+      "level": "L1",
+      "accepted": true,
+      "fallback": ""
+    },
+    {
+      "at": 1794378551.686,
+      "request_id": "probe10-req-eefe2e4964",
+      "elapsed_ms": 429.89,
+      "intent": "",
+      "confidence": 0.0,
+      "tools": [],
+      "level": "",
+      "accepted": false,
+      "fallback": "timeout"
+    },
+    {
+      "at": 1794378557.64,
+      "request_id": "probe10-req-220b8dc072",
+      "elapsed_ms": 430.94,
+      "intent": "",
+      "confidence": 0.0,
+      "tools": [],
+      "level": "",
+      "accepted": false,
+      "fallback": "timeout"
+    },
+    {
+      "at": 1794378564.983,
+      "request_id": "probe10-req-84bfb56235",
+      "elapsed_ms": 434.76,
+      "intent": "",
+      "confidence": 0.0,
+      "tools": [],
+      "level": "",
+      "accepted": false,
+      "fallback": "timeout"
+    },
+    {
+      "at": 1794378583.041,
+      "request_id": "probe10-req-8fb0e8c915",
+      "elapsed_ms": 432.12,
+      "intent": "",
+      "confidence": 0.0,
+      "tools": [],
+      "level": "",
+      "accepted": false,
+      "fallback": "timeout"
+    },
+    {
+      "at": 1794378618.273,
+      "request_id": "probe10-req-c45428d5a4",
+      "elapsed_ms": 432.89,
+      "intent": "",
+      "confidence": 0.0,
+      "tools": [],
+      "level": "",
+      "accepted": false,
+      "fallback": "timeout"
+    },
+    {
+      "at": 1794378632.04,
+      "request_id": "probe10-req-55b20dd74b",
+      "elapsed_ms": 426.78,
+      "intent": "",
+      "confidence": 0.0,
+      "tools": [],
+      "level": "",
+      "accepted": false,
+      "fallback": "timeout"
+    }
+  ]
+}

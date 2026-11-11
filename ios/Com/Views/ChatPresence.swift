@@ -263,56 +263,79 @@ struct ChatAttentionStrip: View {
     var body: some View {
         Group {
             if visible {
-                Button {
-                    guard !openingWaiting else { return }
-                    Haptics.selection()
-                    if preferWaiting { model.openWaitingInbox() }
-                    else { model.tab = .next }
-                } label: {
-                    HStack(alignment: .center, spacing: Space.md) {
-                        Image(systemName: openingWaiting ? "hourglass" : (preferWaiting ? "hand.raised.fill" : "arrow.turn.up.right"))
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(preferWaiting ? Palette.warning : Palette.accentText)
-                            .frame(width: 28, height: 28)
-                            .background((preferWaiting ? Palette.warning : Palette.accent).opacity(0.14), in: .circle)
-                        VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .center, spacing: Space.sm) {
+                    Button {
+                        guard !openingWaiting else { return }
+                        Haptics.selection()
+                        if preferWaiting { model.openWaitingInbox() }
+                        else { model.tab = .next }
+                    } label: {
+                        HStack(alignment: .center, spacing: Space.sm) {
+                            Image(systemName: openingWaiting ? "hourglass" : (preferWaiting ? "hand.raised.fill" : "arrow.turn.up.right"))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(preferWaiting ? Palette.warning : Palette.accentText)
+                                .frame(width: 24, height: 24)
+                                .background((preferWaiting ? Palette.warning : Palette.accent).opacity(0.14), in: .circle)
                             Text(openingWaiting ? "正在打开等你…" : headline)
                                 .font(TypeScale.footnote.weight(.semibold))
                                 .foregroundStyle(preferWaiting ? Palette.warning : Palette.accentText)
+                                .lineLimit(1)
                                 .contentTransition(.numericText())
                             if !openingWaiting, let tip, !tip.isEmpty {
-                                Text(tip)
-                                    .font(TypeScale.subheadline.weight(.medium))
-                                    .foregroundStyle(Palette.textPrimary)
+                                Text("· " + tip)
+                                    .font(TypeScale.footnote)
+                                    .foregroundStyle(Palette.textSecondary)
                                     .lineLimit(1)
                             }
+                            Spacer(minLength: 4)
+                            if openingWaiting {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text(cta)
+                                    .font(TypeScale.caption.weight(.bold))
+                                    .foregroundStyle(preferWaiting ? Palette.onAccent : Palette.accentText)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(preferWaiting ? Palette.warning : Palette.accent.opacity(0.22), in: .capsule)
+                            }
                         }
-                        Spacer(minLength: 0)
-                        if openingWaiting {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text(cta)
-                                .font(TypeScale.footnote.weight(.semibold))
-                                .foregroundStyle(preferWaiting ? Palette.warning : Palette.accentText)
-                        }
+                        .contentShape(.rect)
                     }
-                    .padding(.horizontal, Space.md)
-                    .padding(.vertical, Space.sm + 2)
-                    .background(Palette.surface, in: .rect(cornerRadius: Radius.md, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                            .strokeBorder((preferWaiting ? Palette.warning : Palette.accent).opacity(0.28), lineWidth: 1)
-                    )
-                    .contentShape(.rect(cornerRadius: Radius.md))
-                    .opacity(openingWaiting ? 0.72 : 1)
+                    .buttonStyle(SoftPressStyle(scale: 0.985))
+                    .disabled(openingWaiting)
+                    .accessibilityIdentifier(preferWaiting ? "chat-attention-waiting" : "chat-attention-next")
+                    .accessibilityLabel((openingWaiting ? "正在打开等你" : headline) + (tip.map { "：\($0)" } ?? "") + "，" + cta)
+
+                    Button {
+                        Haptics.selection()
+                        withAnimation(ComMotion.reduced(reduce, ComMotion.settle)) {
+                            if preferWaiting {
+                                model.dismissCurrentWaitingAttention()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Palette.textTertiary)
+                            .frame(width: 24, height: 24)
+                            .background(Palette.fill, in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("收起待拍板提醒")
+                    .accessibilityIdentifier("chat-attention-dismiss")
                 }
-                .buttonStyle(SoftPressStyle(scale: 0.985))
-                .disabled(openingWaiting)
-                .accessibilityIdentifier(preferWaiting ? "chat-attention-waiting" : "chat-attention-next")
-                .accessibilityLabel((openingWaiting ? "正在打开等你" : headline) + (tip.map { "：\($0)" } ?? "") + "，" + cta)
-                .attentionBreath(active: preferWaiting && !openingWaiting && !reduce)
+                .padding(.leading, Space.sm + 2)
+                .padding(.trailing, Space.sm)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: .capsule)
+                .background(Palette.surface.opacity(0.88), in: .capsule)
+                .overlay(
+                    Capsule()
+                        .strokeBorder((preferWaiting ? Palette.warning : Palette.accent).opacity(0.32), lineWidth: 0.8)
+                )
+                .opacity(openingWaiting ? 0.72 : 1)
                 .padding(.horizontal, Space.lg)
-                .padding(.vertical, Space.xs)
+                .padding(.vertical, 2)
                 .enterRise(on: shown, delay: 0, y: 8, blur: 4)
                 .transition(.asymmetric(
                     insertion: reduce ? .opacity : .move(edge: .bottom).combined(with: .opacity),
@@ -335,13 +358,13 @@ struct ChatAttentionStrip: View {
 enum ChatAttentionHint {
     static func topWaitingTitle(_ model: AppModel) -> String? {
         // Waiting API 已按 case → wechat → todo 排；优先它，避免派活/旧任务盖住航程停顿。
-        if let item = model.waitingData["items"].array.first {
+        if let item = model.waitingData["items"].array.first(where: { !model.dismissedWaitingIDs.contains($0.id) }) {
             let title = item["title"].string
             if !title.isEmpty { return shorten(title) }
             let why = item["why"].string
             if !why.isEmpty { return shorten(why) }
         }
-        if let item = model.pendingItems.first(where: { !$0.stale }), !item.title.isEmpty {
+        if let item = model.pendingItems.first(where: { !$0.stale && !model.dismissedWaitingIDs.contains($0.id) }), !item.title.isEmpty {
             return shorten(item.title)
         }
         return nil

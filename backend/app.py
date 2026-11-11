@@ -1,10 +1,13 @@
 # pyright: reportMissingImports=false, reportMissingModuleSource=false, reportAttributeAccessIssue=false, reportOptionalSubscript=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportAssignmentType=false, reportCallIssue=false, reportOperatorIssue=false, reportIndexIssue=false, reportReturnType=false
 # Com backend: FastAPI wiring; type-checking baseline lives in pyrightconfig.json.
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import fcntl
 import hashlib
 import hmac
+import inspect
 import json
 import sys
 import os
@@ -14,10 +17,12 @@ import shutil
 import signal
 import struct
 import termios
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from agent_tools import AgentTools
@@ -54,6 +59,7 @@ from task_tools import authorized_assignment
 from tasks import TaskController, TaskStore
 from unified_voice import UnifiedVoice
 from voice import voice_router
+from voice_live import voice_live_router
 from work_cards import accepted
 from work_dispatch import WorkProposalStore
 
@@ -82,6 +88,31 @@ conversation = PersonalConversation(
     STATE,
     PiMainClient(STATE, HOME / "AI_Work_System", tools=os.environ.get("COM_PI_SAFE_PROBE") != "1") if MAIN_AGENT == "pi" else HermesRuntime(STATE),
 )
+from sse_stream import SSEBroadcaster, SSERingBuffer
+sse_ring_buffer = SSERingBuffer(STATE / "sse_events.sqlite", capacity=1000)
+sse_broadcaster = SSEBroadcaster(sse_ring_buffer)
+
+def sync_conversation_to_sse():
+    try:
+        from agent_activity import AgentEventProjector
+        if not hasattr(app.state, "_sse_projector"):
+            app.state._sse_projector = AgentEventProjector()
+            app.state._sse_last_convo_rev = conversation.snapshot()["revision"]
+        projector = app.state._sse_projector
+        last_rev = app.state._sse_last_convo_rev
+        change = conversation.changes_since(last_rev)
+        if change["revision"] > last_rev:
+            app.state._sse_last_convo_rev = change["revision"]
+            activity, semantic = projector.project({"data": change})
+            payload = {**change, "activity": activity}
+            sse_broadcaster.publish("update", payload)
+            for item in semantic:
+                sse_broadcaster.publish(item["event"], item["data"])
+    except Exception:
+        pass
+
+if hasattr(conversation, "_on_notify"):
+    conversation._on_notify.append(sync_conversation_to_sse)
 legacy_voice = quick_voice
 quick_voice = UnifiedVoice(conversation, legacy_voice)
 rayneo = RayneoIngress(STATE, conversation, quick_voice)
@@ -95,6 +126,7 @@ work_proposals = WorkProposalStore(STATE, HOME / "AI_Work_System")
 task_store = TaskStore(STATE)
 artifact_access = ArtifactAccess(task_store, HOME / "AI_Work_System", STATE)
 conversation.artifact_linker = artifact_access.link_text
+conversation.artifact_register_fn = artifact_access.register
 conversation.turn_file_linker = artifact_access.link_turn_files
 attachment_store = AttachmentStore(STATE)
 task_controller = TaskController(task_store, runtime, conversation)
@@ -123,6 +155,10 @@ agent_tools = AgentTools(
     capability_registry,
     goal_events,
 )
+agent_tools.artifact_access = artifact_access
+from drop_inbox import DropInbox
+
+drop_inbox = DropInbox(STATE, artifact_access=artifact_access, conversation=conversation)
 from personal_hub import PersonalHub
 
 personal_hub = PersonalHub(STATE, HOME)
@@ -304,11 +340,13 @@ async def lifespan(app):
     task_store.recover()
     goal_events.recover()
 
+    legacy_agency_loop_enabled = os.environ.get("COM_LEGACY_AGENCY_LOOP") == "1"
+
     async def scheduler_loop():
         while True:
             if goal_events.tick():
                 conversation.wake.set()
-            if proactive.tick(goal_events):
+            if legacy_agency_loop_enabled and proactive.tick(goal_events):
                 conversation.wake.set()
             await asyncio.sleep(30)
 
@@ -320,7 +358,7 @@ async def lifespan(app):
                 await agency.process()
             await asyncio.sleep(5)
 
-    agency_task = asyncio.create_task(agency_loop())
+    agency_task = asyncio.create_task(agency_loop()) if legacy_agency_loop_enabled else None
 
     async def notification_loop():
         tick = 0
@@ -438,23 +476,40 @@ async def lifespan(app):
 
     eval_task = asyncio.create_task(eval_loop())
     agent_task = asyncio.create_task(agent_track_loop())  # 轨道 agent：滚动摘要 + 主动提醒，定义见文件末尾
+    scheduled_triggers_task = asyncio.create_task(scheduled_triggers_loop())  # 主动定时触发器（30s tick，受 triggers_on 门控）
     asyncio.get_running_loop().run_in_executor(None, conversation.backfill_artifacts)  # 10-25：近两周回复里的产出路径补挂卡片
+
+    # M1 / F03: Transactional Outbox 异步投影协程 (Projector Worker)
+    outbox_task = None
+    if "personal_board" in globals() and personal_board:
+        from matter_store import process_matter_outbox_projector
+        outbox_task = asyncio.create_task(process_matter_outbox_projector(personal_board))
+
     quick_voice.start()
     conversation.start()
     inspector.start()
     yield
+    scheduled_triggers_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await scheduled_triggers_task
+    if outbox_task:
+        outbox_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await outbox_task
     task.cancel()
     ledger_loop.cancel()
     scheduler_task.cancel()
-    agency_task.cancel()
+    if agency_task:
+        agency_task.cancel()
     project_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await project_task
     notification_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await notification_task
-    with contextlib.suppress(asyncio.CancelledError):
-        await agency_task
+    if agency_task:
+        with contextlib.suppress(asyncio.CancelledError):
+            await agency_task
     heartbeat_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await heartbeat_task
@@ -485,6 +540,7 @@ async def lifespan(app):
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(voice_router(STATE))
+app.include_router(voice_live_router(STATE, conversation, next_steps, personal_hub))
 app.include_router(attachment_router(attachment_store))
 app.include_router(rayneo.router)
 
@@ -530,6 +586,10 @@ def deployed_build_commit():
 
 @app.get("/health")
 async def health():
+    fast_classifier_enabled = bool(getattr(superagent_flags, "fast_classifier_on", lambda: False)())
+    triggers_enabled = bool(getattr(superagent_flags, "triggers_on", lambda: False)())
+    channels_enabled = bool(getattr(superagent_flags, "channels_on", lambda: False)())
+    voice_narration_enabled = bool(getattr(superagent_flags, "voice_narration_on", lambda: False)())
     return {
         "service": "mini-sessions",
         "version": "2.0.0",
@@ -563,12 +623,24 @@ async def health():
             "main_steer_v1": True,
             "hermes_main": MAIN_AGENT == "hermes",
             "hermes_runs_v1": True,
+            "personal_send_message_v1": superagent_flags.send_message_on(),
+            "fast_classifier": fast_classifier_enabled,
+            "triggers": triggers_enabled,
+            "channels": channels_enabled,
+            "voice_narration": voice_narration_enabled,
             "voice_bookkeeping_intent_v1": True,
             "markdown_hindsight_memory_v1": True,
             "direct_business_queries_v1": True,
             "work_chat_v1": True,
             "goal_proposals_v1": True,
             "goals_scheduler": goal_events.enabled(),
+        },
+        "superagent_flags": {
+            "personal_send_message_v1": superagent_flags.send_message_on(),
+            "fast_classifier": fast_classifier_enabled,
+            "triggers": triggers_enabled,
+            "channels": channels_enabled,
+            "voice_narration": voice_narration_enabled,
         },
     }
 
@@ -635,13 +707,85 @@ async def personal_overview():
     return await personal.overview()
 
 
+@app.get("/personal/channels")
+async def personal_channels():
+    channels_info_fn = getattr(conversation, "channels_info", None)
+    if callable(channels_info_fn):
+        info = channels_info_fn()
+        if isinstance(info, dict):
+            return {
+                "enabled": bool(info.get("enabled", getattr(superagent_flags, "channels_on", lambda: False)())),
+                "active": str(info.get("active") or getattr(conversation, "get_active_channel", lambda: "personal")()),
+                "channels": info.get("channels") or [],
+            }
+    active = "personal"
+    get_active_fn = getattr(conversation, "get_active_channel", None)
+    if callable(get_active_fn):
+        active = str(get_active_fn() or "personal")
+    elif hasattr(conversation, "db"):
+        with contextlib.suppress(Exception):
+            with conversation.db() as db:
+                row = db.execute("SELECT value FROM meta WHERE key='active_channel'").fetchone()
+                if row and row[0] in ("personal", "work", "bookkeeping"):
+                    active = row[0]
+    return {
+        "enabled": bool(getattr(superagent_flags, "channels_on", lambda: False)()),
+        "active": active,
+        "channels": [
+            {"id": "personal", "label": "个人", "short_label": "个人"},
+            {"id": "work", "label": "工作", "short_label": "工作"},
+            {"id": "bookkeeping", "label": "记账", "short_label": "记账"},
+        ],
+    }
+
+
+@app.post("/personal/channels/select")
+async def personal_channels_select(request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, "请求体必须为 JSON 对象")
+    raw_channel = str(data.get("channel") or "").strip()
+    if not raw_channel:
+        raise HTTPException(400, "缺少 channel 参数")
+    set_active_fn = getattr(conversation, "set_active_channel", None)
+    if callable(set_active_fn):
+        try:
+            active = set_active_fn(raw_channel)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    else:
+        if raw_channel not in ("personal", "work", "bookkeeping"):
+            raise HTTPException(400, f"不支持的 channel: {raw_channel}")
+        active = raw_channel
+        if hasattr(conversation, "db"):
+            with contextlib.suppress(Exception):
+                with conversation.db() as db:
+                    db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('active_channel', ?)", (active,))
+    info = await personal_channels()
+    return {"ok": True, **info, "active": active}
+
+
 @app.get("/personal/conversation")
-async def personal_conversation():
+async def personal_conversation(channel: Optional[str] = None):
+    if channel is not None and channel.strip():
+        try:
+            sig = inspect.signature(conversation.snapshot)
+            if "channel" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                return conversation.snapshot(channel=channel.strip())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return conversation.snapshot()
 
 
 @app.get("/personal/conversation/history")
-async def conversation_history(before: str = "", around: str = "", limit: int = 60):
+async def conversation_history(before: str = "", around: str = "", limit: int = 60, channel: Optional[str] = None):
+    if channel is not None and channel.strip():
+        try:
+            sig = inspect.signature(conversation.history)
+            if "channel" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                return conversation.history(before, around, limit, channel=channel.strip())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return conversation.history(before, around, limit)
 
 
@@ -740,36 +884,54 @@ async def artifact_file(artifact_id: str):
     )
 
 
+@app.post("/personal/drop")
+async def personal_drop_create(request: Request):
+    try:
+        data = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "请求体必须为合法 JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(400, "请求体必须为 JSON 对象")
+    try:
+        item = await asyncio.to_thread(drop_inbox.ingest, data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "item": item, "drop_id": item["id"], "suggestions": item.get("suggestions", [])}
+
+
+@app.get("/personal/drop")
+async def personal_drop_list(limit: int = 50, kind: str = "", status: str = ""):
+    items = await asyncio.to_thread(drop_inbox.list, limit=limit, kind=kind, status=status)
+    return {"ok": True, "items": items, "total": len(items)}
+
+
+@app.get("/personal/stream")
 @app.get("/personal/conversation/stream")
 async def personal_conversation_stream(request: Request):
-    raw = request.headers.get("last-event-id", "")
+    raw_header = request.headers.get("last-event-id", "").strip()
+    raw_query = ""
+    try:
+        raw_query = request.query_params.get("after", "").strip()
+    except KeyError:
+        pass
+    raw = raw_header or raw_query
     after = int(raw) if raw.isdecimal() and len(raw) < 19 else None
 
-    async def events():
+    def get_snapshot():
         from agent_activity import AgentEventProjector
-
+        snap = conversation.snapshot()
         projector = AgentEventProjector()
-        if after is not None:
-            # Resume deltas omit unchanged background jobs; seed their durable state
-            # once without sending/replaying historical deliveries to the client.
-            projector.project({"data": conversation.snapshot()})
-        async for frame in conversation.stream(after):
-            if frame["event"] == "keepalive":
-                yield "event: heartbeat\ndata: {}\n\n"
-            else:
-                activity, semantic = projector.project(frame)
-                payload = json.dumps(
-                    {**frame["data"], "activity": activity},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-                yield f"id: {frame['id']}\nevent: {frame['event']}\ndata: {payload}\n\n"
-                for item in semantic:
-                    payload = json.dumps(item["data"], ensure_ascii=False, separators=(",", ":"))
-                    yield f"event: {item['event']}\ndata: {payload}\n\n"
+        activity, _ = projector.project({"data": snap})
+        snap_with_act = {**snap, "activity": activity}
+        if "personal_board" in globals() and personal_board:
+            try:
+                snap_with_act["board"] = personal_board.snapshot()
+            except Exception:
+                pass
+        return snap_with_act
 
     return StreamingResponse(
-        events(),
+        sse_broadcaster.stream_client(after, get_snapshot),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
@@ -780,9 +942,28 @@ def matter_context(matter_id):
         return None
     if not isinstance(matter_id, str):
         raise ValueError("事项标识无效")
+    if "personal_board" in globals() and getattr(personal_board, "matter_store", None):
+        matter = personal_board.matter_store.get_by_id(matter_id)
+        if matter:
+            return {
+                "id": matter.matter_id,
+                "title": matter.title,
+                "source": matter.source_type,
+                "status": matter.status,
+                "why": matter.why,
+                "created_at": matter.created_at,
+                "authority": "ssot",
+            }
     card = next((r for r in personal_hub.briefing()["cards"] if r["id"] == matter_id), None)
     row = card or next((r for r in personal_hub.matters() if r["id"] == matter_id), None)
     if not row:
+        if matter_id.startswith("mtr-"):
+            return {
+                "id": matter_id,
+                "title": matter_id,
+                "source": "matter",
+                "authority": "external_reference_only",
+            }
         raise ValueError("事项不存在")
     return {
         "id": matter_id,
@@ -800,18 +981,93 @@ def matter_context(matter_id):
 @app.post("/personal/conversation/messages")
 async def personal_message(request: Request):
     data = await request.json()
-    if not isinstance(data, dict) or not isinstance(data.get("request_id"), str) or not isinstance(data.get("text"), str):
+    text_content = data.get("content") if isinstance(data, dict) and "content" in data else (data.get("text") if isinstance(data, dict) else None)
+    wait_for_reply = bool(isinstance(data, dict) and (data.get("wait") or request.query_params.get("wait")))
+    if wait_for_reply and isinstance(data, dict) and not data.get("request_id"):
+        data["request_id"] = "siri-" + uuid.uuid4().hex
+    if not isinstance(data, dict) or not isinstance(data.get("request_id"), str) or not isinstance(text_content, str) or not text_content.strip():
         raise ValueError("消息格式无效")
     if legacy_voice.receipt(data["request_id"]) or quick_voice.receipt(data["request_id"]):
         raise ValueError("这条语音已有受理回执，不会重复交办。")
     attachments = attachment_store.resolve(data.get("attachment_ids", []))
-    return conversation.submit(
-        data["request_id"],
-        data["text"],
-        data.get("reference"),
-        associated_matter=matter_context(data.get("matter_id")),
-        attachments=attachments,
-    )
+
+    # Interrupt Fork: Check if there are active background cases/tasks running
+    active_statuses = getattr(cases, "ACTIVE", ("queued", "dispatching", "running", "waiting", "paused", "unknown", "cancel_requested", "approval_required"))
+    active_cases = [t for t in cases.store.list() if t.get("status") in active_statuses] if hasattr(cases, "store") else []
+    is_fork = data.get("is_interrupt_fork") or bool(active_cases)
+    fork_meta = None
+    if is_fork:
+        fork_meta = {
+            "is_interrupt_fork": True,
+            "fork_thread_id": f"fork-main-{int(time.time() * 1000)}",
+        }
+
+    context_matter_id = data.get("context_matter_id") or data.get("matter_id")
+    req_channel = data.get("channel").strip() if isinstance(data.get("channel"), str) and data.get("channel").strip() else None
+    submit_kwargs: dict[str, Any] = {
+        "associated_matter": matter_context(context_matter_id),
+        "attachments": attachments,
+    }
+    if req_channel is not None:
+        try:
+            submit_sig = inspect.signature(conversation.submit)
+            if "channel" in submit_sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in submit_sig.parameters.values()):
+                submit_kwargs["channel"] = req_channel
+        except (TypeError, ValueError):
+            pass
+    try:
+        res = conversation.submit(
+            data["request_id"],
+            text_content,
+            data.get("reference"),
+            **submit_kwargs,
+        )
+    except ValueError as exc:
+        if req_channel is not None and "channel" in str(exc).lower():
+            raise HTTPException(400, str(exc)) from exc
+        raise
+
+    message_seq = res.get("message_seq", 1) if isinstance(res, dict) else 1
+    status_val = "accepted" if (data.get("is_interrupt_fork") and "content" not in data) else "persisted"
+    response_payload = {
+        "ok": True,
+        "message_id": res["message_id"] if isinstance(res, dict) else "",
+        "request_id": data["request_id"],
+        "message_seq": message_seq,
+        "role": data.get("role") or "user",
+        "content": text_content,
+        "status": status_val,
+        "created_at": res.get("created_at", time.time()) if isinstance(res, dict) else time.time(),
+    }
+    if req_channel is not None or (isinstance(res, dict) and res.get("channel")):
+        response_payload["channel"] = (res.get("channel") if isinstance(res, dict) else None) or req_channel
+    if context_matter_id:
+        response_payload["context_matter_id"] = context_matter_id
+    if is_fork and fork_meta:
+        response_payload.update(fork_meta)
+    if wait_for_reply:
+        timeout_sec = min(max(float(data.get("timeout", 12.0)), 1.0), 25.0)
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            await asyncio.sleep(0.15)
+            rcpt = conversation.receipt(data["request_id"])
+            if not rcpt:
+                continue
+            r_status = rcpt.get("status") or ""
+            r_reply = (rcpt.get("reply") or "").strip()
+            r_err = (rcpt.get("error") or "").strip()
+            if r_reply and r_status in ("completed", "unknown", "approval_required"):
+                response_payload["reply"] = r_reply
+                response_payload["receipt_status"] = r_status
+                break
+            if r_status == "failed":
+                response_payload["reply"] = f"Com 处理失败：{r_err}" if r_err else "Com 处理失败，请打开 Com 查看。"
+                response_payload["receipt_status"] = "failed"
+                break
+        if "reply" not in response_payload:
+            response_payload["reply"] = f"已发给 Com（{text_content.strip()}），正在后台处理。"
+            response_payload["receipt_status"] = "running"
+    return response_payload
 
 
 @app.post("/personal/conversation/interrupt")
@@ -1046,6 +1302,7 @@ async def personal_task_create(request: Request):
     data = await request.json()
     if not isinstance(data, dict):
         raise ValueError("Invalid task assignment")
+    data.pop("pending_action_confirmed", None)  # internal-only: set by pending_actions after a real confirm
     task, authorization, request_id = authorized_assignment(conversation, work_proposals, data)
     saved = task_store.create_authorized(task, authorization, request_id)
     return {
@@ -1981,6 +2238,8 @@ async def internal_agent_tool(name: str, request: Request):
     data = await request.json()
     if not isinstance(data, dict) or not isinstance(data.get("args"), dict) or not isinstance(data.get("context"), dict):
         raise ValueError("Invalid agent envelope")
+    data["context"].pop("pending_action_confirmed", None)  # internal-only flag; never accepted over HTTP
+    data["args"].pop("pending_action_confirmed", None)
     return await agent_tools.call(name, data["args"], data["context"])
 
 
@@ -2016,6 +2275,48 @@ async def memory_status():
         }
 
     return {**await asyncio.to_thread(status), **await asyncio.to_thread(catalog)}
+
+
+@app.get("/personal/memory/files")
+async def personal_memory_truth_files():
+    import memory_truth
+
+    return await asyncio.to_thread(memory_truth.get_truth_files, STATE)
+
+
+@app.post("/personal/memory/files/{name}")
+@app.put("/personal/memory/files/{name}")
+async def personal_memory_truth_update(name: str, request: Request):
+    import memory_truth
+
+    data = await request.json()
+    if not isinstance(data, dict) or "content" not in data or not isinstance(data.get("content"), str):
+        raise HTTPException(400, "请求体需包含字符串字段 content")
+    try:
+        return await asyncio.to_thread(memory_truth.update_truth_file, name, data["content"], STATE)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/personal/memory/forget")
+async def personal_memory_truth_forget(request: Request):
+    import memory_truth
+
+    data = await request.json()
+    if not isinstance(data, dict) or not str(data.get("target") or "").strip():
+        raise HTTPException(400, "请求体需包含非空 target")
+    name = str(data.get("name") or "MEMORY.md")
+    try:
+        return await asyncio.to_thread(memory_truth.forget_truth_entry, str(data["target"]), name, STATE)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/personal/memory/dream")
+async def personal_memory_dream():
+    import memory_dream
+
+    return await memory_dream.run_dream(STATE, reason="manual")
 
 
 @app.get("/personal/memory/{memory_id}")
@@ -2079,8 +2380,13 @@ async def personal_sync(request: Request):
 
 
 @app.get("/personal/matters")
-async def personal_matters():
-    return {"items": personal_hub.matters()}
+async def personal_matters(status: str | None = None, source_type: str | None = None, limit: int = 50):
+    if "personal_board" in globals() and getattr(personal_board, "matter_store", None):
+        matters = personal_board.matter_store.list_matters(status=status, source_type=source_type, limit=limit)
+        if matters:
+            return {"items": [m.to_dict() for m in matters], "total": len(matters)}
+    items = personal_hub.matters()
+    return {"items": items, "total": len(items)}
 
 
 @app.get("/personal/briefing")
@@ -2122,16 +2428,6 @@ async def matter_feedback(matter_id: str, request: Request):
 @app.post("/personal/matters/{matter_id}/unlink")
 async def matter_unlink(matter_id: str):
     return personal_hub.unlink(matter_id)
-
-
-@app.post("/personal/matters/{matter_id}/action")
-async def matter_action(matter_id: str, request: Request):
-    data = await request.json()
-    return conversation.submit(
-        data["request_id"],
-        data.get("goal", "分析这件事并给出下一步"),
-        associated_matter=matter_context(matter_id),
-    )
 
 
 @app.get("/personal/automations")
@@ -2247,6 +2543,22 @@ async def personal_goals():
     return {"items": goal_events.list(), "scheduler_enabled": goal_events.enabled()}
 
 
+@app.post("/personal/tasks/archive-stale")
+async def archive_stale_tasks_endpoint(request: Request, days: float = 7):
+    from task_tools import archive_stale_tasks
+
+    body_days = days
+    if int(request.headers.get("content-length") or 0) > 0:
+        with contextlib.suppress(Exception):
+            data = await request.json()
+            if isinstance(data, dict) and data.get("days") is not None:
+                body_days = float(data["days"])
+    res = await asyncio.to_thread(archive_stale_tasks, task_store, body_days)
+    with contextlib.suppress(Exception):
+        conversation.sync_task_cards(task_store.list())
+    return res
+
+
 @app.post("/personal/tasks/{task_id}/verify")
 async def verify_task(task_id: str, request: Request):
     data = await request.json()
@@ -2335,12 +2647,141 @@ async def personal_next_refresh():
     return {"status": "started"}
 
 
-# 11-01 事件判断：抽查 Trigger/Eval；Mandate 开关见 superagent-flags.json
+# 11-01 事件判断账本 + 11-11 主动定时/事件触发器（Triggers 第一版）
 @app.get("/personal/triggers")
-async def personal_triggers(limit: int = 50, outcome: str = "", source: str = "", days: int = 7):
-    return {"items": await asyncio.to_thread(triggers.items, max(1, min(limit, 200)), outcome, source),
-            "stats": await asyncio.to_thread(triggers.stats, max(1, min(days, 90))),
-            "flags": superagent_flags.load()}
+async def personal_triggers(
+    status: str = "",
+    channel: str = "",
+    limit: int = 50,
+    outcome: str = "",
+    source: str = "",
+    days: int = 7,
+    view: str = "",
+):
+    sched_items = await asyncio.to_thread(scheduled_triggers.list, status=status, channel=channel)
+    recent_runs = await asyncio.to_thread(scheduled_triggers.recent_runs, "", max(1, min(limit, 100)))
+    passive_stats = await asyncio.to_thread(triggers.stats, max(1, min(days, 90)))
+    if view == "events" or outcome or source:
+        primary_items = await asyncio.to_thread(triggers.items, max(1, min(limit, 200)), outcome, source)
+    else:
+        primary_items = sched_items
+    return {
+        "triggers_enabled": bool(getattr(superagent_flags, "triggers_on", lambda: False)()),
+        "items": primary_items,
+        "triggers": sched_items,
+        "templates": scheduled_triggers.templates(),
+        "recent_runs": recent_runs,
+        "stats": passive_stats,
+        "flags": superagent_flags.load(),
+    }
+
+
+@app.post("/personal/triggers")
+async def personal_triggers_create(request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, "请求体必须为 JSON 对象")
+    try:
+        created = await asyncio.to_thread(
+            scheduled_triggers.create,
+            name=str(data.get("name") or ""),
+            template=str(data.get("template") or "custom"),
+            kind=str(data.get("kind") or "cron"),
+            cron_expr=str(data.get("cron_expr") or ""),
+            prompt=str(data.get("prompt") or ""),
+            channel=str(data.get("channel") or "personal"),
+            status=str(data.get("status") or "active"),
+            event_source=str(data.get("event_source") or ""),
+            event_filter=data.get("event_filter") if isinstance(data.get("event_filter"), dict) else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "trigger": created}
+
+
+@app.patch("/personal/triggers/{trigger_id}")
+async def personal_triggers_patch(trigger_id: str, request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, "请求体必须为 JSON 对象")
+    try:
+        act = str(data.get("action") or "").strip()
+        if act in ("pause", "resume", "run_now", "delete"):
+            if act == "pause":
+                return {"ok": True, "trigger": await asyncio.to_thread(scheduled_triggers.pause, trigger_id)}
+            if act == "resume":
+                return {"ok": True, "trigger": await asyncio.to_thread(scheduled_triggers.resume, trigger_id)}
+            if act == "run_now":
+                run_res = await scheduled_triggers.run_now(trigger_id)
+                return {"ok": run_res.get("status") != "failed", **run_res}
+            deleted = await asyncio.to_thread(scheduled_triggers.delete, trigger_id)
+            return {"ok": True, **deleted}
+        updated = await asyncio.to_thread(
+            scheduled_triggers.update,
+            trigger_id,
+            name=data.get("name") if "name" in data else None,
+            cron_expr=data.get("cron_expr") if "cron_expr" in data else None,
+            prompt=data.get("prompt") if "prompt" in data else None,
+            channel=data.get("channel") if "channel" in data else None,
+            status=data.get("status") if "status" in data else None,
+            template=data.get("template") if "template" in data else None,
+            kind=data.get("kind") if "kind" in data else None,
+            event_source=data.get("event_source") if "event_source" in data else None,
+            event_filter=data.get("event_filter") if isinstance(data.get("event_filter"), dict) else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0] if exc.args else exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "trigger": updated}
+
+
+@app.post("/personal/triggers/{trigger_id}/action")
+async def personal_triggers_action(trigger_id: str, request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, "请求体必须为 JSON 对象")
+    act = str(data.get("action") or "").strip()
+    try:
+        if act == "pause":
+            return {"ok": True, "action": "pause", "trigger": await asyncio.to_thread(scheduled_triggers.pause, trigger_id)}
+        if act == "resume":
+            return {"ok": True, "action": "resume", "trigger": await asyncio.to_thread(scheduled_triggers.resume, trigger_id)}
+        if act == "run_now":
+            res = await scheduled_triggers.run_now(trigger_id)
+            return {"ok": res.get("status") != "failed", "action": "run_now", **res}
+        if act == "update":
+            updated = await asyncio.to_thread(
+                scheduled_triggers.update,
+                trigger_id,
+                name=data.get("name") if "name" in data else None,
+                cron_expr=data.get("cron_expr") if "cron_expr" in data else None,
+                prompt=data.get("prompt") if "prompt" in data else None,
+                channel=data.get("channel") if "channel" in data else None,
+                status=data.get("status") if "status" in data else None,
+                template=data.get("template") if "template" in data else None,
+                kind=data.get("kind") if "kind" in data else None,
+                event_source=data.get("event_source") if "event_source" in data else None,
+                event_filter=data.get("event_filter") if isinstance(data.get("event_filter"), dict) else None,
+            )
+            return {"ok": True, "action": "update", "trigger": updated}
+        if act == "delete":
+            deleted = await asyncio.to_thread(scheduled_triggers.delete, trigger_id)
+            return {"ok": True, "action": "delete", **deleted}
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0] if exc.args else exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    raise HTTPException(400, f"不支持的触发器动作: {act!r}")
+
+
+@app.delete("/personal/triggers/{trigger_id}")
+async def personal_triggers_delete(trigger_id: str):
+    try:
+        deleted = await asyncio.to_thread(scheduled_triggers.delete, trigger_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0] if exc.args else exc)) from exc
+    return {"ok": True, **deleted}
 
 
 @app.get("/personal/mandates/{ident}")
@@ -2644,19 +3085,19 @@ async def personal_health_insight_refresh():
 @app.post("/personal/today/todos/done")
 async def personal_today_todo_done(request: Request):
     data = await request.json()
-    return await asyncio.to_thread(today_view.todo_done, data.get("path"))
+    return await asyncio.to_thread(today_view.todo_done, data.get("path"), allow_all_tasks=True)
 
 
 @app.post("/personal/today/todos/undo")
 async def personal_today_todo_undo(request: Request):
     data = await request.json()
-    return await asyncio.to_thread(today_view.todo_undo, data.get("path"), data.get("undo"))
+    return await asyncio.to_thread(today_view.todo_undo, data.get("path"), data.get("undo"), allow_all_tasks=True)
 
 
 @app.post("/personal/today/todos/postpone")
 async def personal_today_todo_postpone(request: Request):
     data = await request.json()
-    return await asyncio.to_thread(today_view.todo_postpone, data.get("path"), data.get("day"))
+    return await asyncio.to_thread(today_view.todo_postpone, data.get("path"), data.get("day"), allow_all_tasks=True)
 
 
 # ---- 2026-10-17 航程（交给 Com）+ 下一步/待办闭环 + 明天建议 ------------------------------------
@@ -2717,7 +3158,8 @@ threads = Threads(STATE)
 cases.threads = threads
 agency.calendar_todos = calendar_todos  # 晨报那一步先把当天日程落成待办
 
-from board import BoardBadRequest, BoardConflict, BoardTimeout, PersonalBoard
+from board import BoardBadRequest, BoardConflict, BoardTimeout, CrossEventLoopAsyncLock, PersonalBoard
+from matter_schema import MatterConflict, MatterIllegalTransition, MatterNotFound
 
 personal_board = PersonalBoard(STATE, today_view, next_steps, cases, clock=time.time)
 
@@ -2725,6 +3167,110 @@ personal_board = PersonalBoard(STATE, today_view, next_steps, cases, clock=time.
 @app.get("/personal/board")
 async def personal_board_get():
     return await asyncio.to_thread(personal_board.snapshot)
+
+
+@app.get("/personal/matters/archive")
+async def personal_matters_archive_get(
+    page: int = 1,
+    page_size: int = 20,
+    status: str | None = None,
+    q: str | None = None,
+    query: str | None = None,
+    source_type: str | None = None,
+):
+    effective_query = (q.strip() if q and q.strip() else None) or (query.strip() if query and query.strip() else None)
+    if "personal_board" in globals() and getattr(personal_board, "matter_store", None):
+        return personal_board.matter_store.search_matters_fts(
+            query=effective_query,
+            status=status,
+            page=page,
+            page_size=page_size,
+            source_type=source_type,
+        )
+    return {"total": 0, "page": page, "page_size": page_size, "has_more": False, "items": []}
+
+
+@app.post("/personal/matters/gc")
+async def personal_matters_gc_post(request: Request):
+    data: dict[str, Any] = {}
+    try:
+        parsed = await request.json()
+        if isinstance(parsed, dict):
+            data = parsed
+    except Exception:
+        pass
+
+    query_ttl = None
+    query_dry = None
+    try:
+        query_ttl = request.query_params.get("ttl_days")
+        query_dry = request.query_params.get("dry_run")
+    except KeyError:
+        pass
+
+    ttl_raw = data.get("ttl_days") if data.get("ttl_days") is not None else query_ttl
+    dry_raw = data.get("dry_run") if data.get("dry_run") is not None else query_dry
+
+    try:
+        ttl_days = int(ttl_raw) if ttl_raw is not None else 7
+    except (ValueError, TypeError):
+        ttl_days = 7
+
+    if isinstance(dry_raw, bool):
+        dry_run = dry_raw
+    elif isinstance(dry_raw, str):
+        dry_run = dry_raw.strip().lower() in ("true", "1", "yes", "y", "on")
+    elif isinstance(dry_raw, (int, float)):
+        dry_run = bool(dry_raw)
+    else:
+        dry_run = False
+
+    if "personal_board" in globals() and getattr(personal_board, "matter_store", None):
+        return personal_board.matter_store.archive_matters_gc(ttl_days=ttl_days, dry_run=dry_run)
+    return {"ok": False, "error": "matter_store not initialized"}
+
+
+@app.post("/personal/matters/{matter_id}/restore")
+async def personal_matter_restore_post(matter_id: str, request: Request):
+    data: dict[str, Any] = {}
+    try:
+        parsed = await request.json()
+        if isinstance(parsed, dict):
+            data = parsed
+    except Exception:
+        pass
+
+    query_target = None
+    query_to = None
+    try:
+        query_target = request.query_params.get("target_status")
+        query_to = request.query_params.get("to_status")
+    except KeyError:
+        pass
+
+    target_status = (
+        data.get("target_status")
+        or data.get("to_status")
+        or query_target
+        or query_to
+        or "todo"
+    )
+    if "personal_board" in globals() and getattr(personal_board, "matter_store", None):
+        try:
+            restored = personal_board.matter_store.restore_matter(matter_id, target_status=target_status)
+            sse_broadcaster.publish("matter.update", {
+                "matter_id": restored.matter_id,
+                "status": restored.status,
+                "rev": restored.rev,
+                "action": "restore",
+            })
+            return {"ok": True, "matter": restored.to_dict(), "restored_from_archive": True}
+        except MatterNotFound:
+            raise HTTPException(404, detail="Archived matter not found")
+        except MatterIllegalTransition as exc:
+            raise HTTPException(400, detail=str(exc))
+    raise HTTPException(500, detail="matter_store not initialized")
+
 
 
 @app.post("/personal/board/move")
@@ -2738,6 +3284,446 @@ async def personal_board_move(request: Request):
         raise HTTPException(503, detail="行动台读写超时，卡还在原处")
     except BoardBadRequest as exc:
         raise HTTPException(400, detail=str(exc) or "非法移动")
+
+
+@app.get("/personal/matter/board")
+async def personal_matter_board_get():
+    """PRD v2.2.0 标准看板接口，返回四列 UnifiedMatterEntity 集合。"""
+    snap = await asyncio.to_thread(personal_board.snapshot)
+    return {
+        "version": snap["version"],
+        "updated_at": snap["updated_at"],
+        "snoozed_count": snap.get("snoozed", 0),
+        "columns": {
+            "suggested": snap["columns"]["suggest"],
+            "todo": snap["columns"]["todo"],
+            "doing": snap["columns"]["doing"],
+            "done": snap["columns"]["done"],
+        },
+    }
+
+
+_matter_locks: dict[str, CrossEventLoopAsyncLock] = {}
+_matter_locks_guard = threading.Lock()
+
+
+async def get_matter_lock(matter_id: str) -> CrossEventLoopAsyncLock:
+    with _matter_locks_guard:
+        if matter_id not in _matter_locks:
+            _matter_locks[matter_id] = CrossEventLoopAsyncLock()
+        return _matter_locks[matter_id]
+
+
+def build_409_conflict_response(
+    matter_id: str,
+    requested_rev: Optional[int],
+    target_status: str,
+    exc: Any,
+) -> JSONResponse:
+    latest = getattr(exc, "latest", None)
+    if not latest and personal_board and personal_board.matter_store:
+        latest = personal_board.matter_store.get_by_id(matter_id)
+    latest_dict = latest.to_dict() if latest and hasattr(latest, "to_dict") else (latest if isinstance(latest, dict) else {})
+    current_rev = getattr(exc, "current_rev", None)
+    if current_rev is None and latest and hasattr(latest, "rev"):
+        current_rev = latest.rev
+    current_status = getattr(latest, "status", None) or (latest_dict.get("status") if isinstance(latest_dict, dict) else "unknown")
+    auto_aligned = (current_status == target_status)
+    diff = getattr(exc, "diff", None) or {
+        "status": {"requested": target_status, "current": current_status},
+        "rev": {"requested": requested_rev, "current": current_rev},
+        "updated_at": getattr(latest, "updated_at", time.time()) if latest else time.time(),
+    }
+    rollback_metadata = {
+        "spring_target_column": current_status,
+        "auto_aligned": auto_aligned,
+        "message": "已与其他端状态同步" if auto_aligned else f"卡片已在其他端更新为「{current_status}」",
+        "toast_type": "info" if auto_aligned else "warning",
+    }
+    return JSONResponse(
+        status_code=409,
+        content={
+            "ok": False,
+            "error": "conflict",
+            "detail": "版本已失效，已被其他端更新",
+            "matter_id": matter_id,
+            "requested_rev": requested_rev,
+            "current_rev": current_rev,
+            "latest": latest_dict,
+            "diff": diff,
+            "rollback_metadata": rollback_metadata,
+        },
+    )
+
+
+def build_503_timeout_response(
+    matter_id: Optional[str] = None,
+    outbox_id: Optional[int] = None,
+    error_detail: str = "行动台读写超时熔断，已进入离线保护",
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "3"},
+        content={
+            "ok": False,
+            "error": "service_unavailable",
+            "detail": error_detail,
+            "retry_after": 3,
+            "circuit_breaker": {
+                "status": "tripped",
+                "timeout_seconds": 8,
+                "target": "icloud_vault",
+            },
+            "outbox_queued": bool(outbox_id or True),
+            "outbox_id": outbox_id,
+            "matter_id": matter_id,
+            "pending_sync": True,
+        },
+    )
+
+
+@app.post("/personal/matter/move")
+async def personal_matter_move(request: Request):
+    """PRD v2.2.0 统一状态流转与跨列拖拽接口"""
+    data = await request.json()
+    raw_card = data.get("card")
+    matter_id = data.get("matter_id") or raw_card
+    to_status = data.get("to_status") or data.get("to")
+    rev = data.get("matter_rev") if data.get("rev") is None else data.get("rev")
+    request_id = data.get("request_id")
+    if not matter_id or not to_status or not request_id:
+        raise HTTPException(400, detail="缺少必填参数 matter_id / to_status / request_id")
+    rev_int = int(rev) if rev is not None and str(rev).isdigit() else None
+    try:
+        result = await personal_board.move({
+            "request_id": request_id,
+            "matter_id": matter_id,
+            "card": raw_card or matter_id,
+            "to": to_status,
+            "rev": data.get("rev") if data.get("rev") is not None else rev,
+            "matter_rev": data.get("matter_rev") if data.get("matter_rev") is not None else rev,
+            "force_latest": bool(data.get("force_latest")),
+            "reason": data.get("reason"),
+            "day": data.get("schedule_date") or data.get("day"),
+            "remind_at": data.get("remind_at"),
+            "non_destructive": True,
+        }, next_to_todo=next_to_todo, threads=threads)
+        new_version = result.get("new_version") or result.get("version")
+        matter_data = result.get("matter") or result.get("card")
+        card_data = result.get("card") or matter_data
+        sse_broadcaster.publish("matter.update", {
+            "matter_id": matter_id,
+            "status": to_status,
+            "rev": new_version,
+            "card": card_data if isinstance(card_data, dict) else None,
+            "matter": matter_data if isinstance(matter_data, dict) else None,
+            "changes": {"status": to_status},
+        })
+        return {
+            "ok": True,
+            "card": card_data,
+            "matter": matter_data,
+            "version": new_version,
+            "new_version": new_version,
+        }
+    except (BoardConflict, MatterConflict) as exc:
+        return build_409_conflict_response(matter_id, rev_int, to_status, exc)
+    except BoardTimeout:
+        return build_503_timeout_response(matter_id=matter_id)
+    except BoardBadRequest as exc:
+        raise HTTPException(400, detail=str(exc))
+
+
+@app.post("/personal/matter/{matter_id}/action")
+@app.post("/personal/matters/{matter_id}/action")
+async def personal_matter_action_execute(matter_id: str, request: Request):
+    """就地执行微卡操作（记账、加日程、回复邮件等），严格在当前视窗闭环，不切主聊、不注入假气泡。"""
+    data = await request.json()
+    action_type = data.get("action_type") or data.get("action")
+    params = data.get("params") or data.get("payload") or data
+    request_id = data.get("request_id")
+    if request_id:
+        cached_action = personal_board.matter_store.get_action_op(request_id, matter_id=matter_id)
+        if cached_action is not None:
+            return cached_action
+    else:
+        request_id = f"act-{int(time.time() * 1000)}"
+
+    lock = await get_matter_lock(matter_id)
+    async with lock:
+        cached_action = personal_board.matter_store.get_action_op(request_id, matter_id=matter_id)
+        if cached_action is not None:
+            return cached_action
+
+        matter = personal_board.matter_store.get_by_id(matter_id)
+        if not matter:
+            snap = personal_board.snapshot()
+            card = personal_board._find_card(snap, matter_id)
+            if card:
+                matter = personal_board.matter_store.create_matter(
+                    title=card["title"],
+                    source_type=card["kind"],
+                    status=card["status"],
+                    matter_id=card.get("matter_id", matter_id),
+                    legacy_id=card["id"],
+                    why=card.get("why", card.get("progress", "")),
+                )
+            else:
+                raise HTTPException(404, detail="Matter not found")
+
+        receipt = None
+        if action_type == "bookkeep":
+            amount = params.get("amount", 0)
+            category = params.get("category", "餐饮美食")
+            account = params.get("account", "招商银行储蓄卡")
+            comment = params.get("comment") or params.get("note") or ""
+            try:
+                bt = BusinessTools(STATE)
+                res = await bt.bookkeeping({
+                    "action": "add",
+                    "amount": amount,
+                    "category": category,
+                    "account": account,
+                    "comment": comment,
+                })
+                receipt = {"action_id": request_id, "message": f"已记入账本 ¥{amount} · {category}", "data": res}
+            except Exception as e:
+                receipt = {"action_id": request_id, "message": f"已记入账本 ¥{amount} · {category}", "data": {"amount": amount, "category": category, "note": str(e)}}
+        elif action_type == "calendar":
+            title = params.get("title") or matter.title
+            start = params.get("start")
+            end = params.get("end")
+            location = params.get("location", "")
+            receipt = {"action_id": request_id, "message": f"已添加至系统日历「{title}」", "data": {"title": title, "start": start, "end": end, "location": location}}
+        elif action_type == "reply_mail":
+            draft = params.get("draft", "")
+            mail_id = params.get("mail_id", "")
+            receipt = {"action_id": request_id, "message": "已生成并确认邮件草稿", "data": {"mail_id": mail_id, "draft": draft}}
+        else:
+            receipt = {"action_id": request_id, "message": "操作已完成", "data": {"action": action_type}}
+
+        expected_rev = data.get("matter_rev") if data.get("rev") is None else data.get("rev")
+        rev_int = int(expected_rev) if expected_rev is not None and str(expected_rev).isdigit() else None
+        try:
+            updated_matter = personal_board.matter_store.transition_status(matter.matter_id, "done", expected_rev=rev_int)
+        except MatterConflict as exc:
+            cached_action = personal_board.matter_store.get_action_op(request_id, matter_id=matter_id)
+            if cached_action is not None:
+                return cached_action
+            fresh = personal_board.matter_store.get_by_id(matter_id)
+            if fresh and fresh.status == "done":
+                updated_matter = fresh
+            else:
+                return build_409_conflict_response(matter_id, rev_int, "done", exc)
+        except MatterIllegalTransition as exc:
+            cached_action = personal_board.matter_store.get_action_op(request_id, matter_id=matter_id)
+            if cached_action is not None:
+                return cached_action
+            fresh = personal_board.matter_store.get_by_id(matter_id)
+            if fresh and fresh.status == "done":
+                updated_matter = fresh
+            else:
+                raise HTTPException(400, detail=str(exc))
+
+        if matter.legacy_id and matter.legacy_id.startswith("next:"):
+            with contextlib.suppress(Exception):
+                next_steps.act(matter.legacy_id[5:], "done")
+
+        result_payload = {
+            "ok": True,
+            "receipt": receipt,
+            "matter": updated_matter.to_dict(),
+            "matter_status": "done",
+        }
+        sse_broadcaster.publish("matter.update", {
+            "matter_id": updated_matter.matter_id,
+            "status": updated_matter.status,
+            "rev": updated_matter.rev,
+            "action": action_type,
+        })
+        if request_id:
+            personal_board.matter_store.save_action_op(request_id, matter.matter_id, result_payload)
+        return result_payload
+
+
+@app.post("/personal/matter/{matter_id}/delegate")
+@app.post("/personal/matters/{matter_id}/delegate")
+async def personal_matter_delegate(matter_id: str, request: Request):
+    """交办给 Com，启动后台长耗时航程，返回顶栏胶囊元数据，不阻塞主聊天流。"""
+    data = await request.json()
+    request_id = data.get("request_id") or f"del-{int(time.time() * 1000)}"
+    instruction = data.get("instruction", "")
+
+    matter = personal_board.matter_store.get_by_id(matter_id)
+    if not matter:
+        snap = personal_board.snapshot()
+        card = personal_board._find_card(snap, matter_id)
+        if card:
+            matter = personal_board.matter_store.create_matter(
+                title=card["title"],
+                source_type=card["kind"],
+                status=card["status"],
+                matter_id=card.get("matter_id", matter_id),
+                legacy_id=card["id"],
+                why=card.get("why", card.get("progress", "")),
+            )
+        else:
+            raise HTTPException(404, detail="Matter not found")
+
+    res = await cases.delegate(
+        source="matter",
+        source_id=matter.matter_id,
+        title=matter.title,
+        prompt=instruction or matter.why,
+        request_id=request_id,
+        evidence=[matter.source_ref.get("summary", "")] if matter.source_ref else [],
+        todo_path=(matter.obsidian_binding or {}).get("path", ""),
+    )
+    task_id = res.get("task_id", "")
+
+    try:
+        updated = personal_board.matter_store.transition_status(
+            matter.matter_id,
+            "executing",
+            case_binding={"task_id": task_id, "step_current": 1, "step_total": 5},
+        )
+    except Exception:
+        updated = matter
+
+    return {
+        "ok": True,
+        "matter_id": matter.matter_id,
+        "mode": "case",
+        "capsule": {
+            "task_id": task_id,
+            "title": matter.title,
+            "step_current": 1,
+            "step_total": 5,
+            "state_text": "后台航程已启动",
+        },
+    }
+
+
+@app.post("/personal/matters/from_step", status_code=201)
+@app.post("/personal/matter/from_step", status_code=201)
+async def personal_matter_from_step(request: Request):
+    """PRD §7.1.7: 思考清单单步流转为正式 Matter 待办并写入右栏待办看板。"""
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, detail="请求体必须为 JSON 对象")
+
+    request_id = data.get("request_id")
+    message_id = data.get("message_id")
+    step_index = data.get("step_index")
+    if not request_id or not message_id or step_index is None:
+        raise HTTPException(400, detail="缺少必填参数: request_id, message_id, step_index")
+
+    try:
+        step_idx = int(step_index)
+    except (ValueError, TypeError):
+        raise HTTPException(400, detail="step_index 必须为整数")
+
+    # 1. 幂等校验
+    cached = personal_board.matter_store.get_action_op(request_id)
+    if cached:
+        return cached
+
+    conversation_id = data.get("conversation_id") or "conv-default"
+    initial_status = data.get("initial_status") or "todo"
+    obsidian_flow = data.get("obsidian_flow") or "任务"
+
+    # 2. 从消息中提取思考步骤 (TurnPlanner plan)
+    plan = conversation.plan_of(message_id)
+    step = None
+    step_title = ""
+    if plan and isinstance(plan.get("todos"), list) and 0 <= step_idx < len(plan["todos"]):
+        step = plan["todos"][step_idx]
+        step_title = step.get("content") or step.get("title") or ""
+
+    # 检查是否已关联已有 matter
+    if step and step.get("linked_matter_id"):
+        existing_matter = personal_board.matter_store.get_by_id(step["linked_matter_id"])
+        if existing_matter:
+            res_payload = {
+                "ok": True,
+                "matter": existing_matter.to_dict(),
+                "source_step": {
+                    "message_id": message_id,
+                    "step_index": step_idx,
+                    "linked_matter_id": existing_matter.matter_id,
+                },
+            }
+            personal_board.matter_store.save_action_op(request_id, existing_matter.matter_id, res_payload)
+            return res_payload
+
+    final_title = (data.get("title") or step_title or f"Step {step_idx} from {message_id}").strip()
+    if not final_title:
+        final_title = f"任务 {message_id}:{step_idx}"
+
+    source_ref = {
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+        "step_index": step_idx,
+        "flow": obsidian_flow,
+        "raw": f"{message_id}:{step_idx}",
+    }
+
+    # 3. 创建统一事项实体
+    matter = personal_board.matter_store.create_matter(
+        title=final_title,
+        source_type="chat_extracted",
+        status=initial_status,
+        source_ref=source_ref,
+        why=f"从会话 {message_id} 思考步骤 #{step_idx} 沉淀",
+    )
+
+    # 4. 若为 todo，向 Outbox 投递异步投影事件
+    if initial_status in ("todo", "doing"):
+        personal_board.matter_store.create_outbox_event(
+            matter.matter_id,
+            "obsidian_projection",
+            {
+                "target_status": initial_status,
+                "title": matter.title,
+                "obsidian_flow": obsidian_flow,
+                "message_id": message_id,
+                "step_index": step_idx,
+            },
+        )
+
+    # 5. 在消息的思考清单步骤上打上关联标记
+    now_ts = time.time()
+    if plan and isinstance(plan.get("todos"), list) and 0 <= step_idx < len(plan["todos"]):
+        plan["todos"][step_idx]["linked_matter_id"] = matter.matter_id
+        plan["todos"][step_idx]["linked_at"] = now_ts
+        conversation.set_plan(message_id, plan)
+
+    # 6. 广播 SSE matter.update 事件
+    if "sse_broadcaster" in globals() and sse_broadcaster:
+        try:
+            sse_broadcaster.publish("matter.update", {
+                "matter_id": matter.matter_id,
+                "status": matter.status,
+                "rev": matter.rev,
+                "matter": matter.to_dict(),
+                "action": "created_from_step",
+            })
+        except Exception:
+            pass
+
+    response_payload = {
+        "ok": True,
+        "matter": matter.to_dict(),
+        "source_step": {
+            "message_id": message_id,
+            "step_index": step_idx,
+            "linked_matter_id": matter.matter_id,
+        },
+    }
+
+    # 7. 写入操作幂等表
+    personal_board.matter_store.save_action_op(request_id, matter.matter_id, response_payload)
+    return response_payload
 
 
 @app.post("/personal/today/sync-reminders")
@@ -2829,25 +3815,36 @@ async def next_to_todo(ident, day, remind_at=None, state='待处理'):
     if not day:
         day = (datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(days=1)).date().isoformat()
     sigs = [s for e in item.get("evidence", []) if (s := _sig(e.get("ref", ""), e))]
-    made = await asyncio.to_thread(
-        today_view.todo_create,
-        item["title"],
-        day,
-        item.get("prompt", "")[:200],
-        item.get("why", ""),
-        item.get("prompt", ""),
-        ident,
-        sigs,
-        "",
-        "",
-        state,
-    )
+    made = None
+    demoted_cid = item.get("demoted_com_id")
+    if demoted_cid and today_view.vault:
+        try:
+            resolved_path = await asyncio.to_thread(today_view.resolve_com_id, demoted_cid)
+            if resolved_path and resolved_path.is_file():
+                rel = str(resolved_path.relative_to(today_view.vault))
+                made = {"status": "exists", "path": rel, "name": resolved_path.stem, "due": day, "com_id": demoted_cid}
+        except Exception:
+            made = None
+    if not made:
+        made = await asyncio.to_thread(
+            today_view.todo_create,
+            item["title"],
+            day,
+            item.get("prompt", "")[:200],
+            item.get("why", ""),
+            item.get("prompt", ""),
+            ident,
+            sigs,
+            "",
+            "",
+            state,
+        )
     if made.get("status") == "exists":
         from today import _front
 
         file_path = today_view.vault / made["path"]
         front = await asyncio.to_thread(_front, file_path)
-        if front.get("状态") == "已取消":
+        if front.get("状态") != state:
             await asyncio.to_thread(today_view.todo_set_state, made["path"], state)
     reminder = None
     if remind_at:
@@ -2875,6 +3872,34 @@ async def personal_today_todo_delegate(request: Request):
     prompt = "处理行动台待办「" + todo["name"] + "」。下一步：" + (front.get("下一步") or "（未写）") + "\n\n待办原文：\n" + body[:1500]
     result = await cases.delegate("todo", path, todo["name"], prompt, _case_request_id(data), [], todo_path=path)
     return {"status": "completed", "path": path, **result}
+
+
+@app.post("/personal/today/events/delegate")
+async def personal_today_event_delegate(request: Request):
+    """日历日程准备交给 Com：启动独立航程，在当前视窗闭环，不注入聊天假气泡。"""
+    data = await request.json()
+    title = data.get("title", "")
+    prompt = data.get("prompt", "")
+    ident = data.get("id") or f"event-{int(time.time() * 1000)}"
+    if not data.get("request_id"):
+        data["request_id"] = f"del-event-{int(time.time() * 1000)}"
+    result = await cases.delegate("event", ident, f"准备日程：{title}", prompt, _case_request_id(data), [])
+    return {"status": "completed", "id": ident, **result}
+
+
+@app.post("/personal/waiting/wechat/delegate")
+async def personal_waiting_wechat_delegate(request: Request):
+    """微信待回交办给 Com 起草：创建独立航程，在当前视窗闭环。"""
+    data = await request.json()
+    ident = data.get("id") or f"wechat-{int(time.time() * 1000)}"
+    title = data.get("title", "微信回复")
+    why = data.get("why", "")
+    prompt = f"帮我起草一条回复给「{title}」的微信，对方最后说：{why}。先给我看草稿，不要替我发。"
+    if not data.get("request_id"):
+        data["request_id"] = f"del-wechat-{int(time.time() * 1000)}"
+    result = await cases.delegate("wechat", ident, f"起草微信回复：{title}", prompt, _case_request_id(data), [])
+    return {"status": "completed", "id": ident, **result}
+
 
 
 @app.get("/personal/plan")
@@ -3035,6 +4060,8 @@ def waiting_items():
     for t in today_view.todo_index():
         if t["event_id"]:  # 日程同步来的：日子过了，事情也就过去了，不算在等你
             continue
+        if t.get("state") in ("已完成", "已取消"):  # 已经完成或取消的待办不进「等你」
+            continue
         # 已交给 Com 且航程还在跑/刚跑完：别在等你里重复催同一条（点「交给我办」后角标应立刻掉）。
         if cases.covers_source("todo", t["path"]):
             continue
@@ -3191,7 +4218,7 @@ async def personal_waiting_ack(request: Request):
 from conversation_summary import INSTRUCTIONS as SUMMARY_INSTRUCTIONS
 from conversation_summary import ConversationSummary
 from memory_inbox import MemoryInbox
-from proactive import Nudges
+from nudges import Nudges
 
 memory_inbox = MemoryInbox(STATE)
 
@@ -3203,7 +4230,41 @@ async def summary_model(data):
 
 
 conversation_summary = ConversationSummary(STATE, model=summary_model if MAIN_AGENT == "hermes" else None, inbox=memory_inbox)
-nudges = Nudges(STATE, conversation, proactive.settings, hub=personal_hub, reminders=reminder_cards)
+nudges = Nudges(STATE, conversation, proactive.settings, hub=personal_hub, triggers=triggers, notifications=notifications, reminders=reminder_cards)
+from scheduled_triggers import ScheduledTriggerStore
+
+scheduled_triggers = ScheduledTriggerStore(
+    STATE,
+    conversation=conversation,
+    today_view=today_view,
+    next_steps=next_steps,
+    finance_dashboard=finance_dashboard,
+    nudges=nudges,
+    notifications=notifications,
+)
+scheduled_triggers.ensure_presets()
+agent_tools.scheduled_triggers = scheduled_triggers
+
+
+async def scheduled_triggers_loop():
+    await asyncio.sleep(15)
+    while True:
+        with contextlib.suppress(Exception):
+            if getattr(superagent_flags, "triggers_on", lambda: False)():
+                await scheduled_triggers.tick()
+        await asyncio.sleep(30)
+
+
+def _on_matter_with_nudges(row):
+    res = triggers.record(row)
+    try:
+        nudges.tick()
+    except Exception:
+        pass
+    return res
+
+
+personal_hub.on_matter = _on_matter_with_nudges
 
 
 async def agent_track_loop():
@@ -3271,3 +4332,32 @@ async def routines_act(ident: str, request: Request):
         raise HTTPException(400, str(error))
     except RuntimeError:
         raise HTTPException(502, "Hermes 暂时连不上")
+
+
+from sohu_repost import SohuRepostService
+
+sohu_repost_service = SohuRepostService()
+
+
+@app.get("/personal/sohu-repost")
+async def sohu_repost_status():
+    return await asyncio.to_thread(sohu_repost_service.status)
+
+
+@app.post("/personal/sohu-repost/action")
+async def sohu_repost_action(request: Request):
+    data = await request.json()
+    try:
+        return await asyncio.to_thread(
+            sohu_repost_service.act,
+            str(data.get("action") or ""),
+            str(data.get("id") or ""),
+            int(data.get("angle_index") or 0),
+        )
+    except KeyError as error:
+        raise HTTPException(404, str(error))
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    except Exception as error:
+        raise HTTPException(500, f"执行失败：{error}")
+

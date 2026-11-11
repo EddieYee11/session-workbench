@@ -28,20 +28,24 @@ struct ShareInboxView: View {
                     .accessibilityIdentifier("share-inbox-pulling")
                 }
                 if !listFail.isEmpty {
-                    InlineNotice(text: listFail, tone: .danger)
-                    Button(listLoading ? "重试中…" : "再试一次") {
-                        guard !listLoading else { return }
-                        reloadList()
+                    InlineNotice(text: listFail, tone: model.hasShareExtension ? .danger : .neutral)
+                    if model.hasShareExtension {
+                        Button(listLoading ? "重试中…" : "再试一次") {
+                            guard !listLoading else { return }
+                            reloadList()
+                        }
+                        .buttonStyle(.secondaryCompact)
+                        .disabled(listLoading)
+                        .accessibilityIdentifier("share-inbox-retry")
                     }
-                    .buttonStyle(.secondaryCompact)
-                    .disabled(listLoading)
-                    .accessibilityIdentifier("share-inbox-retry")
                 }
                 if drafts.isEmpty && listLoadedOnce && !listLoading {
-                    EmptyState(title: listFail.isEmpty ? "还没收过分享" : "分享还没读上",
+                    EmptyState(title: listFail.isEmpty ? "还没收过分享" : (model.hasShareExtension ? "分享还没读上" : "系统分享未启用"),
                                description: listFail.isEmpty
                                 ? "在别的 App 里点「分享 → Com」，文字、链接和文件会先停在这里，你确认后再进聊天草稿。"
-                                : "先重试拉齐收件箱；通了再「加入聊天草稿」。",
+                                : (model.hasShareExtension
+                                    ? "先重试拉齐收件箱；通了再「加入聊天草稿」。"
+                                    : "当前运行无扩展重签包（未包含 ComShare.appex 与 App Group）。可正常使用聊天、看板与 Siri，系统分享需原生签名包。"),
                                symbol: "tray.and.arrow.down")
                     .modifier(EnterRise(on: shown, delay: 0.05, y: 12, blur: 5, animation: ComMotion.pop))
                 }
@@ -85,6 +89,12 @@ struct ShareInboxView: View {
         defer {
             listLoading = false
             listLoadedOnce = true
+        }
+        guard model.hasShareExtension else {
+            drafts = []
+            listFail = "当前为无扩展重签包，系统分享收件箱未启用"
+            model.shareInboxNote = ""
+            return
         }
         let batch = ShareInbox.loadAll()
         if let err = batch.error, !err.isEmpty {

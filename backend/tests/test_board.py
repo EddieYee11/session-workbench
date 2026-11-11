@@ -192,7 +192,7 @@ def test_move_todo_linked_to_suggest(tmp_path):
     rev = str(path.stat().st_mtime_ns)
 
     async def run():
-        r = await board.move({'request_id': 'op-todo-linked-suggest', 'card': 'todo:' + cid, 'to': 'suggest', 'rev': rev})
+        r = await board.move({'request_id': 'op-todo-linked-suggest', 'card': 'todo:' + cid, 'to': 'suggest', 'rev': rev, 'destructive_cancel': True})
         assert r['ok']
         assert r['card']['id'] == 'next:' + ident
         assert r['card']['column'] == 'suggest'
@@ -220,7 +220,7 @@ def test_move_todo_unlinked_to_suggest(tmp_path):
     rev = str(path.stat().st_mtime_ns)
 
     async def run():
-        r = await board.move({'request_id': 'op-todo-unlinked-suggest', 'card': 'todo:' + cid, 'to': 'suggest', 'rev': rev})
+        r = await board.move({'request_id': 'op-todo-unlinked-suggest', 'card': 'todo:' + cid, 'to': 'suggest', 'rev': rev, 'destructive_cancel': True})
         assert r['ok']
         assert r['card']['column'] == 'suggest'
         new_id = r['card']['id'].replace('next:', '')
@@ -284,7 +284,7 @@ def test_full_roundtrip_suggest_todo_doing_done_suggest(tmp_path):
 
         # Step 5: done -> suggest (move todo card back to suggest)
         r_back = await board.move(
-            {'request_id': 'op-rt-4', 'card': r_done['card']['id'], 'to': 'suggest', 'rev': r_done['card']['rev']}
+            {'request_id': 'op-rt-4', 'card': r_done['card']['id'], 'to': 'suggest', 'rev': r_done['card']['rev'], 'destructive_cancel': True}
         )
         assert r_back['ok']
         assert r_back['card']['id'] == 'next:' + ident
@@ -330,7 +330,7 @@ def test_move_doing_todo_to_suggest(tmp_path):
         snap_before = board.snapshot()
         assert any(c['id'] == 'todo:' + cid for c in snap_before['columns']['doing'])
 
-        r = await board.move({'request_id': 'op-doing-to-suggest', 'card': 'todo:' + cid, 'to': 'suggest', 'rev': rev})
+        r = await board.move({'request_id': 'op-doing-to-suggest', 'card': 'todo:' + cid, 'to': 'suggest', 'rev': rev, 'destructive_cancel': True})
         assert r['ok']
         assert r['card']['column'] == 'suggest'
         new_id = r['card']['id'].replace('next:', '')
@@ -347,5 +347,87 @@ def test_move_doing_todo_to_suggest(tmp_path):
         snap_after = board.snapshot()
         assert any(c['id'] == 'next:' + new_id for c in snap_after['columns']['suggest'])
         assert not any(c['id'] == 'todo:' + cid for c in snap_after['columns']['doing'])
+
+    asyncio.run(run())
+
+
+def test_ios_matter_move_payload_and_non_destructive_reverse_drag(tmp_path):
+    """回归：iOS BoardModel 发送 matter_id + 10位时间戳 rev + force_latest + non_destructive 时，
+    卡片跨列拖拽不得误判 409，且非破坏性逆向拖回 suggest 在 snapshot 中真正移出 todo 进入 suggest。"""
+    board, today, ns, vault = _board(tmp_path)
+    ident = 'ios_drag_item_1'
+    item = {'id': ident, 'title': 'iOS拖拽回归测试', 'why': '验证不回弹', 'prompt': '执行', 'urgency': 'today', 'score': 92, 'evidence': []}
+    with ns.db() as db:
+        db.execute('INSERT INTO items VALUES (?,?,?,?,?)', (ident, json.dumps(item, ensure_ascii=False), 'open', NOW, NOW))
+        db.commit()
+
+    async def fake_next_to_todo(i, day, remind_at=None, state='待处理'):
+        made = today.todo_create('iOS拖拽回归测试', day or '2026-11-04', next_id=i, state=state)
+        ns.act(i, 'todo', todo={'path': made['path'], 'due': made.get('due', '2026-11-04'), 'remind_at': ''})
+        return {'todo': made}
+
+    async def run():
+        snap1 = board.snapshot()
+        c_sug = next(c for c in snap1['columns']['suggest'] if c['id'] == 'next:' + ident)
+
+        # 1) Simulate legacy iOS payload where only matter_id & 10-digit timestamp rev were forwarded
+        r1 = await board.move(
+            {
+                'request_id': 'op-ios-1',
+                'matter_id': c_sug['matter_id'],
+                'card': c_sug['id'],
+                'to': 'todo',
+                'rev': int(float(c_sug['rev'])),
+                'matter_rev': c_sug['matter_rev'],
+                'force_latest': True,
+                'non_destructive': True,
+            },
+            next_to_todo=fake_next_to_todo,
+        )
+        assert r1['ok'] and r1['card']['column'] == 'todo'
+        todo_card = r1['card']
+        todo_cid = todo_card['id'].replace('todo:', '')
+        todo_path = today.resolve_com_id(todo_cid)
+
+        # 2) Non-destructive reverse drag: todo -> suggest (Obsidian file NOT marked 已取消, but snapshot moves it to suggest)
+        r2 = await board.move(
+            {
+                'request_id': 'op-ios-2',
+                'matter_id': todo_card['matter_id'],
+                'card': todo_card['id'],
+                'to': 'suggest',
+                'rev': todo_card['rev'],
+                'matter_rev': todo_card['matter_rev'],
+                'force_latest': True,
+                'non_destructive': True,
+            },
+            next_to_todo=fake_next_to_todo,
+        )
+        assert r2['ok'] and r2['card']['column'] == 'suggest'
+        assert '状态: 已取消' not in todo_path.read_text(encoding='utf-8')
+        snap2 = board.snapshot()
+        assert any(c['id'] == 'next:' + ident for c in snap2['columns']['suggest'])
+        assert not any(c['id'] == 'todo:' + todo_cid for c in snap2['columns']['todo'])
+
+        # 3) Forward drag from suggest -> doing: file state updates to 进行中 and appears in doing
+        sug_card2 = r2['card']
+        r3 = await board.move(
+            {
+                'request_id': 'op-ios-3',
+                'matter_id': sug_card2['matter_id'],
+                'card': sug_card2['id'],
+                'to': 'doing',
+                'rev': sug_card2['rev'],
+                'matter_rev': sug_card2['matter_rev'],
+                'force_latest': True,
+                'non_destructive': True,
+            },
+            next_to_todo=fake_next_to_todo,
+        )
+        assert r3['ok'] and r3['card']['column'] == 'doing'
+        assert '状态: 进行中' in todo_path.read_text(encoding='utf-8')
+        snap3 = board.snapshot()
+        assert any(c['id'] == 'todo:' + todo_cid for c in snap3['columns']['doing'])
+        assert not any(c['id'] == 'next:' + ident for c in snap3['columns']['suggest'])
 
     asyncio.run(run())

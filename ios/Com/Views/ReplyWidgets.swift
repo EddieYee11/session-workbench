@@ -14,14 +14,24 @@ struct ReplyWidgetStack: View {
         VStack(alignment: .leading, spacing: Space.md) {
             ForEach(Array(widgets.enumerated()), id: \.offset) { index, widget in
                 let key = "widget:\(messageID):\(index)"
-                switch widget["type"].string {
-                case "checklist": ChecklistWidget(spec: widget, stateKey: key, send: send)
-                case "choices": ChoicesWidget(spec: widget, stateKey: key, send: send)
-                case "table": TableWidget(spec: widget)
-                case "chart": ChartWidget(spec: widget)
-                case "steps": StepsWidget(spec: widget)
-                case "form": FormWidget(spec: widget, stateKey: key, send: send)
-                default: EmptyView()
+                let widgetKind = (widget["kind"].string.isEmpty ? widget["type"].string : widget["kind"].string).lowercased()
+                switch widgetKind {
+                case "confirm", "picker", "staging_review":
+                    WidgetBubbleView(messageID: messageID, spec: widget, stateKey: key)
+                case "checklist":
+                    ChecklistWidget(spec: widget, stateKey: key, send: send)
+                case "choices":
+                    ChoicesWidget(spec: widget, stateKey: key, send: send)
+                case "table":
+                    TableWidget(spec: widget)
+                case "chart":
+                    ChartWidget(spec: widget)
+                case "steps":
+                    StepsWidget(spec: widget)
+                case "form":
+                    FormWidget(spec: widget, stateKey: key, send: send)
+                default:
+                    EmptyView()
                 }
             }
         }
@@ -103,6 +113,11 @@ private struct ChecklistWidget: View {
     private func isOn(_ item: JSON) -> Bool { checked[item.id] ?? item["checked"].bool }
     private var submit: String { spec["submit"].string }
 
+    private func itemText(_ item: JSON) -> String {
+        let t = item["text"].string
+        return t.isEmpty ? item["label"].string : t
+    }
+
     var body: some View {
         WidgetCard(title: spec["title"].string) {
             VStack(spacing: 0) {
@@ -118,7 +133,7 @@ private struct ChecklistWidget: View {
                             Image(systemName: on ? "checkmark.circle.fill" : "circle")
                                 .font(.system(size: 22))
                                 .foregroundStyle(on ? Palette.accentText : Palette.textTertiary)
-                            Text(item["text"].string).font(TypeScale.body)
+                            Text(itemText(item)).font(TypeScale.body)
                                 .foregroundStyle(on ? Palette.textTertiary : Palette.textPrimary)
                                 .strikethrough(on, color: Palette.textTertiary.opacity(0.6))
                                 .frame(maxWidth: .infinity, alignment: .leading)

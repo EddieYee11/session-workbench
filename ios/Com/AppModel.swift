@@ -36,10 +36,14 @@ enum SectionTab: String, CaseIterable, Identifiable {
             if !isChatBriefVisible { resetBriefImmediate() }
         }
     }
-    /// 这一页此刻在屏幕上：单栏时是当前 tab，双栏时是左栏的聊天和右栏的 rightTab。
-    func isShown(_ page: SectionTab) -> Bool { splitView ? (page == .chat || page == rightTab) : tab == page }
+    /// 双栏展开态下，主聊天是否被全宽右栏（工作页或看板专注）收起。
+    var isChatHiddenInSplit: Bool {
+        splitView && (rightTab == .work || (rightTab == .next && boardFocus))
+    }
+    /// 这一页此刻在屏幕上：单栏时是当前 tab，双栏时是左栏的聊天和右栏的 rightTab（若主聊天被全宽右栏收起则只有 rightTab）。
+    func isShown(_ page: SectionTab) -> Bool { splitView ? (isChatHiddenInSplit ? page == rightTab : (page == .chat || page == rightTab)) : tab == page }
     /// 回来简报挂载的左栏/主聊天当前是否在视图树中。
-    var isChatBriefVisible: Bool { splitView ? !(rightTab == .next && boardFocus) : tab == .chat }
+    var isChatBriefVisible: Bool { splitView ? !isChatHiddenInSplit : tab == .chat }
     var base = UserDefaults.standard.string(forKey: "base") ?? "https://pi.eddiegao.work:8443/sessions"
     var isPaired = false
     var conversation = ConversationState()
@@ -53,6 +57,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var sending = false
     var lastSubmittedID: String?
     var streaming = false
+    var lastEventID: Int = 0
+    private var streamDisconnectTime: Date?
     /// 主聊 SSE 断线开口；仅真正收到 snapshot/update 才清。HTTP 快照拉齐不得清（假「已恢复」）。
     var streamNote = ""
     /// 灵动岛开启失败 / 系统关闭实时活动：设置「平台能力」开口，不假装岛上还在跳。
@@ -70,6 +76,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var showSearch = false
     var showShareInbox = false
     var showQuickVoice = false
+    var showLiveVoice = false
     var showMenu = false
     /// 回来简报卡：展开态与跟手进度（0 收起 … 1 展开，拖动可略超 1）。
     var briefExpanded = false
@@ -87,6 +94,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var showConnectors = false
     var showNewWork = false
     var showActivity = false  // 10-25 活动日志：它替你做过的写操作
+    var showWaiting = false   // 就地打开「等你」拍板收件箱（Zero Tab Hijacking）
+    var dismissedWaitingIDs: Set<String> = []
     var showWorkSidebar = false // 工作页历史侧栏，顶栏左上按钮开（r3-work）
     /// 拖侧栏时手指走了多远（往右正、往左负）；松手归零。
     var workSidebarDrag: CGFloat = 0
@@ -105,6 +114,24 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
     }
     var deferredBoardDatasets: [String: JSON] = [:]
+    var capsuleTasks: [CapsuleTask] = []
+    var contextMatter: JSON? = nil
+    // MARK: P0/P2 共享契约（与 @ios-surfaces 严格对齐）
+    var activeChannel: String = "personal"
+    var attachedContext: AttachedContextItem? = nil
+    var liveToolChips: [String: [LiveToolChip]] = [:]
+    var clipboardDropCandidate: String? = nil
+    var voiceNarrationEnabled: Bool = false {
+        didSet {
+            UserDefaults.standard.set(voiceNarrationEnabled, forKey: "chat.voiceNarration")
+            if !voiceNarrationEnabled { stopVoiceNarration() }
+        }
+    }
+    var lastEventIDRaw: String = ""
+    var streamFailures: Int = 0
+    var lastClipboardHash: String = UserDefaults.standard.string(forKey: "chat.lastClipboardHash") ?? ""
+    var lastPasteboardChangeCount: Int = -1
+    var resolvedWidgetStates: [String: JSON] = [:]
     var boardMoveNotes: [String: String] = [:]
     /// 看板当前分组（持久化原值）。放成存储属性，胶囊切换才会被 @Observable 追踪到；读写见 BoardModel.boardColumn。
     var boardColumnRaw: String = UserDefaults.standard.string(forKey: "board.column") ?? ""
@@ -171,6 +198,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
     /// 他亲手点了重新整理，等结果中。
     var nextUserRefresh = false
     var voice = VoiceRecorder()
+    var liveVoice = LiveVoiceSession()
     var devices: DeviceBridge!
     private var api: APIClient?
     private var streamTask: Task<Void, Never>?
@@ -285,6 +313,9 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
         #endif
         do {
+            let savedChannel = UserDefaults.standard.string(forKey: "chat.activeChannel") ?? "personal"
+            activeChannel = ["personal", "work", "bookkeeping"].contains(savedChannel) ? savedChannel : "personal"
+            voiceNarrationEnabled = UserDefaults.standard.bool(forKey: "chat.voiceNarration")
             conversation = try SecureVault.load(ConversationState.self, name: "conversation") ?? ConversationState()
             datasets = try SecureVault.load([String: JSON].self, name: "datasets") ?? [:]
             recomputeFlow()
@@ -381,11 +412,14 @@ enum SectionTab: String, CaseIterable, Identifiable {
         pollTask?.cancel(); pollTask = nil
         devices.stop()
         if !value {
+            stopVoiceNarration()
             if voice.phase == .recording { voice.finishRecording() }
             persistNow(); await cacheWriteTask?.value; ComNotifications.schedule(); return
         }
         refreshShareInboxPresence()
+        probeClipboardForDrop()
         if UserDefaults.standard.bool(forKey: "openVoiceIntent") { UserDefaults.standard.set(false, forKey: "openVoiceIntent"); openVoice(quick: true) }
+        if let page = UserDefaults.standard.string(forKey: "openPageIntent"), !page.isEmpty { UserDefaults.standard.removeObject(forKey: "openPageIntent"); openSiriPage(page) }
         guard isPaired else { return }
         // 先把聊天拉回来并立刻打开实时流，再去拉其余页面：回到前台第一眼就是最新对话，舞台不再先显示离线。
         await refresh(.chat)
@@ -402,19 +436,21 @@ enum SectionTab: String, CaseIterable, Identifiable {
         pollTask = Task { [weak self] in
             var ticks = 0
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(15))
+                try? await Task.sleep(for: .seconds(4))
                 guard !Task.isCancelled, let self, self.active else { return }
                 ticks += 1
                 // 流里的便签（事项、待批准、信源状态）每分钟补一次，不随 SSE。
-                if ticks % 4 == 0 { await self.refreshFlow(); _ = await self.load("/personal/next") }
-                // 聊天页由 SSE 推送；只有流断开时才用快照补拉，避免每 15 秒重复下载整份对话。
+                if ticks % 15 == 0 { await self.refreshFlow(); _ = await self.load("/personal/next") }
+                // 聊天页由 SSE 推送；流断开时按 4 秒快速兜底补拉快照。
                 if self.splitView {
                     if !self.streaming { await self.refresh(.chat) }
-                    await self.refresh(self.rightTab)
+                    if ticks % 4 == 0 { await self.refresh(self.rightTab) }
                     continue
                 }
                 if self.tab == .chat && self.streaming { continue }
-                await self.refresh(self.tab)
+                if self.tab == .chat || ticks % 4 == 0 {
+                    await self.refresh(self.tab)
+                }
             }
         }
     }
@@ -543,8 +579,20 @@ enum SectionTab: String, CaseIterable, Identifiable {
     var todayOpening: Bool { menuOpening.contains("today") }
     var settingsOpening: Bool { menuOpening.contains("settings") }
     var searchOpening: Bool { menuOpening.contains("search") }
+    /// 是否内置系统分享扩展 ComShare.appex（全能签裸包构建时被剔除，原生包存在）。
+    var hasShareExtension: Bool {
+        guard let pluginsURL = Bundle.main.builtInPlugInsURL else { return false }
+        let shareURL = pluginsURL.appendingPathComponent("ComShare.appex")
+        return FileManager.default.fileExists(atPath: shareURL.path)
+    }
     /// 前台探测分享收件箱。用 `loadAll` 而非 `all()`：App Group 失败时开口，不假装没有分享。
     func refreshShareInboxPresence() {
+        guard hasShareExtension else {
+            // 全能签裸包：物理不存在 ComShare.appex 且无 App Group 容器，不在主聊输入框常驻弹横幅
+            shareInboxNote = ""
+            showShareInbox = false
+            return
+        }
         let batch = ShareInbox.loadAll()
         if let err = batch.error, !err.isEmpty {
             shareInboxNote = "分享收件箱没读上：\(err)——可能有待处理分享。可点「打开收件箱」再试。不会假装没有。"
@@ -594,7 +642,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         showCases = false
         presentedCase = nil
         showActivity = false
-        tab = .next  // 「等你」现在是下一步页最上面那一段
+        showWaiting = true  // 就地弹出「等你」互动抽屉，不强行劫持切去空白页
         waitingOpenNote = ""
         guard menuOpening.insert("waiting").inserted else { return }
         Task {
@@ -611,6 +659,25 @@ enum SectionTab: String, CaseIterable, Identifiable {
                 ? (hadCache ? "等你清单没刷新上——下面仍可能是上一版。可再从菜单打开。不会假装已读上。" : "等你清单还没拉齐——可再打开重试。不会假装已读上。")
                 : "等你清单没拉齐：" + err + "——可再打开重试。不会假装已读上。"
         }
+    }
+    func dismissCurrentWaitingAttention() {
+        for item in (datasets["/personal/waiting"]?["items"].array ?? []) where !item.id.isEmpty {
+            dismissedWaitingIDs.insert(item.id)
+        }
+        for item in flowItems where !item.id.isEmpty {
+            dismissedWaitingIDs.insert(item.id)
+        }
+    }
+    func removeWaitingItemLocally(_ id: String) {
+        guard !id.isEmpty else { return }
+        dismissedWaitingIDs.insert(id)
+        if var data = datasets["/personal/waiting"] {
+            let filtered = data["items"].array.filter { $0.id != id }
+            data["items"] = .array(filtered)
+            data["count"] = .number(Double(filtered.count))
+            datasets["/personal/waiting"] = data
+        }
+        flowItems.removeAll { $0.id == id }
     }
     /// 打开动态（航程+写操作）：立刻 loadFeed，避免菜单里「有航程停顿」点进去却是旧列表。
     func openActivityFeed() {
@@ -791,12 +858,16 @@ enum SectionTab: String, CaseIterable, Identifiable {
         switch tab {
         case .chat:
             // 下拉/各处 refresh(.chat)：conversation 失败写 todayOpenNote，别假装主聊已读上。
-            if let data = await load("/personal/conversation") {
+            let chatPath = activeChannel == "personal"
+                ? "/personal/conversation"
+                : "/personal/conversation?channel=" + activeChannel.queryEncoded
+            if let data = await load(chatPath) {
                 conversation.apply(data, snapshot: true)
+                reconcileLiveToolChips(with: conversation.messages)
                 ComNotifications.observe(conversation.messages)
                 todayOpenNote = ""
             } else {
-                let err = errors["/personal/conversation"] ?? ""
+                let err = errors[chatPath] ?? errors["/personal/conversation"] ?? ""
                 let hadCache = !conversation.messages.isEmpty
                 todayOpenNote = err.isEmpty
                     ? (hadCache
@@ -923,23 +994,32 @@ enum SectionTab: String, CaseIterable, Identifiable {
     private func startStream() {
         guard let api else { return }
         streamTask = Task { [weak self] in
-            var failures = 0
             while !Task.isCancelled {
                 guard let self, self.active else { return }
                 do {
-                    try await api.stream(after: self.conversation.revision > 0 ? self.conversation.revision : nil) { [weak self] event in
-                        await self?.receive(event)
-                    }
+                    let cursor = self.lastEventID > 0 ? self.lastEventID : (self.conversation.revision > 0 ? self.conversation.revision : nil)
+                    let headerID = self.lastEventIDRaw.isEmpty ? nil : self.lastEventIDRaw
+                    try await api.stream(
+                        after: cursor,
+                        lastEventID: headerID,
+                        onCursor: { [weak self] rawID in
+                            await self?.recordSSECursor(rawID)
+                        },
+                        onEvent: { [weak self] event in
+                            await self?.receive(event)
+                        }
+                    )
                     // 字节流正常结束也算断线：勿保持 streaming=true，否则轮询以为还在线、假成功。
                     if Task.isCancelled { return }
-                    failures += 1
-                    self.markStreamDown(attempt: failures)
+                    self.streamFailures += 1
+                    self.markStreamDown(attempt: self.streamFailures)
                 } catch {
                     if Task.isCancelled || error is CancellationError { return }
-                    failures += 1
-                    self.markStreamDown(attempt: failures)
+                    self.streamFailures += 1
+                    self.markStreamDown(attempt: self.streamFailures)
                 }
-                try? await Task.sleep(for: .seconds(min(30, 1 << min(failures, 5))))
+                let backoff = SSEParser.reconnectDelay(attempt: self.streamFailures)
+                try? await Task.sleep(for: .seconds(backoff))
             }
         }
     }
@@ -947,14 +1027,82 @@ enum SectionTab: String, CaseIterable, Identifiable {
     private func markStreamDown(attempt: Int) {
         streaming = false
         stage.disconnect()
+        let now = Date()
+        if streamDisconnectTime == nil {
+            streamDisconnectTime = now
+        }
+        let elapsed = now.timeIntervalSince(streamDisconnectTime ?? now)
+        // 3.0s 瞬断静默宽限期 (PRD C06 & TC-05)：小于 3.0s 不显示红/黄报错横幅，避免切 WiFi 或瞬断时打扰心流
+        if elapsed < 3.0 {
+            streamNote = ""
+            errors["/personal/conversation"] = nil
+            return
+        }
         let message = attempt >= 3
-            ? "实时连接一直没接上（已重试多次）——仍在重连；这会儿是缓存，新回复可能晚到。不会假装已恢复。"
-            : "实时连接断了，正在重连——这会儿是缓存，新回复可能晚到。不会假装已恢复。"
+            ? "实时连接恢复中，当前显示本地缓存（已重试多次）"
+            : "实时连接恢复中，当前显示本地缓存"
         streamNote = message
         errors["/personal/conversation"] = message
     }
     private func receive(_ event: SSEEvent) {
+        if !event.id.isEmpty {
+            recordSSECursor(event.id)
+        }
+        // 解析序列号并执行判重门禁
+        var eventSeq: Int = 0
+        if let seq = Int(event.id), seq > 0 {
+            eventSeq = seq
+        }
         guard let data = event.data.data(using: .utf8), let value = try? JSON.decode(data) else { return }
+        if eventSeq == 0 {
+            let seq = value["event_seq"].int
+            if seq > 0 {
+                eventSeq = seq
+            }
+        }
+
+        // 判重门禁：若已处理过该 seq 且非重置事件，直接忽略
+        if eventSeq > 0 {
+            if event.name != "snapshot" && event.name != "resync_required" && eventSeq <= self.lastEventID {
+                return
+            }
+            self.lastEventID = max(self.lastEventID, eventSeq)
+            if self.lastEventIDRaw.isEmpty {
+                self.lastEventIDRaw = String(self.lastEventID)
+            }
+        }
+
+        // 收到合法帧，重置断线计时、退避计数与中性提示
+        streamFailures = 0
+        streamDisconnectTime = nil
+        streaming = true
+        streamNote = ""
+        errors["/personal/conversation"] = nil
+        fetchedAt["/personal/conversation"] = Date()
+
+        if event.name == "resync_required" {
+            // 环形缓冲越界对齐：重置游标并重新拉取全新全量快照自愈
+            diagnose("stream:resync_required")
+            self.lastEventID = 0
+            self.lastEventIDRaw = ""
+            Task { @MainActor in
+                _ = await self.load(Self.boardPath)
+                await self.refresh(.chat)
+            }
+            return
+        }
+        if event.name == "tool.started" || event.name == "tool.completed" || event.name == "tool.failed" {
+            handleLiveToolEvent(name: event.name, value: value)
+            return
+        }
+        if event.name == "matter.update" {
+            // 看板卡片/统一事项流转实时推流：增量修补内存数据，无需全量网络请求
+            diagnose("stream:matter.update")
+            Task { @MainActor in
+                self.applyMatterDeltaLocally(value)
+            }
+            return
+        }
         if ["heartbeat", "task.progress", "task.review", "agent.push"].contains(event.name) {
             stage.receive(event.name, value)
             if event.name == "agent.push" || event.name == "task.review" {
@@ -962,15 +1110,53 @@ enum SectionTab: String, CaseIterable, Identifiable {
             }
             return
         }
+        if event.name == "capsule.sync" {
+            updateCapsuleTask(from: value)
+            return
+        }
         guard event.name == "snapshot" || event.name == "update" else { return }
         stage.receive(event.name, value)
         let before = Set(conversation.messages.filter { $0["status"].string == "completed" }.map(\.id))
         let previousRevision = conversation.revision
-        conversation.apply(value, snapshot: event.name == "snapshot")
+        if event.name == "snapshot" {
+            let boardVal = value["board"]
+            if boardVal != .null {
+                datasets["/personal/board"] = boardVal
+            }
+            let latestSeq = value["latest_event_seq"].int
+            if latestSeq > 0 {
+                self.lastEventID = max(self.lastEventID, latestSeq)
+                if self.lastEventIDRaw.isEmpty {
+                    self.lastEventIDRaw = String(self.lastEventID)
+                }
+            }
+        }
+        if activeChannel != "personal", case .array(let incomingMsgs) = value["messages"] {
+            var filtered = value
+            let matching = incomingMsgs.filter {
+                let ch = $0["channel"].string
+                return ch.isEmpty || ch == activeChannel
+            }
+            filtered["messages"] = .array(matching)
+            conversation.apply(filtered, snapshot: event.name == "snapshot")
+        } else {
+            conversation.apply(value, snapshot: event.name == "snapshot")
+        }
+        reconcileLiveToolChips(with: conversation.messages)
         ComNotifications.observe(conversation.messages)
         if streaming && event.name == "update" && previousRevision > 0 {
-            let fresh = value["messages"].array.filter { $0["role"].string == "assistant" && $0["status"].string == "completed" && !before.contains($0.id) }
-            if !fresh.isEmpty { Haptics.success() }
+            let fresh = value["messages"].array.filter {
+                $0["role"].string == "assistant"
+                    && $0["status"].string == "completed"
+                    && !before.contains($0.id)
+                    && (activeChannel == "personal" || $0["channel"].string.isEmpty || $0["channel"].string == activeChannel)
+            }
+            if !fresh.isEmpty {
+                Haptics.success()
+                if voiceNarrationEnabled, let latestBubble = fresh.last {
+                    narrateAssistantMessage(latestBubble)
+                }
+            }
             // 快记账回执到了就立刻刷账本；失败开口，别让「已记」气泡配着旧明细假装已更新。
             if fresh.contains(where: { $0["text"].string.hasPrefix("已记") }) {
                 Task {
@@ -985,19 +1171,52 @@ enum SectionTab: String, CaseIterable, Identifiable {
                 }
             }
         }
-        // 只有真正收到对话事件才算恢复；心跳不算。
-        streaming = true
-        streamNote = ""
-        errors["/personal/conversation"] = nil
-        fetchedAt["/personal/conversation"] = Date()
         diagnose("stream:" + event.name)
         persistSoon()
+    }
+
+    func updateCapsuleTask(from value: JSON) {
+        let taskID = value["task_id"].string.isEmpty ? value["id"].string : value["task_id"].string
+        guard !taskID.isEmpty else { return }
+        let matterID = value["matter_id"].string.isEmpty ? nil : value["matter_id"].string
+        let title = value["title"].string.isEmpty ? "后台任务" : value["title"].string
+        let rawStatus = value["status"].string
+        let status = CapsuleStatus(rawValue: rawStatus) ?? .executing
+        let stepCurrent = max(1, value["step_current"].int)
+        let stepTotal = max(stepCurrent, value["step_total"].int)
+        let stateText = value["state_text"].string
+        let waitingQuestion = value["waiting_question"].string.isEmpty ? nil : value["waiting_question"].string
+        let artifactPath = value["artifact_path"].string.isEmpty ? nil : value["artifact_path"].string
+
+        let task = CapsuleTask(
+            id: taskID,
+            matterID: matterID,
+            title: title,
+            status: status,
+            stepCurrent: stepCurrent,
+            stepTotal: stepTotal,
+            stateText: stateText,
+            waitingQuestion: waitingQuestion,
+            artifactPath: artifactPath,
+            updatedAt: CACurrentMediaTime()
+        )
+
+        if let idx = capsuleTasks.firstIndex(where: { $0.id == taskID }) {
+            if status == .cancelled {
+                capsuleTasks.remove(at: idx)
+            } else {
+                capsuleTasks[idx] = task
+            }
+        } else if status != .cancelled {
+            capsuleTasks.append(task)
+        }
     }
     /// 拉更早对话。false = 请求失败（调用方页内提示，勿假装已读完）。
     @discardableResult
     func loadHistory() async -> Bool {
         guard moreHistory, let first = conversation.messages.first else { return true }
-        if let page = await load("/personal/conversation/history?before=" + first.id.queryEncoded + "&limit=60") {
+        let channelParam = activeChannel == "personal" ? "" : "&channel=" + activeChannel.queryEncoded
+        if let page = await load("/personal/conversation/history?before=" + first.id.queryEncoded + "&limit=60" + channelParam) {
             conversation.prependHistory(page); moreHistory = page["has_more"].bool; persistSoon()
             return true
         }
@@ -1035,13 +1254,38 @@ enum SectionTab: String, CaseIterable, Identifiable {
     /// 返回是否已送达受理。下一步记账/加日程靠它决定要不要标「做完」——失败别把卡划掉。
     @discardableResult
     func send(voiceMessage: Bool = false, matter: String? = nil, textOverride: String? = nil) async -> Bool {
-        let text = (textOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, (!sending || voiceMessage) else { return false }
+        let rawInput = (textOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawInput.isEmpty, (!sending || voiceMessage) else { return false }
+        let shouldConsumeAttachedContext = (textOverride == nil && attachedContext != nil)
+        let text: String = {
+            guard shouldConsumeAttachedContext, let ctx = attachedContext else { return rawInput }
+            let summaryTrim = ctx.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let prefix = summaryTrim.isEmpty
+                ? "[关联事项：\(ctx.title)]"
+                : "[关联事项：\(ctx.title)] \(summaryTrim)"
+            return "\(prefix)\n\(rawInput)"
+        }()
         chatComposerNote = ""
-        var extra: [String: JSON] = [:]
+        var extra: [String: JSON] = ["channel": .string(activeChannel)]
         if let reference { extra["reference"] = reference }
         if !attachments.isEmpty { extra["attachment_ids"] = .array(attachments.map { .string($0.id) }) }
-        if let matter { extra["matter_id"] = .string(matter) }
+        if let matter {
+            extra["context_matter_id"] = .string(matter)
+            extra["matter_id"] = .string(matter)
+        } else if let contextMatter {
+            let mID = contextMatter["matter_id"].string.isEmpty ? contextMatter["id"].string : contextMatter["matter_id"].string
+            if !mID.isEmpty {
+                extra["context_matter_id"] = .string(mID)
+                extra["matter_id"] = .string(mID)
+            }
+        } else if shouldConsumeAttachedContext, let ctx = attachedContext, !ctx.id.isEmpty {
+            extra["attached_context"] = .object([
+                "id": .string(ctx.id),
+                "title": .string(ctx.title),
+                "summary": .string(ctx.summary),
+                "kind": .string(ctx.kind)
+            ])
+        }
         let voiceID = voiceMessage ? "voice-" + voice.captureID : nil
         if let voiceID, pending.contains(where: { $0.id == voiceID }) { return false }
         let entry = PendingMessage(text: text, path: "/personal/conversation/messages", extra: extra, requestID: voiceID)
@@ -1050,7 +1294,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         if isUITesting {
             lastSubmittedID = entry.id
             if voiceMessage { voice.cancel(); showQuickVoice = false }
-            if textOverride == nil { draft = "" }; reference = nil; attachments = []
+            if textOverride == nil { draft = ""; contextMatter = nil; attachedContext = nil }; reference = nil; attachments = []
             if ProcessInfo.processInfo.arguments.contains("--ui-send-rejected") {
                 pending[pending.count - 1].state = .rejected; pending[pending.count - 1].note = "测试中的发送未被受理"
                 chatComposerNote = "没送出去：测试中的发送未被受理——可点「回到草稿」再试"
@@ -1079,7 +1323,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
             return false
         }
         lastSubmittedID = entry.id
-        if textOverride == nil { draft = "" }; reference = nil; attachments = []; persistNow()
+        if textOverride == nil { draft = ""; contextMatter = nil; attachedContext = nil }; reference = nil; attachments = []; persistNow()
         await deliver(entry.id)
         let state = pending.first(where: { $0.id == entry.id })?.state
         let detail = pending.first(where: { $0.id == entry.id })?.note ?? ""
@@ -1328,7 +1572,7 @@ enum SectionTab: String, CaseIterable, Identifiable {
         removeRejected(id)
         chatComposerNote = "草稿已收回输入框——改完再发。刚才那条没有发出去。"
     }
-    func mutate(_ path: String, fields: [String: JSON] = [:]) async throws -> JSON {
+    func mutate(_ path: String, fields: [String: JSON] = [:], silentBanner: Bool = false) async throws -> JSON {
         guard let api else { throw APIError(status: 0, detail: "请先连接 Mac mini") }
         let body = JSON.object(fields.merging(["request_id": .string(UUID().uuidString.lowercased())]) { a, _ in a })
         let key = "operation-" + body["request_id"].string
@@ -1337,7 +1581,12 @@ enum SectionTab: String, CaseIterable, Identifiable {
             let result = try await api.request(path, body: body)
             try SecureVault.save(JSON.object(["path": .string(path), "body": body, "status": .string("received"), "result": result]), name: key)
             return result
-        } catch { banner = "操作未确认：" + error.localizedDescription + "。先刷新核对结果。"; throw error }
+        } catch {
+            if !silentBanner {
+                banner = "操作未确认：" + error.localizedDescription + "。先刷新核对结果。"
+            }
+            throw error
+        }
     }
     @discardableResult
     func action(_ path: String, fields: [String: JSON] = [:], refresh section: SectionTab? = nil) async -> Bool {
@@ -1375,6 +1624,33 @@ enum SectionTab: String, CaseIterable, Identifiable {
     func settleWorkSidebar(predicted: CGFloat, width: CGFloat, reduce: Bool = false) {
         let base: CGFloat = showWorkSidebar ? width : 0
         if base + predicted > width / 2 { openWorkSidebar(reduce: reduce) } else { closeWorkSidebar(reduce: reduce) }
+    }
+    func openSiriPage(_ page: String) {
+        switch page {
+        case "chat": tab = .chat; Task { await refresh(.chat) }
+        case "next": tab = .next; Task { await refresh(.next) }
+        case "today": tab = .doing; Task { await refresh(.doing) }
+        case "health": tab = .health; Task { await refresh(.health) }
+        case "work": tab = .work; Task { await refresh(.work) }
+        case "finance": openFinance()
+        case "waiting": openWaitingInbox()
+        case "memory": openMemory()
+        case "activity": openActivityFeed()
+        case "voice": openVoice(quick: true)
+        case "live": openLiveVoice()
+        default: tab = .chat
+        }
+    }
+    func openLiveVoice() {
+        guard isPaired else {
+            let note = "要先配对才能开启实时通话——连上 Mac mini 后再说。"
+            pairGateNote = note
+            banner = note
+            return
+        }
+        pairGateNote = ""
+        if voice.phase == .recording { voice.cancel() }
+        showLiveVoice = true
     }
     func openVoice(quick: Bool = false) {
         guard isPaired else {
@@ -1453,8 +1729,8 @@ enum SectionTab: String, CaseIterable, Identifiable {
         }
         // Show the glyph reveal before entering the same durable text-message outbox.
         let text = voice.transcript
-        // Auto-send is the quick 记账 path: a shorter reveal keeps the round trip snappy.
-        try? await Task.sleep(for: .milliseconds(voice.autoSend ? 500 : 1200))
+        // Auto-send is the quick 记账 path: keep reveal minimal so round trip feels instant.
+        try? await Task.sleep(for: .milliseconds(voice.autoSend ? 150 : 350))
         guard !Task.isCancelled, voice.phase == .ready, voice.captureID == capture else { return }
         await send(voiceMessage: true, textOverride: text)
         if voice.phase == .ready {
@@ -1492,16 +1768,6 @@ enum SectionTab: String, CaseIterable, Identifiable {
     }
 }
 
-@MainActor enum Haptics {
-    static func selection() { UISelectionFeedbackGenerator().selectionChanged() }
-    static func success() { UINotificationFeedbackGenerator().notificationOccurred(.success) }
-    static func sent() { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
-    static func error() { UINotificationFeedbackGenerator().notificationOccurred(.error) }
-    static func prepareDrag() { UIImpactFeedbackGenerator(style: .medium).prepare() }
-    static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium, intensity: CGFloat = 1) {
-        UIImpactFeedbackGenerator(style: style).impactOccurred(intensity: intensity)
-    }
-}
 
 #if DEBUG
 extension AppModel {
@@ -1516,6 +1782,7 @@ extension AppModel {
         isPaired = true
         moreHistory = false
         if ProcessInfo.processInfo.arguments.contains("--ui-quick-voice") { openVoice(quick: true) }
+        if ProcessInfo.processInfo.arguments.contains("--ui-live-voice") { openLiveVoice() }
         if let value = ProcessInfo.processInfo.environment["COM_PREVIEW_TAB"], let selected = SectionTab(rawValue: value) { tab = selected }
         let payload = #"""
         {
@@ -1569,8 +1836,9 @@ extension AppModel {
         }
         if ProcessInfo.processInfo.arguments.contains("--ui-work-process") { seedWorkProcessPreview() }  // chat 轨道：工作过程验收
         if ProcessInfo.processInfo.arguments.contains("--ui-reply-layout") { seedReplyLayoutPreview() }  // r2-chat：排版 + 建议卡验收
+        if ProcessInfo.processInfo.arguments.contains("--ui-her-demo") { seedHerDemoPreview() }  // Her 助理聊天观感验收
         // 聊天机制类的验收（长对话、压力、发送失败、语音）不铺流里的便签，免得把最新一条气泡顶出屏幕。
-        let chatOnly = ["--ui-long-chat", "--ui-stress-chat", "--ui-send-rejected", "--ui-reduce-motion", "--ui-voice-during-send", "--ui-quick-voice", "--ui-reply-widgets"].contains { ProcessInfo.processInfo.arguments.contains($0) }
+        let chatOnly = ["--ui-long-chat", "--ui-stress-chat", "--ui-send-rejected", "--ui-reduce-motion", "--ui-voice-during-send", "--ui-quick-voice", "--ui-reply-widgets", "--ui-her-demo"].contains { ProcessInfo.processInfo.arguments.contains($0) }
         datasets["/personal/connectors"] = .object(["sources": .array([
             .object(["name": .string("gmail"), "status": .string("needs_connection")]),
             .object(["name": .string("github"), "status": .string("connected")]),
@@ -1756,3 +2024,11 @@ extension AppModel {
     }
 }
 #endif
+
+extension AppModel: HerdrBackend {
+    @discardableResult
+    func mutate(_ path: String, fields: [String: JSON]) async throws -> JSON {
+        try await mutate(path, fields: fields, silentBanner: false)
+    }
+}
+

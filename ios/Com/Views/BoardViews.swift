@@ -7,9 +7,7 @@ import UIKit
 enum BoardLayoutMode: Equatable {
     case singleCapsule, twoColumnScroll, fourColumn
     static func mode(width: CGFloat) -> BoardLayoutMode {
-        if width >= 820 { return .fourColumn }
-        if width >= 560 { return .twoColumnScroll }
-        return .singleCapsule
+        .fourColumn
     }
 }
 
@@ -61,9 +59,11 @@ struct BoardKanbanView: View {
                         card: ghost,
                         pending: false,
                         showProgress: boardCardColumn(ghost) == .doing,
+                        isDoing: boardCardColumn(ghost) == .doing,
                         isDoneColumn: false,
                         newlyDone: false,
                         isFloating: true,
+                        isCompact: drag.cardSize.width < 180,
                         shadowRadius: drag.shadowRadius,
                         shadowY: drag.shadowY,
                         shadowOpacity: drag.shadowOpacity
@@ -138,31 +138,27 @@ struct BoardKanbanView: View {
     }
 
     @ViewBuilder private var boardMeasuredColumns: some View {
-        switch mode {
-        case .twoColumnScroll:
-            let inner = containerWidth - 56 - Layout.margin * 2 - Space.md * 2  // 两列 + 投放栏之间有两道间距
-            let colWidth = max(210, min(300, inner * 0.5))
-            HStack(spacing: Space.md) {
-                groupBlock(.suggest, width: colWidth)
-                groupBlock(.todo, width: colWidth)
-                BoardDoneDropColumn(cards: model.boardCards[.done] ?? [], drag: drag)
-                    .frame(width: 56)
-                    .background {
-                        GeometryReader { geo in
-                            Color.clear.preference(key: BoardDoneDropFrameKey.self, value: geo.frame(in: .named("board")))
-                        }
-                    }
-            }
-            .padding(.horizontal, Layout.margin)
-        case .fourColumn:
-            HStack(alignment: .top, spacing: Space.md) {
+        let totalW = containerWidth > 0 ? containerWidth : 390
+        if totalW < 560 {
+            let spacing: CGFloat = 6
+            let hPad: CGFloat = 8
+            let colWidth = max(108, floor((totalW - hPad * 2 - spacing * 2) / 3))
+            HStack(alignment: .top, spacing: spacing) {
                 ForEach(BoardGroup.allCases) { group in
-                    groupBlock(group, width: max(220, min(300, (containerWidth - Layout.margin * 2 - Space.md * 2) / 3)))
+                    groupBlock(group, width: colWidth)
                 }
             }
-            .padding(.horizontal, Layout.margin)
-        default:
-            EmptyView()
+            .padding(.horizontal, hPad)
+        } else {
+            let spacing: CGFloat = Space.md
+            let hPad: CGFloat = Layout.margin
+            let colWidth = max(156, min(320, floor((totalW - hPad * 2 - spacing * 2) / 3)))
+            HStack(alignment: .top, spacing: spacing) {
+                ForEach(BoardGroup.allCases) { group in
+                    groupBlock(group, width: colWidth)
+                }
+            }
+            .padding(.horizontal, hPad)
         }
     }
 
@@ -355,6 +351,8 @@ private struct BoardGroupColumnView: View {
     private var todoOnlyCards: [JSON] { model.boardCards[.todo] ?? [] }
     private var cards: [JSON] { boardCards(in: group, from: model.boardCards) }
 
+    private var isCompact: Bool { width < 180 }
+
     private var isHoveredNewGroup: Bool {
         drag.active && !drag.settling && drag.hoverGroup == group && drag.originGroup != group
     }
@@ -371,18 +369,24 @@ private struct BoardGroupColumnView: View {
     }
 
     var body: some View {
-        VStack(spacing: Space.sm) {
-            BoardGroupHeader(group: group, count: cards.count, doingCount: doingCards.count, highlighted: isHoveredNewGroup)
+        VStack(spacing: isCompact ? 6 : Space.sm) {
+            BoardGroupHeader(
+                group: group,
+                count: cards.count,
+                doingCount: doingCards.count,
+                highlighted: isHoveredNewGroup,
+                compact: isCompact
+            )
             ScrollView {
-                LazyVStack(spacing: Space.sm) {
+                VStack(spacing: isCompact ? 6 : Space.sm) {
                     ForEach(displayRows) { row in
                         switch row.kind {
                         case .section(let title):
                             Text(title)
-                                .font(TypeScale.caption)
+                                .font(isCompact ? .system(size: 11, weight: .semibold) : TypeScale.caption)
                                 .foregroundStyle(Palette.textSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, Space.xs)
+                                .padding(.top, 2)
                         case .card(let card, let index, let placeholder):
                             cardRow(card: card, index: index, isPlaceholder: placeholder)
                         case .dropPlaceholder:
@@ -406,10 +410,16 @@ private struct BoardGroupColumnView: View {
             .scrollPosition(id: .init(get: { anchor }, set: { onAnchor($0) }), anchor: .center)
             .scrollDisabled(drag.active || model.boardDragFreeze || horizontalSwipeCardID != nil)
         }
-        .padding(.horizontal, isHoveredNewGroup ? 4 : 0)
         .background(
             RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                 .fill(Palette.accent.opacity(isHoveredNewGroup ? 0.08 : 0))
+                .padding(.horizontal, -2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.accentText.opacity(isHoveredNewGroup ? 0.45 : 0), lineWidth: 1.5)
+                .padding(.horizontal, -2)
+                .allowsHitTesting(false)
         )
         .animation(reduce ? nil : .smooth(duration: 0.18), value: isHoveredNewGroup)
         .frame(width: width)
@@ -457,6 +467,10 @@ private struct BoardGroupColumnView: View {
 
     @ViewBuilder private func moveMenu(_ card: JSON) -> some View {
         let underlying = boardCardColumn(card)
+        Button("聊这件", systemImage: "bubble.left") {
+            triggerAttachBoardCard(card, model: model)
+        }
+        .accessibilityIdentifier("board-menu-chat-" + card.id)
         ForEach(BoardColumn.allCases.filter { $0.moveTarget != nil && $0 != underlying }) { target in
             Button("移到\(target.title)") { onMove(card, target, nil) }
                 .accessibilityIdentifier("board-move-" + target.rawValue)
@@ -464,6 +478,10 @@ private struct BoardGroupColumnView: View {
     }
 
     @ViewBuilder private func moveAccessibility(_ card: JSON, underlying: BoardColumn, index: Int) -> some View {
+        Button("聊这件") {
+            triggerAttachBoardCard(card, model: model)
+            UIAccessibility.post(notification: .announcement, argument: "已挂入聊天输入框")
+        }
         ForEach(BoardColumn.allCases.filter { $0.moveTarget != nil && $0 != underlying }) { target in
             Button("移到 \(target.title)") {
                 onMove(card, target, nil)
@@ -517,35 +535,26 @@ private struct BoardCardInteractiveRow<Menu: View, A11y: View>: View {
     @ViewBuilder let moveMenu: () -> Menu
     @ViewBuilder let moveAccessibility: () -> A11y
 
-    @State private var swipeOffset: CGFloat = 0
-    @State private var swipeActive = false
-    @State private var crossedPrimary = false
-    @State private var crossedDone = false
-
-    private var cardWidth: CGFloat { max(200, cardFrames[card.id]?.width ?? width) }
+    private var isCompact: Bool { width < 180 }
 
     var body: some View {
         ZStack {
-            if swipeActive || abs(swipeOffset) > 0.5 {
-                swipeBackdrop
-            }
-            // 焦点开关放进卡片内容层：子 Button 优先于外层 onTapGesture，点它不会顺带打开详情；横拖时跟着卡一起走。
+            // 焦点开关放进卡片内容层：子 Button 优先于外层 onTapGesture，点它不会顺带打开详情。
             cardContent
-                .overlay(alignment: .trailing) {
-                    if showFocus { focusToggle }
+                .overlay(alignment: isCompact ? .bottomTrailing : .trailing) {
+                    if showFocus && !isPlaceholder { focusToggle }
                 }
-                .offset(x: swipeOffset)
         }
         .scaleEffect(isPressing ? 0.985 : 1)
         .animation(reduce ? .easeOut(duration: 0.12) : ComMotion.press, value: isPressing)
         .contentShape(.rect(cornerRadius: Radius.md))
         .onTapGesture {
-            guard !drag.active, !swipeActive else { return }
+            guard !drag.active else { return }
             onOpen(card)
         }
         .gesture(
             BoardCardLongPressGesture(
-                enabled: canDrag && !swipeActive,
+                enabled: canDrag,
                 card: card,
                 group: group,
                 column: underlying,
@@ -560,69 +569,33 @@ private struct BoardCardInteractiveRow<Menu: View, A11y: View>: View {
                     }
                 },
                 onBegin: { point in
-                    // 待办组的插入位一律按「正在做 + 待办」合并序号算（和 drag.move 同一口径），落地时在 onMove 里换回底层列序号。
-                    let colCards = group == .todo
-                        ? (model.boardCards[.doing] ?? []) + (model.boardCards[.todo] ?? [])
-                        : (model.boardCards[underlying] ?? [])
-                    let origIdx = colCards.firstIndex(where: { $0.id == card.id }) ?? 0
-                    let frame = cardFrames[card.id] ?? CGRect(x: point.x - width / 2, y: point.y - 34, width: width, height: 68)
-                    model.boardDragFreeze = true
-                    drag.begin(card: card, group: group, column: underlying, index: origIdx, frame: frame, at: point, reduce: reduce)
+                    beginFloatingDrag(at: point)
                 },
                 onMove: { point, vx in
-                    drag.move(
-                        to: point,
-                        velocityX: vx,
-                        mode: mode,
-                        containerWidth: containerWidth,
-                        currentSingleGroup: model.boardColumn,
-                        groupFrames: groupFrames,
-                        cardFrames: cardFrames,
-                        capsuleFrames: capsuleFrames,
-                        doneDropFrame: doneDropFrame,
-                        boardCards: model.boardCards,
-                        reduce: reduce,
-                        onSelectGroup: onSelectSingleGroup
-                    )
+                    moveFloatingDrag(to: point, velocityX: vx)
                 },
                 onEnd: { completed in
-                    if completed {
-                        drag.end(
-                            placeholderFrames: placeholderFrames,
-                            capsuleFrames: capsuleFrames,
-                            groupFrames: groupFrames,
-                            doneDropFrame: doneDropFrame,
-                            reduce: reduce,
-                            onMove: onMove,
-                            onFinish: { model.boardDragFreeze = false }
-                        )
-                    } else {
-                        drag.cancelAnimated(reduce: reduce) {
-                            model.boardDragFreeze = false
-                        }
-                    }
+                    endFloatingDrag(completed: completed)
                 }
             )
         )
         .modifier(BoardCardSwipePanModifier(
-            enabled: swipeEnabled && canDrag && !drag.active,
+            enabled: swipeEnabled && canDrag,
             session: drag,
-            onChanged: handlePanChanged,
-            onEnded: handlePanEnded
+            onBegin: { point in
+                beginFloatingDrag(at: point)
+            },
+            onMove: { point, vx in
+                moveFloatingDrag(to: point, velocityX: vx)
+            },
+            onEnd: { completed in
+                endFloatingDrag(completed: completed)
+            }
         ))
         .background {
             GeometryReader { geo in
                 Color.clear.preference(key: BoardCardFrameKey.self, value: [card.id: geo.frame(in: .named("board"))])
             }
-        }
-        .contextMenu { moveMenu() }
-        .onDisappear {
-            // 横拖途中卡被回收（换布局 / 刷新挪走）收不到 ended：在这里复位，免得整板滚动和手势被锁死。
-            guard swipeActive || horizontalSwipeCardID == card.id else { return }
-            swipeActive = false
-            swipeOffset = 0
-            drag.horizontalSwipeActive = false
-            if horizontalSwipeCardID == card.id { horizontalSwipeCardID = nil }
         }
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.isButton)
@@ -655,7 +628,8 @@ private struct BoardCardInteractiveRow<Menu: View, A11y: View>: View {
                 isDoneColumn: underlying == .done,
                 newlyDone: newlyDone,
                 shake: !note.isEmpty,
-                errorNote: note
+                errorNote: note,
+                isCompact: isCompact
             )
         }
     }
@@ -668,68 +642,60 @@ private struct BoardCardInteractiveRow<Menu: View, A11y: View>: View {
             Task { _ = await model.boardMove(card: card, to: target) }
         } label: {
             Image(systemName: isDoing ? "flame.fill" : "flame")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: isCompact ? 14 : 18, weight: .semibold))
                 .foregroundStyle(isDoing ? Palette.danger : Palette.textSecondary)
-                .frame(width: 44, height: 44)
+                .frame(width: isCompact ? 30 : 44, height: isCompact ? 30 : 44)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isDoing ? "取消正在做" : "设为正在做")
         .accessibilityIdentifier(boardCardFocusID(card.id))
     }
 
-    @ViewBuilder private var swipeBackdrop: some View {
-        let hint = swipeHint
-        HStack {
-            if swipeOffset > 0 { Spacer(minLength: 0) }
-            if let hint {
-                HStack(spacing: 6) {
-                    Image(systemName: hint.symbol)
-                    Text(hint.title)
-                        .font(TypeScale.subheadline.weight(.semibold))
-                }
-                .foregroundStyle(hint.color)
-                .padding(.horizontal, Space.md)
+    private func beginFloatingDrag(at point: CGPoint) {
+        guard !drag.active else { return }
+        // 待办组的插入位一律按「正在做 + 待办」合并序号算（和 drag.move 同一口径），落地时在 onMove 里换回底层列序号。
+        let colCards = group == .todo
+            ? (model.boardCards[.doing] ?? []) + (model.boardCards[.todo] ?? [])
+            : (model.boardCards[underlying] ?? [])
+        let origIdx = colCards.firstIndex(where: { $0.id == card.id }) ?? 0
+        let frame = cardFrames[card.id] ?? CGRect(x: point.x - width / 2, y: point.y - 34, width: width, height: 68)
+        model.boardDragFreeze = true
+        drag.begin(card: card, group: group, column: underlying, index: origIdx, frame: frame, at: point, reduce: reduce)
+    }
+
+    private func moveFloatingDrag(to point: CGPoint, velocityX: CGFloat?) {
+        guard drag.active else { return }
+        drag.move(
+            to: point,
+            velocityX: velocityX,
+            mode: mode,
+            containerWidth: containerWidth,
+            currentSingleGroup: model.boardColumn,
+            groupFrames: groupFrames,
+            cardFrames: cardFrames,
+            capsuleFrames: capsuleFrames,
+            doneDropFrame: doneDropFrame,
+            boardCards: model.boardCards,
+            reduce: reduce,
+            onSelectGroup: onSelectSingleGroup
+        )
+    }
+
+    private func endFloatingDrag(completed: Bool) {
+        if completed {
+            drag.end(
+                placeholderFrames: placeholderFrames,
+                capsuleFrames: capsuleFrames,
+                groupFrames: groupFrames,
+                doneDropFrame: doneDropFrame,
+                reduce: reduce,
+                onMove: onMove,
+                onFinish: { model.boardDragFreeze = false }
+            )
+        } else {
+            drag.cancelAnimated(reduce: reduce) {
+                model.boardDragFreeze = false
             }
-            if swipeOffset < 0 { Spacer(minLength: 0) }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(hint?.color.opacity(hintOpacity) ?? Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-    }
-
-    private var hintOpacity: Double {
-        let primary = max(80, cardWidth * 0.28)
-        let t = min(1, abs(swipeOffset) / primary)
-        return 0.12 + 0.28 * t
-    }
-
-    private struct SwipeHint {
-        let title: String
-        let symbol: String
-        let color: Color
-        let target: BoardColumn?
-    }
-
-    private var swipeHint: SwipeHint? {
-        if swipeOffset > 0 { return advanceHint }
-        if swipeOffset < 0 { return retreatHint }
-        return nil
-    }
-
-    private var advanceHint: SwipeHint? {
-        switch underlying {
-        case .suggest: return SwipeHint(title: "→ 待办", symbol: "arrow.right", color: Palette.accent, target: .todo)
-        case .todo: return SwipeHint(title: "→ 正在做", symbol: "flame", color: Palette.danger, target: .doing)
-        case .doing: return SwipeHint(title: "→ 已完成", symbol: "checkmark", color: Palette.success, target: .done)
-        case .done: return nil
-        }
-    }
-
-    private var retreatHint: SwipeHint? {
-        switch underlying {
-        case .todo: return SwipeHint(title: "← 退回建议", symbol: "arrow.uturn.left", color: Palette.accent, target: .suggest)
-        case .doing, .done: return SwipeHint(title: "← 退回待办", symbol: "arrow.uturn.left", color: Palette.accent, target: .todo)
-        default: return nil
         }
     }
 
@@ -792,80 +758,6 @@ private struct BoardCardInteractiveRow<Menu: View, A11y: View>: View {
     }
 }
 
-extension BoardCardInteractiveRow {
-    private func handlePanChanged(_ translation: CGFloat, velocity: CGPoint) {
-        guard !drag.active else { return }
-        if !swipeActive {
-            swipeActive = true
-            drag.horizontalSwipeActive = true
-            drag.clearPressPreview(reduce: reduce)
-            horizontalSwipeCardID = card.id
-        }
-        let primary = max(80, cardWidth * 0.28)
-        let doneThreshold = cardWidth * 0.6
-        var x = translation
-        if x > 0 {
-            if advanceHint == nil {
-                x = rubberBand(x)
-            }
-        } else if x < 0 {
-            if retreatHint == nil {
-                x = -rubberBand(-x)
-            }
-        }
-        swipeOffset = x
-        if x > primary, !crossedPrimary { crossedPrimary = true; Haptics.selection() }
-        if x > doneThreshold, !crossedDone, underlying != .done { crossedDone = true; Haptics.selection() }
-    }
-
-    private func handlePanEnded(_ translation: CGFloat) {
-        defer {
-            swipeActive = false
-            drag.horizontalSwipeActive = false
-            horizontalSwipeCardID = nil
-            crossedPrimary = false
-            crossedDone = false
-        }
-        let primary = max(80, cardWidth * 0.28)
-        let doneThreshold = cardWidth * 0.6
-        if translation > doneThreshold, underlying != .done {
-            commitSwipe(to: .done, outward: translation)
-            return
-        }
-        if translation > primary, let hint = advanceHint, let target = hint.target {
-            commitSwipe(to: target, outward: translation)
-            return
-        }
-        if translation < -primary, let hint = retreatHint, let target = hint.target {
-            commitSwipe(to: target, outward: translation)
-            return
-        }
-        withAnimation(reduce ? .easeOut(duration: 0.2) : ComMotion.settle) { swipeOffset = 0 }
-    }
-
-    private func rubberBand(_ x: CGFloat) -> CGFloat {
-        x * 0.3
-    }
-
-    private func commitSwipe(to target: BoardColumn, outward: CGFloat) {
-        // 待办组内 todo↔正在做：卡还留在本组，不飞出去再瞬移回来，直接弹回原位、交给列表重排动画。
-        if reduce || target.boardGroup == underlying.boardGroup {
-            withAnimation(reduce ? nil : ComMotion.settle) { swipeOffset = 0 }
-            onMove(card, target, nil)
-            return
-        }
-        // 跨组：顺着拖的方向滑出，同一帧就提交移动（立刻进 inFlight 锁住），不留空窗让别的手势再动这张卡。
-        let out = outward > 0 ? cardWidth * 1.1 : -cardWidth * 1.1
-        withAnimation(.easeOut(duration: 0.22)) { swipeOffset = out }
-        onMove(card, target, nil)
-        Task { @MainActor in
-            // 移动没被受理（卡还在原处）时把卡拉回来，别停在屏外。
-            try? await Task.sleep(for: .milliseconds(450))
-            if swipeOffset != 0 { withAnimation(ComMotion.settle) { swipeOffset = 0 } }
-        }
-    }
-}
-
 private struct BoardPlaceholderCard: View {
     let height: CGFloat
     var body: some View {
@@ -885,17 +777,34 @@ private struct BoardGroupHeader: View {
     let count: Int
     var doingCount: Int = 0
     var highlighted: Bool = false
+    var compact: Bool = false
+    @State private var showArchiveSheet = false
+
     var body: some View {
-        HStack(spacing: Space.sm) {
+        HStack(spacing: compact ? 4 : Space.sm) {
             Text(group.title)
-                .font(TypeScale.subheadline.weight(.semibold))
+                .font(compact ? TypeScale.caption.weight(.semibold) : TypeScale.subheadline.weight(.semibold))
                 .foregroundStyle(highlighted ? Palette.accentText : Palette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
             CountBadge(count: count)
             if group == .todo, doingCount > 0 {
                 Circle().fill(Palette.danger).frame(width: 6, height: 6)
             }
             Spacer(minLength: 0)
-            if group != .done {
+            if group == .done {
+                Button {
+                    showArchiveSheet = true
+                } label: {
+                    Image(systemName: "archivebox")
+                        .font(.system(size: compact ? 12 : 14, weight: .medium))
+                        .foregroundStyle(Palette.textSecondary)
+                        .frame(width: compact ? 26 : 32, height: compact ? 26 : 32)
+                        .background(Palette.fill, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("board-open-archive-sheet")
+            } else if !compact {
                 Button { } label: {
                     Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
                         .frame(width: 44, height: 44)
@@ -906,7 +815,10 @@ private struct BoardGroupHeader: View {
                 .opacity(0.35)
             }
         }
-        .frame(height: 44)
+        .frame(height: compact ? 34 : 44)
+        .sheet(isPresented: $showArchiveSheet) {
+            MatterArchiveSheet()
+        }
     }
 }
 
@@ -946,6 +858,7 @@ struct BoardSlimCard: View {
     var shake: Bool = false
     var errorNote: String = ""
     var isFloating: Bool = false
+    var isCompact: Bool = false
     var shadowRadius: CGFloat = 12
     var shadowY: CGFloat = 3
     var shadowOpacity: Double = 0.05
@@ -956,10 +869,153 @@ struct BoardSlimCard: View {
     @State private var strikeProgress: CGFloat = 0
     @State private var compactDone: Bool = false
     @State private var doneAnimated = false
+    @State private var isExecutingAction: Bool = false
+    @State private var actionExecuted: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @Environment(AppModel.self) private var model
 
     private var item: JSON { card["kind"].string == "next" ? (card["next"].isNull ? card : card["next"]) : card }
     private var settledCompact: Bool { isDoneColumn && (!newlyDone || compactDone) }
+
+    private var suggestedAction: JSON? {
+        if !card["suggested_action"].isNull { return card["suggested_action"] }
+        if !item["suggested_action"].isNull { return item["suggested_action"] }
+        if !card["action"].isNull && (!card["action"]["label"].string.isEmpty || !card["action"]["title"].string.isEmpty) { return card["action"] }
+        if !item["action"].isNull && (!item["action"]["label"].string.isEmpty || !item["action"]["title"].string.isEmpty) { return item["action"] }
+        return nil
+    }
+
+    private var suggestedActionLabel: String {
+        guard let act = suggestedAction else { return "" }
+        let label = act["label"].string
+        if !label.isEmpty { return label }
+        let title = act["title"].string
+        if !title.isEmpty { return title }
+        let type = act["type"].string
+        if type == "bookkeep" || type == "bookkeeping" { return "记一笔" }
+        if type == "calendar" { return "加日程" }
+        return "执行"
+    }
+
+    private var fsmStatus: String {
+        let s = card["status"].string
+        if !s.isEmpty { return s }
+        let is_ = item["status"].string
+        if !is_.isEmpty { return is_ }
+        return card["column"].string
+    }
+
+    @ViewBuilder
+    private var fsmStatusBadge: some View {
+        switch fsmStatus {
+        case "waiting_input", "waiting":
+            Stamp(text: "等待输入", tone: .warning)
+        case "executing":
+            Stamp(text: "执行中", tone: .accent)
+        case "error_retrying":
+            Stamp(text: "重试中", tone: .warning, dashed: true)
+        case "error_blocked":
+            Stamp(text: "执行受阻", tone: .danger)
+        case "snoozed":
+            Stamp(text: "已稍后", tone: .neutral)
+        case "dismissed":
+            Stamp(text: "已划掉", tone: .neutral)
+        case "cancelled":
+            Stamp(text: "已取消", tone: .neutral)
+        default:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var inlineActionButton: some View {
+        if let _ = suggestedAction, !isDoneColumn, fsmStatus != "done" {
+            Button(action: {
+                executeInlineAction()
+            }) {
+                HStack(spacing: 4) {
+                    if isExecutingAction {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(Palette.accent)
+                    } else if actionExecuted {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Palette.success)
+                    } else {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Palette.accent)
+                    }
+                    Text(actionExecuted ? "已完成" : "⚡️ " + suggestedActionLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(actionExecuted ? Palette.success : Palette.accent)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Palette.accent.opacity(0.12), in: Capsule())
+                .overlay(Capsule().strokeBorder(Palette.accent.opacity(0.3), lineWidth: 0.8))
+            }
+            .buttonStyle(SoftPressStyle(scale: 0.95))
+            .disabled(isExecutingAction || actionExecuted)
+            .accessibilityIdentifier("board-inline-action-\(card.id)")
+        }
+    }
+
+    @ViewBuilder
+    private var chatAttachButton: some View {
+        if !isDoneColumn && !isFloating {
+            let ctx = makeBoardAttachedContext(card: card)
+            let isAttached = !ctx.id.isEmpty && model.attachedContext?.id == ctx.id
+            Button {
+                triggerAttachBoardCard(card, model: model)
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: isAttached ? "bubble.left.fill" : "bubble.left")
+                        .font(.system(size: isCompact ? 9 : 10, weight: .semibold))
+                    Text(isAttached ? (isCompact ? "已挂" : "已挂入") : (isCompact ? "聊" : "聊这件"))
+                        .font(.system(size: isCompact ? 10 : 11, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(isAttached ? Palette.accentText : Palette.textSecondary)
+                .padding(.horizontal, isCompact ? 6 : 8)
+                .padding(.vertical, 3)
+                .background(isAttached ? Tone.accent.soft : Palette.fill, in: Capsule())
+            }
+            .buttonStyle(SoftPressStyle(scale: 0.95))
+            .accessibilityLabel("聊这件：\(ctx.title)")
+            .accessibilityIdentifier("board-chat-\(card.id)")
+        }
+    }
+
+    private func executeInlineAction() {
+        guard !isExecutingAction, !actionExecuted, let act = suggestedAction else { return }
+        isExecutingAction = true
+        Haptics.impact(.medium)
+        Task { @MainActor in
+            let matterId = card["matter_id"].string.isEmpty ? card.id : card["matter_id"].string
+            var fields = act.object
+            if fields["action"] == nil {
+                fields["action"] = .string("execute")
+            }
+            do {
+                _ = try await model.mutate("/personal/matter/" + matterId.pathEncoded + "/action", fields: fields)
+                withAnimation(ComMotion.settle) {
+                    isExecutingAction = false
+                    actionExecuted = true
+                }
+                Haptics.success()
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(400))
+                    _ = await model.load(AppModel.boardPath)
+                }
+            } catch {
+                isExecutingAction = false
+                Haptics.error()
+                model.banner = "执行失败: \(error.localizedDescription)"
+            }
+        }
+    }
 
     var body: some View {
         Group {
@@ -1009,17 +1065,18 @@ struct BoardSlimCard: View {
     }
 
     private var compactDoneBody: some View {
-        HStack(spacing: Space.sm) {
+        HStack(spacing: isCompact ? 6 : Space.sm) {
             doneCheckBadge(settled: true)
             Text(card["title"].string)
-                .font(TypeScale.subheadline)
+                .font(isCompact ? .system(size: 12) : TypeScale.subheadline)
                 .foregroundStyle(Palette.textSecondary)
                 .strikethrough(true, color: Palette.textSecondary)
-                .lineLimit(1)
+                .lineLimit(isCompact ? 2 : 1)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, Space.md)
-        .frame(height: 44)
+        .padding(.horizontal, isCompact ? 8 : Space.md)
+        .padding(.vertical, isCompact ? 6 : 0)
+        .frame(minHeight: isCompact ? 38 : 44)
     }
 
     private var standardCardBody: some View {
@@ -1029,12 +1086,21 @@ struct BoardSlimCard: View {
             } else if !isDoneColumn, (card["urgency"].string == "now" || item["urgency"].string == "now") {
                 Rectangle().fill(Palette.accent).frame(width: 3)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+            VStack(alignment: .leading, spacing: isCompact ? 4 : 6) {
+                if isCompact && isDoing {
+                    Text("● 正在做")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.danger)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Palette.danger.opacity(0.12), in: Capsule())
+                        .accessibilityIdentifier(boardDoingTagID(card.id))
+                }
+                HStack(alignment: .firstTextBaseline, spacing: isCompact ? 4 : Space.sm) {
                     if isDoneColumn {
                         doneCheckBadge(settled: false)
                     }
-                    if isDoing {
+                    if isDoing && !isCompact {
                         Text("● 正在做")
                             .font(TypeScale.caption.weight(.semibold))
                             .foregroundStyle(Palette.danger)
@@ -1044,10 +1110,11 @@ struct BoardSlimCard: View {
                             .accessibilityIdentifier(boardDoingTagID(card.id))
                     }
                     Text(card["title"].string)
-                        .font(TypeScale.subheadline.weight(.semibold))
+                        .font(isCompact ? .system(size: 13, weight: .semibold) : TypeScale.subheadline.weight(.semibold))
                         .foregroundStyle(isDoneColumn && strikeProgress > 0.5 ? Palette.textSecondary : Palette.textPrimary)
                         .strikethrough(isDoneColumn && strikeProgress > 0.5, color: Palette.textSecondary)
-                        .lineLimit(2)
+                        .lineLimit(isCompact ? 3 : 2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .overlay(alignment: .leading) {
                             if isDoneColumn && strikeProgress > 0 && strikeProgress < 1 {
                                 GeometryReader { geo in
@@ -1059,13 +1126,19 @@ struct BoardSlimCard: View {
                             }
                         }
                 }
-                HStack(spacing: 6) {
+                HStack(spacing: isCompact ? 4 : 6) {
                     ForEach(card["sources"].array.prefix(3).map(\.string), id: \.self) { kind in
-                        Image(systemName: sourceSymbol(kind)).font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
+                        Image(systemName: sourceSymbol(kind)).font(.system(size: isCompact ? 11 : 12)).foregroundStyle(Palette.textTertiary)
                     }
-                    if item["phase"].string == "waiting" { Stamp(text: "等对方", tone: .info) }
-                    else if item["phase"].string == "progress", !isDoing { Stamp(text: "进展中", tone: .accent) }  // 正在做已有红标签，不再叠一个
-
+                    fsmStatusBadge
+                    if item["phase"].string == "waiting" && fsmStatus != "waiting_input" && fsmStatus != "waiting" {
+                        Stamp(text: "等对方", tone: .info)
+                    } else if item["phase"].string == "progress", !isDoing, fsmStatus != "executing" {
+                        Stamp(text: "进展中", tone: .accent)
+                    }
+                    inlineActionButton
+                    chatAttachButton
+                    Spacer(minLength: isCompact ? 22 : 0)
                 }
                 if showProgress, !card["progress"].string.isEmpty {
                     Text(card["progress"].string).font(TypeScale.footnote).foregroundStyle(Palette.textSecondary).lineLimit(1)
@@ -1077,10 +1150,10 @@ struct BoardSlimCard: View {
                         .lineLimit(2)
                 }
             }
-            .padding(Space.md)
+            .padding(isCompact ? 8 : Space.md)
             Spacer(minLength: 0)
         }
-        .frame(minHeight: 64)
+        .frame(minHeight: isCompact ? 54 : 64)
     }
 
     private func doneCheckBadge(settled: Bool) -> some View {
@@ -1206,6 +1279,7 @@ private struct BoardDoneDropColumn: View {
     let cards: [JSON]
     @Bindable var drag: BoardDragSession
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @State private var showArchiveSheet = false
     private var hovered: Bool { drag.active && (drag.hoverDoneStrip || drag.hoverGroup == .done) }
     var body: some View {
         VStack(spacing: Space.sm) {
@@ -1218,10 +1292,25 @@ private struct BoardDoneDropColumn: View {
                 .fixedSize()
                 .padding(.top, Space.md)
             Spacer()
+            Button {
+                showArchiveSheet = true
+            } label: {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Palette.textSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(Palette.fill, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, Space.md)
+            .accessibilityIdentifier("board-open-archive-sheet")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.accent.opacity(hovered ? 0.14 : 0.04))
         .animation(reduce ? nil : .smooth(duration: 0.18), value: hovered)
+        .sheet(isPresented: $showArchiveSheet) {
+            MatterArchiveSheet()
+        }
         .accessibilityIdentifier("board-done-drop")
     }
 }
@@ -1385,27 +1474,33 @@ final class BoardDragSession {
             }
         }
 
-        let hitGroup: BoardGroup? = (mode == .singleCapsule)
-            ? currentSingleGroup
-            : groupFrames.first(where: { $0.value.contains(point) })?.key
+        let hitGroup: BoardGroup? = {
+            if mode == .singleCapsule { return currentSingleGroup }
+            if let exact = groupFrames.first(where: { $0.value.insetBy(dx: -3, dy: -24).contains(point) })?.key {
+                return exact
+            }
+            return groupFrames.min(by: { abs($0.value.midX - point.x) < abs($1.value.midX - point.x) })?.key
+        }()
 
         guard let grp = hitGroup else {
             updateAutoScroll(speed: 0, group: nil)
             return
         }
 
+        let headerH: CGFloat = (containerWidth > 0 && containerWidth < 560) ? 34 : 44
+        let rowSpacing: CGFloat = (containerWidth > 0 && containerWidth < 560) ? 6 : Space.sm
         let groupChanged = (hoverGroup != grp)
         updateHoverGroup(grp, boardCards: boardCards, reduce: reduce)
         let colCards = mergedCards(for: grp, columns: boardCards)
         let otherIDs = colCards.map(\.id).filter { $0 != ghost.id }
-        let colTop = (groupFrames[grp]?.minY ?? 0) + 44 + Space.sm
+        let colTop = (groupFrames[grp]?.minY ?? 0) + headerH + rowSpacing
         let measuredMinY = otherIDs.compactMap { cardFrames[$0]?.minY }.min() ?? colTop
         var cursorY = min(colTop, measuredMinY)
         var centers: [CGFloat] = []
         for id in otherIDs {
             let h = cardFrames[id]?.height ?? cardSize.height
             centers.append(cursorY + h / 2)
-            cursorY += h + Space.sm
+            cursorY += h + rowSpacing
         }
         let probeY = floatingPosition.y + cardSize.height / 2
         let baseIdx = groupChanged ? (grp == originGroup ? originIndex : otherIDs.count) : insertIndex
@@ -1429,7 +1524,7 @@ final class BoardDragSession {
         }
 
         if let colFrame = groupFrames[grp] {
-            let topEdge = colFrame.minY + 44
+            let topEdge = colFrame.minY + headerH
             let bottomEdge = colFrame.maxY - 72
             if point.y >= topEdge && point.y < topEdge + 64 {
                 let t = min(1, max(0, (topEdge + 64 - point.y) / 64))
@@ -1742,8 +1837,8 @@ private struct BoardCardLongPressGesture: UIGestureRecognizerRepresentable {
 
     func makeUIGestureRecognizer(context: Context) -> BoardLongPressRecognizer {
         let press = BoardLongPressRecognizer()
-        press.minimumPressDuration = 0.30
-        press.allowableMovement = 8
+        press.minimumPressDuration = 0.16
+        press.allowableMovement = 14
         press.cancelsTouchesInView = true
         press.delegate = context.coordinator
         press.onTouchState = { down in
@@ -1754,7 +1849,9 @@ private struct BoardCardLongPressGesture: UIGestureRecognizerRepresentable {
 
     func updateUIGestureRecognizer(_ recognizer: BoardLongPressRecognizer, context: Context) {
         context.coordinator.parent = self
-        recognizer.isEnabled = enabled
+        if !context.coordinator.isDrivingDrag {
+            recognizer.isEnabled = enabled
+        }
         recognizer.onTouchState = { down in
             context.coordinator.parent.onTouchDown(down)
         }
@@ -1765,12 +1862,20 @@ private struct BoardCardLongPressGesture: UIGestureRecognizerRepresentable {
         let vx = context.converter.velocity(in: .named("board"))?.x
         switch recognizer.state {
         case .began:
+            guard !session.active else { return }
+            context.coordinator.isDrivingDrag = true
             onBegin(point)
         case .changed:
+            guard context.coordinator.isDrivingDrag else { return }
             onMove(point, vx)
         case .ended:
+            guard context.coordinator.isDrivingDrag else { return }
+            context.coordinator.isDrivingDrag = false
+            onMove(point, vx)
             onEnd(true)
         case .cancelled, .failed:
+            guard context.coordinator.isDrivingDrag else { return }
+            context.coordinator.isDrivingDrag = false
             onEnd(false)
         default:
             break
@@ -1780,6 +1885,7 @@ private struct BoardCardLongPressGesture: UIGestureRecognizerRepresentable {
     @MainActor
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var parent: BoardCardLongPressGesture
+        var isDrivingDrag = false
         init(parent: BoardCardLongPressGesture) { self.parent = parent }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -1795,17 +1901,19 @@ private struct BoardCardLongPressGesture: UIGestureRecognizerRepresentable {
 private struct BoardCardSwipePanModifier: ViewModifier {
     let enabled: Bool
     let session: BoardDragSession
-    let onChanged: (CGFloat, CGPoint) -> Void
-    let onEnded: (CGFloat) -> Void
+    let onBegin: (CGPoint) -> Void
+    let onMove: (CGPoint, CGFloat?) -> Void
+    let onEnd: (Bool) -> Void
 
-    // 始终挂着、只切 isEnabled：if/else 会换视图身份，长按起拖那一刻把长按识别器和卡片 @State 一起重建。
+    // 始终挂着、只切 isEnabled：if/else 会换视图身份，起拖那一刻把识别器和卡片 @State 一起重建。
     func body(content: Content) -> some View {
         content.gesture(
             BoardCardPanGesture(
                 enabled: enabled,
                 session: session,
-                onChanged: onChanged,
-                onEnded: onEnded
+                onBegin: onBegin,
+                onMove: onMove,
+                onEnd: onEnd
             )
         )
     }
@@ -1814,8 +1922,9 @@ private struct BoardCardSwipePanModifier: ViewModifier {
 private struct BoardCardPanGesture: UIGestureRecognizerRepresentable {
     let enabled: Bool
     let session: BoardDragSession
-    let onChanged: (CGFloat, CGPoint) -> Void
-    let onEnded: (CGFloat) -> Void
+    let onBegin: (CGPoint) -> Void
+    let onMove: (CGPoint, CGFloat?) -> Void
+    let onEnd: (Bool) -> Void
 
     func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
         Coordinator(parent: self, converter: converter)
@@ -1824,23 +1933,45 @@ private struct BoardCardPanGesture: UIGestureRecognizerRepresentable {
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
         let pan = UIPanGestureRecognizer()
         pan.delegate = context.coordinator
-        pan.cancelsTouchesInView = true  // 横拖认出来后取消卡片点按 / 🔥 开关，松手不会顺带开详情或切焦点
+        pan.cancelsTouchesInView = true  // 横/斜向直接拖拽认出来后立即锁住列表，浮起卡片跨列流转
         return pan
     }
 
     func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
         context.coordinator.parent = self
-        recognizer.isEnabled = enabled
+        if !context.coordinator.isDrivingDrag {
+            recognizer.isEnabled = enabled
+        }
     }
 
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
-        let t = recognizer.translation(in: recognizer.view).x
-        let v = recognizer.velocity(in: recognizer.view)
+        let point = context.converter.location(in: .named("board"))
+        let vx = context.converter.velocity(in: .named("board"))?.x
+        let t = recognizer.translation(in: recognizer.view)
         switch recognizer.state {
-        case .began, .changed:  // .began 当帧就锁列表滚动
-            onChanged(t, v)
-        case .ended, .cancelled, .failed:
-            onEnded(t)
+        case .began:
+            guard !session.active else { return }
+            context.coordinator.isDrivingDrag = true
+            let startPoint = CGPoint(x: point.x - t.x, y: point.y - t.y)
+            onBegin(startPoint)
+            onMove(point, vx)
+        case .changed:
+            if !context.coordinator.isDrivingDrag, !session.active {
+                context.coordinator.isDrivingDrag = true
+                let startPoint = CGPoint(x: point.x - t.x, y: point.y - t.y)
+                onBegin(startPoint)
+            }
+            guard context.coordinator.isDrivingDrag else { return }
+            onMove(point, vx)
+        case .ended:
+            guard context.coordinator.isDrivingDrag else { return }
+            context.coordinator.isDrivingDrag = false
+            onMove(point, vx)
+            onEnd(true)
+        case .cancelled, .failed:
+            guard context.coordinator.isDrivingDrag else { return }
+            context.coordinator.isDrivingDrag = false
+            onEnd(false)
         default:
             break
         }
@@ -1850,6 +1981,7 @@ private struct BoardCardPanGesture: UIGestureRecognizerRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var parent: BoardCardPanGesture
         let converter: CoordinateSpaceConverter
+        var isDrivingDrag = false
         init(parent: BoardCardPanGesture, converter: CoordinateSpaceConverter) {
             self.parent = parent
             self.converter = converter
@@ -1858,15 +1990,15 @@ private struct BoardCardPanGesture: UIGestureRecognizerRepresentable {
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard parent.enabled, !parent.session.active, !parent.session.horizontalSwipeActive else { return false }
             guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
-            // 先看累计位移判方向（慢拖时瞬时速度可能为 0），位移太小再退回看速度。
+            // 横向或斜向直接拖拽卡片即刻起浮层跨列流转，保留纯纵向给本列 ScrollView 滚动。
             let t = pan.translation(in: pan.view)
-            if hypot(t.x, t.y) >= 4 { return abs(t.x) > abs(t.y) * 1.3 }
+            if hypot(t.x, t.y) >= 5 { return abs(t.x) > abs(t.y) * 0.75 }
             let v = pan.velocity(in: pan.view)
-            return abs(v.x) > abs(v.y) * 1.5
+            return hypot(v.x, v.y) >= 40 && abs(v.x) > abs(v.y) * 0.85
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
+            gestureRecognizer.state == .possible
         }
     }
 }
@@ -1992,6 +2124,7 @@ struct NextCardDetailBody: View {
     @Binding var handoffNote: String
     @Binding var busy: Bool
     @Binding var askReason: Bool
+    @State private var activeMicroPayload: MicroSheetPayload? = nil
     private var hasAction: Bool { !item["action"]["type"].string.isEmpty }
 
     var body: some View {
@@ -2039,6 +2172,24 @@ struct NextCardDetailBody: View {
                         .disabled(busy)
                         .accessibilityIdentifier("next-discuss-" + item.id)
                 }
+                Button {
+                    triggerAttachBoardCard(card ?? item, fallbackItem: item, model: model)
+                    dismiss()
+                } label: {
+                    Label("聊这件", systemImage: "bubble.left")
+                }
+                .buttonStyle(.secondaryCompact)
+                .disabled(busy)
+                .accessibilityIdentifier("next-detail-chat-" + item.id)
+            }
+        }
+        .sheet(item: $activeMicroPayload) { payload in
+            MicroSheetView(payload: payload) { _ in
+                Task {
+                    _ = await model.nextAction(item, "done")
+                    await model.refreshBoard()
+                    dismiss()
+                }
             }
         }
     }
@@ -2059,6 +2210,17 @@ struct NextCardDetailBody: View {
 
     private func runAction() {
         guard !busy else { return }
+        let actType = item["action"]["type"].string
+        if actType == "bookkeep" || actType == "calendar" || actType == "reply_mail" {
+            let mtrId = item["matter_id"].string.isEmpty ? item.id : item["matter_id"].string
+            activeMicroPayload = MicroSheetPayload(
+                matterId: mtrId,
+                action: item["action"],
+                title: item["title"].string,
+                why: item["why"].string
+            )
+            return
+        }
         busy = true
         Task {
             if await model.runNextAction(item, open: { openURL($0) }) {
@@ -2085,7 +2247,7 @@ struct NextCardDetailBody: View {
         Task {
             if let id = await model.delegateNext(item) {
                 if id.isEmpty {
-                    handoffNote = "已接进主对话——去 Com 页继续"
+                    handoffNote = "已交由后台处理"
                 } else {
                     withAnimation(ComMotion.reduced(reduce, ComMotion.pop)) { model.presentedCase = id }
                     handoffNote = "已接进航程——打开就能看步骤"
@@ -2097,4 +2259,32 @@ struct NextCardDetailBody: View {
             busy = false
         }
     }
+}
+
+@MainActor
+private func makeBoardAttachedContext(card: JSON, fallbackItem: JSON = .null) -> AttachedContextItem {
+    let item = card["item"].isNull ? fallbackItem : card["item"]
+    let rawID = !card["matter_id"].string.isEmpty
+        ? card["matter_id"].string
+        : (!item["matter_id"].string.isEmpty
+            ? item["matter_id"].string
+            : (!card.id.isEmpty ? card.id : item.id))
+    let rawTitle = !card["title"].string.isEmpty ? card["title"].string : item["title"].string
+    let rawSummary = !item["why"].string.isEmpty
+        ? item["why"].string
+        : (!card["progress"].string.isEmpty ? card["progress"].string : item["summary"].string)
+    let cleanSummary = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+    let summary = cleanSummary.count > 140 ? String(cleanSummary.prefix(139)) + "…" : cleanSummary
+    return AttachedContextItem(id: rawID, title: rawTitle, summary: summary, kind: "next")
+}
+
+@MainActor
+private func triggerAttachBoardCard(_ card: JSON, fallbackItem: JSON = .null, model: AppModel) {
+    let ctx = makeBoardAttachedContext(card: card, fallbackItem: fallbackItem)
+    guard !ctx.title.isEmpty || !ctx.id.isEmpty else { return }
+    Haptics.selection()
+    if model.splitView && model.boardFocus {
+        model.boardFocus = false
+    }
+    model.attachToChat(ctx, switchIfCompact: true)
 }

@@ -12,16 +12,42 @@ import ComCore
 
 /// 简报内容：只用 App 已有的数据拼，不新增后端接口。
 struct ChatBrief: Equatable {
+    struct BriefItem: Identifiable, Equatable {
+        enum Target: Equatable {
+            case waiting
+            case reply(String)
+            case doing
+            case next
+            case work
+            case finance
+            case connectors
+        }
+        let id: String
+        let symbol: String
+        let tag: String
+        let title: String
+        let badge: String
+        let target: Target
+    }
+
     var away: TimeInterval = 0
+    var manual = false
+    var isRefreshing = false
     var replyIDs: [String] = []
     var proactive = 0
+    var latestReplyID: String?
+    var latestReplyPreview = ""
     var finished: [String] = []
     var waiting = 0
     var waitingTip: String?
     var running = 0
+    var nextUrgent = 0
+    var nextTip: String?
     var eventTime = ""
     var eventTitle = ""
-    /// 手动下拉且无新动静时的一行兜底文案。
+    var monthSpendLabel = ""
+    var items: [BriefItem] = []
+    /// 保留字段兼容旧判断；下拉简报现统一展示高密度实时工作台速览。
     var quietFallback = false
 
     var hasNews: Bool { !quietFallback && (!replyIDs.isEmpty || !finished.isEmpty || waiting > 0 || !eventTitle.isEmpty) }
@@ -29,36 +55,218 @@ struct ChatBrief: Equatable {
     static let awayThreshold: TimeInterval = 30 * 60
 
     @MainActor
-    static func build(_ model: AppModel, since: Double, now: Date = Date()) -> ChatBrief {
+    static func build(_ model: AppModel, since: Double, manual: Bool = false, now: Date = Date()) -> ChatBrief {
         var brief = ChatBrief()
+        brief.manual = manual
         let nowTs = now.timeIntervalSince1970
-        brief.away = since > 0 ? nowTs - since : .infinity
+        brief.away = since > 0 ? max(0, nowTs - since) : .infinity
         // 首次（从没记过）只看最近 12 小时，免得把整段历史当「新」。
         let floor = since > 0 ? since : nowTs - 12 * 3600
-        let replies = model.conversation.messages.filter {
-            $0["role"].string == "assistant" && $0["status"].string == "completed" && $0["created_at"].double > floor
+        let allAssistant = model.conversation.messages.filter {
+            $0["role"].string == "assistant" && ($0["status"].string == "completed" || $0["status"].string.isEmpty)
         }
+        let replies = allAssistant.filter { $0["created_at"].double > floor }
         brief.replyIDs = replies.map(\.id)
         brief.proactive = replies.filter { $0["request_id"].string.hasPrefix("task-result:") }.count
+        if let latest = (replies.last ?? allAssistant.last) {
+            brief.latestReplyID = latest.id
+            brief.latestReplyPreview = cleanPreview(latest)
+        }
+
         let cases = model.casesData["items"].array.filter { $0["kind"].string != "turn" }
         brief.finished = cases.filter { $0["state"].string == "done" && $0["updated_at"].double > floor }.map { $0["title"].string }.filter { !$0.isEmpty }
-        brief.running = cases.filter { ["running", "queued"].contains($0["state"].string) }.count
+        let activeCases = cases.filter { ["running", "queued", "dispatching"].contains($0["state"].string) }
+        brief.running = activeCases.count + model.runningTasks.count
         brief.waiting = model.waitingInboxCount
         brief.waitingTip = ChatAttentionHint.topWaitingTitle(model)
-        let soon = model.todayData["events"].array
-            .filter { !$0["all_day"].bool && !$0["informational"].bool && $0["start"].double > nowTs && $0["start"].double < nowTs + 4 * 3600 }
-            .min { $0["start"].double < $1["start"].double }
-        if let soon {
+        brief.nextUrgent = model.nextUrgentCount
+        brief.nextTip = ChatAttentionHint.topNextTitle(model)
+
+        let rawEvents = model.todayData["events"].array.isEmpty
+            ? (model.datasets["/personal/today"]?["events"].array ?? [])
+            : model.todayData["events"].array
+        let upcomingToday = rawEvents
+            .filter { !$0["all_day"].bool && !$0["informational"].bool && $0["start"].double > nowTs }
+            .sorted { $0["start"].double < $1["start"].double }
+        if let soon = upcomingToday.first(where: { $0["start"].double < nowTs + 4 * 3600 }) ?? (manual ? upcomingToday.first : nil) {
             brief.eventTime = clockTime(soon["start"].double)
             brief.eventTitle = soon["title"].string
         }
+
+        let money = model.datasets["/personal/finance"]?["currencies"].array.first ?? .null
+        if !money.isNull, money["month_minor"].double > 0 {
+            let month = Calendar.current.component(.month, from: now)
+            let spent = (money["month_minor"].double / 100).formatted(.number.precision(.fractionLength(0)))
+            brief.monthSpendLabel = "\(month)月 ¥\(spent)"
+        }
+
+        // 组装高密度速览条目（最多 4 行，点击直达）
+        var rows: [BriefItem] = []
+
+        // 1. 等你拍板（审批 / 待验收任务 / waiting 汇总）
+        let activeFlow = model.flowItems.filter { !$0.stale }
+        for item in activeFlow.prefix(2) {
+            let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { continue }
+            rows.append(BriefItem(
+                id: "wait-\(item.id)",
+                symbol: item.symbol,
+                tag: "拍板",
+                title: title,
+                badge: item.stamp,
+                target: .waiting
+            ))
+        }
+        if rows.isEmpty, brief.waiting > 0 {
+            let waitItems = model.waitingData["items"].array
+            if let firstWait = waitItems.first, !firstWait["title"].string.isEmpty {
+                rows.append(BriefItem(
+                    id: "wait-api-0",
+                    symbol: "hand.raised.fill",
+                    tag: "等你",
+                    title: firstWait["title"].string,
+                    badge: brief.waiting > 1 ? "共 \(brief.waiting) 件" : "待处理",
+                    target: .waiting
+                ))
+            } else if let tip = brief.waitingTip, !tip.isEmpty {
+                rows.append(BriefItem(
+                    id: "wait-tip",
+                    symbol: "hand.raised.fill",
+                    tag: "等你",
+                    title: tip,
+                    badge: "\(brief.waiting) 件",
+                    target: .waiting
+                ))
+            }
+        }
+
+        // 2. 正在跑的任务 / 航程，或刚做完的交付
+        if let firstTask = model.runningTasks.first, !firstTask["title"].string.isEmpty {
+            rows.append(BriefItem(
+                id: "run-task-\(firstTask.id)",
+                symbol: "bolt.horizontal.circle.fill",
+                tag: "在跑",
+                title: firstTask["title"].string,
+                badge: brief.running > 1 ? "\(brief.running) 项并行" : agentName(firstTask["agent"].string),
+                target: .doing
+            ))
+        } else if let firstCase = activeCases.first, !firstCase["title"].string.isEmpty {
+            rows.append(BriefItem(
+                id: "run-case-\(firstCase.id)",
+                symbol: "location.north.line.fill",
+                tag: "航程",
+                title: firstCase["title"].string,
+                badge: brief.running > 1 ? "\(brief.running) 段在跑" : "进行中",
+                target: .doing
+            ))
+        }
+        if let firstDone = brief.finished.first, rows.count < 4 {
+            rows.append(BriefItem(
+                id: "done-0",
+                symbol: "checkmark.circle.fill",
+                tag: "刚完",
+                title: firstDone,
+                badge: brief.finished.count > 1 ? "等 \(brief.finished.count) 段" : "已完成",
+                target: .doing
+            ))
+        }
+
+        // 3. 今日下一档日程
+        if let nextEv = upcomingToday.first, !nextEv["title"].string.isEmpty, rows.count < 4 {
+            rows.append(BriefItem(
+                id: "event-0",
+                symbol: "calendar",
+                tag: "日程",
+                title: nextEv["title"].string,
+                badge: clockTime(nextEv["start"].double),
+                target: .doing
+            ))
+        }
+
+        // 4. 下一步紧要事项 / 主动建议
+        if rows.count < 4 {
+            if let tip = brief.nextTip, !tip.isEmpty {
+                rows.append(BriefItem(
+                    id: "next-tip",
+                    symbol: "arrow.right.circle.fill",
+                    tag: "下一步",
+                    title: tip,
+                    badge: brief.nextUrgent > 0 ? "\(brief.nextUrgent) 件急" : "待办",
+                    target: .next
+                ))
+            } else if let card = model.agencyCards.first, !card["title"].string.isEmpty {
+                rows.append(BriefItem(
+                    id: "agency-0",
+                    symbol: "sparkles",
+                    tag: "建议",
+                    title: card["title"].string,
+                    badge: "去看看",
+                    target: .next
+                ))
+            }
+        }
+
+        // 5. 最新回复预览（方便一键跳回那条消息）
+        if rows.count < 4, let replyID = brief.latestReplyID, !brief.latestReplyPreview.isEmpty {
+            rows.append(BriefItem(
+                id: "reply-latest",
+                symbol: "bubble.left.fill",
+                tag: brief.replyIDs.isEmpty ? "上条" : "新回",
+                title: brief.latestReplyPreview,
+                badge: brief.replyIDs.isEmpty ? "跳去读" : "\(brief.replyIDs.count) 条",
+                target: .reply(replyID)
+            ))
+        }
+
+        // 6. 信源告警或月度账本兜底，保证拉开卡片永远信息饱满
+        if rows.count < 4, let broken = model.brokenSources.first {
+            let name = sourceName(broken["name"].string)
+            rows.append(BriefItem(
+                id: "broken-0",
+                symbol: "exclamationmark.triangle.fill",
+                tag: "信源",
+                title: "\(name)连接中断，点此重新授权",
+                badge: "待修复",
+                target: .connectors
+            ))
+        }
+        if rows.count < 3, !brief.monthSpendLabel.isEmpty {
+            let topCat = money["categories"].array.first
+            let catDesc = topCat != nil && !topCat!["name"].string.isEmpty
+                ? "最大头：\(topCat!["name"].string)"
+                : "点此核对近期收支明细"
+            rows.append(BriefItem(
+                id: "finance-0",
+                symbol: "creditcard.fill",
+                tag: "账本",
+                title: catDesc,
+                badge: brief.monthSpendLabel,
+                target: .finance
+            ))
+        }
+
+        brief.items = Array(rows.prefix(4))
         return brief
+    }
+
+    private static func cleanPreview(_ msg: JSON) -> String {
+        let raw = [msg["text"].string, msg["content"].string, msg["summary"].string]
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? ""
+        let oneLine = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "#", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if oneLine.count <= 34 { return oneLine }
+        return String(oneLine.prefix(33)) + "…"
     }
 
     var awayLabel: String {
         if away == .infinity { return "有一阵" }
         let minutes = Int(away / 60)
-        if minutes < 60 { return "\(max(1, minutes)) 分钟" }
+        if minutes < 1 { return "刚刚" }
+        if minutes < 60 { return "\(minutes) 分钟" }
         let hours = minutes / 60
         if hours < 24 { return "\(hours) 小时" }
         return "\(hours / 24) 天"
@@ -81,7 +289,7 @@ struct ChatBriefOverlay: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     @AppStorage("chat.brief.seenAt") private var seenAt: Double = 0
     @State private var docked = false
-    @State private var cardHeight: CGFloat = 180
+    @State private var cardHeight: CGFloat = 220
     @State private var dragStart: CGFloat?
     /// 手势被系统取消（手指拖出把手范围、来电等）时不会走 onEnded；靠它复位后照常结算开合。
     @GestureState private var dragging = false
@@ -102,7 +310,7 @@ struct ChatBriefOverlay: View {
                 .allowsHitTesting(expanded)
                 .onTapGesture { collapse() }
                 .accessibilityHidden(true)
-            // 把手下面一段渐进虚化 + 压暗（参考：贴着胶囊的两三行糊、暗，往下 120pt 就清楚了），跟着卡底边走。
+            // 卡底柔和暗影过渡（不用 ultraThinMaterial 高斯模糊层，避免竖屏下拉时对下方聊天产生模糊残影）。
             if p > 0.001 && !reduce { haze }
 
             if p > 0.001 { card }
@@ -110,20 +318,20 @@ struct ChatBriefOverlay: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .allowsHitTesting(expanded || docked)
-        .onAppear { evaluate(after: .milliseconds(450)) }
+        .onAppear { evaluate(after: .milliseconds(150)) }
         .onChange(of: model.active) { _, active in
-            if active { evaluate(after: .milliseconds(700)) } else { markSeen(); reset() }
+            if active { evaluate(after: .milliseconds(250)) } else { markSeen(); reset() }
         }
         .onChange(of: model.tab) { old, new in
             // 双栏时左栏固定是主聊天，右栏换页不算离开。
             if model.splitView { return }
-            if new == .chat { evaluate(after: .milliseconds(350)) }
+            if new == .chat { evaluate(after: .milliseconds(150)) }
             else if old == .chat { markSeen(); reset() }
         }
         .onChange(of: model.splitView) { _, _ in
             if !model.isChatBriefVisible { markSeen(); reset() }
             else if model.isUITesting && ProcessInfo.processInfo.arguments.contains("--ui-chat-brief") {
-                evaluate(after: .milliseconds(250))
+                evaluate(after: .milliseconds(150))
             }
         }
         .onChange(of: model.boardFocus) { _, _ in
@@ -131,15 +339,30 @@ struct ChatBriefOverlay: View {
         }
         .onChange(of: model.lastSubmittedID) { _, _ in if expanded || docked { collapse(dockAfter: false) } }
         .onChange(of: model.draft.isEmpty) { _, empty in if !empty && expanded { collapse() } }
+        .onChange(of: model.waitingInboxCount) { _, _ in
+            if expanded || p > 0.01 { model.rebuildChatBrief(manual: brief.manual) }
+        }
+        .onChange(of: model.conversation.messages.count) { _, _ in
+            if expanded || p > 0.01 { model.rebuildChatBrief(manual: brief.manual) }
+        }
+        .onChange(of: model.flowItems.count) { _, _ in
+            if expanded || p > 0.01 { model.rebuildChatBrief(manual: brief.manual) }
+        }
+        .onChange(of: model.nextUrgentCount) { _, _ in
+            if expanded || p > 0.01 { model.rebuildChatBrief(manual: brief.manual) }
+        }
         .onChange(of: dragging) { _, now in
-            // 正常松手 onEnded 已把 dragStart 清掉；还留着说明手势被取消，按当前位置结算。
-            guard !now, let start = dragStart else { return }
-            dragStart = nil
-            let threshold: CGFloat = start >= 0.5 ? 0.65 : 0.35
-            DispatchQueue.main.async { model.briefProgress < threshold ? collapse() : expand() }
+            // SwiftUI 的 @GestureState 复位早于 .onEnded；延迟 50ms 仅在系统真正打断手势时兜底结算。
+            guard !now else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                guard !dragging, let start = dragStart else { return }
+                dragStart = nil
+                let delta = (model.briefProgress - start) * dragDivisor
+                model.settleBriefFromHandle(start: start, translation: delta, predictedEnd: delta)
+            }
         }
         .onChange(of: model.briefProgress) { _, progress in
-            if progress > 0 { evalTask?.cancel() }
+            if progress > 0, !expanded { evalTask?.cancel() }
         }
         .onChange(of: model.briefExpanded) { _, open in
             if open {
@@ -150,7 +373,7 @@ struct ChatBriefOverlay: View {
                 startDock(model.briefDockAfterClose)
             }
         }
-        .onChange(of: cardHeight) { _, h in if h > 40 { model.briefDragHeight = h } }
+        .onChange(of: cardHeight) { _, h in if h > 50 { model.briefDragHeight = h } }
         .onDisappear {
             evalTask?.cancel()
             dockTask?.cancel()
@@ -168,41 +391,54 @@ struct ChatBriefOverlay: View {
     // MARK: 卡片
 
     private var haze: some View {
-        let band: CGFloat = 150
-        return Rectangle().fill(.ultraThinMaterial)
-            .overlay(Palette.background.opacity(0.55))
-            .mask(LinearGradient(colors: [.black, .black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
-            .frame(height: band)
-            .offset(y: max(0, visibleHeight - 24))
-            .opacity(Double(shown))
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        let band: CGFloat = 56
+        return LinearGradient(
+            colors: [Palette.background.opacity(0.68), Palette.background.opacity(0)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: band)
+        .offset(y: max(0, visibleHeight - 12))
+        .opacity(Double(shown))
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private var card: some View {
         let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
         let h = visibleHeight
-        // 收到最后 140→90pt 才整体模糊淡出；之前字不动、不变淡，只被底边一行行吃掉。
-        let fade = min(1, max(0, (h - 90) / 50))
+        // 用归一化进度 p 控制淡入/收起，且展开态或下拉 >= 45% 时严禁任何高斯模糊。
+        let fade: CGFloat = (expanded || p >= 0.45) ? 1.0 : min(1, max(0, (p - 0.08) / 0.37))
+        let blurRadius: CGFloat = (reduce || expanded || p >= 0.45) ? 0 : 5 * (1 - fade)
+        let softEdge: CGFloat = (expanded || p >= 0.96) ? 0 : min(16, max(0, h))
         return content
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if $0 > 40 { cardHeight = $0 } }
-            // 底边 18pt 柔边：碰到底边的那一行半截糊掉，上面几行保持清楚。
+            // 关键：先固定垂直理想尺寸再测高，防止下拉初段小 frame(height: h) 压扁 VStack 导致 cardHeight 锁死在 ~95pt。
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { newHeight in
+                if newHeight > 50 {
+                    cardHeight = newHeight
+                    model.briefDragHeight = newHeight
+                }
+            }
             .mask(alignment: .top) {
                 VStack(spacing: 0) {
-                    Rectangle().frame(height: max(0, h - 18))
-                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: 18)
+                    Rectangle().frame(height: max(0, h - softEdge))
+                    if softEdge > 0 {
+                        LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                            .frame(height: softEdge)
+                    }
                     Spacer(minLength: 0)
                 }
             }
-            .blur(radius: reduce ? 0 : 10 * (1 - fade))
+            .blur(radius: blurRadius)
             .opacity(Double(fade))
             .frame(height: max(0, h), alignment: .top)
             .frame(maxWidth: .infinity, alignment: .top)
             .clipShape(shape)
             .background(Palette.accent, in: shape)
             .shadow(color: .black.opacity(0.22 * Double(shown)), radius: 18, y: 10)
-            // 收到最后 12% 时整卡淡掉，像被顶栏吸回去。
-            .opacity(Double(min(1, p / 0.12)))
+            // 收到最后 10% 时整卡淡掉，像被顶栏吸回去。
+            .opacity(Double(min(1, p / 0.10)))
             .padding(.horizontal, Space.sm)
             .contentShape(shape)
             .gesture(drag)
@@ -212,36 +448,129 @@ struct ChatBriefOverlay: View {
     }
 
     private var content: some View {
-        let lines = sentence
-        return VStack(alignment: .leading, spacing: Space.md) {
-            lines
-                .font(.system(size: 20, weight: .semibold))
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("chat-brief-text")
-            if !brief.quietFallback {
-                BriefDots().stroke(Palette.onAccent.opacity(0.22), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [0.1, 4]))
-                    .frame(height: 1.5)
-                meta
+        VStack(alignment: .leading, spacing: Space.sm + 2) {
+            HStack(alignment: .top, spacing: Space.sm) {
+                sentence
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("chat-brief-text")
+                refreshButton
             }
+            if !brief.items.isEmpty {
+                VStack(spacing: 5) {
+                    ForEach(brief.items) { item in
+                        briefRow(item)
+                    }
+                }
+            }
+            BriefDots().stroke(Palette.onAccent.opacity(0.22), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [0.1, 4]))
+                .frame(height: 1.5)
+            meta
         }
-        .padding(.horizontal, Space.lg + 2)
-        .padding(.top, Space.md + 2)
-        .padding(.bottom, Space.md + 4)
+        .padding(.horizontal, Space.lg)
+        .padding(.top, Space.md)
+        .padding(.bottom, Space.md + 2)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var refreshButton: some View {
+        Button {
+            Haptics.selection()
+            model.rebuildChatBrief(manual: true)
+            model.triggerBriefRefresh()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Palette.onAccent.opacity(brief.isRefreshing ? 0.9 : 0.65))
+                .rotationEffect(.degrees(brief.isRefreshing ? 360 : 0))
+                .animation(
+                    brief.isRefreshing && !reduce
+                        ? .linear(duration: 0.8).repeatForever(autoreverses: false)
+                        : .default,
+                    value: brief.isRefreshing
+                )
+                .frame(width: 26, height: 26)
+                .background(Palette.onAccent.opacity(0.08), in: .circle)
+                .contentShape(.circle)
+        }
+        .buttonStyle(SoftPressStyle(scale: 0.92))
+        .accessibilityLabel(brief.isRefreshing ? "正在刷新简报" : "刷新简报")
+        .accessibilityIdentifier("chat-brief-refresh")
+    }
+
+    private func briefRow(_ item: ChatBrief.BriefItem) -> some View {
+        Button {
+            Haptics.selection()
+            collapse(dockAfter: false)
+            navigate(item.target)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: item.symbol)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Palette.onAccent)
+                    .frame(width: 14)
+                Text(item.tag)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Palette.onAccent)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Palette.onAccent.opacity(0.12), in: .capsule)
+                Text(item.title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Palette.onAccent)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !item.badge.isEmpty {
+                    Text(item.badge)
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(Palette.onAccent.opacity(0.68))
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Palette.onAccent.opacity(0.45))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Palette.onAccent.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(SoftPressStyle(scale: 0.97))
+    }
+
+    private func navigate(_ target: ChatBrief.BriefItem.Target) {
+        switch target {
+        case .waiting:
+            model.openWaitingInbox()
+        case .reply(let messageID):
+            model.jumpMessage = messageID
+        case .doing:
+            model.tab = .doing
+        case .next:
+            model.tab = .next
+        case .work:
+            model.tab = .work
+        case .finance:
+            model.openFinance()
+        case .connectors:
+            model.openConnectors()
+        }
     }
 
     /// 一句话：灰的是铺垫，黑粗的是要点，图标夹在字里（参考里的头像 / 日历角标）。
     private var sentence: Text {
-        if brief.quietFallback {
-            return Text("这几个小时没什么新动静").foregroundStyle(Palette.onAccent).fontWeight(.semibold)
-        }
         let ink = Palette.onAccent
-        let soft = Palette.onAccent.opacity(0.5)
+        let soft = Palette.onAccent.opacity(0.55)
         func s(_ t: String) -> Text { Text(t).foregroundStyle(soft) }
         func b(_ t: String) -> Text { Text(t).foregroundStyle(ink).fontWeight(.bold) }
-        func i(_ symbol: String) -> Text { Text(Image(systemName: symbol)).foregroundStyle(ink).font(.system(size: 16, weight: .bold)) }
-        var parts: [Text] = [s("Eddie，你离开了 "), b(brief.awayLabel), s("。")]
+        func i(_ symbol: String) -> Text { Text(Image(systemName: symbol)).foregroundStyle(ink).font(.system(size: 14, weight: .bold)) }
+
+        var parts: [Text] = brief.awayLabel == "刚刚"
+            ? [s("Eddie，"), b("刚刚"), s("看过对话。")]
+            : [s("Eddie，你离开了 "), b(brief.awayLabel), s("。")]
+
         if !brief.replyIDs.isEmpty {
             parts += [s("我回了 "), i("bubble.left.fill"), b(" \(brief.replyIDs.count) 条")]
             parts.append(s(brief.proactive > 0 ? "（\(brief.proactive) 条是我主动说的）。" : "。"))
@@ -256,13 +585,24 @@ struct ChatBriefOverlay: View {
         if !brief.eventTitle.isEmpty {
             parts += [b(brief.eventTime), s(" 有 "), i("calendar"), b(" 「\(clip(brief.eventTitle, 12))」"), s("。")]
         }
+        if !brief.hasNews {
+            if brief.running > 0 {
+                parts += [s("后台有 "), i("bolt.horizontal.circle.fill"), b(" \(brief.running) 项"), s("正在推进。")]
+            } else if brief.nextUrgent > 0 {
+                parts += [s("「下一步」有 "), i("arrow.right.circle.fill"), b(" \(brief.nextUrgent) 件"), s("要紧事。")]
+            } else {
+                parts += [s("眼下无积压审批，点下方直达各模块。")]
+            }
+        }
         return parts.dropFirst().reduce(parts[0]) { Text("\($0)\($1)") }
     }
 
     /// 参考卡底部那行「3 hours ago · 📎12 · 💬7」：这里每个数都能点，点了先收卡再去。
     private var meta: some View {
-        HStack(spacing: Space.md) {
-            Text(brief.awayLabel + "前").font(TypeScale.footnote).foregroundStyle(Palette.onAccent.opacity(0.55))
+        HStack(spacing: Space.sm) {
+            Text(brief.awayLabel == "刚刚" ? "实时" : brief.awayLabel + "前")
+                .font(TypeScale.footnote)
+                .foregroundStyle(Palette.onAccent.opacity(0.55))
             if !brief.replyIDs.isEmpty {
                 metaChip("bubble.left", "\(brief.replyIDs.count)", id: "chat-brief-replies") {
                     if let first = brief.replyIDs.first { model.jumpMessage = first }
@@ -277,7 +617,17 @@ struct ChatBriefOverlay: View {
             if !brief.eventTitle.isEmpty {
                 metaChip("calendar", brief.eventTime, id: "chat-brief-event") { model.tab = .doing }
             }
+            if brief.nextUrgent > 0 {
+                metaChip("arrow.right.circle", "\(brief.nextUrgent)", id: "chat-brief-next") { model.tab = .next }
+            }
+            if brief.replyIDs.isEmpty && brief.waiting == 0 && brief.running == 0 && brief.eventTitle.isEmpty {
+                metaChip("arrow.right.circle", "下一步", id: "chat-brief-next") { model.tab = .next }
+                metaChip("checklist", "在办", id: "chat-brief-doing") { model.tab = .doing }
+            }
             Spacer(minLength: 0)
+            if !brief.monthSpendLabel.isEmpty {
+                metaChip("creditcard", brief.monthSpendLabel, id: "chat-brief-finance") { model.openFinance() }
+            }
         }
     }
 
@@ -288,12 +638,12 @@ struct ChatBriefOverlay: View {
             action()
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
-                Text(text).font(TypeScale.footnote.weight(.semibold).monospacedDigit())
+                Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
+                Text(text).font(TypeScale.footnote.weight(.semibold).monospacedDigit()).lineLimit(1)
             }
             .foregroundStyle(Palette.onAccent)
-            .padding(.horizontal, Space.sm).frame(height: 28)
-            .background(Palette.onAccent.opacity(0.08), in: .capsule)
+            .padding(.horizontal, Space.sm).frame(height: 26)
+            .background(Palette.onAccent.opacity(0.09), in: .capsule)
             .contentShape(.capsule)
         }
         .buttonStyle(SoftPressStyle(scale: 0.94))
@@ -339,7 +689,7 @@ struct ChatBriefOverlay: View {
 
     // MARK: 手势：跟手 + 橡皮筋，松手按落点和速度
 
-    private var dragDivisor: CGFloat { max(120, cardHeight) }
+    private var dragDivisor: CGFloat { model.briefPullDistance }
 
     private var drag: some Gesture {
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
@@ -353,15 +703,13 @@ struct ChatBriefOverlay: View {
             .onEnded { value in
                 guard let start = dragStart else { return }
                 dragStart = nil
-                DispatchQueue.main.async {
-                    model.settleBriefFromHandle(
-                        start: start,
-                        translation: value.translation.height,
-                        predictedEnd: value.predictedEndTranslation.height
-                    )
-                    if !model.briefExpanded && docked {
-                        startDock(true)
-                    }
+                model.settleBriefFromHandle(
+                    start: start,
+                    translation: value.translation.height,
+                    predictedEnd: value.predictedEndTranslation.height
+                )
+                if !model.briefExpanded && docked {
+                    startDock(true)
                 }
             }
     }
@@ -369,6 +717,7 @@ struct ChatBriefOverlay: View {
     // MARK: 状态
 
     private func evaluate(after delay: Duration) {
+        guard !expanded else { return }
         evalTask?.cancel()
         evalTask = Task { @MainActor in
             try? await Task.sleep(for: delay)
@@ -381,7 +730,7 @@ struct ChatBriefOverlay: View {
                   dragStart == nil else { return }
             let forced = model.isUITesting && ProcessInfo.processInfo.arguments.contains("--ui-chat-brief")
             let since = forced ? Date().timeIntervalSince1970 - 3 * 3600 : seenAt
-            let next = ChatBrief.build(model, since: since)
+            let next = ChatBrief.build(model, since: since, manual: forced)
             guard forced || (next.hasNews && next.away >= ChatBrief.awayThreshold), !model.conversation.messages.isEmpty || forced else { return }
             guard !Task.isCancelled, !expanded, model.briefProgress == 0, !dragging, dragStart == nil else { return }
             model.chatBrief = next
@@ -389,9 +738,11 @@ struct ChatBriefOverlay: View {
             #if DEBUG
             // 截图验收用：展开 2.5s 后自动收起，看停靠态。
             if forced && ProcessInfo.processInfo.arguments.contains("--ui-chat-brief-collapse") {
-                try? await Task.sleep(for: .milliseconds(2500))
-                guard !Task.isCancelled else { return }
-                collapse()
+                evalTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(2500))
+                    guard !Task.isCancelled, expanded else { return }
+                    collapse()
+                }
             }
             #endif
         }
@@ -416,6 +767,7 @@ struct ChatBriefOverlay: View {
     }
 
     private func collapse(dockAfter: Bool = true) {
+        evalTask?.cancel()
         markSeen()
         startDock(dockAfter)
         model.closeBrief(dockAfter: dockAfter)

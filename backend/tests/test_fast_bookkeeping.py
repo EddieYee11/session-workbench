@@ -119,10 +119,17 @@ def test_explicit_entry_settles_without_hermes(tmp_path, monkeypatch):
 
 
 def test_fuzzy_entry_falls_through_to_hermes_without_touching_the_ledger(tmp_path, monkeypatch):
-    row, reply, calls = _run(tmp_path, '天气不错啊', monkeypatch)
-    assert not calls
-    # 落到 Hermes 客户端的表现：本机没有 hermes key。
-    assert row['status'] == 'failed' and row['error'] == 'hermes_key_missing'
+    for i, text in enumerate((
+        '天气不错啊',
+        '验收测试二：明早9点提醒我「测试提醒2」，你先准备好，我确认了再加。',
+    )):
+        case_dir = tmp_path / f'case-{i}'
+        case_dir.mkdir(exist_ok=True)
+        row, reply, calls = _run(case_dir, text, monkeypatch)
+        assert not calls
+        assert '记这笔账吗' not in reply
+        # 落到 Hermes 客户端的表现：本机没有 hermes key。
+        assert row['status'] == 'failed' and row['error'] == 'hermes_key_missing'
 
 
 def test_unverified_write_is_reported_and_never_replayed(tmp_path, monkeypatch):

@@ -337,7 +337,7 @@ class Today:
         allowed = [(self.vault / '任务' / '待处理').resolve()] if pending_only else [(self.vault / r).resolve() for r in TASK_ROOTS]
         path = (self.vault / rel).resolve()
         if path.suffix != '.md' or path.stem.startswith(('00-', 'zz')) or path.parent not in allowed:
-            raise ValueError('只能改行动台「待处理」里的待办' if pending_only else '待办路径无效')
+            raise ValueError('只能改行动台「待处理」里的待办' if pending_only else '只能改行动台「待处理」等任务目录里的待办')
         return path
 
     def _iter_task_files(self):
@@ -393,13 +393,14 @@ class Today:
             if tmp.exists():
                 tmp.unlink()
 
-    def todo_done(self, rel, *, from_board=False):
+    def todo_done(self, rel, *, from_board=False, allow_all_tasks=False):
         """打勾：`状态` 改成 已完成、写 `完成时间: YYYY-MM-DD`，其余一字不动。
         返回 undo：两行原样（没有这一行就是 None），撤销时照它恢复。已经是已完成就什么都不改（幂等）。"""
         with self._lock:
-            path = self._task_file(rel) if from_board else self._pending_file(rel)
+            allowed = from_board or allow_all_tasks
+            path = self._task_file(rel) if allowed else self._pending_file(rel)
             if not path.is_file():
-                raise ValueError('这条待办已经不在待处理里了，请刷新' if not from_board else '找不到这条待办')
+                raise ValueError('找不到这条待办' if allowed else '这条待办已经不在待处理里了，请刷新')
             stamp = path.stat().st_mtime_ns
             lines, end = _head(path.read_bytes().decode('utf-8'))
             state, when = _field(lines, end, '状态'), _field(lines, end, '完成时间')
@@ -456,7 +457,7 @@ class Today:
             new_stamp = path.stat().st_mtime_ns
             return {'path': str(path.relative_to(self.vault)), 'changed': True, 'rev': str(new_stamp), 'completed_at': day if state == '已完成' else ''}
 
-    def todo_undo(self, rel, undo):
+    def todo_undo(self, rel, undo, *, from_board=False, allow_all_tasks=False):
         """撤销打勾：两行精确恢复成打勾前的原文，原来没有的就删掉。
         auto-move 插件可能已经把文件挪进 `任务/已完成/`（同名），那就在那里恢复，插件会再按状态挪回来。"""
         if not isinstance(undo, dict) or set(undo) != set(DONE_FIELDS):
@@ -467,7 +468,8 @@ class Today:
                                      or not re.match(r'^' + re.escape(key) + r'\s*:', line)):
                 raise ValueError('撤销信息无效')
         with self._lock:
-            path = self._pending_file(rel)
+            allowed = from_board or allow_all_tasks
+            path = self._task_file(rel) if allowed else self._pending_file(rel)
             if not path.is_file():
                 moved = (self.vault / '任务' / '已完成' / path.name).resolve()
                 if moved.parent != (self.vault / '任务' / '已完成').resolve() or not moved.is_file():
@@ -500,15 +502,16 @@ class Today:
             self._write(path, ''.join(out), stamp)
             return {'status': 'completed', 'path': relative, 'changed': True}
 
-    def todo_postpone(self, rel, day=None):
+    def todo_postpone(self, rel, day=None, *, from_board=False, allow_all_tasks=False):
         """改期：只把 `计划结束` 改到 day（默认明天），其余一字不动；返回原行，撤销时照原样写回。"""
         target = _day(day) if day else (datetime.fromtimestamp(self.clock(), TZ) + timedelta(days=1)).date()
         if not target:
             raise ValueError('日期无效')
         with self._lock:
-            path = self._pending_file(rel)
+            allowed = from_board or allow_all_tasks
+            path = self._task_file(rel) if allowed else self._pending_file(rel)
             if not path.is_file():
-                raise ValueError('这条待办已经不在待处理里了，请刷新')
+                raise ValueError('找不到这条待办' if allowed else '这条待办已经不在待处理里了，请刷新')
             stamp = path.stat().st_mtime_ns
             lines, end = _head(path.read_bytes().decode('utf-8'))
             index = _field(lines, end, '计划结束')

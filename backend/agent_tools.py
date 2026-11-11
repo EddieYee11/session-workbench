@@ -1,4 +1,5 @@
 """Single model-facing service for Pi HTTP extension and Hermes MCP aliases."""
+from __future__ import annotations
 
 import hashlib
 import json
@@ -11,7 +12,13 @@ from pathlib import Path
 
 from policy import action_is_readonly, assignment, bookkeeping_details, deletion_risk, recoverable_remove, source
 from activity import detail as effect_detail, summarize
-from task_tools import authorized_assignment, record_constraint
+from task_tools import (
+    authorized_assignment,
+    build_staging_review_widget,
+    emit_staging_bubble,
+    record_constraint,
+    stage_outbound_action,
+)
 
 REMOVAL = re.compile(r"删|去掉|移除|撤销|撤回|取消|作废|清掉|清除|不要了|重记|重新记|改成|换成|改为|改到|挪到")
 
@@ -88,8 +95,79 @@ class AgentTools:
     async def call(self, name, args, context):
         if name not in ("loaded", "tool_result", "authorize_tool"):
             self.check_glasses_scope(name, args, context)
-        aliases = {"create_task": "task_submit", "get_task_status": "task_status", "cancel_task": "task_cancel", "update_task_constraints": "task_send"}
+        aliases = {
+            "SendMessage": "send_message",
+            "create_task": "task_submit",
+            "get_task_status": "task_status",
+            "cancel_task": "task_cancel",
+            "update_task_constraints": "task_send",
+        }
         name = aliases.get(name, name)
+        if name not in ("loaded", "tool_result", "authorize_tool", "send_message"):
+            staged = stage_outbound_action(
+                self.path.parent,
+                tool=name,
+                args=args if isinstance(args, dict) else {},
+                context=context if isinstance(context, dict) else {},
+                conversation=self.conversation,
+            )
+            if staged is not None:
+                return staged
+        if name == "send_message":
+            if self.conversation.artifact_register_fn is None and getattr(self, "artifact_access", None):
+                self.conversation.artifact_register_fn = self.artifact_access.register
+            if context.get("origin_message_id") and context.get("origin_request_id"):
+                row = source(self.conversation, context)
+                mid, req_id = row["id"], row["request_id"]
+            else:
+                with self.conversation.db() as db:
+                    active_rows = db.execute(
+                        "SELECT id, request_id, supplement_to_message_id FROM messages "
+                        "WHERE role='user' AND status IN ('sending','running') ORDER BY created_at ASC"
+                    ).fetchall()
+                ids = {r["id"] for r in active_rows}
+                roots = [
+                    r for r in active_rows
+                    if not r["supplement_to_message_id"] or r["supplement_to_message_id"] not in ids
+                ]
+                if len(roots) != 1:
+                    raise ValueError("SendMessage 缺少唯一有效的本轮用户消息来源")
+                mid, req_id = roots[0]["id"], roots[0]["request_id"]
+            if (
+                isinstance(args, dict)
+                and str(args.get("type") or "").strip() == "widget"
+                and isinstance(args.get("widget"), dict)
+                and str(args["widget"].get("kind") or "").strip().lower() == "staging_review"
+            ):
+                raw_w = args["widget"]
+                widget = build_staging_review_widget(
+                    action_type=str(raw_w.get("action_type") or "content_publish"),
+                    title=str(raw_w.get("title") or ""),
+                    summary=str(raw_w.get("summary") or ""),
+                    target_url=str(raw_w.get("target_url") or ""),
+                    staging_id=str(raw_w.get("staging_id") or ""),
+                    confirm_label=str(raw_w.get("confirm_label") or "打开页面我去点"),
+                    cancel_label=str(raw_w.get("cancel_label") or "打回重改"),
+                )
+                bubble_id = emit_staging_bubble(
+                    self.conversation,
+                    widget=widget,
+                    content=str(args.get("content") or ""),
+                    parent_message_id=mid,
+                )
+                return {
+                    "ok": True,
+                    "message_id": bubble_id,
+                    "bubble_type": "widget",
+                    "turn_state": "awaiting_user",
+                    "widget": widget,
+                }
+            return self.conversation.emit_bubble(
+                mid,
+                args,
+                session_id=str(context.get("origin_session_id") or ""),
+                request_id=req_id,
+            )
         if name == "business_call":
             from business_tools import BusinessTools
 
@@ -189,11 +267,108 @@ class AgentTools:
             return {"items": tasks}
         if name == "goal_status":
             return {"items": [g for g in self.goals.list() if not args.get("goal_id") or g["id"] == args["goal_id"]], "scheduler_enabled": self.goals.enabled()}
+        if name == "trigger_manage":
+            store = getattr(self, "scheduled_triggers", None)
+            if store is None:
+                from scheduled_triggers import ScheduledTriggerStore
+
+                self.scheduled_triggers = store = ScheduledTriggerStore(self.path.parent, conversation=self.conversation)
+            act = str((args or {}).get("action") or "").strip()
+            if act == "list":
+                return await store.dispatch_action("list", args)
+            if context.get("origin_message_id") or context.get("origin_request_id"):
+                row = source(self.conversation, context)
+                mid, req_id = row["id"], row["request_id"]
+            else:
+                with self.conversation.db() as db:
+                    active_rows = db.execute(
+                        "SELECT id, request_id, supplement_to_message_id FROM messages "
+                        "WHERE role='user' AND status IN ('sending','running') ORDER BY created_at ASC"
+                    ).fetchall()
+                ids = {r["id"] for r in active_rows}
+                roots = [
+                    r for r in active_rows
+                    if not r["supplement_to_message_id"] or r["supplement_to_message_id"] not in ids
+                ]
+                if len(roots) != 1:
+                    raise ValueError("trigger_manage 写操作缺少唯一有效的本轮用户消息来源")
+                mid, req_id = roots[0]["id"], roots[0]["request_id"]
+            try:
+                result = await store.dispatch_action(act, args)
+            except KeyError as exc:
+                raise ValueError(str(exc.args[0] if exc.args else exc)) from exc
+            trg = result.get("trigger") if isinstance(result.get("trigger"), dict) else {}
+            trg_id = str(trg.get("id") or result.get("trigger_id") or args.get("trigger_id") or "")
+            trg_name = str(trg.get("name") or result.get("name") or args.get("name") or trg_id)
+            act_labels = {
+                "create": "新建触发器",
+                "update": "修改触发器",
+                "pause": "暂停触发器",
+                "resume": "启用触发器",
+                "delete": "删除触发器",
+                "run_now": "立即触发",
+            }
+            summary_text = f"{act_labels.get(act, '管理触发器')}「{trg_name}」"[:60]
+            detail_payload = {
+                k: str(v)[:120]
+                for k, v in {
+                    "action": act,
+                    "trigger_id": trg_id,
+                    "name": trg_name,
+                    "cron_expr": trg.get("cron_expr") or args.get("cron_expr") or "",
+                    "template": trg.get("template") or args.get("template") or "",
+                    "channel": trg.get("channel") or args.get("channel") or "",
+                }.items()
+                if v
+            }
+            effect_key = hashlib.sha256(
+                f"trigger_manage:{req_id}:{act}:{trg_id}:{time.time_ns()}".encode("utf-8")
+            ).hexdigest()
+            with sqlite3.connect(self.path) as db:
+                db.execute(
+                    "INSERT INTO effects VALUES (?,?,?,?)",
+                    (
+                        effect_key,
+                        args.get("tool_call_id"),
+                        "completed",
+                        json.dumps(
+                            {
+                                **context,
+                                "origin_message_id": mid,
+                                "origin_request_id": req_id,
+                                "tool": "trigger_manage",
+                                "summary": summary_text,
+                                "detail": detail_payload,
+                                "at": time.time(),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+            return result
         if name == "tool_result":
             return self.tool_result(args, context)
         if name == "authorize_tool":
             return self.authorize_tool(args, context)
         row = source(self.conversation, context)
+        if name == "pending_action_register":
+            if not str(row.get("raw_text") or row.get("text") or "").strip():
+                raise ValueError("需要真实用户消息才可登记待确认动作")
+            from pending_actions import PendingActions
+
+            pa = getattr(self, "pending_actions", None) or PendingActions(self.path.parent)
+            return pa.register(
+                args["description"],
+                args["confirm_word"],
+                args.get("action") or {},
+                ttl_seconds=int(args.get("ttl_seconds", 1800)),
+                context={
+                    **context,
+                    "origin_message_id": row["id"],
+                    "origin_request_id": row["request_id"],
+                    "origin_user_text": row["text"],
+                },
+            )
         if name == "artifact_register":
             artifact = self.artifact_access.register(row["id"], args["path"])
             self.conversation.attach_artifact(row["id"], artifact)
@@ -213,7 +388,7 @@ class AgentTools:
                 raise ValueError("归档对象未关联真实交办，请先定位具体对象")
             return self.archives.archive(args["relative_path"], args["request_id"], row["id"])
         if name == "task_submit":
-            data = {**args, **{k: context.get(k) for k in ("origin_session_id", "origin_message_id", "origin_request_id")}}
+            data = {**{k: v for k, v in args.items() if k != "pending_action_confirmed"}, **{k: context.get(k) for k in ("origin_session_id", "origin_message_id", "origin_request_id")}}
             draft, authorization, request_id = authorized_assignment(self.conversation, self.proposals, data)
             goal_id = args.get("goal_id") or context.get("goal_id")
             if row.get("continuation") and any(
@@ -385,6 +560,15 @@ class AgentTools:
         tool = args["tool"]
         params = args.get("args") or {}
         glasses = self.check_glasses_scope(tool, params, context)
+        staged = stage_outbound_action(
+            self.path.parent,
+            tool=tool,
+            args=params if isinstance(params, dict) else {},
+            context=context if isinstance(context, dict) else {},
+            conversation=self.conversation,
+        )
+        if staged is not None:
+            return staged
         task_id = context.get("task_id")
         task = next((t for t in self.store.list() if t["id"] == task_id), None) if task_id else None
         if task_id:
@@ -403,13 +587,13 @@ class AgentTools:
             with self.conversation.db() as db:
                 voice = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='voice_requests'").fetchone()
                 purpose = db.execute("SELECT purpose FROM voice_requests WHERE request_id=?", (source_request_id,)).fetchone() if voice else None
-            expense = bool(purpose and purpose[0] == "expense")
+            expense = bool((purpose and purpose[0] == "expense") or context.get("pending_action_confirmed"))
         else:
             row = source(self.conversation, context)
             with self.conversation.db() as db:
                 voice = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='voice_requests'").fetchone()
                 purpose = db.execute("SELECT purpose FROM voice_requests WHERE request_id=?", (row["request_id"],)).fetchone() if voice else None
-            expense = bool(purpose and purpose[0] == "expense")
+            expense = bool((purpose and purpose[0] == "expense") or context.get("pending_action_confirmed"))
             bookkeeping_source = row.get("bookkeeping_source") or "\n".join(link["text"] for link in row.get("source_links", [])) or row["raw_text"]
             readonly = action_is_readonly(tool, params)
             from policy import QUOTE, quote_free

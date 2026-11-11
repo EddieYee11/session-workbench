@@ -17,6 +17,8 @@ struct ComTopBar: View {
     @GestureState private var dragging = false
     /// 双栏时左栏的顶栏固定是 Com 主对话，不跟着右栏换页。
     var pinned: SectionTab? = nil
+    /// iPhone Duo 展开竖屏形态：顶栏上移与右上角系统状态栏（时间/Wi-Fi）同行，人偶与搜索按钮下边界跟状态栏下边界齐平。
+    var widePortrait: Bool = false
     private var tab: SectionTab { pinned ?? model.tab }
     /// 她在顶栏里缩小的比例：Duo 外屏只有约 466×678pt，顶栏要把高度让给内容。
     static let restScale: CGFloat = 0.72
@@ -24,7 +26,6 @@ struct ComTopBar: View {
     /// 她靠左，标题跟在她右边，右侧留给这一页的一个动作。
     static func figureX(hasLeadingButton: Bool) -> CGFloat { Space.lg + (hasLeadingButton ? 44 + Space.xs : 0) }
     private var motion: Animation { ComMotion.reduced(reduce, ComMotion.settle) }
-    private var brief: CGFloat { min(1, max(0, model.briefProgress)) }
     /// 标题：工作页是「派给谁」（点开换人 / 会话菜单），其他页是页名。
     private var head: String {
         switch tab {
@@ -34,33 +35,49 @@ struct ComTopBar: View {
         }
     }
     var body: some View {
+        let closing = model.briefExpanded || dragStart != nil
+        let showChannelCapsule = tab == .chat && !closing
+        let statusReserve: CGFloat = widePortrait ? 136 : 0
+        let barTotalHeight: CGFloat = widePortrait ? 54 : Layout.topBar
+        let baseTrailingWidth: CGFloat = (tab == .chat || tab == .doing || closing) ? 44 : 88
+        let trailingButtonsWidth: CGFloat = baseTrailingWidth + (showChannelCapsule ? 128 : 0)
         GeometryReader { geometry in
             let width = geometry.size.width
             let x = Self.figureX(hasLeadingButton: tab == .work)
             let titleLeading = x + Self.figureWidth + Space.sm
-            let titleWidth = max(56, width - titleLeading - Space.lg - 44)
-            ZStack(alignment: .topLeading) {
-                titleBlock
-                    .frame(width: titleWidth, height: Layout.topBar, alignment: .leading)
-                    .overlay { titleTarget }
-                    .padding(.leading, titleLeading)
-                figure()
-                    .scaleEffect(Self.restScale, anchor: .topLeading)
-                    .padding(.leading, x).padding(.top, Self.figureTop)
-                HStack(spacing: 0) {
-                    if tab == .work {
-                        GlassIconButton(symbol: "sidebar.left", label: "历史对话") { model.openWorkSidebar(reduce: reduce) }
-                            .accessibilityIdentifier("work-sidebar")
-                            .transition(reduce ? .opacity : .opacity.combined(with: .scale(scale: 0.7)))
+            let titleWidth = max(56, width - titleLeading - Space.lg - trailingButtonsWidth - statusReserve)
+            ZStack(alignment: .bottomLeading) {
+                ZStack(alignment: .topLeading) {
+                    titleBlock
+                        .frame(width: titleWidth, height: Layout.topBar, alignment: .leading)
+                        .overlay { titleTarget }
+                        .padding(.leading, titleLeading)
+                    figure()
+                        .scaleEffect(Self.restScale, anchor: .topLeading)
+                        .padding(.leading, x)
+                        .padding(.top, widePortrait ? max(2, Layout.topBar - StripFigure.size.height * Self.restScale - 2) : Self.figureTop)
+                    HStack(spacing: 6) {
+                        if tab == .work {
+                            GlassIconButton(symbol: "sidebar.left", label: "历史对话") { model.openWorkSidebar(reduce: reduce) }
+                                .accessibilityIdentifier("work-sidebar")
+                                .transition(reduce ? .opacity : .opacity.combined(with: .scale(scale: 0.7)))
+                        }
+                        Spacer(minLength: 0)
+                        if showChannelCapsule {
+                            ComTopChannelCapsule()
+                                .transition(reduce ? .opacity : .opacity.combined(with: .scale(scale: 0.92)))
+                        }
+                        TopBarTrailing(tab: tab, closing: closing)
                     }
-                    Spacer(minLength: 0)
-                    TopBarTrailing(tab: tab, closing: model.briefExpanded || brief > 0.5)
+                    .padding(.leading, Space.lg)
+                    .padding(.trailing, Space.lg + statusReserve)
+                    .frame(width: width, height: Layout.topBar)
                 }
-                .padding(.horizontal, Space.lg)
                 .frame(width: width, height: Layout.topBar)
             }
+            .frame(width: width, height: barTotalHeight, alignment: .bottom)
         }
-        .frame(height: Layout.topBar)
+        .frame(height: barTotalHeight)
         .background {
             // 实色顶栏：ultraThinMaterial 叠在滚动列表上会每帧重模糊，上滑掉帧。
             Palette.background.opacity(0.94)
@@ -74,10 +91,14 @@ struct ComTopBar: View {
         .contentShape(Rectangle())
         .simultaneousGesture(briefDrag)
         .onChange(of: dragging) { _, now in
-            guard !now, let start = dragStart else { return }
-            dragStart = nil
-            let delta = (model.briefProgress - start) * max(120, model.briefDragHeight)
-            model.settleBriefFromTopBar(start: start, translation: delta, predictedEnd: delta)
+            guard !now else { return }
+            // SwiftUI 的 @GestureState 复位早于 .onEnded；延迟 50ms 仅在系统真正打断手势（未走 onEnded）时兜底结算。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                guard !dragging, let start = dragStart else { return }
+                dragStart = nil
+                let delta = (model.briefProgress - start) * model.briefPullDistance
+                model.settleBriefFromTopBar(start: start, translation: delta, predictedEnd: delta)
+            }
         }
         .animation(motion, value: tab)
     }
@@ -154,35 +175,102 @@ struct ComTopBar: View {
 
     /// 按住她往下拉：简报跟着手指长出来；展开后在顶栏往上推收回。松手按位置和速度决定开合。
     private var briefDrag: some Gesture {
-        DragGesture(minimumDistance: 10, coordinateSpace: .global)
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .updating($dragging) { _, state, _ in state = true }
             .onChanged { value in
                 let dy = value.translation.height
-                if model.briefExpanded {
-                    if dragStart == nil { guard dy < 0 else { return }; dragStart = model.briefProgress }
-                    model.dragBrief(to: (dragStart ?? 1) + dy / max(120, model.briefDragHeight))
-                } else {
-                    if dragStart == nil {
-                        guard dy > 0, dy > abs(value.translation.width) * 0.8 else { return }
-                        dragStart = 0
-                        model.showMenu = false
-                        model.ensureChatVisibleForBrief()
-                        model.prepareManualChatBrief()
-                    }
-                    model.dragBrief(to: (dragStart ?? 0) + dy / max(120, model.briefDragHeight))
+                let divisor = model.briefPullDistance
+                if model.briefExpanded && dragStart == nil {
+                    guard dy < 0 else { return }
+                    dragStart = model.briefProgress
+                } else if !model.briefExpanded && dragStart == nil {
+                    guard dy > 0, dy > abs(value.translation.width) * 0.65 else { return }
+                    dragStart = 0
+                    model.showMenu = false
+                    model.ensureChatVisibleForBrief()
+                    model.prepareManualChatBrief()
                 }
+                guard let start = dragStart else { return }
+                model.dragBrief(to: start + dy / divisor)
             }
             .onEnded { value in
                 guard let start = dragStart else { return }
                 dragStart = nil
-                DispatchQueue.main.async {
-                    model.settleBriefFromTopBar(
-                        start: start,
-                        translation: value.translation.height,
-                        predictedEnd: value.predictedEndTranslation.height
-                    )
-                }
+                model.settleBriefFromTopBar(
+                    start: start,
+                    translation: value.translation.height,
+                    predictedEnd: value.predictedEndTranslation.height
+                )
             }
+    }
+}
+
+/// 主对话顶栏紧凑三频道切换胶囊（日常 | 工作 | 记账）：外屏 ~382pt 窄宽下同样完整显示不截断。
+struct ComTopChannelCapsule: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    @Namespace private var pillSpace
+
+    private struct ChannelItem: Identifiable {
+        let id: String
+        let label: String
+    }
+
+    private static let items: [ChannelItem] = [
+        .init(id: "personal", label: "日常"),
+        .init(id: "work", label: "工作"),
+        .init(id: "bookkeeping", label: "记账"),
+    ]
+
+    private var currentChannel: String {
+        let raw = model.activeChannel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Self.items.contains(where: { $0.id == raw }) ? raw : "personal"
+    }
+
+    var body: some View {
+        let active = currentChannel
+        HStack(spacing: 1) {
+            ForEach(Self.items) { item in
+                let isSelected = active == item.id
+                Button {
+                    guard active != item.id else { return }
+                    Haptics.selection()
+                    withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                        model.switchChannel(item.id)
+                    }
+                } label: {
+                    Text(item.label)
+                        .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? Palette.onAccent : Palette.textSecondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 5)
+                        .background {
+                            if isSelected {
+                                if reduce {
+                                    Capsule().fill(Palette.accent)
+                                } else {
+                                    Capsule().fill(Palette.accent)
+                                        .matchedGeometryEffect(id: "top-channel-pill", in: pillSpace)
+                                }
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("切换到\(item.label)频道")
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                .accessibilityIdentifier("top-channel-\(item.id)")
+            }
+        }
+        .padding(2)
+        .background(Palette.surface.opacity(0.88), in: .capsule)
+        .overlay(Capsule().strokeBorder(Palette.separator, lineWidth: 0.5))
+        .fixedSize(horizontal: true, vertical: false)
+        .animation(ComMotion.reduced(reduce, ComMotion.snap), value: active)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("top-channel-switcher")
     }
 }
 
@@ -197,19 +285,45 @@ struct TopBarTrailing: View {
     private var motion: Animation { ComMotion.reduced(reduce, ComMotion.settle) }
     var body: some View {
         let item = trailingItem(closing: closing)
-        return Button(action: item.action) {
-            // 没有圆底：只留图标，点击区仍是 44pt。
-            Image(systemName: item.symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(Palette.textSecondary)
-                .contentTransition(.symbolEffect(.replace))
-                .opacity(item.disabled ? 0.4 : 1)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+        let showExtraSearch = !closing && tab != .chat && tab != .doing
+        return HStack(spacing: 2) {
+            if showExtraSearch {
+                let opening = model.searchOpening
+                Button {
+                    guard !model.searchOpening else { return }
+                    Haptics.selection()
+                    model.openSearch()
+                } label: {
+                    Image(systemName: opening ? "hourglass" : "magnifyingglass")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(Palette.textSecondary)
+                        .frame(width: 40, height: 40)
+                        .background(Palette.surface.opacity(0.85), in: .circle)
+                        .overlay(Circle().strokeBorder(Palette.separator, lineWidth: 0.5))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(MessagePressStyle())
+                .disabled(opening)
+                .accessibilityLabel(opening ? "正在打开搜索" : "搜索聊天与成果")
+                .accessibilityIdentifier("top-search")
+            }
+            Button(action: item.action) {
+                Image(systemName: item.symbol)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Palette.textSecondary)
+                    .contentTransition(.symbolEffect(.replace))
+                    .opacity(item.disabled ? 0.4 : 1)
+                    .frame(width: 40, height: 40)
+                    .background(Palette.surface.opacity(0.85), in: .circle)
+                    .overlay(Circle().strokeBorder(Palette.separator, lineWidth: 0.5))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(MessagePressStyle())
+            .disabled(item.disabled)
+            .accessibilityLabel(item.label)
+            .accessibilityIdentifier(item.id)
+            .animation(motion, value: item.symbol)
         }
-        .buttonStyle(MessagePressStyle())
-        .disabled(item.disabled)
-        .accessibilityLabel(item.label)
-        .accessibilityIdentifier(item.id)
-        .animation(motion, value: item.symbol)
     }
     private struct BarItem { let symbol: String; let label: String; let id: String; var disabled = false; let action: () -> Void }
     private func trailingItem(closing: Bool) -> BarItem {

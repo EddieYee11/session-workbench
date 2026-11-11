@@ -1,12 +1,37 @@
 """Durable Hermes Runs transport shared by the main chat and Com task workers."""
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
+import os
+import re
 import sqlite3
 import time
 from pathlib import Path
 import httpx
 from conversation import HermesClient
+
+SUPPLEMENT_MARKER_RE = re.compile(r"\[Com supplement ([^\]]+)\]")
+SEND_MESSAGE_TOOL_NAMES = frozenset({"mcp__com_workbench__send_message", "send_message", "SendMessage"})
+
+
+def _is_send_message_tool_event(event: str, payload: dict) -> bool:
+    if event not in ("tool.started", "tool.completed") or not isinstance(payload, dict):
+        return False
+    tool_name = str(payload.get("tool_name") or payload.get("tool") or "").strip()
+    if tool_name in SEND_MESSAGE_TOOL_NAMES or tool_name.endswith("__send_message"):
+        return True
+    if tool_name == "tool_call":
+        args = payload.get("args")
+        calls = args.get("calls") if isinstance(args, dict) else None
+        if isinstance(calls, list):
+            for entry in calls:
+                if isinstance(entry, dict):
+                    inner = str(entry.get("name") or "").strip()
+                    if inner in SEND_MESSAGE_TOOL_NAMES or inner.endswith("__send_message"):
+                        return True
+    return False
 
 
 class HermesRuntime(HermesClient):
@@ -14,6 +39,7 @@ class HermesRuntime(HermesClient):
     session_key = 'hermes_v2_session_id'
     operation_mode = 'full-access'
     has_native_history = True
+    accepts_turn_reminder = True
 
     def __init__(self, state, session_id='com-hermes-main', emit=None, context=None, instructions=None):
         super().__init__(Path(state))
@@ -186,11 +212,13 @@ class HermesRuntime(HermesClient):
             # SSE is a view. Poll the exact admitted run; never submit its input again.
             pass
         while True:
-            await self.reconcile_steering()
             result = await self.request('GET', '/v1/runs/' + self.run_id)
             status = result.get('status')
+            pending_steer = result.get('pending_steer') or []
+            await self.reconcile_steering(pending_steer=pending_steer if status in ('completed', 'failed', 'cancelled', 'interrupted', 'unknown') else None)
             if status in ('completed', 'failed', 'cancelled', 'interrupted', 'unknown'): break
             await asyncio.sleep(1)
+        unconsumed_supplements = self._extract_unconsumed_supplements(result.get('pending_steer') or [])
         output = result.get('output', '')
         if isinstance(output, list): output = '\n'.join(str(item.get('text', item.get('content', ''))) for item in output if isinstance(item, dict))
         output = output if isinstance(output, str) else ''
@@ -202,7 +230,7 @@ class HermesRuntime(HermesClient):
         self.emit({'kind': 'status', 'turn_id': request_id, 'status': 'completed' if status == 'completed' else 'interrupted' if reason == 'aborted' else 'unknown'})
         if status == 'completed':
             yield 'assistant.completed', {'content': output}
-            yield 'run.completed', {'run_id': self.run_id}
+            yield 'run.completed', {'run_id': self.run_id, 'unconsumed_supplements': unconsumed_supplements}
         else:
             # Provider resolution/authentication happens before any model/tool
             # execution. This is a confirmed failure, not an uncertain action.
@@ -225,6 +253,7 @@ class HermesRuntime(HermesClient):
         from context_builder import build
         from context_working_set import parse_input
         from message_router import MessageRouter, use_fast_model
+        from superagent_flags import SuperagentFlags
         started = time.monotonic()
         _,context=parse_input(text)
         request_id=context.get('event_id') or context.get('origin_request_id')
@@ -232,17 +261,46 @@ class HermesRuntime(HermesClient):
         self.turn_history=working.history
         self.turn_instructions=working.instructions
         self.turn_source=working.source
-        route=MessageRouter(self.state).decide(request_id,working.user)
+        flags = SuperagentFlags(self.state)
+        router = MessageRouter(self.state)
+        if flags.fast_classifier_on():
+            route = await router.decide_async(request_id, working.user)
+        else:
+            route = router.decide(request_id, working.user)
         from dataclasses import asdict
         self.turn_route=asdict(route)
         self.turn_fast_model=use_fast_model(route.level,working.user,bool(context.get('attachments')))
         text=working.user
+        send_mode = flags.send_message_on()
+        from direct_tools import attach_turn_reminders, select_direct_tools
+        direct_enabled = os.environ.get('COM_DIRECT_TOOLS_MODE', 'on').strip().lower() != 'off'
+        direct_tools_list = (
+            select_direct_tools(route.level, route.group, working.user, route.prebound_tools)
+            if direct_enabled
+            else []
+        )
+        base_reminder = ''
+        if send_mode and '<system_reminder>' not in text:
+            from send_message import build_turn_reminder
+            base_reminder = build_turn_reminder()
+        text = attach_turn_reminders(
+            text,
+            send_mode=send_mode,
+            base_turn_reminder=base_reminder,
+            tool_names=direct_tools_list,
+        )
         metrics = {'version':3,'at':time.time(),'input_chars':len(text),**working.sizes,
                    'automatic_memory_calls':0,'route':route.level,'tool_group':route.group,'model_tier':'fast' if self.turn_fast_model else 'default',
+                   'send_message_mode':send_mode,'prebound_tools':direct_tools_list,
                    'assembly_ms':round((time.monotonic()-started)*1000,2)}
         try:
             async for event, payload in self.stream(text, request_id, context=context):
-                if event in ('assistant.delta','assistant.completed') and 'first_text_ms' not in metrics:
+                if _is_send_message_tool_event(event, payload):
+                    if 'first_bubble_ms' not in metrics:
+                        metrics['first_bubble_ms'] = round((time.monotonic() - started) * 1000, 2)
+                    if 'first_text_ms' not in metrics:
+                        metrics['first_text_ms'] = metrics['first_bubble_ms']
+                elif not send_mode and event in ('assistant.delta','assistant.completed') and 'first_text_ms' not in metrics:
                     if payload.get('content') or payload.get('text') or payload.get('delta'):
                         metrics['first_text_ms']=round((time.monotonic()-started)*1000,2)
                 yield event, payload
@@ -252,6 +310,8 @@ class HermesRuntime(HermesClient):
             self.turn_source = None
             self.turn_route = None
             self.turn_fast_model = False
+            if 'first_text_ms' not in metrics and 'first_bubble_ms' in metrics:
+                metrics['first_text_ms'] = metrics['first_bubble_ms']
             metrics['elapsed_ms']=round((time.monotonic()-started)*1000,2)
             MessageRouter(self.state).complete(request_id,elapsed_ms=metrics['elapsed_ms'],first_text_ms=metrics.get('first_text_ms'),prompt_chars=metrics['input_chars']+metrics['instructions_chars']+metrics['history_chars'])
             with sqlite3.connect(self.path) as db:
@@ -278,14 +338,33 @@ class HermesRuntime(HermesClient):
         # Queue admission is not proof of model consumption.
         return {'state': 'worker_queued', 'run_id': self.run_id}
 
-    async def reconcile_steering(self):
+    def _extract_unconsumed_supplements(self, pending_steer) -> list[str]:
+        if not isinstance(pending_steer, list):
+            return []
+        found: list[str] = []
+        for entry in pending_steer:
+            raw = entry.get('input', entry.get('text', '')) if isinstance(entry, dict) else str(entry or '')
+            for match in SUPPLEMENT_MARKER_RE.finditer(raw):
+                req_id = match.group(1).strip()
+                if req_id and req_id not in found:
+                    found.append(req_id)
+        if found:
+            with sqlite3.connect(self.path) as db:
+                for req_id in found:
+                    db.execute("UPDATE steering SET state='unconsumed' WHERE request_id=? AND state!='delivered'", (req_id,))
+        return found
+
+    async def reconcile_steering(self, *, pending_steer=None):
+        unconsumed = set(self._extract_unconsumed_supplements(pending_steer or []))
         with sqlite3.connect(self.path) as db:
-            rows=db.execute("SELECT request_id,text FROM steering WHERE run_id=? AND state!='delivered'",(self.run_id,)).fetchall()
+            rows=db.execute("SELECT request_id,text FROM steering WHERE run_id=? AND state NOT IN ('delivered','unconsumed')",(self.run_id,)).fetchall()
         if not rows:return
         try:
             messages=await self.request('GET','/api/sessions/'+self.session_id+'/messages?limit=500&order=latest')
         except Exception:return
         for request_id,text in rows:
+            if request_id in unconsumed:
+                continue
             # Hermes persists consumed steer as a standalone user row after tool results.
             if any(m.get('role')=='user' and text in str(m.get('content','')) for m in messages.get('data',[])):
                 with sqlite3.connect(self.path) as db:db.execute("UPDATE steering SET state='delivered' WHERE request_id=?",(request_id,))
@@ -294,6 +373,31 @@ class HermesRuntime(HermesClient):
 
     async def steer_chat(self, session_id, text, request_id, context):
         return await self.steer(text, request_id, context=context)
+
+    async def inject_reminder(self, session_id: str, reminder_text: str) -> dict:
+        """向正在运行的回合注入进度提醒（<system_reminder>），不计入用户 steering 表。"""
+        if not self.run_id:
+            return {'state': 'not_sent'}
+        try:
+            result = await self.request('POST', '/v1/runs/' + self.run_id + '/steer', {'input': reminder_text})
+        except (RuntimeError, httpx.HTTPError):
+            return {'state': 'not_sent'}
+        status = result.get('status', '') if isinstance(result, dict) else ''
+        if status in ('not_running', 'completed'):
+            return {'state': 'not_sent'}
+        return {'state': 'injected', 'run_id': self.run_id}
+
+    def clear_unconsumed_steer(self, request_id: str) -> None:
+        with sqlite3.connect(self.path) as db:
+            db.execute("DELETE FROM steering WHERE request_id=? AND state!='delivered'", (request_id,))
+
+    async def repair_missing_send_message(self, session_id: str, parent_request_id: str, context: dict) -> None:
+        """当模型整轮只写了思考文本而未调 send_message 时，触发最多一次同会话修复续跑。"""
+        from send_message import build_repair_reminder
+        repair_req = f"{parent_request_id}:send-repair-1"
+        self.session_id = session_id + getattr(self, 'lane_suffix', '')
+        async for _event, _payload in self.stream(build_repair_reminder(), repair_req, context=context):
+            pass
 
     async def restore_request(self,request_id):
         with sqlite3.connect(self.path) as db:

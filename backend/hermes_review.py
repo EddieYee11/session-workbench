@@ -9,7 +9,7 @@ import httpx
 from hermes_runtime import HermesRuntime
 
 MODELS=Path.home()/'.pi/agent/models.json'
-DIRECT_MODEL='volcengine/deepseek-v4.1-flash'
+DIRECT_MODEL='opencode-go/deepseek-v4.1-flash'
 NO_TOOLS='\n只做本轮数据判断，不调用工具，不派发任务，不写入记忆或业务对象。'
 
 def _json_object(text):

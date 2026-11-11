@@ -638,7 +638,10 @@ struct TodayDetail: View {
         }
         if !v["notes"].string.isEmpty { Card { RichText(text: v["notes"].string) } }
         Button(busy ? "交给 Com…" : "交给 Com 准备") {
-            hand("帮我准备今天的「\(entry.title)」（\(allDay ? "全天" : clockTime(v["start"].double))\(v["location"].string.isEmpty ? "" : "，" + v["location"].string)）：列出要带的材料、要确认的问题，有相关邮件就一起看。")
+            handEvent(
+                title: entry.title,
+                prompt: "帮我准备今天的「\(entry.title)」（\(allDay ? "全天" : clockTime(v["start"].double))\(v["location"].string.isEmpty ? "" : "，" + v["location"].string)）：列出要带的材料、要确认的问题，有相关邮件就一起看。"
+            )
         }
             .buttonStyle(.primaryFull).disabled(busy)
             .accessibilityIdentifier("today-event-hand")
@@ -678,8 +681,21 @@ struct TodayDetail: View {
             if !v["note"].string.isEmpty { KeyValueRow(label: "备注", value: v["note"].string) }
             KeyValueRow(label: "来源", value: "Obsidian 行动台")
         }
-        Button(busy ? "交给 Com…" : "交给 Com") {
-            hand("帮我推进待办「\(entry.title)」" + (v["next_step"].string.isEmpty ? "。" : "，下一步是：" + v["next_step"].string + "。") + "先告诉我你打算怎么做。")
+        Button(busy ? "交给 Com…" : "交给 Com（开一段航程）") {
+            guard !busy else { return }
+            busy = true
+            failNote = ""
+            Task {
+                if let caseId = await model.delegateTodo(v["path"].string) {
+                    if !caseId.isEmpty {
+                        model.presentedCase = caseId
+                    }
+                    dismiss()
+                } else {
+                    failNote = "交给我办没成，卡还在"
+                }
+                busy = false
+            }
         }
             .buttonStyle(.primaryFull).disabled(busy)
             .accessibilityIdentifier("today-todo-hand")
@@ -701,19 +717,27 @@ struct TodayDetail: View {
             }
         }
     }
-    /// 作为一条消息交给主对话，执行仍走原有批准流。
-    private func hand(_ text: String) {
+
+    /// 日历日程交给 Com 准备：开一段独立航程并在当前页打开，不注入聊天假消息、不切 Tab。
+    private func handEvent(title: String, prompt: String) {
         guard !busy else { return }
         busy = true
         failNote = ""
         Task {
-            let ok = await model.send(textOverride: text)
-            busy = false
-            // 送达失败别空跳聊天，留在今天详情重试。
-            if ok {
-                model.tab = .chat
-            } else {
-                failNote = "没交给 Com——还在详情页，可再试"
+            do {
+                let res = try await model.mutate("/personal/today/events/delegate", fields: [
+                    "title": .string(title),
+                    "prompt": .string(prompt)
+                ])
+                busy = false
+                let taskId = res["task_id"].string
+                if !taskId.isEmpty {
+                    model.presentedCase = taskId
+                }
+                dismiss()
+            } catch {
+                busy = false
+                failNote = "交办失败：" + error.localizedDescription
             }
         }
     }

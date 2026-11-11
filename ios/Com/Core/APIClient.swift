@@ -76,27 +76,50 @@ public struct APIClient: Sendable {
         return try JSON.decode(body)
     }
     public func download(_ id: String, name: String, into folder: URL) async throws -> URL {
-        let (tmp, response) = try await session.download(for: makeRequest("/personal/artifacts/" + id.pathEncoded))
+        try await downloadArtifact(path: "/personal/artifacts/" + id.pathEncoded, cacheKey: id, name: name, into: folder)
+    }
+    public func downloadArtifact(path: String, cacheKey: String, name: String, into folder: URL) async throws -> URL {
+        let normalizedPath = path.hasPrefix("/") ? path : "/personal/artifacts/" + cacheKey.pathEncoded
+        let (tmp, response) = try await session.download(for: makeRequest(normalizedPath))
         try check(response)
-        let directory = folder.appendingPathComponent(id.pathEncoded, isDirectory: true)
+        let key = cacheKey.isEmpty ? URL(fileURLWithPath: normalizedPath).lastPathComponent : cacheKey
+        let directory = folder.appendingPathComponent(key.pathEncoded, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let safeName = URL(fileURLWithPath: name).lastPathComponent
         let file = directory.appendingPathComponent(safeName.isEmpty ? "成果" : safeName)
         if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         try FileManager.default.moveItem(at: tmp, to: file); return file
     }
-    public func stream(after: Int?, onEvent: @Sendable (SSEEvent) async -> Void) async throws {
-        var req = try makeRequest("/personal/conversation/stream")
+    public func makeStreamRequest(after: Int?, lastEventID: String? = nil) throws -> URLRequest {
+        let trimmedLastID = lastEventID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let effectiveHeaderID: String? = !trimmedLastID.isEmpty ? trimmedLastID : after.map(String.init)
+        let effectiveCursorInt: Int? = after ?? Int(trimmedLastID)
+        let path = effectiveCursorInt.map { "/personal/stream?after=\($0)&cursor=\($0)" } ?? "/personal/stream"
+        var req = try makeRequest(path)
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept"); req.timeoutInterval = 3600
-        if let after { req.setValue(String(after), forHTTPHeaderField: "Last-Event-ID") }
+        if let effectiveHeaderID { req.setValue(effectiveHeaderID, forHTTPHeaderField: "Last-Event-ID") }
+        return req
+    }
+    public func stream(
+        after: Int?,
+        lastEventID: String? = nil,
+        onCursor: (@Sendable (String) async -> Void)? = nil,
+        onEvent: @Sendable (SSEEvent) async -> Void
+    ) async throws {
+        let req = try makeStreamRequest(after: after, lastEventID: lastEventID)
         let (bytes, response) = try await session.bytes(for: req); try check(response)
         var parser = SSEParser()
+        var reportedID = ""
         var line = Data()
         for try await byte in bytes {
             try Task.checkCancellation()
             line.append(byte)
             if byte == 10 {
                 for event in parser.feed(line) { await onEvent(event) }
+                if !parser.lastEventID.isEmpty && parser.lastEventID != reportedID {
+                    reportedID = parser.lastEventID
+                    await onCursor?(reportedID)
+                }
                 line.removeAll(keepingCapacity: true)
             }
         }

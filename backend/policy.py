@@ -5,7 +5,7 @@ import shlex
 from decimal import Decimal,InvalidOperation
 from pathlib import Path
 
-ACTION = re.compile(r'请|帮我|给我|替我|把.{0,100}(?:做|改|查|记|收|存|导)|连接|启动|无线调试|跑起来|检查|排查|诊断|修复|修好|修改|优化|实现|添加|增加|编写|整理|记一下|记一笔|记账|记录|提醒|收藏|转写|导出|分析|查一下|查查|继续|接着做|恢复|照.{0,20}(?:办|做)|按.{0,40}(?:做|办|流程)|停止|取消|暂停|先别管|停下|归档|删除|清空|销毁|发送|发布|验收|合入', re.S)
+ACTION = re.compile(r'请|帮我|给我|替我|把.{0,100}(?:做|改|查|记|收|存|导)|连接|启动|无线调试|跑起来|检查|排查|诊断|修复|修好|修改|优化|实现|添加|增加|编写|整理|记一下|记一笔|记账|记录|提醒|收藏|转写|导出|分析|查一下|查查|继续|接着做|恢复|照.{0,20}(?:办|做)|按.{0,40}(?:做|办|流程)|停止|取消|暂停|先别管|停下|归档|删除|清空|销毁|发送|发布|验收|合入|提交|回复|发邮件|打款|转账|支付|准备|预约|预订|订(?:票|酒店|座|车)|叫(?:车|快车|专车)|直接执行|Eddie 已确认', re.S)
 WISH = re.compile(r'^(?:我)?(?:最近)?(?:想|希望|打算|以后|有空|不想)|(?:不想折腾|好烦|真累|太累|心情不好)')
 QUOTE = re.compile(r'「[^」]*」|“[^”]*”|"[^"\n]*"|```[\s\S]*?```|(?m:^>.*$)')
 DANGER = re.compile(r'\b(?:rm|rmdir|unlink|shred|wipefs|mkfs|dd|mv)\b|\b(?:DROP|TRUNCATE)\b|(?:Remove-Item|deleteMany|rmtree)|(?:-X|--request)\s+(?:DELETE|PUT)|\.delete\s*\(|\bos\.remove\s*\(|\bfind\b[^\n]*-delete|(?<![><])>(?!>)\s*[^&\s]|\bsed\s+-i\b', re.I)
@@ -311,6 +311,7 @@ def recoverable_remove(tool,args,copy):
 def source(conversation, data):
     with conversation.db() as db:
         row = db.execute("SELECT * FROM messages WHERE id=? AND role='user'", (data.get('origin_message_id'),)).fetchone()
+        confirm_meta = db.execute("SELECT value FROM meta WHERE key=?", ('confirm-source:' + str(row['id']),)).fetchone() if row else None
     if not row or row['request_id'] != data.get('origin_request_id'):
         raise ValueError('需要真实用户消息和 request_id')
     accepts = getattr(conversation, 'accepts_origin', lambda sid, mid: sid == conversation._session_id())
@@ -319,6 +320,16 @@ def source(conversation, data):
     result = dict(row)
     result['raw_text'] = result['text']
     result['source_links']=[source_link(result)]
+    if confirm_meta:
+        saved = json.loads(confirm_meta[0])
+        quote = str(saved.get('source_quote') or '')
+        if quote:
+            result['bookkeeping_source'] = quote + '\n' + result['text']
+            result['text'] = quote + '\n' + result['text']
+        if saved.get('parent_id'):
+            result['authorization_parent_message_id'] = saved['parent_id']
+        if saved.get('source_links'):
+            result['source_links'] = list(saved['source_links']) + [source_link(result)]
     clarification = bookkeeping_clarification(conversation, result)
     if clarification:
         parent = clarification['parent']
@@ -346,7 +357,7 @@ def source(conversation, data):
         result['text']=parent['text']+''.join('\n用户后续限制：'+link['text'] for link in supplemental_links
                                             if readonly_restriction(link['text']))+'\n用户本次补充（保留原授权范围）：'+result['raw_text']
         result['supplement']=True
-    if CONTINUATION.fullmatch(result['raw_text']) or CONTEXTUAL_FOLLOWUP.fullmatch(result['raw_text']):
+    if not confirm_meta and (CONTINUATION.fullmatch(result['raw_text']) or CONTEXTUAL_FOLLOWUP.fullmatch(result['raw_text'])):
         parent,links=_continuation_parent(conversation,result)
         if parent:
             result['authorization_parent_message_id']=parent['id']

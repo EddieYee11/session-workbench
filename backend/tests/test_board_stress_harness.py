@@ -118,7 +118,7 @@ def test_multihop_cycle_1_full(tmp_path):
         # 4. done -> suggest
         advance_time()
         r4 = await board.move(
-            {'request_id': 'op-4', 'card': r3['card']['id'], 'to': 'suggest', 'rev': r3['card']['rev']}
+            {'request_id': 'op-4', 'card': r3['card']['id'], 'to': 'suggest', 'rev': r3['card']['rev'], 'destructive_cancel': True}
         )
         assert r4['ok'] and r4['card']['column'] == 'suggest'
         assert r4['card']['id'] == 'next:' + ident
@@ -182,7 +182,7 @@ def test_rapid_multihop_cycle_suggest_todo_doing_done_suggest_todo(tmp_path):
 
         # done -> suggest
         advance_time(1)
-        r = await board.move({'request_id': 'op-c1-4', 'card': r['card']['id'], 'to': 'suggest', 'rev': r['card']['rev']})
+        r = await board.move({'request_id': 'op-c1-4', 'card': r['card']['id'], 'to': 'suggest', 'rev': r['card']['rev'], 'destructive_cancel': True})
         assert r['ok'] and r['card']['id'] == 'next:' + ident and r['card']['column'] == 'suggest'
 
         # === CYCLE 2: The critical re-entry! ===

@@ -1,4 +1,6 @@
 """Voice and text share the main conversation's idempotent request registry."""
+from __future__ import annotations
+
 import json
 from quick_voice import observed_progress
 
@@ -36,7 +38,7 @@ class UnifiedVoice:
             row=db.execute("SELECT * FROM messages WHERE request_id=? AND role='user'",(request_id,)).fetchone()
             if not row:
                 return None
-            reply=db.execute("SELECT text FROM messages WHERE parent_id=? AND role='assistant'",(row['id'],)).fetchone()
+            reply=db.execute("SELECT text FROM messages WHERE parent_id=? AND role='assistant' ORDER BY message_seq DESC, created_at DESC LIMIT 1",(row['id'],)).fetchone()
         status='accepted' if row['status']=='queued' else 'submitted' if row['status']=='sending' else row['status']
         evidence={}
         rpc=getattr(self.conversation.client,'rpc',None)

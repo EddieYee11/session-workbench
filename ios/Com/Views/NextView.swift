@@ -17,8 +17,7 @@ extension AppModel {
             var value = nextData
             value["items"] = .array(value["items"].array.filter { $0.id != item.id }); datasets["/personal/next"] = value
             if action == "discuss" {
-                conversation.messages.append(.object(["id": .string("next-" + item.id), "role": .string("user"), "text": .string(item["prompt"].string), "status": .string("completed"), "created_at": .number(Date().timeIntervalSince1970)]))
-                conversation.revision += 1; tab = .chat
+                conversation.revision += 1
             }
             Haptics.selection(); return true
         }
@@ -46,7 +45,7 @@ extension AppModel {
                     ? head + "，下一步列表没刷齐——可下拉再试。不会假装列表已是最新。"
                     : head + "，下一步列表没刷齐：" + err + "——可下拉再试。不会假装列表已是最新。"
             }
-            if action == "discuss" { tab = .chat; await refresh(.chat) }
+            if action == "discuss" { await refresh(.chat) }
             Haptics.success()
             return true
         } catch { banner = error.localizedDescription; return false }
@@ -92,38 +91,57 @@ extension AppModel {
             if let url = parts.url { open(url) }
             return await nextAction(item, "drafted")
         case "bookkeep":
+            let amt = action["amount"].double
             let note = action["note"].string
-            let ok = await send(textOverride: "记一笔 " + nextAmount(action["amount"].double) + " 元" + (note.isEmpty ? "" : " " + note))
-            // 只有送达才跳聊天并标做完；失败留在下一步。
-            if ok {
-                tab = .chat
+            let mid = item["matter_id"].string.isEmpty ? item.id : item["matter_id"].string
+            let fields: [String: JSON] = [
+                "action": .string("done"),
+                "action_type": .string("bookkeep"),
+                "amount": .number(amt),
+                "category": .string(action["category"].string.isEmpty ? "餐饮美食" : action["category"].string),
+                "account": .string(action["account"].string.isEmpty ? "招商银行储蓄卡" : action["account"].string),
+                "comment": .string(note)
+            ]
+            do {
+                _ = try await mutate("/personal/matter/" + mid.pathEncoded + "/action", fields: fields)
                 let marked = await nextAction(item, "done")
-                // 预热账本；失败 financeOpenNote（主聊已有开口），别假装新账已显示。
                 if await load("/personal/finance") == nil {
                     let err = errors["/personal/finance"] ?? ""
                     financeOpenNote = err.isEmpty
-                        ? "记账已送上，账本没刷上——可打开账本下拉。不会假装新账已显示。"
-                        : "记账已送上，账本没刷上：" + err + "——可打开账本再试。不会假装新账已显示。"
+                        ? "记账已办结，账本没刷上——可打开账本下拉。"
+                        : "记账已办结，账本没刷上：" + err
                 }
+                Haptics.success()
                 return marked
+            } catch {
+                banner = "记账失败：" + error.localizedDescription
+                return false
             }
-            return false
         case "calendar":
-            let end = action["end"].string
-            let ok = await send(textOverride: "加个日程：" + action["title"].string + " " + action["start"].string + (end.isEmpty ? "" : " 到 " + end))
-            if ok {
-                tab = .chat
+            let mid = item["matter_id"].string.isEmpty ? item.id : item["matter_id"].string
+            let fields: [String: JSON] = [
+                "action": .string("done"),
+                "action_type": .string("calendar"),
+                "title": action["title"],
+                "start": action["start"],
+                "end": action["end"],
+                "location": action["location"]
+            ]
+            do {
+                _ = try await mutate("/personal/matter/" + mid.pathEncoded + "/action", fields: fields)
                 let marked = await nextAction(item, "done")
-                // 预热今天；失败 doingOpenNote（今天页开口），别假装新日程已显示。
                 if await load("/personal/today") == nil {
                     let err = errors["/personal/today"] ?? ""
                     doingOpenNote = err.isEmpty
-                        ? "日程已送上，今天页没刷上——可到「今天」下拉。不会假装新日程已显示。"
-                        : "日程已送上，今天页没刷上：" + err + "——可到「今天」下拉。不会假装新日程已显示。"
+                        ? "日程已添加，今天页没刷上——可到「今天」下拉。"
+                        : "日程已添加，今天页没刷上：" + err
                 }
+                Haptics.success()
                 return marked
+            } catch {
+                banner = "添加日程失败：" + error.localizedDescription
+                return false
             }
-            return false
         default:
             return false
         }
@@ -184,14 +202,8 @@ struct NextView: View {
     @State private var showMore = false
     @State private var alertsOpen = false
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @Environment(\.dockOnSide) private var outer
     private var data: JSON { model.nextData }
     private var building: Bool { model.nextUserRefresh && data["running"].bool }
-    private var glance: JSON? {
-        guard outer && !model.splitView else { return nil }
-        if let card = model.boardCards[.doing]?.first { return card }
-        return model.boardCards[.todo]?.first
-    }
     private var hasAlerts: Bool {
         model.waitingInboxCount > 0 || !model.activityData["uncertain"].array.isEmpty || !model.brokenSources.isEmpty
             || !model.activityOpenNote.isEmpty || !model.planOpenNote.isEmpty
@@ -199,7 +211,7 @@ struct NextView: View {
 
     var body: some View {
         GeometryReader { _ in
-            VStack(alignment: .leading, spacing: Space.md) {
+            VStack(alignment: .leading, spacing: Space.sm) {
                 header
                 if hasAlerts {
                     NextAlertStrip(open: $alertsOpen, brokenSources: model.brokenSources) {
@@ -222,7 +234,6 @@ struct NextView: View {
                         }
                     }
                 }
-                if let glance, !building { NextGlanceCard(item: boardGlanceItem(glance)) }
                 VoyageBanner()
                 if building {
                     NextBuildingCard(progress: data["progress"])
@@ -233,7 +244,7 @@ struct NextView: View {
                 }
             }
         }
-        .padding(.top, Space.md)
+        .padding(.top, Space.sm)
         .background(Palette.background)
         .navigationTitle("下一步")
         .toolbar(.hidden, for: .navigationBar)
@@ -408,17 +419,82 @@ private struct NextCard: View {
     let item: JSON
     @Environment(\.openURL) private var openURL
     @State private var offset: CGFloat = 0
+    @State private var swipeOpen = false
     @State private var busy = false
     @State private var askReason = false
     @State private var landed = false
     @State private var handoffNote = ""
+    @State private var activeMicroPayload: MicroSheetPayload? = nil
     /// 乐观收起（已做/划掉/稍后再说）；失败回弹。
     @State private var gone = false
     private var hasAction: Bool { !item["action"]["type"].string.isEmpty }
+    private var attachedContextCandidate: AttachedContextItem {
+        let rawID = !item["matter_id"].string.isEmpty ? item["matter_id"].string : item.id
+        let rawSummary = !item["why"].string.isEmpty ? item["why"].string : item["summary"].string
+        let trimmed = rawSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = trimmed.count > 140 ? String(trimmed.prefix(139)) + "…" : trimmed
+        return AttachedContextItem(id: rawID, title: item["title"].string, summary: summary, kind: "next")
+    }
+    private var isAttachedToChat: Bool {
+        let cid = attachedContextCandidate.id
+        return !cid.isEmpty && model.attachedContext?.id == cid
+    }
     var body: some View {
         Group {
             if !gone {
-                cardBody
+                ZStack(alignment: .trailing) {
+                    if offset < -2 || swipeOpen {
+                        Button {
+                            attachToChat()
+                        } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: "bubble.left.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("聊这件")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .foregroundStyle(Palette.onAccent)
+                            .frame(width: max(84, -offset - 8))
+                            .frame(maxHeight: .infinity)
+                            .background(Palette.accent, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 2)
+                        .accessibilityIdentifier("next-swipe-chat-" + item.id)
+                    }
+                    cardBody
+                        .offset(x: offset)
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 18, coordinateSpace: .local)
+                                .onChanged { value in
+                                    let dx = value.translation.width
+                                    let dy = value.translation.height
+                                    guard abs(dx) > abs(dy) * 1.2 || swipeOpen else { return }
+                                    let base: CGFloat = swipeOpen ? -92 : 0
+                                    offset = min(0, max(-170, base + dx))
+                                }
+                                .onEnded { value in
+                                    let dx = value.translation.width
+                                    let dy = value.translation.height
+                                    guard abs(dx) > abs(dy) || swipeOpen else { return }
+                                    let projected = (swipeOpen ? -92 : 0) + value.predictedEndTranslation.width
+                                    if offset <= -136 || projected <= -165 {
+                                        attachToChat()
+                                    } else if offset < -42 || projected < -68 {
+                                        Haptics.selection()
+                                        withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                                            offset = -92
+                                            swipeOpen = true
+                                        }
+                                    } else {
+                                        withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+                                            offset = 0
+                                            swipeOpen = false
+                                        }
+                                    }
+                                }
+                        )
+                }
             }
         }
         .animation(ComMotion.reduced(reduce, ComMotion.settle), value: gone)
@@ -480,7 +556,20 @@ private struct NextCard: View {
                             .disabled(busy)
                             .accessibilityIdentifier("next-discuss-" + item.id)
                     }
+                    Button {
+                        attachToChat()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: isAttachedToChat ? "bubble.left.fill" : "bubble.left")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(isAttachedToChat ? "已挂入" : "聊这件")
+                        }
+                    }
+                    .buttonStyle(.secondaryCompact)
+                    .disabled(busy)
+                    .accessibilityIdentifier("next-chat-" + item.id)
                     Menu {
+                        Button("聊这件", systemImage: "bubble.left") { attachToChat() }
                         if hasAction { Button("交给我办", systemImage: "paperplane") { delegate() } }
                         if item["in_todo"].isNull {
                             Button("加到今天待办", systemImage: "sun.max") { todo(0) }
@@ -508,12 +597,16 @@ private struct NextCard: View {
             Button("取消", role: .cancel) {}
         }
         .contextMenu {
+            Button("聊这件", systemImage: "bubble.left") { attachToChat() }
             if hasAction { Button(nextActionTitle(item["action"]), systemImage: "bolt") { runAction() } }
             Button("交给我办", systemImage: "paperplane") { delegate() }
             Button("加到明天的待办", systemImage: "checklist") { todo(1) }
             Button("稍后再说（明天再提）", systemImage: "clock.arrow.circlepath") { act("snooze") }
             Button("已经做了", systemImage: "checkmark") { act("done") }
             Button("不用…", systemImage: "xmark") { askReason = true }
+        }
+        .accessibilityAction(named: "聊这件") {
+            attachToChat()
         }
         .scaleEffect(reduce || landed ? 1 : 0.97)
         .opacity(reduce || landed ? 1 : 0)
@@ -526,6 +619,27 @@ private struct NextCard: View {
         .transition(reduce ? .opacity : .asymmetric(
             insertion: .opacity,
             removal: .opacity.combined(with: .move(edge: .trailing))))
+        .sheet(item: $activeMicroPayload) { payload in
+            MicroSheetView(payload: payload) { _ in
+                Task {
+                    await model.nextAction(item, "done")
+                    await model.refreshNext()
+                }
+            }
+        }
+    }
+    private func attachToChat() {
+        let ctx = attachedContextCandidate
+        guard !ctx.title.isEmpty || !ctx.id.isEmpty else { return }
+        Haptics.selection()
+        withAnimation(ComMotion.reduced(reduce, ComMotion.snap)) {
+            offset = 0
+            swipeOpen = false
+        }
+        if model.splitView && model.boardFocus {
+            model.boardFocus = false
+        }
+        model.attachToChat(ctx, switchIfCompact: true)
     }
     private func act(_ action: String) {
         guard !busy else { return }
@@ -554,6 +668,19 @@ private struct NextCard: View {
         }
     }
     private func runAction() {
+        let action = item["action"]
+        let typeStr = action["type"].string
+        if typeStr == "bookkeep" || typeStr == "calendar" || typeStr == "reply_mail" {
+            let microType: MicroActionType = typeStr == "bookkeep" ? .bookkeep : (typeStr == "calendar" ? .calendar : .replyMail)
+            activeMicroPayload = MicroSheetPayload(
+                id: item["matter_id"].string.isEmpty ? item.id : item["matter_id"].string,
+                title: item["title"].string,
+                sourceWhy: item["why"].string,
+                actionType: microType,
+                rawPayload: action
+            )
+            return
+        }
         guard !busy else { return }
         busy = true
         handoffNote = ""
